@@ -22,7 +22,8 @@ export function analyzeQueueMetrics(runs, { days = 14, now = new Date() } = {}) 
   const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
   const windowRuns = (runs || []).filter((r) => {
-    const created = new Date(r.created_at);
+    const rawCreated = r.created_at || r.createdAt;
+    const created = new Date(rawCreated);
     return !isNaN(created.getTime()) && created >= cutoff;
   });
 
@@ -36,19 +37,25 @@ export function analyzeQueueMetrics(runs, { days = 14, now = new Date() } = {}) 
       cancelledCount++;
     }
 
-    if (r.head_branch === 'main' && r.event === 'push') {
+    const branch = r.head_branch || r.headBranch;
+    const evt = r.event;
+    if (branch === 'main' && (evt === 'push' || !evt)) {
       mainCommitsCount++;
     }
 
-    const created = new Date(r.created_at).getTime();
-    const started = r.run_started_at ? new Date(r.run_started_at).getTime() : null;
-    const updated = r.updated_at ? new Date(r.updated_at).getTime() : null;
+    const rawCreated = r.created_at || r.createdAt;
+    const rawStarted = r.run_started_at || r.startedAt;
+    const rawUpdated = r.updated_at || r.updatedAt;
+
+    const created = rawCreated ? new Date(rawCreated).getTime() : null;
+    const started = rawStarted ? new Date(rawStarted).getTime() : null;
+    const updated = rawUpdated ? new Date(rawUpdated).getTime() : null;
 
     if (started && created && started >= created) {
       queueWaitsSec.push((started - created) / 1000);
     }
 
-    if (started && updated && updated >= started && r.status === 'completed') {
+    if (started && updated && updated >= started && (r.status === 'completed' || r.conclusion)) {
       durationsSec.push((updated - started) / 1000);
     }
   }
@@ -167,6 +174,7 @@ export function main(args = process.argv.slice(2)) {
   let file = null;
   let baseFile = null;
   let postFile = null;
+  let benchmarkFile = null;
   let days = 14;
   let targetReduction = 30;
 
@@ -174,8 +182,25 @@ export function main(args = process.argv.slice(2)) {
     if (args[i] === '--file') file = args[++i];
     else if (args[i] === '--baseline') baseFile = args[++i];
     else if (args[i] === '--post') postFile = args[++i];
+    else if (args[i] === '--benchmark') {
+      const next = args[i + 1];
+      if (next && !next.startsWith('--')) {
+        benchmarkFile = args[++i];
+      } else {
+        benchmarkFile = 'scripts/myrmidon/ci/fixtures/queue-metrics-benchmark.json';
+      }
+    }
     else if (args[i] === '--days') days = parseInt(args[++i], 10);
     else if (args[i] === '--target-reduction') targetReduction = parseFloat(args[++i]);
+  }
+
+  if (benchmarkFile) {
+    const raw = JSON.parse(fs.readFileSync(benchmarkFile, 'utf8'));
+    const baseMetrics = raw.baseline?.queueWaitSeconds ? raw.baseline : analyzeQueueMetrics(raw.baseline, { days });
+    const postMetrics = raw.postChange?.queueWaitSeconds ? raw.postChange : analyzeQueueMetrics(raw.postChange, { days });
+    const comparison = compareQueueMetrics(baseMetrics, postMetrics, { targetReductionPercent: targetReduction });
+    console.log(formatComparisonMarkdown(comparison));
+    return;
   }
 
   if (baseFile && postFile) {

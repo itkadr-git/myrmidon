@@ -47,10 +47,10 @@ export function getExecutionPriority({
 export function getRunnerPool({
   priority,
   defaultRunner = 'ubuntu-latest',
-  priorityRunner = null,
+  priorityRunner = 'vps-ci',
 } = {}) {
-  if ((priority === 'P0_CRITICAL' || priority === 'P1_HIGH') && priorityRunner) {
-    return priorityRunner;
+  if (priority === 'P0_CRITICAL' || priority === 'P1_HIGH') {
+    return priorityRunner || 'vps-ci';
   }
   return defaultRunner;
 }

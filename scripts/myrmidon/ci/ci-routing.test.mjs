@@ -66,10 +66,14 @@ test('getRunnerPool routes to priority pool for P0/P1 when configured', () => {
     'ubuntu-latest'
   );
 
-  // When no priority runner is configured, fallback to default
+  // When no priority runner is explicitly passed, default to vps-ci
   assert.equal(
-    getRunnerPool({ priority: 'P0_CRITICAL', defaultRunner: 'ubuntu-latest', priorityRunner: null }),
-    'ubuntu-latest'
+    getRunnerPool({ priority: 'P0_CRITICAL', defaultRunner: 'ubuntu-latest' }),
+    'vps-ci'
+  );
+  assert.equal(
+    getRunnerPool({ priority: 'P1_HIGH', defaultRunner: 'ubuntu-latest' }),
+    'vps-ci'
   );
 });
 
