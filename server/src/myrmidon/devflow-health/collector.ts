@@ -1,6 +1,6 @@
 import { and, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { activityLog, agents, connectionEventDeliveries, issueComments, issues, issueWorkProducts } from "@myrmidon/db";
+import { activityLog, agents, connectionEventDeliveries, instanceSettings, issueComments, issues, issueWorkProducts } from "@myrmidon/db";
 import {
   buildDevflowSignals,
   redCiSince,
@@ -12,7 +12,10 @@ import {
 import { DEVFLOW_HEALTH_SETTINGS_KEY } from "./thresholds.js";
 
 export async function collectDevflowHealth(db: Db, companyId: string, now = new Date()): Promise<DevflowSignal[]> {
-  const settingsRows = await db.select().from(sql`instance_settings`);
+  const settingsRows = await db
+    .select({ general: instanceSettings.general })
+    .from(instanceSettings)
+    .limit(1);
   const general = (settingsRows[0]?.general as Record<string, unknown> | undefined) ?? {};
   const thresholds = general[DEVFLOW_HEALTH_SETTINGS_KEY];
   if (thresholds && typeof thresholds === "object" && (thresholds as { enabled?: boolean }).enabled === false) {
@@ -171,7 +174,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     // Red CI sample - guarded by repo and valid number
     const repo = typeof meta.repo === "string" ? meta.repo : typeof meta.repository === "string" ? meta.repository : null;
     const number = prNumber;
-    if (!repo || !Number.isInteger(number) || number <= 0) continue;
+    if (!repo || typeof number !== "number" || !Number.isInteger(number) || number <= 0) continue;
 
     const events = await db.select({
       payload: connectionEventDeliveries.normalizedPayload,

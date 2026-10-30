@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   agents,
   connectionEventDeliveries,
+  instanceSettings,
   issueComments,
   issues,
   issueWorkProducts,
@@ -45,6 +46,7 @@ function createMockDb(fixtures: {
             return queryChain;
           }),
           where: vi.fn(() => queryChain),
+          limit: vi.fn(() => queryChain),
           then: (resolve: (val: any) => void) => {
             if (table === agents) {
               return resolve(fixtures.agents ?? []);
@@ -63,6 +65,9 @@ function createMockDb(fixtures: {
             }
             if (table === connectionEventDeliveries) {
               return resolve(fixtures.deliveries ?? []);
+            }
+            if (table === instanceSettings) {
+              return resolve(fixtures.instanceSettings ?? []);
             }
             return resolve(fixtures.instanceSettings ?? []);
           },

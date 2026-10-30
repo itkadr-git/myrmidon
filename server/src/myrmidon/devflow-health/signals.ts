@@ -217,8 +217,8 @@ export function approvedPrSince(
           continue;
         }
         const textAfter = verdictHeaderMatch[2];
-        const approves = /(?:^|[^\p{L}\p{N}])(approve|approved|одобрен[оаы]?|одобрить|lgtm)(?:[^\\p{L}\\p{N}]|$)/iu.test(textAfter);
-        const rejects = /(?:^|[^\p{L}\p{N}])(changes|rework|return|refuse|отклон\p{L}*|доработк\p{L}*)(?:[^\\p{L}\\p{N}]|$)/iu.test(textAfter);
+        const approves = /(?:^|[^\p{L}\p{N}])(approve|approved|одобрен[оаы]?|одобрить|lgtm)(?:[^\p{L}\p{N}]|$)/iu.test(textAfter);
+        const rejects = /(?:^|[^\p{L}\p{N}])(changes|rework|return|refuse|отклон\p{L}*|доработк\p{L}*)(?:[^\p{L}\p{N}]|$)/iu.test(textAfter);
         if (approves && !rejects) {
           commentVerdict = "approve";
           break;
@@ -229,14 +229,14 @@ export function approvedPrSince(
       }
 
       // Case 4: General line containing verdict/вердикт
-      if (/(?:^|[^\p{L}\p{N}])(verdict|вердикт)(?:[^\\p{L}\\p{N}]|$)/iu.test(line)) {
+      if (/(?:^|[^\p{L}\p{N}])(verdict|вердикт)(?:[^\p{L}\p{N}]|$)/iu.test(line)) {
         const prMatch = line.match(/#(\d+)/);
         const commentPrNum = prMatch ? Number(prMatch[1]) : null;
         if (prNumber !== null && commentPrNum !== null && commentPrNum !== prNumber) {
           continue;
         }
-        const approves = /(?:^|[^\p{L}\p{N}])(approve|approved|одобрен[оаы]?|одобрить|lgtm)(?:[^\\p{L}\\p{N}]|$)/iu.test(line);
-        const rejects = /(?:^|[^\p{L}\p{N}])(changes|rework|return|refuse|отклон\p{L}*|доработк\p{L}*)(?:[^\\p{L}\\p{N}]|$)/iu.test(line);
+        const approves = /(?:^|[^\p{L}\p{N}])(approve|approved|одобрен[оаы]?|одобрить|lgtm)(?:[^\p{L}\p{N}]|$)/iu.test(line);
+        const rejects = /(?:^|[^\p{L}\p{N}])(changes|rework|return|refuse|отклон\p{L}*|доработк\p{L}*)(?:[^\p{L}\p{N}]|$)/iu.test(line);
         if (approves && !rejects) {
           commentVerdict = "approve";
           break;
