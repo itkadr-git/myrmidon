@@ -19,7 +19,6 @@ function createMockDb(fixtures: {
   products?: Array<{
     product: any;
     issue: any;
-    issueInReviewSince?: Date | null;
   }>;
   comments?: Array<{
     issueId: string;
@@ -91,7 +90,7 @@ describe("collectDevflowHealth", () => {
             provider: "github",
             externalId: "101",
             createdAt: new Date("2026-10-27T16:00:00Z"),
-            metadata: {}, // No repo, no number!
+            metadata: { headSha: "eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3" }, // No repo, no number!
           },
           issue: {
             id: issueId,
@@ -100,13 +99,12 @@ describe("collectDevflowHealth", () => {
             assigneeAgentId: "rev-1",
             createdByAgentId: "author-1",
           },
-          issueInReviewSince: new Date("2026-10-27T16:00:00Z"),
         },
       ],
       comments: [
         {
           issueId,
-          body: "APPROVE PR #101\n\nCode review approved.",
+          body: "APPROVE PR #101 eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3\n\nCode review approved.",
           createdAt: new Date("2026-10-27T17:00:00Z"), // 3 hours ago -> > 2h threshold
           authorAgentId: "rev-1",
         },
@@ -137,7 +135,7 @@ describe("collectDevflowHealth", () => {
             type: "pull_request",
             provider: "github",
             externalId: "102",
-            metadata: { number: 102 },
+            metadata: { number: 102, headSha: "eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3" },
           },
           issue: { id: "issue-merged", title: "Merged task", status: "done" },
         },
@@ -148,7 +146,7 @@ describe("collectDevflowHealth", () => {
             type: "pull_request",
             provider: "github",
             externalId: "103",
-            metadata: { number: 103 },
+            metadata: { number: 103, headSha: "eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3" },
           },
           issue: { id: "issue-closed", title: "Closed task", status: "done" },
         },
@@ -156,7 +154,7 @@ describe("collectDevflowHealth", () => {
       comments: [
         {
           issueId: "issue-merged",
-          body: "APPROVE PR #102",
+          body: "APPROVE PR #102 eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3",
           createdAt: new Date("2026-10-27T15:00:00Z"),
         },
       ],

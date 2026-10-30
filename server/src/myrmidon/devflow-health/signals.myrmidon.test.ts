@@ -126,6 +126,23 @@ describe("DEVFLOW runtime signals", () => {
       expect(approvedPrSince(product, comments)).toBeNull();
     });
 
+    it("ignores canonical APPROVE PR header when commit SHA is missing or headSha is missing", () => {
+      const product = {
+        status: "open",
+        metadata: { number: 1986, headSha: "eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3" },
+      };
+      // Missing SHA in comment
+      expect(approvedPrSince(product, [
+        { body: "APPROVE PR #1986\n\nLooks good.", createdAt: "2026-10-27T17:15:00Z" },
+      ])).toBeNull();
+
+      // Missing headSha in product metadata
+      const productNoHeadSha = { status: "open", metadata: { number: 1986 } };
+      expect(approvedPrSince(productNoHeadSha, [
+        { body: "APPROVE PR #1986 eb7e5cec37ed6bd3b307e180c3d107c6586c8cc3", createdAt: "2026-10-27T17:15:00Z" },
+      ])).toBeNull();
+    });
+
     it("detects rejection from canonical header ^REQUEST CHANGES PR #N sha", () => {
       const product = {
         status: "open",
@@ -145,10 +162,10 @@ describe("DEVFLOW runtime signals", () => {
     });
 
     it("handles comments with both approve and changes words when header is decisive", () => {
-      const product = { status: "open", metadata: { number: 101 } };
+      const product = { status: "open", metadata: { number: 101, headSha: "abcdef12345678" } };
       const comments = [
         {
-          body: "APPROVE PR #101\n\nNo requested changes needed.",
+          body: "APPROVE PR #101 abcdef12345678\n\nNo requested changes needed.",
           createdAt: "2026-10-27T17:00:00Z",
         },
       ];
@@ -156,24 +173,29 @@ describe("DEVFLOW runtime signals", () => {
     });
 
     it("restricts review verdict comments to authorized reviewer", () => {
-      const product = { status: "open", metadata: { number: 101 } };
+      const product = { status: "open", metadata: { number: 101, headSha: "abcdef12345678" } };
       const reviewerId = "rev-agent-1";
       const authorId = "author-agent-1";
       const intruderId = "other-agent-2";
 
       // Self-approval by PR author is ignored
       expect(approvedPrSince(product, [
-        { body: "APPROVE PR #101", createdAt: "2026-10-27T17:00:00Z", authorAgentId: authorId },
+        { body: "APPROVE PR #101 abcdef12345678", createdAt: "2026-10-27T17:00:00Z", authorAgentId: authorId },
+      ], { authorAgentId: authorId, reviewerAgentIds: [reviewerId] })).toBeNull();
+
+      // Comment without authorAgentId is rejected when reviewerAgentIds or authorAgentId is configured
+      expect(approvedPrSince(product, [
+        { body: "APPROVE PR #101 abcdef12345678", createdAt: "2026-10-27T17:00:00Z" },
       ], { authorAgentId: authorId, reviewerAgentIds: [reviewerId] })).toBeNull();
 
       // Approval by random agent not in reviewerAgentIds is ignored
       expect(approvedPrSince(product, [
-        { body: "APPROVE PR #101", createdAt: "2026-10-27T17:00:00Z", authorAgentId: intruderId },
+        { body: "APPROVE PR #101 abcdef12345678", createdAt: "2026-10-27T17:00:00Z", authorAgentId: intruderId },
       ], { authorAgentId: authorId, reviewerAgentIds: [reviewerId] })).toBeNull();
 
       // Approval by designated reviewer is accepted
       expect(approvedPrSince(product, [
-        { body: "APPROVE PR #101", createdAt: "2026-10-27T17:00:00Z", authorAgentId: reviewerId },
+        { body: "APPROVE PR #101 abcdef12345678", createdAt: "2026-10-27T17:00:00Z", authorAgentId: reviewerId },
       ], { authorAgentId: authorId, reviewerAgentIds: [reviewerId] })).toBe("2026-10-27T17:00:00.000Z");
     });
 
@@ -182,7 +204,7 @@ describe("DEVFLOW runtime signals", () => {
       const product1 = {
         status: "open",
         reviewState: "approved",
-        createdAt: new Date("2026-10-27T17:00:00Z"),
+        updatedAt: new Date("2026-10-27T17:00:00Z"),
         metadata: { number: 101 },
       };
       const comments1 = [
@@ -194,13 +216,26 @@ describe("DEVFLOW runtime signals", () => {
       const product2 = {
         status: "open",
         reviewState: "approved",
-        createdAt: new Date("2026-10-27T16:00:00Z"),
-        metadata: { number: 101 },
+        updatedAt: new Date("2026-10-27T16:00:00Z"),
+        metadata: { number: 101, reviewApprovedAt: "2026-10-27T16:00:00.000Z" },
       };
       const comments2 = [
         { body: "REQUEST CHANGES PR #101", createdAt: "2026-10-27T17:00:00Z" },
       ];
       expect(approvedPrSince(product2, comments2)).toBeNull();
+    });
+
+    it("returns null when product is in changes_requested reviewState even with older approval", () => {
+      const product = {
+        status: "open",
+        reviewState: "changes_requested",
+        updatedAt: new Date("2026-10-27T17:00:00Z"),
+        metadata: { number: 101, headSha: "abcdef12345678" },
+      };
+      const comments = [
+        { body: "APPROVE PR #101 abcdef12345678", createdAt: "2026-10-27T15:00:00Z" },
+      ];
+      expect(approvedPrSince(product, comments)).toBeNull();
     });
 
     it("re-approves if changes requested were followed by a new approve verdict", () => {

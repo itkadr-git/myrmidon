@@ -127,26 +127,67 @@ export function approvedPrSince(
   }
   const events: TimelineEvent[] = [];
 
-  // 1. Initial product state / metadata approval
-  let initialApprovedAt: number | null = null;
-  if (typeof meta.reviewApprovedAt === "string") {
-    const at = Date.parse(meta.reviewApprovedAt);
-    if (Number.isFinite(at)) initialApprovedAt = at;
-  } else if (
+  // 1. Initial product state / metadata approval or rejection
+  const isProductApproved =
     product.reviewState === "approved" ||
     product.status === "approved" ||
     meta.reviewApproved === true ||
-    (Array.isArray(meta.labels) && meta.labels.includes("review-approved"))
-  ) {
-    // Avoid product.updatedAt because it resets on any metadata write.
-    // Use fallbackApprovedAt (e.g. from activityLog or in_review transition) or product.createdAt.
-    const fallback = options.fallbackApprovedAt ?? product.createdAt;
-    const at = fallback ? new Date(fallback).getTime() : NaN;
-    if (Number.isFinite(at)) initialApprovedAt = at;
+    (Array.isArray(meta.labels) && meta.labels.includes("review-approved"));
+
+  const isProductRejected =
+    product.reviewState === "changes_requested" ||
+    product.reviewState === "rejected" ||
+    product.status === "changes_requested" ||
+    product.status === "rejected" ||
+    meta.reviewApproved === false;
+
+  let productApprovalTime: number | null = null;
+  if (isProductApproved) {
+    if (typeof meta.reviewApprovedAt === "string") {
+      const at = Date.parse(meta.reviewApprovedAt);
+      if (Number.isFinite(at)) productApprovalTime = at;
+    }
+    if (productApprovalTime === null && options.fallbackApprovedAt) {
+      const at = options.fallbackApprovedAt instanceof Date
+        ? options.fallbackApprovedAt.getTime()
+        : Date.parse(String(options.fallbackApprovedAt));
+      if (Number.isFinite(at)) productApprovalTime = at;
+    }
+    if (productApprovalTime === null && product.updatedAt) {
+      const at = product.updatedAt instanceof Date
+        ? product.updatedAt.getTime()
+        : Date.parse(String(product.updatedAt));
+      if (Number.isFinite(at)) productApprovalTime = at;
+    }
+    if (productApprovalTime === null && product.createdAt) {
+      const at = product.createdAt instanceof Date
+        ? product.createdAt.getTime()
+        : Date.parse(String(product.createdAt));
+      if (Number.isFinite(at)) productApprovalTime = at;
+    }
   }
 
-  if (initialApprovedAt !== null) {
-    events.push({ type: "approve", time: initialApprovedAt });
+  let productRejectionTime: number | null = null;
+  if (isProductRejected) {
+    if (product.updatedAt) {
+      const at = product.updatedAt instanceof Date
+        ? product.updatedAt.getTime()
+        : Date.parse(String(product.updatedAt));
+      if (Number.isFinite(at)) productRejectionTime = at;
+    }
+    if (productRejectionTime === null && product.createdAt) {
+      const at = product.createdAt instanceof Date
+        ? product.createdAt.getTime()
+        : Date.parse(String(product.createdAt));
+      if (Number.isFinite(at)) productRejectionTime = at;
+    }
+  }
+
+  if (productApprovalTime !== null) {
+    events.push({ type: "approve", time: productApprovalTime });
+  }
+  if (productRejectionTime !== null) {
+    events.push({ type: "reject", time: productRejectionTime });
   }
 
   // 2. Process comments in chronological order
@@ -160,12 +201,18 @@ export function approvedPrSince(
     .sort((a, b) => a.time - b.time);
 
   for (const comment of sortedComments) {
+    // When author or reviewer filtering is configured, require a valid authorAgentId.
+    if (!comment.authorAgentId) {
+      if (options.authorAgentId || (options.reviewerAgentIds && options.reviewerAgentIds.length > 0)) {
+        continue;
+      }
+    }
     // If author of comment is the PR author, ignore self-review verdicts
-    if (options.authorAgentId && comment.authorAgentId && comment.authorAgentId === options.authorAgentId) {
+    if (options.authorAgentId && comment.authorAgentId === options.authorAgentId) {
       continue;
     }
-    // If reviewerAgentIds is specified, comment author must be a reviewer
-    if (options.reviewerAgentIds && options.reviewerAgentIds.length > 0 && comment.authorAgentId) {
+    // If reviewerAgentIds is specified, comment author must be an assigned reviewer
+    if (options.reviewerAgentIds && options.reviewerAgentIds.length > 0) {
       if (!options.reviewerAgentIds.includes(comment.authorAgentId)) {
         continue;
       }
@@ -178,21 +225,24 @@ export function approvedPrSince(
       const line = rawLine.trim();
       if (!line) continue;
 
-      // Case 1: Canonical header ^APPROVE PR #N [sha]
-      const approveMatch = line.match(/^APPROVE\s+PR\s+#?(\d+)(?:\s+([a-f0-9]{7,40}))?\b/i);
+      // Case 1: Canonical header ^APPROVE PR #N <sha>
+      // Requires an explicit commit SHA; without a SHA or matching headSha, header is not accepted.
+      const approveMatch = line.match(/^APPROVE\s+PR\s+#?(\d+)\s+([a-f0-9]{7,40})\b/i);
       if (approveMatch) {
         const commentPrNum = Number(approveMatch[1]);
         if (prNumber !== null && commentPrNum !== prNumber) {
           continue;
         }
         const commentSha = approveMatch[2];
-        if (headSha && commentSha) {
-          const normHead = headSha.toLowerCase();
-          const normCommentSha = commentSha.toLowerCase();
-          if (!normHead.startsWith(normCommentSha) && !normCommentSha.startsWith(normHead)) {
-            // Mismatching SHA on canonical APPROVE PR header: not valid for current head
-            continue;
-          }
+        if (!headSha) {
+          // Cannot verify verdict without current headSha
+          continue;
+        }
+        const normHead = headSha.toLowerCase();
+        const normCommentSha = commentSha.toLowerCase();
+        if (!normHead.startsWith(normCommentSha) && !normCommentSha.startsWith(normHead)) {
+          // Mismatching SHA on canonical APPROVE PR header: not valid for current head
+          continue;
         }
         commentVerdict = "approve";
         break;
@@ -269,6 +319,17 @@ export function approvedPrSince(
     } else if (event.type === "reject") {
       isApproved = false;
       approvedSinceTime = null;
+    }
+  }
+
+  // If product is currently marked rejected, it cannot be approved
+  // unless an approval event occurred strictly AFTER the product rejection.
+  if (isProductRejected) {
+    if (productRejectionTime !== null && approvedSinceTime !== null && approvedSinceTime <= productRejectionTime) {
+      return null;
+    }
+    if (events.length > 0 && events[events.length - 1].type !== "approve") {
+      return null;
     }
   }
 

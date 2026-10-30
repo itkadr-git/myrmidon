@@ -61,15 +61,6 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
   const products = await db.select({
     product: issueWorkProducts,
     issue: issues,
-    issueInReviewSince: sql<Date | null>`(
-      select max(a.created_at) from ${activityLog} a
-      where a.company_id = ${issues.companyId}
-        and a.entity_type = 'issue'
-        and a.entity_id = ${issues.id}::text
-        and a.action = 'issue.updated'
-        and a.details->>'status' = 'in_review'
-        and a.details->'_previous'->>'status' is distinct from 'in_review'
-    )`,
   })
     .from(issueWorkProducts)
     .innerJoin(issues, eq(issueWorkProducts.issueId, issues.id))
@@ -128,7 +119,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
   const activePrProducts = products.filter(({ product }) => !["merged", "closed"].includes(product.status));
 
   // Process approvedNotMergedMs (BEFORE repo/number guard!)
-  for (const { product, issue, issueInReviewSince } of activePrProducts) {
+  for (const { product, issue } of activePrProducts) {
     const prNumber = extractPrNumber(product);
     const meta = (product.metadata ?? {}) as Record<string, unknown>;
     const headSha = typeof meta.headSha === "string" ? meta.headSha : typeof meta.sha === "string" ? meta.sha : null;
@@ -157,7 +148,6 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
       currentHeadSha: headSha,
       reviewerAgentIds: reviewerAgentIds.length > 0 ? reviewerAgentIds : undefined,
       authorAgentId: issue.createdByAgentId ?? undefined,
-      fallbackApprovedAt: issueInReviewSince ? new Date(issueInReviewSince) : (product.createdAt ? new Date(product.createdAt) : null),
     });
 
     if (approvedSince) {
