@@ -46,8 +46,10 @@ describe("GigaamClient", () => {
     })));
     try {
       const snapshot = new GigaamClient("https://stt.example.test", undefined, fetchImpl).snapshot();
+      // Attach the rejection handler before the timers fire; otherwise the rejection is reported as unhandled.
+      const rejection = expect(snapshot).rejects.toThrow("timed out");
       await vi.advanceTimersByTimeAsync(5_001);
-      await expect(snapshot).rejects.toThrow();
+      await rejection;
     } finally {
       vi.useRealTimers();
     }

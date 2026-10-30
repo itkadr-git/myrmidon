@@ -70,7 +70,7 @@ describe("GigaAM plugin", () => {
   });
 
   it("validates configuration against the exact candidate endpoint", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(serviceHealth)));
+    const fetchImpl = vi.fn(async (_url: string) => new Response(JSON.stringify(serviceHealth)));
     const harness = createTestHarness({ manifest });
     const plugin = createSttGigaamPlugin({ fetchImpl });
     await plugin.definition.setup(harness.ctx);
@@ -80,7 +80,12 @@ describe("GigaAM plugin", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual(["GigaAM STT health or metrics are unavailable"]);
-    expect(fetchImpl).toHaveBeenCalledTimes(0);
+    // The probe goes to the candidate endpoint; the stored config is empty here, so a call proves the candidate was used.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.map(([url]) => url).sort()).toEqual([
+      "https://candidate.example.test/health",
+      "https://candidate.example.test/metrics",
+    ]);
   });
 
   it("declares authenticated discovery capability without secret values in the manifest", () => {
