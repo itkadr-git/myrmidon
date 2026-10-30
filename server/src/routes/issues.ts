@@ -15035,6 +15035,32 @@ export function issueRoutes(
                 req.body.executionPolicy !== undefined && monitorChanged,
             });
             Object.assign(updateFields, lockedTransition.patch);
+            Object.assign(issueUpdateData, lockedTransition.patch);
+            if (lockedTransition.decision?.outcome === "changes_requested") {
+              const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
+              const openBlockers = await tx
+                .select({ id: issueRelations.issueId })
+                .from(issueRelations)
+                .innerJoin(issueRows, eq(issueRows.id, issueRelations.issueId))
+                .where(
+                  and(
+                    eq(issueRelations.companyId, lockedExisting.companyId),
+                    eq(issueRelations.relatedIssueId, lockedExisting.id),
+                    eq(issueRelations.type, "blocks"),
+                    notInArray(issueRows.status, ["done", "cancelled"]),
+                  ),
+                );
+              if (hasHumanDecisionBlocker || openBlockers.length > 0) {
+                updateFields.status = "blocked";
+                issueUpdateData.status = "blocked";
+              }
+            }
+            if (lockedExisting.status === "blocked" && updateFields.status && updateFields.status !== "blocked") {
+              updateFields.blockerMetadata = null;
+              updateFields.unblockDescriptor = null;
+              issueUpdateData.blockerMetadata = null;
+              issueUpdateData.unblockDescriptor = null;
+            }
             const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
             if (lockedDecisionId) {
               const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
@@ -15045,6 +15071,7 @@ export function issueRoutes(
                 ...nextExecutionState,
                 lastDecisionId: lockedDecisionId,
               };
+              issueUpdateData.executionState = updateFields.executionState;
             }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
             // row under SELECT ... FOR UPDATE, re-check CAS expectations and

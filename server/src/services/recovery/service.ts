@@ -5188,6 +5188,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5210,6 +5284,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
