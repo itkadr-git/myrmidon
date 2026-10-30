@@ -248,6 +248,9 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+
+  /** OPE-9476: runs that failed before the model emitted output, per agentId. */
+  failedBeforeModel?: Record<string, number> | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -320,6 +323,9 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+
+  /** OPE-9476: where failed-before-model counters come from; tests inject a fake. */
+  failedBeforeModel?: (() => Record<string, number>) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -661,6 +667,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runScratch,
 
       fleetSites,
+
+      failedBeforeModel: await guarded(
+        "myrmidon_agent_failed_before_model_total",
+        () =>
+          Promise.resolve().then(() =>
+            deps.failedBeforeModel
+              ? deps.failedBeforeModel()
+              : failedBeforeModelMetrics.getAll(),
+          ),
+        null as Record<string, number> | null,
+      ),
     },
     errors,
     now,

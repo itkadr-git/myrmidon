@@ -44,7 +44,8 @@ describe("metrics self-check probe", () => {
     // too, so they survive a broken database as well.
     // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
     // The two continuation dedupe counters are process-local too.
-    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2);
+    // OPE-9476: failed_before_model counter is in-process state too (+1 = 23).
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 1);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -54,7 +55,8 @@ describe("metrics self-check probe", () => {
         !family.startsWith("myrmidon_run_scratch_") &&
         !family.startsWith("myrmidon_fleet_") &&
         family !== "myrmidon_continuation_created_total" &&
-        family !== "myrmidon_continuation_deduped_total",
+        family !== "myrmidon_continuation_deduped_total" &&
+        family !== "myrmidon_agent_failed_before_model_total",
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

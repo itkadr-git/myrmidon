@@ -1050,8 +1050,6 @@ async function reportRuntimeProgress(input: {
   let throttleKey = false;
 
   if (
-    eventName === "tool.started" ||
-    eventName === "tool.completed" ||
     eventName === "message.delta" ||
     eventName === "message.completed" ||
     eventName === "reasoning.available"
