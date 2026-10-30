@@ -292,7 +292,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
       })
       .expect(201);
 
-    expect(created.body.description).toContain("This is the user's first task in Paperclip.");
+    expect(created.body.description).toContain("This is the user's first task in Myrmidon.");
     expect(created.body.description).toContain("Take the path the user picked.");
     // Toggle defaults off → the confirmation proposal form is inlined.
     expect(created.body.description).toContain("post ONE request_confirmation that says, in a few lines");
@@ -316,7 +316,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
       .send({ title: "Get started", onboardingFirstTask: true })
       .expect(201);
 
-    expect(created.body.description).toContain("This is the user's first task in Paperclip.");
+    expect(created.body.description).toContain("This is the user's first task in Myrmidon.");
     expect(created.body.description).toContain("treat it like the plan path");
     expect(created.body.description).not.toContain("post ONE request_confirmation that says, in a few lines");
 

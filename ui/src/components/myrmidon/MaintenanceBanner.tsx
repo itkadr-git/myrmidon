@@ -151,7 +151,9 @@ export function MaintenanceBannerView({
   companyId: string | null;
   agents?: AgentListItem[] | null;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
+  const formatWhen = (value: string) => new Date(value).toLocaleString(locale);
   const windows = windowsForCompany(status, companyId);
   if (windows.length === 0) return null;
 
@@ -212,7 +214,7 @@ export function MaintenanceBannerView({
   };
 
   const { rows, windowCount, endsBy } = aggregateMaintenance(windows);
-  const endsByLabel = endsBy ? ` · ${t("maintenanceBanner.endsBy", { time: new Date(endsBy).toLocaleString() })}` : "";
+  const endsByLabel = endsBy ? ` · ${t("maintenanceBanner.endsBy", { time: formatWhen(endsBy) })}` : "";
   return (
     <div
       role="status"
@@ -251,7 +253,7 @@ export function MaintenanceBannerView({
                 {t("maintenanceBanner.row", {
                   scope: t(`maintenanceBanner.scope.${row.scopeType}`),
                   state: stateLabel(row),
-                  since: new Date(row.startedAt).toLocaleString(),
+                  since: formatWhen(row.startedAt),
                   reason: row.reason,
                   count: row.agentCount,
                   queued: row.queuedWakeups,
