@@ -15588,7 +15588,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.blockedByIssueIds ?? []).toEqual([]);
   });
 
-  it("explicitly wakes the reviewer when CI completes for an in_review issue with open PR (OPE-9295)", async () => {
+  it("transitions stranded in_progress issue with pending CI to in_review and explicitly wakes reviewer when CI completes (OPE-9295)", async () => {
     const reviewerAgentId = "d674a53a-3abd-43fe-8f49-696a04937323";
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -15607,7 +15607,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterKind: "hermes_gateway",
     }).onConflictDoNothing();
 
-    await db.insert(issueWorkProducts).values({
+    // 1. Initially PR has pending (not_green) CI
+    const [prProduct] = await db.insert(issueWorkProducts).values({
       companyId,
       issueId,
       type: "pull_request",
@@ -15619,21 +15620,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         repo: "itkadr-git/myrmidon",
         number: 124,
         headSha: "def9876543210",
-        ci: "green",
+        ci: "not_green",
       },
-    });
+    }).returning();
 
     const heartbeat = heartbeatService(db);
+
+    // First sweep: pending CI -> transitions in_progress to in_review at assignee, does not block
     await heartbeat.reconcileStrandedAssignedIssues();
 
-    const issue = await db
+    const intermediateIssue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
 
-    expect(issue?.status).toBe("in_review");
-    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(intermediateIssue?.status).toBe("in_review");
+    expect(intermediateIssue?.assigneeAgentId).toBe(agentId);
+    expect(intermediateIssue?.unblockDescriptor).toBeNull();
+    expect(intermediateIssue?.blockedByIssueIds ?? []).toEqual([]);
+
+    // Reviewer must NOT be woken while CI is pending
+    const initialWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, reviewerAgentId));
+    expect(initialWakeups).toHaveLength(0);
+
+    // 2. CI completes on GitHub -> PR head becomes green
+    await db
+      .update(issueWorkProducts)
+      .set({
+        metadata: {
+          repo: "itkadr-git/myrmidon",
+          number: 124,
+          headSha: "def9876543210",
+          ci: "green",
+        },
+      })
+      .where(eq(issueWorkProducts.id, prProduct!.id));
+
+    // Second sweep: observes green CI for the now-in_review issue -> explicitly wakes reviewer
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const finalIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(finalIssue?.status).toBe("in_review");
 
     const wakeups = await db
       .select()

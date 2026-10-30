@@ -987,13 +987,36 @@ const ADM_REVIEWER_AGENT_IDS = [
   "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
 ];
 
-function getReviewerParticipantAgentId(issue: { executionPolicy?: unknown }): string | null {
+function getReviewerParticipantAgentId(issue: {
+  executionPolicy?: unknown;
+  executionState?: unknown;
+}): string | null {
+  const state = parseIssueExecutionState(issue.executionState);
+  if (
+    state?.currentStageType === "review" &&
+    state.currentParticipant?.type === "agent" &&
+    typeof state.currentParticipant.agentId === "string" &&
+    state.currentParticipant.agentId.length > 0
+  ) {
+    return state.currentParticipant.agentId;
+  }
   const policy = issue.executionPolicy as Record<string, unknown> | null;
   if (!policy || !Array.isArray(policy.stages)) return null;
   for (const stage of policy.stages) {
-    if (stage && typeof stage === "object" && stage.type === "review" && Array.isArray(stage.participants)) {
+    if (
+      stage &&
+      typeof stage === "object" &&
+      stage.type === "review" &&
+      Array.isArray(stage.participants)
+    ) {
       for (const p of stage.participants) {
-        if (p && typeof p === "object" && p.type === "agent" && typeof p.agentId === "string" && p.agentId.length > 0) {
+        if (
+          p &&
+          typeof p === "object" &&
+          p.type === "agent" &&
+          typeof p.agentId === "string" &&
+          p.agentId.length > 0
+        ) {
           return p.agentId;
         }
       }
