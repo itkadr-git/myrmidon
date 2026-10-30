@@ -241,8 +241,7 @@ function TreeBranch({
             aria-current={active ? "page" : undefined}
             onClick={() => onSelect(node.item)}
           >
-            <span>{label}</span>
-            <span className="ml-2 text-xs text-muted-foreground">{node.item.slug}</span>
+            {label}
           </button>
         )}
       </div>
