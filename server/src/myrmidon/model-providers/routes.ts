@@ -70,6 +70,8 @@ export interface ModelProviderRoutesDeps {
   service: ModelProviderService;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;
+  /** Optional change-log listing function. */
+  listChangeLog?: (companyId: string) => Promise<unknown[]>;
 }
 
 function bodyOf(req: Request): Record<string, unknown> {
@@ -109,9 +111,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+      changeLog,
     });
   });
 

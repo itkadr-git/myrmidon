@@ -27,6 +27,8 @@ import {
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
 import { readGatewayFallbackTopology } from "./fallback-cycles.js";
+import { createLiteLlmAuditService } from "../litellm-audit/service.js";
+import { getActorInfo } from "../../routes/authz.js";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
@@ -37,6 +39,7 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
   const router = Router();
   const env = input.env ?? process.env;
   const settings = () => readGatewayKeySettings(env);
+  const auditService = createLiteLlmAuditService(_db);
   const disabled = (res: Response) => {
     res.status(503).json({ error: "LLM gateway key management is not enabled", enabled: false });
   };
@@ -73,6 +76,18 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       return;
     }
     const created = await createAgentGatewayKey(input.deps, { companyId, agentId });
+    const actor = getActorInfo(req);
+    await auditService.record({
+      companyId,
+      category: "keys",
+      action: "litellm_key_created",
+      entityId: agentId,
+      actor: { type: actor.actorType, id: actor.actorId },
+      before: null,
+      after: { agentId, allowedModels: created.view.allowedModels },
+      summary: `Created gateway key for agent ${agentId}`,
+      canRollback: false,
+    });
     // The value is answered exactly once, to the board member who asked for it.
     res.status(201).json({ ...created.view, value: created.value });
   });
@@ -86,7 +101,20 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    res.json(await rotateAgentGatewayKey(input.deps, { companyId, agentId }));
+    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId });
+    const actor = getActorInfo(req);
+    await auditService.record({
+      companyId,
+      category: "keys",
+      action: "litellm_key_rotated",
+      entityId: agentId,
+      actor: { type: actor.actorType, id: actor.actorId },
+      before: { rotated: false },
+      after: { rotated: true, allowedModels: rotated.view.allowedModels },
+      summary: `Rotated gateway key for agent ${agentId}`,
+      canRollback: false,
+    });
+    res.json(rotated);
   });
 
   /**
