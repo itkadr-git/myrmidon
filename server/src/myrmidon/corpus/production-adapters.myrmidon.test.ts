@@ -237,7 +237,7 @@ run("production corpus adapters", () => {
           res.end(JSON.stringify({
             data: input.map((_, index) => ({
               index,
-              embedding: [0.1, 0.2, 0.3],
+              embedding: Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
             })),
           }));
         });
@@ -252,7 +252,7 @@ run("production corpus adapters", () => {
 
     try {
       const dbInstance = createDb(database!.connectionString);
-      const companyId = "bge-m3-company-" + Date.now();
+      const companyId = randomUUID();
       await dbInstance.execute(sql`insert into companies (id, name, issue_prefix) values (${companyId}, 'bge-test', 'BGE')`);
 
       const settings: CorpusPortContext["settings"] = {
@@ -260,7 +260,7 @@ run("production corpus adapters", () => {
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
         embedderModel: "hindsight-embed-bge-m3",
-        embedderDimensions: 3,
+        embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
         maxDocumentBytes: 1024,
         maxDocumentsPerDataset: 5,
@@ -295,7 +295,7 @@ run("production corpus adapters", () => {
       expect(capturedBody).not.toBeNull();
       expect(capturedBody?.model).toBe("hindsight-embed-bge-m3");
       expect(capturedBody?.input).toEqual(["hello bge-m3 world"]);
-      expect(capturedBody?.dimensions).toBe(3);
+      expect(capturedBody?.dimensions).toBe(1024);
 
       await dbInstance.$client.end();
     } finally {
