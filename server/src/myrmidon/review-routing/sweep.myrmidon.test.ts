@@ -336,8 +336,10 @@ describe("assignment", () => {
     await t.sweep.sweep(NOW, { force: true });
     const second = await t.sweep.sweep(NOW, { force: true });
     expect(second).toMatchObject({ assigned: 0, reassigned: 0, signaled: 0 });
-    expect(t.activities).toHaveLength(2);
-    expect(t.activities.filter((entry) => entry.action === REVIEW_ROUTING_ASSIGNED_ACTION)).toHaveLength(1);
+    expect(t.activities).toHaveLength(1);
+    expect(t.activities).toEqual([
+      expect.objectContaining({ action: REVIEW_ROUTING_ASSIGNED_ACTION }),
+    ]);
   });
 
   it("does not undo the assignment when the wake fails", async () => {
