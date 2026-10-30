@@ -1,5 +1,10 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+// myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
+import {
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
+} from "../myrmidon/review-stage-recovery/policy.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -11674,22 +11679,31 @@ export function heartbeatService(
     const isProviderQuotaReviewMonitor =
       monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       Boolean(reviewParticipantAgentId);
-    const targetAgentId = isProviderQuotaReviewMonitor
+    // myrmidon(OPE-10045): the review waited for CI on the PR head; the wake
+    // goes to the stage participant as a review-recovery run, so a run that
+    // again ends without a decision goes back through the bounded recovery.
+    const isReviewCiWaitMonitor =
+      monitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+      Boolean(reviewParticipantAgentId);
+    const isReviewRecoveryMonitor =
+      isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
+    const targetAgentId = isReviewRecoveryMonitor
       ? reviewParticipantAgentId
       : claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
-    const wakeReason = isProviderQuotaReviewMonitor
+    const wakeReason = isReviewRecoveryMonitor
       ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
       : input.wakeReason;
-    const reviewRecoveryContext = isProviderQuotaReviewMonitor
+    const reviewRecoveryContext = isReviewRecoveryMonitor
       ? {
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
-          reviewRecoveryInstruction:
-            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+          reviewRecoveryInstruction: isReviewCiWaitMonitor
+            ? REVIEW_CI_WAIT_RECOVERY_INSTRUCTION
+            : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
         }
       : {};
 
@@ -11787,7 +11801,7 @@ export function heartbeatService(
           requestedByActorId: input.actorId,
           contextSnapshot: {
             issueId: claimed.id,
-            source: isProviderQuotaReviewMonitor
+            source: isReviewRecoveryMonitor
               ? "issue.execution_review_recovery"
               : "issue.monitor",
             wakeReason,

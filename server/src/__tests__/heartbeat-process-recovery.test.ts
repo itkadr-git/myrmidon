@@ -9165,12 +9165,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(agentId);
   });
 
-  it("retries a pending execution-review participant once before blocking with a recovery action", async () => {
+  // myrmidon(OPE-10045): the reviewer is asked twice before the escalation,
+  // and the escalation keeps the review stage.
+  it("retries a pending execution-review participant twice before blocking with a recovery action", async () => {
     const { companyId, agentId, issueId, runId, stageId } =
       await seedInReviewParticipantRunFixture();
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
+    const isSettledReviewRecoveryRun = (row: typeof heartbeatRuns.$inferSelect) =>
+      (row.contextSnapshot as Record<string, unknown> | null)
+        ?.retryReason === "execution_review_participant_recovery" &&
+      row.status !== "queued" &&
+      row.status !== "running";
     const reviewRecoveryRun = await waitForValue(async () => {
       const runs = await db
         .select()
@@ -9178,15 +9185,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(heartbeatRuns.agentId, agentId));
       return (
         runs.find(
-          (row) =>
-            (row.contextSnapshot as Record<string, unknown> | null)
-              ?.retryReason === "execution_review_participant_recovery" &&
-            row.status !== "queued" &&
-            row.status !== "running",
+          (row) => isSettledReviewRecoveryRun(row) && row.retryOfRunId === runId,
         ) ?? null
       );
     }, 8_000);
     expect(reviewRecoveryRun).toBeTruthy();
+    const secondReviewRecoveryRun = await waitForValue(async () => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return (
+        runs.find(
+          (row) =>
+            isSettledReviewRecoveryRun(row) &&
+            row.retryOfRunId === reviewRecoveryRun!.id,
+        ) ?? null
+      );
+    }, 8_000);
+    expect(secondReviewRecoveryRun).toMatchObject({
+      companyId,
+      agentId,
+      status: "succeeded",
+    });
+    expect(secondReviewRecoveryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryReason: "execution_review_participant_recovery",
+      source: "issue.execution_review_recovery",
+      currentStageId: stageId,
+      currentStageType: "review",
+      reviewDecisionRetryAttempt: 2,
+      reviewRecoveryInstruction: expect.stringContaining("status=done"),
+    });
     expect(reviewRecoveryRun).toMatchObject({
       companyId,
       agentId,
@@ -9223,18 +9253,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       assigneeAgentId: agentId,
       executionRunId: null,
     });
+    // The escalation keeps the stage: the participant decides after the unblock.
+    expect(sourceIssue?.executionState).toMatchObject({
+      status: "pending",
+      currentStageId: stageId,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId },
+    });
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
       issueId,
-      runId: reviewRecoveryRun!.id,
+      runId: secondReviewRecoveryRun!.id,
       previousStatus: "in_review",
       retryReason: "execution_review_participant_recovery",
       cause: "execution_review_participant_recovery",
     });
     expect(recoveryAction.evidence).toMatchObject({
-      latestRunId: reviewRecoveryRun?.id,
+      latestRunId: secondReviewRecoveryRun?.id,
       latestRunStatus: "succeeded",
       latestRunErrorCode: null,
       recoveryCause: "execution_review_participant_recovery",
@@ -9253,7 +9290,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         comments.find(
           (comment) =>
             comment.body.includes(
-              "pending execution-review participant once",
+              "pending execution-review participant twice",
             ) &&
             noticeMetadataReferencesRecoveryAction(
               comment.metadata,
