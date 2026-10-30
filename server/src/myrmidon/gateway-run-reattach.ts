@@ -277,6 +277,7 @@ export async function sweepGatewayRunReattach(
             eq(heartbeatRuns.companyId, candidate.companyId),
             eq(heartbeatRuns.status, "running"),
             isNotNull(heartbeatRuns.externalRunId),
+            sql`coalesce((${heartbeatRuns.contextSnapshot} ->> ${REATTACH_GATEWAY_RUN_ID_CONTEXT_KEY}), '') = ''`,
             // myrmidon(T1.6): the atomic half of the lease guard.
             or(
               ...(options.isStartup ? [sql`true`] : []),

@@ -494,6 +494,13 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
       apiBaseUrl: "http://127.0.0.1:9999",
       apiKey: { type: "secret_ref", secretId: secret.id },
     });
+    await secretService(db).createBinding({
+      companyId: company.id,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agent.id,
+      configPath: "apiKey",
+    });
     const run = await createRun(db, agent, {
       externalRunId: "gw-secret-ref-1",
       controllerBootId: randomUUID(),
