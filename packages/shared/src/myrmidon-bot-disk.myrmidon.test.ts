@@ -20,6 +20,9 @@ const BASE = {
   idleTtlMs: 3_600_000,
   graceClosingMinutes: 45,
   scratchTtlHours: 12,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
   partitionThresholdPercent: 80,
   partitionRefuseOpenPercent: 88,
   partitionCriticalPercent: 97,
@@ -35,12 +38,12 @@ const BASE = {
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 16 distinct keys", () => {
+  it("the three key groups are 19 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(16);
+    expect(new Set(all).size).toBe(19);
   });
 
-  it("the canonical schema accepts all 16 keys", () => {
+  it("the canonical schema accepts all 19 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 
