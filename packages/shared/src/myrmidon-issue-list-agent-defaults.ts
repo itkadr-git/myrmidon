@@ -64,3 +64,17 @@ export function normalizeIssueListAgentDefaults(
 export function issueListAgentDefaultsEnabled(raw: unknown): boolean {
   return normalizeIssueListAgentDefaults(raw).enabled;
 }
+
+/**
+ * True when the issue-list compact and limit defaults should apply.
+ * Applies to agents and non-agent integration board keys (source === "board_key")
+ * when the feature is enabled (OPE-9997).
+ */
+export function shouldApplyIssueListAgentDefaults(
+  actor: { type: string; source?: string | null } | null | undefined,
+  rawSetting: unknown,
+): boolean {
+  if (!actor) return false;
+  const isAgentOrBoardKey = actor.type === "agent" || actor.source === "board_key";
+  return isAgentOrBoardKey && issueListAgentDefaultsEnabled(rawSetting);
+}
