@@ -103,7 +103,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function agent(input: { id: string; name: string; bankId?: string | null }): Agent {
+function agent(input: { id: string; name: string; bankId?: string | null; role?: string | null }): Agent {
   const adapterConfig: Record<string, unknown> = {};
   if (input.bankId != null) adapterConfig["hindsight"] = { bankId: input.bankId };
   return {
@@ -111,7 +111,7 @@ function agent(input: { id: string; name: string; bankId?: string | null }): Age
     companyId: COMPANY,
     name: input.name,
     urlKey: input.name,
-    role: "engineer",
+    role: input.role ?? "engineer",
     title: null,
     icon: null,
     status: "idle",
