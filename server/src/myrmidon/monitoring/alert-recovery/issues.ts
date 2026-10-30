@@ -33,6 +33,7 @@ async function ownerAgentId(db: Db, companyId: string, ownerRole: string): Promi
 }
 
 export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
+  const holdMinutes = Number(process.env.MYRMIDON_ALERT_RECOVERY_HOLD_MINUTES) || 15;
   async function guardedWrite(input: {
     issueId: string;
     companyId: string;
@@ -82,7 +83,7 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
           description: input.body,
           status: "todo",
           priority: input.priority,
-          assigneeAgentId,
+          assigneeAgentId: null,
           originKind: ALERT_RECOVERY_ORIGIN_KIND,
           originId: input.originId,
           // The alert lifecycle is governed by the recovery journal, not by the
@@ -96,6 +97,45 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
         logger.warn({ err: error, originId: input.originId }, "alert recovery task refused");
         return null;
       }
+    },
+
+    async getIssueStatus(issueId, companyId) {
+      const [current] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      return current?.status ?? null;
+    },
+    async isSystemRecoveryClosed(issueId, companyId) {
+      const [current] = await db.select({ status: issues.status, originKind: issues.originKind }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      return current?.originKind === ALERT_RECOVERY_ORIGIN_KIND && current.status === "done";
+    },
+    async delayIssueWake(issueId, companyId, delayMinutes) {
+      const issueService = await loadIssueService();
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+          .limit(1).for("update");
+        if (!current || current.originKind !== ALERT_RECOVERY_ORIGIN_KIND) return;
+        await issueService(tx as unknown as Db).update(issueId, {
+          assigneeAgentId: null,
+        } as never, tx);
+      });
+    },
+
+    async dispatchAlertWake(issueId, companyId) {
+      const [task] = await db.select().from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      if (!task || task.originKind !== ALERT_RECOVERY_ORIGIN_KIND || task.status !== "todo") return;
+      const assigneeAgentId = await ownerAgentId(db, companyId, task.assigneeAgentId ?? "observability");
+      if (!assigneeAgentId) return;
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+          .limit(1).for("update");
+        if (!current || current.originKind !== ALERT_RECOVERY_ORIGIN_KIND || current.status !== "todo" || current.assigneeAgentId) return;
+        const issueService = await loadIssueService();
+        await issueService(tx as unknown as Db).update(issueId, { assigneeAgentId } as never, tx);
+      });
     },
 
     async addComment(issueId, body) {

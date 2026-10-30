@@ -448,6 +448,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
             tags: req.body.tags,
             approverKind: req.body.approverKind ?? null,
             sources: req.body.sources,
+            force: req.body.force,
+            reason: req.body.reason,
           },
           { actorType: actor.actorType, actorId: actor.actorId },
         );
@@ -474,6 +476,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
             content: req.body.content,
             changeSummary: req.body.changeSummary ?? null,
             sources: req.body.sources,
+            force: req.body.force,
+            reason: req.body.reason,
           },
           { actorType: actor.actorType, actorId: actor.actorId },
         );

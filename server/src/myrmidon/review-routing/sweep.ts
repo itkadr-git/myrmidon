@@ -169,10 +169,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     result: ReviewRoutingSweepResult,
   ): Promise<ReviewRoutingSignal[]> {
     const rows = await deps.store.listInReviewIssues(companyId, REVIEW_ROUTING_PAGE_SIZE);
+    for (const row of rows) {
+      row.reviewPathRecoveryEligible = issueNeedsReviewer(row);
+      row.reviewRecoveryNow = now;
+      row.reviewRecoveryUpdatedAt = row.updatedAt;
+    }
     result.scanned += rows.length;
 
     const rowById = new Map(rows.map((row) => [row.id, row] as const));
-    const needing = rows.filter((row) => issueNeedsReviewer(row));
+    const needing = rows.filter(
+      (row) => row.reviewPathRecoveryEligible && issueNeedsReviewer(row),
+    );
     const pending = rows
       .map((row) => ({ row, review: readPendingAgentReview(row) }))
       .filter((entry): entry is { row: InReviewIssueRow; review: NonNullable<typeof entry.review> } => entry.review !== null);
@@ -213,7 +220,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
         deps.store.loadByAgent(companyId),
       ]);
-      reviewerPool = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      reviewerPool = agentRows.map((agent) => ({
+        id: agent.id,
+        role: agent.role,
+        invokable: agent.invokable ?? true,
+        load: load.get(agent.id) ?? 0,
+      }));
       return reviewerPool;
     };
     const pool = globalPool;
@@ -408,7 +420,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       deps.store.openPrTaskLoadByAgent(companyId, "review"),
       deps.store.openPrTaskLoadByAgent(companyId, "merge"),
     ]);
-    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
+    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ ...agent, invokable: agent.invokable ?? true, load: 0 }));
     const stewards: ReviewerCandidate[] = stewardRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
     const openReviewByAgent = new Map(openReviewLoad);
     const openMergeByAgent = new Map(openMergeLoad);
