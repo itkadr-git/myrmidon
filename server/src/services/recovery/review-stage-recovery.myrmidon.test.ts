@@ -4,7 +4,7 @@
 // escalation, and the escalation keeps the stage.
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -17,7 +17,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
+import { logger } from "../../middleware/logger.js";
 import {
+  REVIEW_CI_WAIT_MAX_ATTEMPTS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
   type ReviewPullRequestCiFacts,
@@ -199,6 +201,84 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
       pullRequestUrl: PR_URL,
       headSha: "abc123",
     });
+  });
+
+  it("waits for CI instead of blocking when the CI state cannot be read, and logs why once (OPE-10063)", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    try {
+      const seeded = await seed();
+      const { service, wakes } = createService({
+        state: "unknown",
+        pullRequestUrl: PR_URL,
+        headSha: null,
+        reason: "pull:http_404 (anonymous)",
+      });
+
+      const result = await escalate(service, seeded);
+
+      expect(result).toBeTruthy();
+      expect(wakes).toHaveLength(0);
+      const issue = await readIssue(seeded.issueId);
+      expect(issue.status).toBe("in_review");
+      expect(issue.monitorNextCheckAt).toBeInstanceOf(Date);
+      expect(issue.executionPolicy).toMatchObject({
+        monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, kind: "external_service", externalRef: PR_URL },
+      });
+      expect(issue.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: seeded.stageId,
+        currentParticipant: { type: "agent", agentId: seeded.reviewerAgentId },
+      });
+      const rows = await deferrals(seeded.issueId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.details).toMatchObject({
+        kind: "ci_wait",
+        attempt: 1,
+        maxAttempts: REVIEW_CI_WAIT_MAX_ATTEMPTS,
+        ciState: "unknown",
+        ciUnknownReason: "pull:http_404 (anonymous)",
+      });
+      const warnings = warn.mock.calls.filter((call) => String(call[1] ?? "").includes("OPE-10063"));
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0]![1])).toContain("pull:http_404 (anonymous)");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("escalates when the CI state stays unreadable past the wait limit", async () => {
+    const seeded = await seed();
+    await db.insert(activityLog).values([
+      ...Array.from({ length: REVIEW_CI_WAIT_MAX_ATTEMPTS }, (_, index) => ({
+        companyId: seeded.companyId,
+        actorType: "system" as const,
+        actorId: "recovery",
+        action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+        entityType: "issue",
+        entityId: seeded.issueId,
+        details: { kind: "ci_wait", stageId: seeded.stageId, attempt: index + 1 },
+      })),
+      {
+        companyId: seeded.companyId,
+        actorType: "system" as const,
+        actorId: "recovery",
+        action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+        entityType: "issue",
+        entityId: seeded.issueId,
+        details: { kind: "decision_retry", stageId: seeded.stageId, attempt: 2 },
+      },
+    ]);
+    const { service, wakes } = createService({
+      state: "unknown",
+      pullRequestUrl: PR_URL,
+      headSha: null,
+      reason: "pull:http_404 (anonymous)",
+    });
+
+    await escalate(service, seeded);
+
+    expect(wakes).toHaveLength(0);
+    expect((await readIssue(seeded.issueId)).status).toBe("blocked");
   });
 
   it("wakes the reviewer once more with the explicit decision request when CI is finished", async () => {

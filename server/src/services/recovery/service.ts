@@ -4056,7 +4056,7 @@ export function recoveryService(
       );
       return await createReviewPullRequestCiResolver({ db })(input);
     } catch {
-      return { state: "unknown", pullRequestUrl: null, headSha: null };
+      return { state: "unknown", pullRequestUrl: null, headSha: null, reason: "resolver_error" };
     }
   }
 
@@ -4080,6 +4080,7 @@ export function recoveryService(
         notes:
           `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
           `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
+          `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
           "the board wakes the reviewer to decide when the wait ends.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
@@ -4173,11 +4174,26 @@ export function recoveryService(
       participantAgentId,
       latestRunId: latestRun.id,
       ciState: ci.state,
+      ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
       pullRequestUrl: ci.pullRequestUrl,
       headSha: ci.headSha,
     };
 
     if (decision.kind === "wait_for_ci") {
+      // myrmidon(OPE-10063): a CI the board cannot read is waited for like a running one;
+      // one warning line per wait says why (reason codes carry no token).
+      if (ci.state === "unknown") {
+        logger.warn(
+          {
+            issueId: input.issue.id,
+            identifier: input.issue.identifier,
+            reason: ci.reason ?? null,
+            attempt: decision.attempt,
+            maxAttempts: decision.maxAttempts,
+          },
+          `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
+        );
+      }
       const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
       const updated = await scheduleReviewCiWaitMonitor({
         issue: input.issue,
