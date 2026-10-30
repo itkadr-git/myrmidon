@@ -36,6 +36,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { setFeedbackTermsUrlForTesting } from "../lib/myrmidon-links";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -1411,6 +1412,7 @@ describe("IssueDetail", () => {
   });
 
   afterEach(async () => {
+    setFeedbackTermsUrlForTesting(null);
     await act(async () => {
       root.unmount();
     });
@@ -1432,6 +1434,38 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+  });
+
+  it("passes configured FEEDBACK_TERMS_URL to the chat thread", async () => {
+    setFeedbackTermsUrlForTesting("https://operator.example.org/issue-terms");
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      feedbackTermsUrl?: string | null;
+    };
+    expect(props.feedbackTermsUrl).toBe("https://operator.example.org/issue-terms");
+  });
+
+  it("passes null feedbackTermsUrl to the chat thread when FEEDBACK_TERMS_URL is unset", async () => {
+    setFeedbackTermsUrlForTesting(null);
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      feedbackTermsUrl?: string | null;
+    };
+    expect(props.feedbackTermsUrl).toBeNull();
   });
 
   it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
