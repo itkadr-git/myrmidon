@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   createTelegramPoolBridge,
@@ -79,6 +80,50 @@ describe("Telegram Pool Bridge", () => {
       expect(result.error).not.toContain(secretToken);
       expect(result.error).toContain("<redacted>");
       expect(bridge.getOutbox()[0]?.error).not.toContain(secretToken);
+    });
+
+    it("handles rejected outboxSender promise without unhandled crash and redacts secrets", async () => {
+      const secretToken = "987654:CRASH_TOKEN";
+      const poolService = createMockPoolChatService();
+      const mockSender: TelegramOutboxSender = vi.fn(async () => {
+        throw new Error(`Connection timeout reaching https://api.telegram.org/bot${secretToken}/sendMessage`);
+      });
+
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            model: "balanced",
+            botToken: secretToken,
+            allowedChatId: "1001",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const update: TelegramUpdate = {
+        update_id: 88,
+        message: {
+          message_id: 11,
+          chat: { id: "1001" },
+          text: "Will crash outbox",
+        },
+      };
+
+      const result = await bridge.processUpdate("chatgpt", update);
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("<redacted>");
+      expect(result.error).not.toContain(secretToken);
+      expect(result.outboxItem?.status).toBe("failed");
+      expect(result.outboxItem?.error).toContain("<redacted>");
+
+      // Subsequent retry of the same update returns deduplicated and does not resubmit to pool
+      const retry = await bridge.processUpdate("chatgpt", update);
+      expect(retry.status).toBe("deduplicated");
+      expect(poolService.submit).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -250,6 +295,96 @@ describe("Telegram Pool Bridge", () => {
       expect(second.reason).toBe("update_already_processed");
       expect(poolService.submit).toHaveBeenCalledTimes(1); // not called again
       expect(mockSender).toHaveBeenCalledTimes(1); // not sent again
+    });
+
+    it("handles concurrent deliveries of same update_id without duplicate poolChat submit", async () => {
+      let resolveSubmit: (val: unknown) => void;
+      const delayedSubmitPromise = new Promise((resolve) => {
+        resolveSubmit = resolve;
+      });
+
+      const poolService = createMockPoolChatService(async () => {
+        await delayedSubmitPromise;
+        return {
+          request: { id: "req-1", status: "completed", result: { text: "Concurrent reply" } },
+          result: { text: "Concurrent reply" },
+          replayed: false,
+        };
+      });
+      const mockSender: TelegramOutboxSender = vi.fn(async () => ({ ok: true, messageId: 333 }));
+
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            model: "balanced",
+            botToken: "token-1",
+            allowedChatId: "chat-1",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const update: TelegramUpdate = {
+        update_id: 777,
+        message: {
+          message_id: 50,
+          chat: { id: "chat-1" },
+          text: "Concurrent test",
+        },
+      };
+
+      // Launch two concurrent processUpdate calls
+      const call1 = bridge.processUpdate("chatgpt", update);
+      const call2 = bridge.processUpdate("chatgpt", update);
+
+      // Now resolve the underlying pool submission
+      resolveSubmit!({});
+
+      const [res1, res2] = await Promise.all([call1, call2]);
+      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect(res1.status).toBe("delivered");
+      expect(res2.status).toBe("deduplicated");
+    });
+
+    it("uses update.update_id in idempotencyKey and clientMessageId for durable adapter deduplication", async () => {
+      const poolService = createMockPoolChatService();
+      const mockSender: TelegramOutboxSender = vi.fn(async () => ({ ok: true, messageId: 444 }));
+
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            model: "balanced",
+            botToken: "token-1",
+            allowedChatId: "chat-1",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const update1: TelegramUpdate = {
+        update_id: 9901,
+        message: {
+          message_id: 1,
+          chat: { id: "chat-1" },
+          text: "First msg id",
+        },
+      };
+
+      await bridge.processUpdate("chatgpt", update1);
+      const firstCall = vi.mocked(poolService.submit).mock.calls[0][0];
+      expect(firstCall.body.clientMessageId).toBe("tg-upd-9901");
+      const expectedIdempotencyKey = createHash("sha256")
+        .update("tg-bridge:chatgpt:chat-1:update:9901")
+        .digest("hex");
+      expect(firstCall.idempotencyKey).toBe(expectedIdempotencyKey);
     });
   });
 

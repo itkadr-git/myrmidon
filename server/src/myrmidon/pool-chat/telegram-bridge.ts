@@ -111,6 +111,7 @@ export interface TelegramPoolBridgeOptions {
 export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
   const { poolChatService, modules, defaultCompanyId = "default-company" } = options;
   const processedUpdates = new Map<number, TelegramOutboxItem | null>();
+  const inflightUpdates = new Map<number, Promise<TelegramBridgeProcessResult>>();
   const outbox: TelegramOutboxItem[] = [];
 
   const defaultSender: TelegramOutboxSender = async ({ botToken, chatId, text, replyToMessageId }) => {
@@ -157,6 +158,7 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
 
     clear(): void {
       processedUpdates.clear();
+      inflightUpdates.clear();
       outbox.length = 0;
     },
 
@@ -215,101 +217,132 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
         };
       }
 
-      const companyId = callOptions?.companyId ?? config.companyId ?? defaultCompanyId;
-      const conversationId = `tg:${config.provider}:${message.chat.id}`;
-      const clientMessageId = `tg-upd-${update.update_id}-msg-${message.message_id}`;
-      const idempotencyKey = createHash("sha256")
-        .update(`tg-bridge:${config.provider}:${message.chat.id}:${message.message_id}`)
-        .digest("hex");
-
-      let requestRow;
-      try {
-        const submission = await poolChatService.submit({
-          companyId,
-          moduleId: config.moduleId,
-          channel: "telegram",
-          subjectId: String(message.chat.id),
-          idempotencyKey,
-          body: {
-            conversationId,
-            clientMessageId,
-            model: config.model,
-            messages: [
-              {
-                role: "user",
-                content: message.text,
-              },
-            ],
-          },
-        });
-        requestRow = submission;
-      } catch (err) {
-        let errorMsg = err instanceof Error ? err.message : String(err);
-        if (config.botToken) {
-          errorMsg = redactSecret(errorMsg, config.botToken);
-        }
+      // Concurrent delivery check: already inflight
+      if (inflightUpdates.has(update.update_id)) {
+        const existingResult = await inflightUpdates.get(update.update_id)!;
         return {
-          status: "error",
+          status: "deduplicated",
+          reason: "update_already_processed",
           updateId: update.update_id,
-          error: errorMsg,
+          outboxItem: existingResult.outboxItem,
         };
       }
 
-      const resultText =
-        requestRow && typeof requestRow === "object" && "result" in requestRow && requestRow.result
-          ? (requestRow.result as { text?: string }).text ?? ""
-          : "";
+      const execution = (async (): Promise<TelegramBridgeProcessResult> => {
+        const companyId = callOptions?.companyId ?? config.companyId ?? defaultCompanyId;
+        const conversationId = `tg:${config.provider}:${message.chat.id}`;
+        const clientMessageId = `tg-upd-${update.update_id}`;
+        const idempotencyKey = createHash("sha256")
+          .update(`tg-bridge:${config.provider}:${message.chat.id}:update:${update.update_id}`)
+          .digest("hex");
 
-      const parts = splitTelegramMessageText(resultText, 4096);
-      const outboxItem: TelegramOutboxItem = {
-        id: randomUUID(),
-        moduleKey: config.moduleKey ?? moduleKeyOrId,
-        chatId: message.chat.id,
-        replyToMessageId: message.message_id,
-        text: resultText,
-        parts,
-        status: "pending",
-        attempts: 0,
-        deliveredMessageIds: [],
-        createdAt: new Date(),
-      };
-
-      outbox.push(outboxItem);
-
-      // Dispatch parts via outbox
-      for (const part of parts) {
-        outboxItem.attempts += 1;
-        const res = await sender({
-          botToken: config.botToken ?? undefined,
-          chatId: message.chat.id,
-          text: part,
-          replyToMessageId: message.message_id,
-        });
-
-        if (res.ok && res.messageId !== undefined) {
-          outboxItem.deliveredMessageIds.push(res.messageId);
-        } else if (!res.ok) {
-          outboxItem.status = "failed";
-          outboxItem.error = redactSecret(res.error ?? "Failed to send message", config.botToken);
-          processedUpdates.set(update.update_id, outboxItem);
-          return {
+        let requestRow;
+        try {
+          const submission = await poolChatService.submit({
+            companyId,
+            moduleId: config.moduleId,
+            channel: "telegram",
+            subjectId: String(message.chat.id),
+            idempotencyKey,
+            body: {
+              conversationId,
+              clientMessageId,
+              model: config.model,
+              messages: [
+                {
+                  role: "user",
+                  content: message.text!,
+                },
+              ],
+            },
+          });
+          requestRow = submission;
+        } catch (err) {
+          let errorMsg = err instanceof Error ? err.message : String(err);
+          if (config.botToken) {
+            errorMsg = redactSecret(errorMsg, config.botToken);
+          }
+          const errResult: TelegramBridgeProcessResult = {
             status: "error",
             updateId: update.update_id,
-            outboxItem,
-            error: outboxItem.error,
+            error: errorMsg,
           };
+          processedUpdates.set(update.update_id, null);
+          return errResult;
         }
+
+        const resultText =
+          requestRow && typeof requestRow === "object" && "result" in requestRow && requestRow.result
+            ? (requestRow.result as { text?: string }).text ?? ""
+            : "";
+
+        const parts = splitTelegramMessageText(resultText, 4096);
+        const outboxItem: TelegramOutboxItem = {
+          id: randomUUID(),
+          moduleKey: config.moduleKey ?? moduleKeyOrId,
+          chatId: message.chat.id,
+          replyToMessageId: message.message_id,
+          text: resultText,
+          parts,
+          status: "pending",
+          attempts: 0,
+          deliveredMessageIds: [],
+          createdAt: new Date(),
+        };
+
+        outbox.push(outboxItem);
+        // Mark processed updates immediately to prevent duplicate submissions on retry or concurrent delivery
+        processedUpdates.set(update.update_id, outboxItem);
+
+        // Dispatch parts via outbox
+        for (const part of parts) {
+          outboxItem.attempts += 1;
+          let res: { ok: boolean; messageId?: number; error?: string };
+          try {
+            res = await sender({
+              botToken: config.botToken ?? undefined,
+              chatId: message.chat.id,
+              text: part,
+              replyToMessageId: message.message_id,
+            });
+          } catch (senderErr) {
+            const senderErrMsg = senderErr instanceof Error ? senderErr.message : String(senderErr);
+            res = {
+              ok: false,
+              error: senderErrMsg,
+            };
+          }
+
+          if (res.ok && res.messageId !== undefined) {
+            outboxItem.deliveredMessageIds.push(res.messageId);
+          } else {
+            outboxItem.status = "failed";
+            outboxItem.error = redactSecret(res.error ?? "Failed to send message", config.botToken);
+            return {
+              status: "error",
+              updateId: update.update_id,
+              outboxItem,
+              error: outboxItem.error,
+            };
+          }
+        }
+
+        outboxItem.status = "delivered";
+        outboxItem.deliveredAt = new Date();
+
+        return {
+          status: "delivered",
+          updateId: update.update_id,
+          outboxItem,
+        };
+      })();
+
+      inflightUpdates.set(update.update_id, execution);
+      try {
+        return await execution;
+      } finally {
+        inflightUpdates.delete(update.update_id);
       }
-
-      outboxItem.status = "delivered";
-      outboxItem.deliveredAt = new Date();
-      processedUpdates.set(update.update_id, outboxItem);
-
-      return {
-        status: "delivered",
-        updateId: update.update_id,
-        outboxItem,
-      };
     },
   };
 }
