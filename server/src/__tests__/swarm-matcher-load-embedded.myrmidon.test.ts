@@ -289,12 +289,11 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");
       await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
-      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
       await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
       const task = await seedTask(companyId);
       const wakes: string[] = [];
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs).toEqual([]);
       expect(result.unmatched).toBe(1);
@@ -308,11 +307,10 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");
       await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
-      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
       const task = await seedTask(companyId);
       const wakes: string[] = [];
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs.map((pair) => pair.issueId)).toEqual([task]);
       expect(await assigneeOf(task)).toBe(agent);
@@ -339,7 +337,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect((await openTasksOf(agent))).toHaveLength(3);
       expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs.map((pair) => pair.issueId)).toEqual([readyTask]);
       expect(result.pairs.map((pair) => pair.agentId)).toEqual([agent]);
