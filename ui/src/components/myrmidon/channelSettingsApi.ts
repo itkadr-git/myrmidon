@@ -39,6 +39,12 @@ export interface ChannelSettingsView {
   chatCrossChannelLookbackHours: ChannelSettingValue<number>;
   chatReconcileIntervalMs: ChannelSettingValue<number | null>;
   telegramApiBaseUrl: ChannelSettingValue<string | null>;
+  telegramPoolChatGptEnabled?: ChannelSettingValue<boolean>;
+  telegramPoolChatGptChatId?: ChannelSettingValue<string>;
+  telegramPoolChatGptModel?: ChannelSettingValue<string>;
+  telegramPoolGeminiEnabled?: ChannelSettingValue<boolean>;
+  telegramPoolGeminiChatId?: ChannelSettingValue<string>;
+  telegramPoolGeminiModel?: ChannelSettingValue<string>;
 }
 
 /** The keys the panel may change (`telegramApiBaseUrl` is deployment-only). */
@@ -56,6 +62,12 @@ export interface ChannelSettingsPatch {
   chatCrossChannelTotalChars?: number;
   chatCrossChannelLookbackHours?: number;
   chatReconcileIntervalMs?: number | null;
+  telegramPoolChatGptEnabled?: boolean;
+  telegramPoolChatGptChatId?: string;
+  telegramPoolChatGptModel?: string;
+  telegramPoolGeminiEnabled?: boolean;
+  telegramPoolGeminiChatId?: string;
+  telegramPoolGeminiModel?: string;
 }
 
 export const channelSettingsQueryKey = ["myrmidon", "channel-settings"] as const;

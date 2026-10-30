@@ -198,4 +198,23 @@ describe("ChannelSettingsPanelView", () => {
         .textContent,
     ).toBeTruthy();
   });
+
+  it("renders Telegram pool bridge section when present in view", () => {
+    const withPoolBridge: ChannelSettingsView = {
+      ...VIEW,
+      telegramPoolChatGptEnabled: resolved(false),
+      telegramPoolChatGptChatId: resolved("123456789"),
+      telegramPoolChatGptModel: resolved("balanced"),
+      telegramPoolGeminiEnabled: resolved(true),
+      telegramPoolGeminiChatId: resolved("987654321"),
+      telegramPoolGeminiModel: resolved("gemini-1.5-pro"),
+    };
+    renderView({ view: withPoolBridge });
+    const poolBridges = container.querySelector("[data-testid='channel-settings-telegram-pool-bridges']");
+    expect(poolBridges).toBeTruthy();
+    expect(poolBridges?.textContent).toContain("ChatGPT Pool Bridge");
+    expect(poolBridges?.textContent).toContain("Gemini Pool Bridge");
+    expect(poolBridges?.textContent).toContain("Allowed Chat ID: 123456789");
+    expect(poolBridges?.textContent).toContain("Allowed Chat ID: 987654321");
+  });
 });

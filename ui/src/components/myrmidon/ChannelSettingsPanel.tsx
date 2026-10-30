@@ -211,11 +211,25 @@ export function ChannelSettingsPanelView({
   const currentPatch: ChannelSettingsPatch = {
     ...parsed.patch,
     telegramDmStatus: numbers.telegramDmStatus,
+    ...(view.telegramPoolChatGptEnabled
+      ? {
+          telegramPoolChatGptEnabled: view.telegramPoolChatGptEnabled.value,
+          telegramPoolChatGptChatId: view.telegramPoolChatGptChatId?.value,
+          telegramPoolChatGptModel: view.telegramPoolChatGptModel?.value,
+        }
+      : {}),
+    ...(view.telegramPoolGeminiEnabled
+      ? {
+          telegramPoolGeminiEnabled: view.telegramPoolGeminiEnabled.value,
+          telegramPoolGeminiChatId: view.telegramPoolGeminiChatId?.value,
+          telegramPoolGeminiModel: view.telegramPoolGeminiModel?.value,
+        }
+      : {}),
   };
   // Drop keys the environment pins: the server keeps honouring the override,
   // and saving them would only rewrite what the deployment already forces.
   for (const key of Object.keys(currentPatch) as ChannelSettingKey[]) {
-    if (view[key].overridden) delete currentPatch[key];
+    if (view[key]?.overridden) delete currentPatch[key];
   }
 
   const setField = (key: keyof Omit<StringDraft, "telegramDmStatus">, value: string) =>
@@ -318,6 +332,51 @@ export function ChannelSettingsPanelView({
             <p className="text-xs text-muted-foreground">{FIELD_HINTS[key]}</p>
           </div>
         ))}
+
+        {view.telegramPoolChatGptEnabled ? (
+          <div className="space-y-3 md:col-span-2 border-t pt-4" data-testid="channel-settings-telegram-pool-bridges">
+            <h3 className="text-sm font-semibold">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2 p-3 border rounded-md">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">ChatGPT Pool Bridge</span>
+                  <span className="text-xs font-mono">
+                    {view.telegramPoolChatGptEnabled.value ? "Enabled" : "Disabled (default)"}
+                  </span>
+                </div>
+                {view.telegramPoolChatGptChatId?.value ? (
+                  <p className="text-xs text-muted-foreground">
+                    Allowed Chat ID: {view.telegramPoolChatGptChatId.value}
+                  </p>
+                ) : null}
+                {view.telegramPoolChatGptModel?.value ? (
+                  <p className="text-xs text-muted-foreground">
+                    Model: {view.telegramPoolChatGptModel.value}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-2 p-3 border rounded-md">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Gemini Pool Bridge</span>
+                  <span className="text-xs font-mono">
+                    {view.telegramPoolGeminiEnabled?.value ? "Enabled" : "Disabled (default)"}
+                  </span>
+                </div>
+                {view.telegramPoolGeminiChatId?.value ? (
+                  <p className="text-xs text-muted-foreground">
+                    Allowed Chat ID: {view.telegramPoolGeminiChatId.value}
+                  </p>
+                ) : null}
+                {view.telegramPoolGeminiModel?.value ? (
+                  <p className="text-xs text-muted-foreground">
+                    Model: {view.telegramPoolGeminiModel.value}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="space-y-1 md:col-span-2 text-xs text-muted-foreground" data-testid="channel-settings-deployment-only">
           <span>{t("area.settings-integrations.channel-settings-panel.deploymentOnly")} </span>
