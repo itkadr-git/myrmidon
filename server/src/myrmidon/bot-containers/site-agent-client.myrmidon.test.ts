@@ -5,6 +5,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import { cleanupTestPki, generateEphemeralTestPki } from "./site-agent-pki.js";
@@ -134,14 +135,14 @@ describe("site-agent client mTLS guard & https", () => {
   it("fails fast when requireMtls is true but no agent is provided", () => {
     expect(() =>
       createSiteAgentClient({ baseUrl: "https://site.example.com", requireMtls: true }),
-    ).toThrow("site-agent client requires an https agent configured with an active mTLS certificate");
+    ).toThrow("site-agent mTLS requires an HTTPS URL and a registered client certificate transport");
   });
 
   it("fails fast when baseUrl is not https and requireMtls is set", () => {
     const agent = new https.Agent({ cert: pki.clientCert, key: pki.clientKey, ca: pki.caCert });
     expect(() =>
       createSiteAgentClient({ baseUrl: "http://site.example.com", agent, requireMtls: true }),
-    ).toThrow("site-agent client requires https baseUrl when requireMtls is enabled");
+    ).toThrow("site-agent mTLS requires an HTTPS URL and a registered client certificate transport");
   });
 
   it("performs mTLS-authenticated request against an https server with mutual auth", async () => {
@@ -157,8 +158,28 @@ describe("site-agent client mTLS guard & https", () => {
       (req, res) => {
         const cert = (req.socket as any).getPeerCertificate();
         clientCertSubject = cert?.subject?.CN ?? "";
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ logs: "log line via mtls\n" }));
+        if (req.method === "GET" && req.url?.startsWith("/v1/bots/work-bot/logs")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ logs: "log line via mtls\n" }));
+        } else if (req.method === "POST" && req.url === "/v1/memory/export") {
+          res.writeHead(200, { "Content-Type": "application/zip" });
+          res.end(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+        } else if (req.method === "POST" && req.url === "/v1/bots/work-bot/snapshot") {
+          res.writeHead(200, { "Content-Type": "application/x-tar+zstd" });
+          res.end("snapshot-data");
+        } else if (req.method === "POST" && req.url === "/v1/bots/work-bot/restore") {
+          req.on("data", () => {});
+          req.on("end", () => {
+            res.writeHead(200);
+            res.end();
+          });
+        } else if (req.method === "POST" && req.url === "/v1/bots/work-bot/quarantine") {
+          res.writeHead(200);
+          res.end();
+        } else {
+          res.writeHead(404);
+          res.end("not found");
+        }
       },
     );
     httpsServers.push(server);
@@ -178,5 +199,43 @@ describe("site-agent client mTLS guard & https", () => {
     const logs = await client.logs("work-bot", 10);
     expect(logs).toBe("log line via mtls\n");
     expect(clientCertSubject).toBeTruthy();
+
+    const mem = await client.memoryExport("work-bot");
+    expect(Buffer.isBuffer(mem)).toBe(true);
+
+    const snap = await client.snapshot("work-bot");
+    expect(snap).toBeDefined();
+
+    await client.restore("work-bot", Readable.from(["restore-data"]));
+    await client.quarantine("work-bot");
+  });
+
+  it("rejects request when client certificate is not provided to mutual auth server", async () => {
+    const server = https.createServer(
+      {
+        cert: pki.serverCert,
+        key: pki.serverKey,
+        ca: pki.caCert,
+        requestCert: true,
+        rejectUnauthorized: true,
+      },
+      (_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ logs: "ok\n" }));
+      },
+    );
+    httpsServers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const baseUrl = `https://127.0.0.1:${port}`;
+
+    const agentWithoutCert = new https.Agent({
+      ca: pki.caCert,
+      rejectUnauthorized: true,
+      checkServerIdentity: () => undefined,
+    });
+
+    const client = createSiteAgentClient({ baseUrl, agent: agentWithoutCert });
+    await expect(client.logs("work-bot", 10)).rejects.toThrow();
   });
 });
