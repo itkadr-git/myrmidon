@@ -6,19 +6,24 @@
 //   POST   /companies/:companyId/fleet/sites          — enroll a site into myrmidon_fleet_sites
 //   DELETE /companies/:companyId/fleet/sites/:name    — remove a site
 //
-// The request carries the fleetd address (https only: fleetd serves mTLS only), the site CA
-// (public PEM), and NAMES of company secrets for the bearer token and the client certificate
-// and key. No secret value ever passes through this route. Every named secret must already
-// exist in the company, so a typo is an error at enroll time, not a silent skip in the
-// client manager 30 seconds later.
+// The request carries the fleetd address (https only: fleetd serves mTLS only), and the NAME
+// of the company secret for the bearer token. The board generates its own site-CA and issues
+// client and server certificates automatically.
 
 import { X509Certificate, createHash, createPrivateKey } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin } from "../../routes/authz.js";
-import { parseTlsCredentials, type FleetSite, type FleetSiteInsert } from "./site-registry.js";
-import { generateSiteCa, issueSiteClientCertificate, SITE_CLIENT_CERT_VALIDITY_DAYS, SITE_CLIENT_CERT_RENEW_BEFORE_DAYS, siteCaSubject, type SiteCaMaterial } from "./site-client-pki.js";
+import { type FleetSite, type FleetSiteInsert } from "./site-registry.js";
+import {
+  generateSiteCa,
+  issueSiteClientCertificate,
+  issueSiteServerCertificate,
+  SITE_CLIENT_CERT_VALIDITY_DAYS,
+  SITE_CLIENT_CERT_RENEW_BEFORE_DAYS,
+  type SiteCaMaterial,
+} from "./site-client-pki.js";
 
 const SITE_CLIENT_SECRET_PREFIX = "myrmidon-site-client";
 
@@ -68,9 +73,15 @@ export interface FleetSiteRoutesDeps {
   readSiteCa(companyId: string): Promise<SiteCaMaterial | null>;
   secretExists(companyId: string, name: string): Promise<boolean>;
   writeSecret(companyId: string, name: string, value: string): Promise<void>;
+  deleteSecret?(companyId: string, name: string): Promise<void>;
   refreshRegistry(): void;
   updateSite(companyId: string, name: string, patch: Partial<Pick<FleetSite, "clientCertNotAfter" | "clientCertFingerprint" | "certRotatedAt">>): Promise<void>;
   readClientCertificate(companyId: string, secretName: string): Promise<string | null>;
+  log?: {
+    warn?(obj: Record<string, unknown>, msg?: string): void;
+    error?(obj: Record<string, unknown>, msg?: string): void;
+    info?(obj: Record<string, unknown>, msg?: string): void;
+  };
 }
 
 /** The https URL of a fleetd, reduced to origin; throws a message fit for a 400. */
@@ -79,66 +90,26 @@ export function normalizeFleetdUrl(raw: string): string {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new Error("url: not a valid URL");
+    throw new Error("url: not a valid URL (https://host[:port] required)");
   }
-  if (parsed.protocol !== "https:") {
-    throw new Error("url: must be https:// (fleetd serves mTLS only)");
+  if (parsed.protocol !== "https:") throw new Error("url: fleetd serves mTLS only, https: required");
+  if (parsed.username || parsed.password) throw new Error("url: credentials not allowed");
+  if (parsed.pathname !== "/" && parsed.pathname !== "") {
+    throw new Error("url: path not allowed, pass the origin only (e.g. https://192.0.2.10:9100)");
   }
-  if (parsed.username || parsed.password) throw new Error("url: credentials in the URL are not allowed");
-  if ((parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash) {
-    throw new Error("url: expected scheme://host[:port] only");
-  }
+  if (parsed.search || parsed.hash) throw new Error("url: query or fragment not allowed");
   return parsed.origin;
 }
 
-/** Parses the site CA PEM; returns the PEM (as given) and the sha256 fingerprint of its DER. */
-export function inspectCaCert(pem: string): { fingerprint: string } {
+export function inspectCaCert(caPem: string): { fingerprint: string } {
   let cert: X509Certificate;
   try {
-    cert = new X509Certificate(pem);
+    cert = new X509Certificate(caPem);
   } catch {
     throw new Error("caCert: not a PEM certificate");
   }
   return { fingerprint: createHash("sha256").update(cert.raw).digest("hex") };
 }
-
-/**
- * Reads the client certificate the board will present (same lookup order as the client manager)
- * and checks that the site CA signed it. `error` is a message for a 400, or null when it is fine or
- * when the secret cannot be read as a certificate here (the manager then reports it). `notAfter` is
- * the end of the certificate's validity: the key's TTL the fleet screen shows (null when unreadable).
- */
-async function inspectClientCert(
-  deps: FleetSiteRoutesDeps,
-  companyId: string,
-  ref: string,
-  caPem: string,
-  now: Date,
-): Promise<{ error: string | null; notAfter: Date | null }> {
-  let cert: string | undefined;
-  for (const name of [ref, `${ref}-cert`, `${ref}_cert`]) {
-    const raw = await deps.readSecret(companyId, name);
-    if (!raw) continue;
-    cert = parseTlsCredentials(raw).cert;
-    if (cert) break;
-  }
-  if (!cert) return { error: null, notAfter: null };
-  try {
-    const leaf = new X509Certificate(cert);
-    if (!leaf.verify(new X509Certificate(caPem).publicKey)) {
-      return { error: "clientCertSecretKey: the client certificate is not signed by caCert", notAfter: null };
-    }
-    const notAfter = new Date(leaf.validTo);
-    if (Number.isNaN(notAfter.getTime())) return { error: null, notAfter: null };
-    if (notAfter.getTime() <= now.getTime()) {
-      return { error: `clientCertSecretKey: the client certificate expired at ${notAfter.toISOString()}`, notAfter };
-    }
-    return { error: null, notAfter };
-  } catch {
-    return { error: "clientCertSecretKey: the client certificate is not a valid PEM certificate", notAfter: null };
-  }
-}
-
 
 function publicSite(site: FleetSite) {
   return {
@@ -146,6 +117,7 @@ function publicSite(site: FleetSite) {
     name: site.name,
     url: site.url,
     status: site.status,
+    caCert: site.caCert ?? null,
     tokenSecret: site.tokenSecret ?? null,
     clientCertSecretKey: site.clientCertSecretKey ?? null,
     clientCertNotAfter: site.clientCertNotAfter ? new Date(site.clientCertNotAfter).toISOString() : null,
@@ -161,12 +133,19 @@ function publicSite(site: FleetSite) {
 }
 
 export async function rotateDueFleetSiteCertificates(deps: FleetSiteRoutesDeps, companyId: string): Promise<FleetSite[]> {
-  const sites = await deps.listSites(companyId);
+  let sites: FleetSite[];
+  try {
+    sites = await deps.listSites(companyId);
+  } catch (err) {
+    deps.log?.error?.({ companyId, err }, "Failed to list fleet sites for certificate rotation");
+    return [];
+  }
+
   for (const site of sites) {
     if (!site.clientCertSecretKey) continue;
-    const existingPem = await deps.readClientCertificate(companyId, site.clientCertSecretKey);
-    if (!existingPem) continue;
     try {
+      const existingPem = await deps.readClientCertificate(companyId, site.clientCertSecretKey);
+      if (!existingPem) continue;
       const certificate = new X509Certificate(existingPem);
       const expiration = new Date(certificate.validTo).getTime();
       const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
@@ -179,25 +158,47 @@ export async function rotateDueFleetSiteCertificates(deps: FleetSiteRoutesDeps, 
         site.clientCertNotAfter = new Date(expiration);
         site.clientCertFingerprint = fingerprint;
       }
-    } catch {
+    } catch (err) {
+      deps.log?.warn?.({ companyId, site: site.name, err }, "Failed to inspect existing client certificate");
       continue;
     }
   }
+
+  const ca = await deps.readSiteCa(companyId);
+
   for (const site of sites) {
-    if (!site.clientCertSecretKey || !site.clientCertNotAfter) continue;
-    const renewAt = site.clientCertNotAfter.getTime() - SITE_CLIENT_CERT_RENEW_BEFORE_DAYS * 86_400_000;
-    if (Date.now() < renewAt) continue;
-    const ca = await deps.readSiteCa(companyId);
-    if (!ca || !site.caCert || site.caCert !== ca.cert) continue;
-    const client = issueSiteClientCertificate(ca, site.name);
-    await deps.writeSecret(companyId, site.clientCertSecretKey, JSON.stringify({ cert: client.cert, key: client.key }));
-    await deps.updateSite(companyId, site.name, {
-      clientCertNotAfter: client.notAfter,
-      clientCertFingerprint: client.fingerprint,
-      certRotatedAt: new Date(),
-    });
-    deps.refreshRegistry();
+    try {
+      if (!site.clientCertSecretKey || !site.clientCertNotAfter) {
+        if (site.url) {
+          deps.log?.warn?.({ companyId, site: site.name }, "Fleet site missing client cert metadata, skipping rotation");
+        }
+        continue;
+      }
+      const renewAt = site.clientCertNotAfter.getTime() - SITE_CLIENT_CERT_RENEW_BEFORE_DAYS * 86_400_000;
+      if (Date.now() < renewAt) continue;
+
+      if (!ca) {
+        deps.log?.error?.({ companyId, site: site.name }, "Cannot rotate fleet site: company site CA not found");
+        continue;
+      }
+      if (!site.caCert || site.caCert !== ca.cert) {
+        deps.log?.error?.({ companyId, site: site.name }, "Cannot rotate fleet site: site CA certificate mismatch");
+        continue;
+      }
+
+      const client = issueSiteClientCertificate(ca, site.name);
+      await deps.writeSecret(companyId, site.clientCertSecretKey, JSON.stringify({ cert: client.cert, key: client.key }));
+      await deps.updateSite(companyId, site.name, {
+        clientCertNotAfter: client.notAfter,
+        clientCertFingerprint: client.fingerprint,
+        certRotatedAt: new Date(),
+      });
+      deps.refreshRegistry();
+    } catch (err) {
+      deps.log?.error?.({ companyId, site: site.name, err }, "Failed to rotate client certificate for site");
+    }
   }
+
   return deps.listSites(companyId);
 }
 
@@ -261,7 +262,6 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
 
   async function handleList(req: Request, res: Response): Promise<void> {
     const companyId = companyOf(req);
-    await rotateDueFleetSiteCertificates(deps, companyId);
     const current = await deps.listSites(companyId);
     res.json({ sites: current.map(publicSite) });
   }
@@ -299,25 +299,34 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
     }
 
     const caSecretName = "myrmidon-site-ca";
-    const existingCa = await deps.readSiteCa(companyId);
-    let ca: ReturnType<typeof generateSiteCa>;
-    if (existingCa) {
-      ca = existingCa;
-      const caCertificate = new X509Certificate(ca.cert);
-      if (!caCertificate.checkPrivateKey(createPrivateKey(ca.key))) throw conflict("The company site CA secret is malformed");
-    } else {
-      ca = generateSiteCa();
-      await deps.writeSecret(companyId, caSecretName, JSON.stringify({ cert: ca.cert, key: ca.key }));
+    let ca = await deps.readSiteCa(companyId);
+    if (!ca) {
+      const generated = generateSiteCa();
+      try {
+        await deps.writeSecret(companyId, caSecretName, JSON.stringify({ cert: generated.cert, key: generated.key }));
+        ca = generated;
+      } catch (err) {
+        // Race condition: another request concurrently created the secret. Re-read and use it.
+        const concurrentlyCreated = await deps.readSiteCa(companyId);
+        if (concurrentlyCreated) {
+          ca = concurrentlyCreated;
+        } else {
+          throw err;
+        }
+      }
     }
+
+    const caCertificate = new X509Certificate(ca.cert);
+    if (!caCertificate.checkPrivateKey(createPrivateKey(ca.key))) throw conflict("The company site CA secret is malformed");
 
     const fingerprint = inspectCaCert(ca.cert).fingerprint;
     if (await deps.getSite(companyId, body.name)) throw conflict(`Site "${body.name}" is already enrolled`);
     const clientRef = `${SITE_CLIENT_SECRET_PREFIX}-${body.name}`;
     const client = issueSiteClientCertificate(ca, body.name);
+    const server = issueSiteServerCertificate(ca, url);
     const issuedAt = new Date(client.notAfter.getTime() - SITE_CLIENT_CERT_VALIDITY_DAYS * 86_400_000);
     await deps.writeSecret(companyId, clientRef, JSON.stringify({ cert: client.cert, key: client.key }));
     const clientCertSecretKey = clientRef;
-    const clientCert = { ...client, error: null };
 
     const profile: FleetSite["profile"] = {
       gatewayPortStart: body.gatewayPortStart,
@@ -339,14 +348,22 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       caCertFingerprint: fingerprint,
       clientCertSecretKey,
       clientCertNotAfter: client.notAfter,
-      clientCertFingerprint: clientCert.fingerprint,
+      clientCertFingerprint: client.fingerprint,
       certRotatedAt: issuedAt,
       status: "active",
       capacity: body.capacity,
       profile,
       labels: body.labels ?? {},
     });
-    res.status(201).json({ site: publicSite(created) });
+    deps.refreshRegistry();
+    res.status(201).json({
+      site: publicSite(created),
+      fleetd: {
+        caCert: ca.cert,
+        serverCert: server.cert,
+        serverKey: server.key,
+      },
+    });
   }
 
   async function handleDelete(req: Request, res: Response): Promise<void> {
@@ -358,6 +375,13 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       throw conflict(`Site "${name}" still hosts ${bots} bot(s): move them off (container.host) before removing it`);
     }
     if (!(await deps.deleteSite(companyId, name))) throw notFound(`Site "${name}" not found`);
+    if (deps.deleteSecret) {
+      try {
+        await deps.deleteSecret(companyId, `${SITE_CLIENT_SECRET_PREFIX}-${name}`);
+      } catch {
+        // ignore error if secret does not exist
+      }
+    }
     res.status(204).end();
   }
 

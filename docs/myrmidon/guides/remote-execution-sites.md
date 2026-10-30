@@ -309,28 +309,13 @@ Every error response follows single-line, secret-safe reason codes:
 
 1. **Host requirements**: a dedicated Linux VM with Docker (e.g. `myr-vm1`). Project-quota XFS at `/srv/myrmidon-xfs` is recommended for per-bot disk limits; on ext4 the quotas are simply absent and `volumeRoot` can point at any directory (e.g. `/srv/myrmidon-bots`).
 2. **Network**: the board must reach `fleetd` on its listen address (private LAN or tunnel). Do not publish port `9100` publicly; bind `listen` to the LAN address, not `0.0.0.0`.
-3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. There is no issuing command in the product; issue the material once per site with `openssl` on a trusted admin host, in a `0700` directory, and never print the key files:
+3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. The root site-CA (ECDSA P-256) is generated and stored centrally by the board in company secrets (`myrmidon-site-ca`, 10-year validity, private key never leaves the board). Upon enrollment, the board automatically issues a client certificate (valid 90 days, auto-renewed 30 days before expiration) and a server certificate for fleetd with SAN derived from the site URL. The public `ca.crt` and server certificate/key are returned in the enroll response. The operator only prepares a bearer token (at least 32 characters):
    ```bash
    umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
-   # site CA (3 years)
-   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
-   openssl req -x509 -new -key ca.key -sha256 -days 1095 -subj "/CN=myrmidon-site-ca-myr-vm1" -out ca.crt
-   # fleetd server certificate: the SAN must match the host or IP in the enroll `url`
-   openssl ecparam -name prime256v1 -genkey -noout -out server.key
-   openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
-   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
-   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
-   # board client certificate
-   openssl ecparam -name prime256v1 -genkey -noout -out client.key
-   openssl req -new -key client.key -subj "/CN=myrmidon-board" -out client.csr
-   printf "extendedKeyUsage=clientAuth\n" > client.ext
-   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile client.ext -out client.crt
    # bearer token (fleetd requires at least 32 characters)
    openssl rand -hex 32 > token
-   cat client.crt client.key > client.pem
-   openssl verify -CAfile ca.crt server.crt client.crt
    ```
-   Server and client certificates live 365 days and the CA 3 years; rotation is manual (re-issue, replace the files on the site, update the secret value). Keep `ca.key` off the site and off the board.
+   Certificates are issued by the board; the site-CA private key is stored securely in the company and never leaves the board. The public CA certificate and fleetd server certificate are returned upon enrollment to place in `/etc/myrmidon/pki/`.
 
 ---
 
@@ -407,33 +392,30 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
 
 Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_HOSTS` is a legacy bootstrap path that accepts only `http://` addresses and cannot carry mTLS material; do not use it for an mTLS site.
 
-1. Store the secrets in the company (values come from the files, they are never part of the enroll request). Either two secrets `fleetd-myr-vm1-token` (the token) and `fleetd-myr-vm1-client` (`client.pem`: certificate and key PEM blocks, or `{"cert":"...","key":"..."}` JSON), or a pair `fleetd-myr-vm1-client-cert` and `fleetd-myr-vm1-client-key`:
+1. Store the token secret in the company (value comes from the token file and is never part of the enroll request):
    ```bash
    jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
-   jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer ***" -H 'content-type: application/json' -d @-
    ```
-2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`). Optionally add `caFingerprint` (sha256 of `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`) to pin the CA:
+2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`):
    ```bash
-   jq -n --rawfile ca ca.crt '{
-     name: "myr-vm1",
-     url: "https://192.0.2.10:9100",
-     tokenSecret: "fleetd-myr-vm1-token",
-     clientCertSecretKey: "fleetd-myr-vm1-client",
-     caCert: $ca,
-     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
-     gatewayPortStart: 18700,
-     gatewayPortEnd: 18799,
-     imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
-     hindsightUrl: "http://hindsight.internal:8890",
-     llmBaseUrl: "http://llm.internal:4000",
-     volumeRoot: "/srv/myrmidon-bots",
-     network: "myrmidon-bots"
-   }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
-        -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
+        -H "Authorization: Bearer ***" -H 'content-type: application/json' \
+        -d '{
+          "name": "myr-vm1",
+          "url": "https://192.0.2.10:9100",
+          "tokenSecret": "fleetd-myr-vm1-token",
+          "capacity": { "maxCpus": 4, "maxMemoryMb": 32768, "maxBots": 5 },
+          "gatewayPortStart": 18700,
+          "gatewayPortEnd": 18799,
+          "imageAllowlist": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+          "hindsightUrl": "http://hindsight.internal:8890",
+          "llmBaseUrl": "http://llm.internal:4000",
+          "volumeRoot": "/srv/myrmidon-bots",
+          "network": "myrmidon-bots"
+        }'
    ```
-   The request is rejected with `400` when the pinned fingerprint does not match `caCert`, the client certificate in the named secret is not signed by `caCert`, the URL is not `https://host[:port]`, the CA is not a PEM certificate, a named secret does not exist in the company, the port range is inverted or `maxBots` exceeds the number of ports; with `409` when the name is taken. `GET /api/companies/$COMPANY/fleet/sites` lists sites (references and the CA fingerprint, never secret values); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (admins only) removes one with `204`, or answers `409` while bots (`container.host`) still sit on the site. The board refuses to connect to a site whose stored CA no longer matches the fingerprint recorded at enroll. The board picks the site up within 30 seconds, no restart.
+   The `caCert`, `caFingerprint`, and `clientCertSecretKey` fields are managed automatically by the board and rejected if passed by the client (code `400`). In the `201` response, the board returns the public CA certificate (`site.caCert`, `fleetd.caCert`) and the issued fleetd server certificate and key (`fleetd.serverCert`, `fleetd.serverKey`), which the operator stores on the site at `/etc/myrmidon/pki/`. `GET /api/companies/$COMPANY/fleet/sites` lists sites (including the public `caCert` and fingerprint, no private keys); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` removes the site with `204` and cleans up the associated client secret.
 3. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
 
 ---

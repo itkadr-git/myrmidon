@@ -50,6 +50,12 @@ export function createFleetSiteRoutesDeps(db: Db): FleetSiteRoutesDeps {
       if (existing) await secrets.rotate(existing.id, { value });
       else await secrets.create(companyId, { name, provider: "local_encrypted", value });
     },
+    deleteSecret: async (companyId, name) => {
+      const existing = await secrets.getByName(companyId, name);
+      if (existing) {
+        await secrets.remove(existing.id);
+      }
+    },
     refreshRegistry: () => { bumpFleetRegistryVersion(); },
     updateSite: async (companyId, name, patch) => {
       await updateFleetSite(db, companyId, name, patch);

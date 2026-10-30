@@ -7,8 +7,6 @@ const valid: EnrollFormValues = {
   name: "myr-vm1",
   url: "https://192.0.2.10:9100/",
   tokenSecret: "fleetd-token",
-  caCert: "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----",
-  clientCertSecretKey: "fleetd-client",
   maxCpus: "8",
   maxMemoryMb: "32768",
   maxBots: "13",
@@ -33,8 +31,6 @@ describe("buildEnrollBody", () => {
         name: "myr-vm1",
         url: "https://192.0.2.10:9100",
         tokenSecret: "fleetd-token",
-        caCert: valid.caCert,
-        clientCertSecretKey: "fleetd-client",
         capacity: { maxCpus: 8, maxMemoryMb: 32768, maxBots: 13 },
         gatewayPortStart: 18700,
         gatewayPortEnd: 18759,
@@ -52,7 +48,7 @@ describe("buildEnrollBody", () => {
     expect(buildEnrollBody({ ...valid, name: "Bad Name" })).toEqual({ ok: false, field: "name", problem: "name" });
     expect(buildEnrollBody({ ...valid, url: "http://x:1" })).toEqual({ ok: false, field: "url", problem: "url" });
     expect(buildEnrollBody({ ...valid, url: "https://x:1/v1" })).toEqual({ ok: false, field: "url", problem: "url" });
-    expect(buildEnrollBody({ ...valid, caCert: " " })).toEqual({ ok: false, field: "caCert", problem: "required" });
+    expect(buildEnrollBody({ ...valid, tokenSecret: " " })).toEqual({ ok: false, field: "tokenSecret", problem: "required" });
     expect(buildEnrollBody({ ...valid, maxCpus: "0" })).toEqual({ ok: false, field: "maxCpus", problem: "number" });
     expect(buildEnrollBody({ ...valid, maxMemoryMb: "1.5" })).toEqual({ ok: false, field: "maxMemoryMb", problem: "number" });
     expect(buildEnrollBody({ ...valid, gatewayPortStart: "80" })).toEqual({ ok: false, field: "gatewayPortStart", problem: "number" });

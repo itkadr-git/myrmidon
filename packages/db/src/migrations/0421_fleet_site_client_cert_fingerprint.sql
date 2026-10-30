@@ -1,1 +1,0 @@
-ALTER TABLE "myrmidon_fleet_sites" ADD COLUMN "client_cert_fingerprint" text;

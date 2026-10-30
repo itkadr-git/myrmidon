@@ -117,7 +117,6 @@ describe("RemoteSitesSection", () => {
     expect(container.querySelector('[data-testid="remote-site-enroll-problem"]')?.textContent).toBe("Fill in the field: Site name");
     expect(mockFleetApi.enrollSite).not.toHaveBeenCalled();
     await set("name", "myr-vm1"); await set("url", "https://192.0.2.10:9100"); await set("tokenSecret", "fleetd-token");
-    await set("clientCertSecretKey", "fleetd-client"); await set("caCert", "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----");
     await set("maxCpus", "8"); await set("maxMemoryMb", "32768");
     await click(button("Add site"));
     expect(mockFleetApi.enrollSite).toHaveBeenCalledWith("company-1", expect.objectContaining({ name: "myr-vm1", capacity: { maxCpus: 8, maxMemoryMb: 32768 }, gatewayPortStart: 18700, gatewayPortEnd: 18759 }));
@@ -134,8 +133,8 @@ describe("RemoteSitesSection", () => {
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       await act(async () => { Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value); el.dispatchEvent(new Event("input", { bubbles: true })); });
     };
-    await set("name", "s1"); await set("url", "https://h:9100"); await set("tokenSecret", "x"); await set("clientCertSecretKey", "c");
-    await set("caCert", "pem"); await set("maxCpus", "1"); await set("maxMemoryMb", "1024");
+    await set("name", "s1"); await set("url", "https://h:9100"); await set("tokenSecret", "x");
+    await set("maxCpus", "1"); await set("maxMemoryMb", "1024");
     await click(button("Add site"));
     expect(container.textContent).toContain("company secret \"x\" not found");
   });

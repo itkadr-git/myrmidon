@@ -17,6 +17,13 @@ export interface SiteClientMaterial {
   fingerprint: string;
 }
 
+export interface SiteServerMaterial {
+  cert: string;
+  key: string;
+  notAfter: Date;
+  fingerprint: string;
+}
+
 function derLength(length: number): Buffer {
   if (length < 128) return Buffer.from([length]);
   const bytes: number[] = [];
@@ -33,6 +40,11 @@ function int(value: number): Buffer {
   for (let n = value; n > 0; n = Math.floor(n / 256)) bytes.unshift(n & 0xff);
   if (bytes[0]! & 0x80) bytes.unshift(0);
   return der(0x02, Buffer.from(bytes));
+}
+function randomSerial(): Buffer {
+  const bytes = randomBytes(12); // 96 bits (>= 64 bits)
+  const buf = (bytes[0]! & 0x80) ? Buffer.concat([Buffer.from([0x00]), bytes]) : bytes;
+  return der(0x02, buf);
 }
 function oid(bytes: number[]): Buffer { return der(0x06, Buffer.from(bytes)); }
 function time(date: Date): Buffer {
@@ -53,25 +65,65 @@ export function siteCaSubject(cert: string): Buffer {
   if (!parsed.ca || !parsed.subject.includes("myrmidon-site-ca")) throw new Error("Stored site CA certificate has an invalid subject");
   return name("myrmidon-site-ca");
 }
-function makeTbs(serial: number, issuer: Buffer, owner: Buffer, publicKey: Buffer, from: Date, to: Date, ca: boolean): Buffer {
+function makeTbs(
+  serialDer: Buffer,
+  issuer: Buffer,
+  owner: Buffer,
+  publicKey: Buffer,
+  from: Date,
+  to: Date,
+  certType: "ca" | "client" | "server",
+  extraExtensions: Buffer[] = [],
+): Buffer {
   const alg = seq(oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
   // KeyUsage BIT STRING (RFC 5280 4.2.1.3):
   // Byte 0: count of unused bits in final octet.
   // CA: digitalSignature (bit 0), keyCertSign (bit 5), cRLSign (bit 6) -> 0b10000110 = 0x86 (1 unused bit).
   // Client: digitalSignature (bit 0) -> 0b10000000 = 0x80 (7 unused bits).
-  const kuValue = ca ? Buffer.from([0x01, 0x86]) : Buffer.from([0x07, 0x80]);
+  // Server: digitalSignature (bit 0), keyEncipherment (bit 2) -> 0b10100000 = 0xa0 (5 unused bits).
+  const kuValue = certType === "ca"
+    ? Buffer.from([0x01, 0x86])
+    : certType === "server"
+      ? Buffer.from([0x05, 0xa0])
+      : Buffer.from([0x07, 0x80]);
   const usage = seq(oid([0x55, 0x1d, 0x0f]), der(0x01, Buffer.from([0xff])), der(0x04, der(0x03, kuValue)));
-  const bcValue = ca ? seq(der(0x01, Buffer.from([0xff]))) : seq();
+  const bcValue = certType === "ca" ? seq(der(0x01, Buffer.from([0xff]))) : seq();
   const constraints = seq(oid([0x55, 0x1d, 0x13]), der(0x01, Buffer.from([0xff])), der(0x04, bcValue));
-  const eku = ca ? [] : [seq(oid([0x55, 0x1d, 0x25]), der(0x04, seq(oid([0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]))))];
-  return seq(der(0xa0, int(2)), int(serial), alg, issuer, seq(time(from), time(to)), owner, publicKey, der(0xa3, seq(usage, constraints, ...eku)));
+  const eku = certType === "ca"
+    ? []
+    : [
+        seq(
+          oid([0x55, 0x1d, 0x25]),
+          der(
+            0x04,
+            seq(
+              oid(
+                certType === "server"
+                  ? [0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01] // serverAuth
+                  : [0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02], // clientAuth
+              ),
+            ),
+          ),
+        ),
+      ];
+  return seq(
+    der(0xa0, int(2)),
+    serialDer,
+    alg,
+    issuer,
+    seq(time(from), time(to)),
+    owner,
+    publicKey,
+    der(0xa3, seq(usage, constraints, ...eku, ...extraExtensions)),
+  );
 }
 
 export function generateSiteCa(now = new Date()): SiteCaMaterial {
   const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1", publicKeyEncoding: { type: "spki", format: "der" }, privateKeyEncoding: { type: "pkcs8", format: "pem" } });
   const caName = name("myrmidon-site-ca");
-  const notAfter = new Date(now.getTime() + CA_VALIDITY_DAYS * DAY_MS);
-  const tbs = makeTbs(1, caName, caName, pair.publicKey, new Date(now.getTime() - 60_000), notAfter, true);
+  const nowSec = Math.floor(now.getTime() / 1000) * 1000;
+  const notAfter = new Date(nowSec + CA_VALIDITY_DAYS * DAY_MS);
+  const tbs = makeTbs(randomSerial(), caName, caName, pair.publicKey, new Date(nowSec - 60_000), notAfter, "ca");
   const raw = signCert(tbs, pair.privateKey);
   const cert = pem("CERTIFICATE", raw);
   const parsed = new X509Certificate(cert);
@@ -88,6 +140,9 @@ export function issueSiteClientCertificate(
   const caKey = createPrivateKey(ca.key);
   if (!caCert.checkPrivateKey(caKey)) throw new Error("site CA key does not match its certificate");
   if (caCert.ca !== true) throw new Error("site CA certificate is not a CA");
+  if (!caCert.subject.includes("myrmidon-site-ca")) {
+    throw new Error(`site CA certificate has unexpected subject: ${caCert.subject}`);
+  }
   const pair = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",
     publicKeyEncoding: { type: "spki", format: "der" },
@@ -95,15 +150,73 @@ export function issueSiteClientCertificate(
   });
   const now = nowOrOptions instanceof Date ? nowOrOptions : new Date();
   const validityDays = nowOrOptions instanceof Date ? SITE_CLIENT_CERT_VALIDITY_DAYS : (nowOrOptions.validityDays ?? SITE_CLIENT_CERT_VALIDITY_DAYS);
-  const notAfter = new Date(now.getTime() + validityDays * DAY_MS);
-  const from = new Date(Math.min(now.getTime() - 60_000, notAfter.getTime() - 60_000));
-  const issuer = new X509Certificate(ca.cert).issuer;
-  const issuerName = issuer.includes("myrmidon-site-ca") ? name("myrmidon-site-ca") : name("invalid-site-ca");
-  const tbs = makeTbs(randomBytes(16).readUInt32BE(0) || 1, issuerName, name(commonName), pair.publicKey, from, notAfter, false);
+  const nowSec = Math.floor(now.getTime() / 1000) * 1000;
+  const notAfter = new Date(nowSec + validityDays * DAY_MS);
+  const from = validityDays < 0
+    ? new Date(nowSec + validityDays * DAY_MS - 60_000)
+    : new Date(nowSec - 60_000);
+  const issuerName = siteCaSubject(ca.cert);
+  const tbs = makeTbs(randomSerial(), issuerName, name(commonName), pair.publicKey, from, notAfter, "client");
   const cert = pem("CERTIFICATE", signCert(tbs, caKey));
   const parsedCert = new X509Certificate(cert);
   const verified = parsedCert.verify(caCert.publicKey);
   if (!verified || parsedCert.ca) throw new Error("generated site client certificate failed validation");
+  return {
+    cert,
+    key: pair.privateKey,
+    notAfter,
+    fingerprint: createHash("sha256").update(parsedCert.raw).digest("hex"),
+  };
+}
+
+export function issueSiteServerCertificate(
+  ca: SiteCaMaterial,
+  urlOrHost: string,
+  validityDays = 365,
+): SiteServerMaterial {
+  const caCert = new X509Certificate(ca.cert);
+  const caKey = createPrivateKey(ca.key);
+  if (!caCert.checkPrivateKey(caKey)) throw new Error("site CA key does not match its certificate");
+  if (caCert.ca !== true) throw new Error("site CA certificate is not a CA");
+  if (!caCert.subject.includes("myrmidon-site-ca")) {
+    throw new Error(`site CA certificate has unexpected subject: ${caCert.subject}`);
+  }
+
+  let host = urlOrHost.trim();
+  try {
+    if (host.includes("://")) {
+      host = new URL(host).hostname;
+    } else {
+      host = host.split(":")[0]!;
+    }
+  } catch {
+    host = host.replace(/^https?:\/\//, "").split("/")[0]!.split(":")[0]!;
+  }
+  if (!host) throw new Error("Invalid host for server certificate");
+
+  const pair = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+    publicKeyEncoding: { type: "spki", format: "der" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+
+  const nowSec = Math.floor(Date.now() / 1000) * 1000;
+  const notAfter = new Date(nowSec + validityDays * DAY_MS);
+  const from = new Date(nowSec - 60_000);
+  const issuerName = siteCaSubject(ca.cert);
+
+  const isIpv4 = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  const sanEntry = isIpv4
+    ? der(0x87, Buffer.from(host.split(".").map(Number)))
+    : der(0x82, Buffer.from(host, "utf8"));
+  const sanExt = seq(oid([0x55, 0x1d, 0x11]), der(0x04, seq(sanEntry)));
+
+  const tbs = makeTbs(randomSerial(), issuerName, name(`fleetd-${host}`), pair.publicKey, from, notAfter, "server", [sanExt]);
+  const cert = pem("CERTIFICATE", signCert(tbs, caKey));
+  const parsedCert = new X509Certificate(cert);
+  const verified = parsedCert.verify(caCert.publicKey);
+  if (!verified || parsedCert.ca) throw new Error("generated site server certificate failed validation");
+
   return {
     cert,
     key: pair.privateKey,

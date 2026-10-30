@@ -1453,12 +1453,10 @@
     "actionFailed": "The action did not go through: {{error}}",
     "form": {
       "open": "Add a site",
-      "hint": "The token and the certificates are company secrets: enter their names, not their values.",
+      "hint": "The token is a company secret: enter its name, not its value.",
       "name": "Site name",
       "url": "Address of the site agent (https)",
       "tokenSecret": "Token secret name",
-      "caCert": "Site CA certificate (PEM)",
-      "clientCertSecretKey": "Client certificate secret name",
       "maxCpus": "CPUs",
       "maxMemoryMb": "Memory, MB",
       "maxBots": "Bots at most",
@@ -1661,5 +1659,6 @@
       "chatgpt-pool-sidebar": "ChatGPT subscriptions",
       "chatgpt-pool-page": "ChatGPT subscriptions"
     }
-  }
+  },
+  "ui2.nav.group.plugins": "Plugins"
 }

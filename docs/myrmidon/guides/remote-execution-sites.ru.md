@@ -284,28 +284,13 @@
 
 1. **Сервер**: выделенная Linux VM с Docker (например, `myr-vm1`). XFS с проектными квотами в `/srv/myrmidon-xfs` желательна для дисковых лимитов ботов; на ext4 квот просто нет, а `volumeRoot` может указывать на любой каталог (например, `/srv/myrmidon-bots`).
 2. **Сеть**: доска должна достигать `fleetd` по его адресу `listen` (частная сеть или туннель). Порт `9100` не публикуется наружу; `listen` привязывается к адресу локальной сети, а не к `0.0.0.0`.
-3. **PKI площадки (mTLS обязателен)**: `fleetd` отдаёт только HTTPS, требует клиентский сертификат, подписанный site-CA, и поверх проверяет Bearer-токен. Без `siteCA`, `serverCert` и `serverKey` он не стартует. Команды выпуска в продукте нет; материал выпускается один раз на площадку через `openssl` на доверенном админ-хосте, в каталоге с правами `0700`, файлы ключей не печатать:
+3. **PKI площадки (mTLS обязателен)**: `fleetd` отдаёт только HTTPS, требует клиентский сертификат, подписанный site-CA, и поверх проверяет Bearer-токен. Без `siteCA`, `serverCert` и `serverKey` он не стартует. Корневой site-CA (ECDSA P-256) генерируется и хранится доской в секретах компании (`myrmidon-site-ca`, валидность 10 лет, закрытый ключ не покидает доску). При enroll доска автоматически выпускает клиентский сертификат (срок 90 дней, автоматическая ротация за 30 дней до истечения) и серверный сертификат для fleetd с SAN из адреса площадки, а также отдаёт публичный `ca.crt` и серверные сертификат/ключ в ответе enroll. Оператор готовит только Bearer-токен (не менее 32 символов):
    ```bash
    umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
-   # CA площадки (3 года)
-   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
-   openssl req -x509 -new -key ca.key -sha256 -days 1095 -subj "/CN=myrmidon-site-ca-myr-vm1" -out ca.crt
-   # серверный сертификат fleetd: SAN должен совпадать с хостом или IP в `url` при enroll
-   openssl ecparam -name prime256v1 -genkey -noout -out server.key
-   openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
-   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
-   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
-   # клиентский сертификат доски
-   openssl ecparam -name prime256v1 -genkey -noout -out client.key
-   openssl req -new -key client.key -subj "/CN=myrmidon-board" -out client.csr
-   printf "extendedKeyUsage=clientAuth\n" > client.ext
-   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile client.ext -out client.crt
    # Bearer-токен (fleetd требует не менее 32 символов)
    openssl rand -hex 32 > token
-   cat client.crt client.key > client.pem
-   openssl verify -CAfile ca.crt server.crt client.crt
    ```
-   Серверный и клиентский сертификаты живут 365 дней, CA три года; ротация ручная (перевыпустить, заменить файлы на площадке, обновить значение секрета). `ca.key` не держать ни на площадке, ни на доске.
+   Сертификаты выпускаются доской; закрытый ключ site-CA хранится в компании и не передаётся наружу. Публичный CA и серверный сертификат fleetd возвращаются при enroll для размещения в `/etc/myrmidon/pki/`.
 
 ---
 
@@ -382,33 +367,30 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
 
 Площадки регистрируются через API доски, без правок базы. `MYRMIDON_FLEET_HOSTS` — устаревший путь начальной загрузки: он принимает только адреса `http://` и не несёт mTLS-материал, для mTLS-площадки его не используют.
 
-1. Положите секреты в компанию (значения берутся из файлов и в запрос enroll не входят). Либо два секрета: `fleetd-myr-vm1-token` (токен) и `fleetd-myr-vm1-client` (`client.pem`: PEM-блоки сертификата и ключа или JSON `{"cert":"...","key":"..."}`), либо пара `fleetd-myr-vm1-client-cert` и `fleetd-myr-vm1-client-key`:
+1. Положите токен-секрет в компанию (значение берётся из файла и в запрос enroll не входит):
    ```bash
    jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
-   jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer ***" -H 'content-type: application/json' -d @-
    ```
-2. Зарегистрируйте площадку (только владелец/администратор компании или администратор экземпляра; viewer, обычные участники и агенты получают `403`). Необязательно добавьте `caFingerprint` (sha256 от `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`), чтобы закрепить CA:
+2. Зарегистрируйте площадку (только владелец/администратор компании или администратор экземпляра; viewer, обычные участники и агенты получают `403`):
    ```bash
-   jq -n --rawfile ca ca.crt '{
-     name: "myr-vm1",
-     url: "https://192.0.2.10:9100",
-     tokenSecret: "fleetd-myr-vm1-token",
-     clientCertSecretKey: "fleetd-myr-vm1-client",
-     caCert: $ca,
-     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
-     gatewayPortStart: 18700,
-     gatewayPortEnd: 18799,
-     imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
-     hindsightUrl: "http://hindsight.internal:8890",
-     llmBaseUrl: "http://llm.internal:4000",
-     volumeRoot: "/srv/myrmidon-bots",
-     network: "myrmidon-bots"
-   }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
-        -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
+        -H "Authorization: Bearer ***" -H 'content-type: application/json' \
+        -d '{
+          "name": "myr-vm1",
+          "url": "https://192.0.2.10:9100",
+          "tokenSecret": "fleetd-myr-vm1-token",
+          "capacity": { "maxCpus": 4, "maxMemoryMb": 32768, "maxBots": 5 },
+          "gatewayPortStart": 18700,
+          "gatewayPortEnd": 18799,
+          "imageAllowlist": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+          "hindsightUrl": "http://hindsight.internal:8890",
+          "llmBaseUrl": "http://llm.internal:4000",
+          "volumeRoot": "/srv/myrmidon-bots",
+          "network": "myrmidon-bots"
+        }'
    ```
-   Запрос отклоняется с `400`, если закреплённый отпечаток не совпал с `caCert`, клиентский сертификат в названном секрете не подписан `caCert`, адрес не вида `https://host[:port]`, CA не PEM-сертификат, названного секрета нет в компании, диапазон портов перевёрнут или `maxBots` больше числа портов; с `409`, если имя занято. `GET /api/companies/$COMPANY/fleet/sites` показывает площадки (ссылки и отпечаток CA, значений секретов нет); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (только администраторы) удаляет площадку с ответом `204`, а пока на ней есть боты (`container.host`), отвечает `409`. Доска не подключается к площадке, у которой сохранённый CA перестал совпадать с отпечатком, записанным при регистрации. Доска подхватывает её за 30 секунд, рестарт не нужен.
+   Поля `caCert`, `caFingerprint` и `clientCertSecretKey` управляются доской автоматически и отклоняются при передаче клиентом (код `400`). В ответе `201` доска возвращает публичный сертификат CA (`site.caCert`, `fleetd.caCert`) и выпущенный для fleetd серверный сертификат и ключ (`fleetd.serverCert`, `fleetd.serverKey`), которые оператор сохраняет на площадке в `/etc/myrmidon/pki/`. `GET /api/companies/$COMPANY/fleet/sites` показывает площадки (включая публичный `caCert` и отпечаток CA, закрытых ключей нет); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` удаляет площадку с ответом `204` и очищает связанный клиентский секрет.
 3. Диапазон портов шлюза в профиле дублирует `fleetd.json` для справки; авторитетен `fleetd.json`.
 
 ---
