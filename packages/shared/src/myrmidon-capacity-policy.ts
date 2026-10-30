@@ -154,7 +154,8 @@ export function applyStarvationProtection<T extends CapacityCandidate>(
 ): T[] {
   const nowMs = new Date(now).getTime();
   const rank = (candidate: T) => {
-    const ageMs = Math.max(0, nowMs - new Date(candidate.createdAt).getTime());
+    const createdAtMs = candidate.createdAt != null ? new Date(candidate.createdAt).getTime() : 0;
+    const ageMs = Math.max(0, nowMs - createdAtMs);
     const baseRank = swarmPriorityRank(candidate.priority);
     return ageMs >= policy.starvation.afterMin * 60_000
       ? Math.max(0, baseRank - policy.starvation.promoteBy)
@@ -163,7 +164,9 @@ export function applyStarvationProtection<T extends CapacityCandidate>(
   return [...candidates].sort((left, right) => {
     const rankDelta = rank(left) - rank(right);
     if (rankDelta !== 0) return rankDelta;
-    const ageDelta = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    const leftCreatedAtMs = left.createdAt != null ? new Date(left.createdAt).getTime() : 0;
+    const rightCreatedAtMs = right.createdAt != null ? new Date(right.createdAt).getTime() : 0;
+    const ageDelta = leftCreatedAtMs - rightCreatedAtMs;
     return ageDelta || candidates.indexOf(left) - candidates.indexOf(right);
   });
 }

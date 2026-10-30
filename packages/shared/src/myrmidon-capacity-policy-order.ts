@@ -78,7 +78,8 @@ export function orderCandidatesWithPolicy<T extends SwarmQueueCandidate & Capaci
   // Fairness must remain the final tie-break for candidates with equal effective priority.
   const fairPosition = new Map(fair.map((candidate, index) => [candidate.issueId, index]));
   const rank = (candidate: T) => {
-    const ageMs = Math.max(0, new Date(ctx.now).getTime() - new Date(candidate.createdAt).getTime());
+    const createdAtMs = candidate.createdAt != null ? new Date(candidate.createdAt).getTime() : 0;
+    const ageMs = Math.max(0, new Date(ctx.now).getTime() - createdAtMs);
     const baseRank = swarmPriorityRank(candidate.priority);
     return ageMs >= effectivePolicy.starvation.afterMin * 60_000
       ? Math.max(0, baseRank - effectivePolicy.starvation.promoteBy)
