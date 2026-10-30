@@ -102,6 +102,8 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",
   "issue.blockers_resolved_wake_emitted",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
 ];
 
 export interface IssueRewakeCandidateInput {

@@ -30532,12 +30532,22 @@ export function heartbeatService(
                         eq(activityLog.entityId, issue.id),
                         gt(activityLog.createdAt, rewakeState?.agentId === agentId
                           ? new Date(rewakeState.frozenAt) : lastRunFinishedAt),
-                        rewakeState?.agentId === agentId ? ne(activityLog.actorType, "agent") : undefined,
-                        rewakeState?.agentId === agentId ? ne(activityLog.actorType, "system") : undefined,
-                        inArray(
-                          activityLog.action,
-                          ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
-                        ),
+                        rewakeState?.agentId === agentId
+                          ? or(
+                              eq(activityLog.actorType, "user"),
+                              and(eq(activityLog.actorType, "system"), inArray(activityLog.action, [
+                                "issue.blockers_resolved_wake_emitted", "issue.work_product_updated",
+                                "myrmidon.task_pr_sync.settled", "myrmidon.task_pr_sync.returned",
+                              ])),
+                            )
+                          : undefined,
+                        rewakeState?.agentId === agentId
+                          ? inArray(activityLog.action, [
+                              "issue.comment_added", "issue.updated", "issue.assigned",
+                              "issue.blockers_resolved_wake_emitted", "issue.work_product_updated",
+                              "myrmidon.task_pr_sync.settled", "myrmidon.task_pr_sync.returned",
+                            ])
+                          : inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
