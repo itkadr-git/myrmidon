@@ -3,17 +3,19 @@ import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { applyPendingMigrations } from "./client.js";
-import { startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
 const MIGRATION_FILE = "0423_legacy_blocked_import.sql";
 const cleanups: Array<() => Promise<void>> = [];
+const support = await getEmbeddedPostgresTestSupport();
+const describePostgres = support.supported ? describe : describe.skip;
 
 async function migrationHash() {
   const content = await fs.promises.readFile(new URL(`./migrations/${MIGRATION_FILE}`, import.meta.url), "utf8");
   return createHash("sha256").update(content).digest("hex");
 }
 
-describe("legacy_blocked_import migration", () => {
+describePostgres("legacy_blocked_import migration", () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });

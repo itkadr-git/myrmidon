@@ -1,4 +1,4 @@
-CREATE TABLE "legacy_blocked_import" (
+CREATE TABLE IF NOT EXISTS "legacy_blocked_import" (
 	"company_id" uuid NOT NULL REFERENCES "companies"("id") ON DELETE CASCADE,
 	"import_key" text NOT NULL,
 	"issue_id" uuid NOT NULL,
@@ -10,4 +10,4 @@ CREATE TABLE "legacy_blocked_import" (
 	CONSTRAINT "legacy_blocked_import_result_issue_id_issues_id_fk" FOREIGN KEY ("result_issue_id") REFERENCES "issues"("id") ON DELETE SET NULL
 );
 
-CREATE INDEX "legacy_blocked_import_issue_id_idx" ON "legacy_blocked_import" USING btree ("issue_id");
+CREATE INDEX IF NOT EXISTS "legacy_blocked_import_issue_id_idx" ON "legacy_blocked_import" USING btree ("issue_id");
