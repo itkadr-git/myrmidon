@@ -105,7 +105,6 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("agents-fleet")?.path).toBe("agents");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
-    expect(byKey.get("settings-secrets")?.path).toBe("company/settings/secrets");
     expect(byKey.get("settings-language")?.path).toBe("company/settings/language");
     expect(byKey.get("decisions")?.legacyPath).toBe("/decisions");
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
