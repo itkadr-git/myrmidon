@@ -10,6 +10,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
+import type { AskUserQuestionsPayload } from "@myrmidon/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { escalateInteractionStep } from "./escalate-step.js";
 
@@ -21,7 +22,17 @@ const support = await getEmbeddedPostgresTestSupport();
   const issueId = randomUUID();
   const interactionId = randomUUID();
   const [lead, architect, secondary] = [randomUUID(), randomUUID(), randomUUID()];
-  const payload = { questions: [{ id: "q", prompt: "Keep this context" }] };
+  const payload: AskUserQuestionsPayload = {
+    version: 1,
+    questions: [
+      {
+        id: "q",
+        prompt: "Keep this context",
+        selectionMode: "single",
+        options: [{ id: "opt", label: "Option" }],
+      },
+    ],
+  };
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("interaction-escalate-step-");
