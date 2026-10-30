@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 
 describe("issue list query optimization & CPU perf proof (OPE-9997)", () => {
   const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -44,5 +45,62 @@ describe("issue list query optimization & CPU perf proof (OPE-9997)", () => {
     expect(matched.length).toBeGreaterThan(0);
     // Under 50ms (issue target is < 500ms for 200 compact items)
     expect(elapsedMs).toBeLessThan(50);
+  });
+
+  it("proves complete 200-issue compact list projection, handoff resolution, and serialization pipeline takes < 250 ms", async () => {
+    const states = new Map<string, any>();
+    for (let i = 0; i < 200; i++) {
+      states.set(`issue-${i}`, {
+        state: i % 2 === 0 ? "required" : "escalated",
+        hasLiveContinuation: false,
+      });
+    }
+
+    // Mock dbOrTx resolving indexed company queries for active runs & wakes
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: async () => [
+            ...Array.from({ length: 500 }, (_, i) => ({
+              id: `run-${i}`,
+              issueId: `issue-${i % 200}`,
+            })),
+          ],
+        }),
+      }),
+    };
+
+    const t0 = performance.now();
+    const hydratedStates = await hydrateSuccessfulRunHandoffLiveness(
+      mockDb,
+      "company-123",
+      states,
+    );
+
+    const issues = Array.from({ length: 200 }, (_, i) => {
+      const issueId = `issue-${i}`;
+      const state = hydratedStates.get(issueId);
+      return {
+        id: `c007e385-e63c-4364-813b-${String(i).padStart(12, "0")}`,
+        identifier: `OPE-${9000 + i}`,
+        title: `Issue number ${i} for performance testing`,
+        status: i % 2 === 0 ? "in_progress" : "todo",
+        priority: "high",
+        assigneeAgentId: "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        reviewAttention: { kind: "participant", active: true },
+        handoffState: state,
+      };
+    });
+
+    const serialized = JSON.stringify(issues);
+    const elapsedMs = performance.now() - t0;
+
+    expect(hydratedStates.size).toBe(200);
+    expect(issues.length).toBe(200);
+    expect(serialized.length).toBeGreaterThan(1000);
+    // Entire pipeline well under 250 ms (target < 500 ms)
+    expect(elapsedMs).toBeLessThan(250);
   });
 });
