@@ -1,5 +1,6 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { getPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 // myrmidon(B1c): product name in user-facing runner texts; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
@@ -1065,7 +1066,11 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, companyId?: string): Promise<{ id: string; label: string }[]> {
+  const pluginModels = (companyId ? getPluginProviderModels(companyId) : [])
+    .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
+    .map(({ modelId, label }) => ({ id: modelId, label }));
+  if (pluginModels.length > 0) return pluginModels;
   const declaredModels = getDeclaredAdapterModels();
   if (declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));

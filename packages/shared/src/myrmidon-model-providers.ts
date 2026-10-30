@@ -56,26 +56,43 @@ export interface ModelProviderConnectorRegistration {
   supportsChannels?: boolean;
 }
 
+// Keep one registration per plugin/type pair so two plugins can contribute the
+// same connector type without one plugin deleting the other's registration.
 const registeredModelProviderConnectors = new Map<string, ModelProviderConnectorRegistration>();
 
+function connectorRegistrationKey(reg: Pick<ModelProviderConnectorRegistration, "type" | "pluginKey">): string {
+  return `${reg.type}\0${reg.pluginKey ?? ""}`;
+}
+
 export function registerModelProviderConnector(reg: ModelProviderConnectorRegistration): void {
-  registeredModelProviderConnectors.set(reg.type, reg);
+  registeredModelProviderConnectors.set(connectorRegistrationKey(reg), reg);
 }
 
 export function unregisterModelProviderConnector(type: string): void {
-  registeredModelProviderConnectors.delete(type);
+  for (const [key, reg] of registeredModelProviderConnectors) {
+    if (reg.type === type) registeredModelProviderConnectors.delete(key);
+  }
+}
+
+/** Remove only the connector registration owned by one plugin. */
+export function unregisterModelProviderConnectorForPlugin(type: string, pluginKey: string): void {
+  registeredModelProviderConnectors.delete(`${type}\0${pluginKey}`);
 }
 
 export function unregisterModelProviderConnectorsByPlugin(pluginKey: string): void {
-  for (const [type, reg] of registeredModelProviderConnectors.entries()) {
+  for (const [key, reg] of registeredModelProviderConnectors.entries()) {
     if (reg.pluginKey === pluginKey) {
-      registeredModelProviderConnectors.delete(type);
+      registeredModelProviderConnectors.delete(key);
     }
   }
 }
 
 export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
-  return registeredModelProviderConnectors.get(type) ?? null;
+  let match: ModelProviderConnectorRegistration | null = null;
+  for (const reg of registeredModelProviderConnectors.values()) {
+    if (reg.type === type) match = reg;
+  }
+  return match;
 }
 
 export function clearModelProviderConnectors(): void {
@@ -84,7 +101,10 @@ export function clearModelProviderConnectors(): void {
 
 /** Lists provider types currently available (built-in + active registered connectors). */
 export function listAvailableModelProviderTypes(): string[] {
-  return [...BUILTIN_MODEL_PROVIDER_TYPES, ...registeredModelProviderConnectors.keys()];
+  return [...new Set([
+    ...BUILTIN_MODEL_PROVIDER_TYPES,
+    ...[...registeredModelProviderConnectors.values()].map((reg) => reg.type),
+  ])];
 }
 
 export function isModelProviderTypeAvailable(type: string): boolean {
