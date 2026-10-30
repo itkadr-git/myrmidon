@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, issues, issueThreadInteractions } from "@myrmidon/db";
+import { activityLog, agents, issues, issueThreadInteractions, users } from "@myrmidon/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres,
@@ -101,18 +101,25 @@ describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)"
 
   it("creates interaction with explicit user addressee via HTTP route and persists route_type and timeout_at in DB", async () => {
     const seeded = await seed();
+    const targetUserId = `user-${randomUUID()}`;
+
+    await ctx.db.insert(users).values({
+      id: targetUserId,
+      email: `${targetUserId}@example.com`,
+      displayName: "Target User",
+    });
 
     const res = await request(appFor(seeded))
       .post(`/api/issues/${seeded.issueId}/interactions`)
       .send({
         kind: "request_confirmation",
-        addresseeUserId: seeded.userId,
+        addresseeUserId: targetUserId,
         payload: { version: 1, prompt: "Please review" },
       });
 
     expect(res.status).toBe(201);
     expect(res.body.id).toBeDefined();
-    expect(res.body.addresseeUserId).toBe(seeded.userId);
+    expect(res.body.addresseeUserId).toBe(targetUserId);
     expect(res.body.routeType).toBe("human_input");
     expect(res.body.timeoutAt).toBeDefined();
     expect(typeof res.body.timeoutAt).toBe("string");
@@ -122,7 +129,7 @@ describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)"
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, res.body.id));
     expect(dbRow).toBeDefined();
-    expect(dbRow.addresseeUserId).toBe(seeded.userId);
+    expect(dbRow.addresseeUserId).toBe(targetUserId);
     expect(dbRow.routeType).toBe("human_input");
     expect(dbRow.timeoutAt).toBeDefined();
   });

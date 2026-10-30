@@ -133,11 +133,11 @@ import {
 import {
   resolveInteractionRecipient,
   InteractionRecipientUnresolvedError,
+  type InteractionProjectRoles,
 } from "./interaction-router/resolve-recipient.js";
 import type {
   InteractionRouteType,
   InteractionRecipient,
-  InteractionProjectRoles,
   InteractionEscalationStep,
 } from "@myrmidon/shared";
 
@@ -3502,21 +3502,39 @@ export function issueThreadInteractionService(
         };
       } else {
         if (
-          normalizedData.kind === "ask_user_questions" ||
-          policy.effectiveResolverPolicy === "human_only"
-        ) {
-          if (issueContextRow?.responsibleUserId) {
-            recipientCandidate = { userId: issueContextRow.responsibleUserId };
-          } else if (issueContextRow?.createdByUserId) {
-            recipientCandidate = { userId: issueContextRow.createdByUserId };
-          } else if (issueContextRow?.assigneeUserId) {
-            recipientCandidate = { userId: issueContextRow.assigneeUserId };
-          }
-        } else if (
           issueContextRow?.assigneeAgentId &&
           (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
         ) {
           recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
+        } else if (
+          issueContextRow?.assigneeUserId &&
+          (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+        ) {
+          recipientCandidate = { userId: issueContextRow.assigneeUserId };
+        } else if (policy.effectiveResolverPolicy === "human_only") {
+          if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if (
+            issueContextRow?.conversationUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.conversationUserId };
+          }
+        } else if (
+          normalizedData.kind === "ask_user_questions" &&
+          policy.effectiveResolverPolicy !== "human_only" &&
+          actor.agentId &&
+          actor.agentId === issueContextRow?.assigneeAgentId
+        ) {
+          recipientCandidate = { serviceQueue: "default" };
         }
       }
 
