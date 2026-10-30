@@ -71,7 +71,15 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  const latestWakeReason = readNonEmptyString(run.contextSnapshot.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        run.contextSnapshot.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(run.contextSnapshot.source) === "issue.assignment_recovery")));
+  return matchesReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -642,6 +650,7 @@ async function runReleaseRecoveryTail(
     },
     immediate: {
       applies: immediateApplies,
+      isTodoIssue: issue.status === "todo",
       isDispositionRepairRetry:
         readNonEmptyString(run.contextSnapshot.retryReason) ===
         ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
