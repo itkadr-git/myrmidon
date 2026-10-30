@@ -74,6 +74,7 @@ export interface ReviewRoutingStore {
     pendingWake: boolean;
     lastWakeAt: Date | null;
     attempts: number;
+    lastCancelledRunAt?: Date | null;
   }>;
   recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
   recordReviewWakeEscalation(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; attempts: number; at: Date }): Promise<void>;
@@ -328,11 +329,23 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         ))
         .orderBy(desc(activityLog.createdAt))
         .limit(1);
+      const [lastCancelledRun] = await db
+        .select({ finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, reviewerAgentId),
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1);
       return {
         activeRun: Boolean(activeRun),
         pendingWake: Boolean(pendingWake),
         lastWakeAt: lastWake?.requestedAt ?? null,
         attempts: lastWake?.attempt ?? 0,
+        lastCancelledRunAt: lastCancelledRun ? (lastCancelledRun.finishedAt ?? lastCancelledRun.updatedAt ?? lastCancelledRun.createdAt) : null,
       };
     },
 

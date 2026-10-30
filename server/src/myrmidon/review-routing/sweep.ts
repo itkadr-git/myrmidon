@@ -237,11 +237,14 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
           continue;
         }
-        // Recorded failed dispatches retry on bounded backoff, independent of
-        // the initial 30-minute stale threshold.
-        if (wakeState.lastWakeAt) {
+        // Cancelled runs for the same reviewer/task are direct evidence of a
+        // failed dispatch: retry on bounded backoff, without the initial stale delay.
+        const retryAnchor = wakeState.lastCancelledRunAt && (!wakeState.lastWakeAt || wakeState.lastCancelledRunAt > wakeState.lastWakeAt)
+          ? wakeState.lastCancelledRunAt
+          : wakeState.lastWakeAt;
+        if (retryAnchor) {
           const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, wakeState.attempts - 1));
-          if (now.getTime() - wakeState.lastWakeAt.getTime() < backoffMs) continue;
+          if (now.getTime() - retryAnchor.getTime() < backoffMs) continue;
         } else {
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
