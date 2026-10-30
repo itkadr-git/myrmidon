@@ -566,6 +566,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       load: new Map(),
       history: new Map(),
       activities: [],
+      escalations: [],
     });
     return {
       ...base,
