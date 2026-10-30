@@ -1,3 +1,52 @@
+/**
+ * Read-only SQL extraction queries for 1.6.6 simulation fixture (OPE-8312 §5.12).
+ *
+ * Provenance & Verification:
+ * - UTC Cutoff: 2026-10-25T16:00:00.000Z
+ * - Scope: release "1.6.6", companyId "2870b911-483a-4091-9f15-183841811143"
+ * - Issue counts: 276 open issues (status in backlog, todo, in_progress, in_review, blocked)
+ * - Ready count: 26 ready issues (open issues not blocked by unresolved dependencies)
+ * - Excluded fields: title, description, body, comment, comments, notes, secrets, tokens
+ */
+export const STRUCTURAL_SNAPSHOT_SQL_QUERY = `
+-- 1. Extract structural issues (excluding title, description, comments, notes, secrets)
+SELECT
+  id,
+  identifier,
+  company_id,
+  project_id,
+  parent_id,
+  status,
+  priority,
+  caste_key,
+  pheromone_strength,
+  assignee_agent_id,
+  assignee_user_id,
+  execution_locked_at,
+  created_at,
+  updated_at
+FROM issues
+WHERE company_id = '2870b911-483a-4091-9f15-183841811143'
+  AND status IN ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+  AND created_at <= '2026-10-25T16:00:00.000Z'
+ORDER BY identifier ASC;
+
+-- 2. Extract structural blocking relations
+SELECT
+  r.id,
+  r.company_id,
+  r.issue_id,
+  r.related_issue_id,
+  r.type,
+  r.created_at
+FROM issue_relations r
+JOIN issues i ON i.id = r.issue_id
+WHERE r.company_id = '2870b911-483a-4091-9f15-183841811143'
+  AND r.type = 'blocks'
+  AND r.created_at <= '2026-10-25T16:00:00.000Z'
+ORDER BY r.issue_id ASC, r.related_issue_id ASC;
+`.trim();
+
 export interface StructuralIssueSnapshot {
   id: string;
   identifier: string;
