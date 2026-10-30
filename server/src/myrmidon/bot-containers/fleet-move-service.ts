@@ -110,6 +110,12 @@ export interface FleetMoveServiceDeps {
       leaseExpires?: Date | null;
     },
   ): Promise<FleetMoveRecord>;
+  /**
+   * myrmidon(1.6.6 C-MEM): runs once the source container of a live move is stopped (the bot can no
+   * longer retain), to bring the replica of the site's memory up to date. Best effort: a rejection
+   * is logged and the move goes on.
+   */
+  beforeSnapshot?(params: { moveId: string; companyId: string; botKey: string; srcSite: string }): Promise<void>;
   /** The last replica of the bot on `site`, or null. Required for a move with source "replica". */
   openReplica?(site: string, botKey: string, companyId: string): Promise<ReplicaSnapshot | null>;
 
@@ -314,6 +320,11 @@ export class FleetMoveService {
           const stopped = await srcDriver.status(botKey);
           if (stopped.state === "running" || stopped.state === "unhealthy") {
             throw new Error(`Container of "${botKey}" is still ${stopped.state} on "${srcSite}" after stop`);
+          }
+          try {
+            await this.deps.beforeSnapshot?.({ moveId, companyId, botKey, srcSite });
+          } catch (err) {
+            log?.warn({ moveId, botKey, srcSite, err }, "Memory sync before the move failed; the move goes on");
           }
         }
 

@@ -29,6 +29,9 @@ import { reconcileSiteReturn } from "./site-return-reconcile.js";
 import { siteHealthStore, type MonitoredSite } from "./site-health-store.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import type { FleetClientManager } from "./site-registry.js";
+import { fleetMemorySyncStore } from "./fleet-memory-sync-store.js";
+import { startFleetMemorySyncLane } from "./fleet-memory-sync.js";
+import { fleetMemorySyncFromEnv, fleetMemorySyncHourFromEnv } from "./fleet-memory-sync-wiring.js";
 
 export { SITE_HEALTH_ENV, isSiteHealthEnabled } from "./site-health-flag.js";
 
@@ -58,9 +61,9 @@ export function startSiteHealth(db: Db, opts: { env?: NodeJS.ProcessEnv; clientM
   const store = siteHealthStore(db);
   const moves = createFleetMoveContext(db);
   const replicas = fleetReplicaStoreFromEnv(env);
-  const keyOf = (site: MonitoredSite) => fleetSiteKey(site.companyId, site.name);
+  const keyOf = (site: Pick<MonitoredSite, "companyId" | "name">) => fleetSiteKey(site.companyId, site.name);
 
-  const transportOf = (site: MonitoredSite) => {
+  const transportOf = (site: Pick<MonitoredSite, "companyId" | "name">) => {
     const transport = clientManager.getTransports?.().get(keyOf(site));
     // No client means the registry row cannot be turned into a connection (a secret that does not
     // resolve, say). That is a configuration fault, not a dead site: it must never count as a miss.
@@ -156,10 +159,26 @@ export function startSiteHealth(db: Db, opts: { env?: NodeJS.ProcessEnv; clientM
     }).stop;
   }
 
-  logger.info({ replicas: Boolean(replicas) }, "site-monitor lane started");
+  // myrmidon(1.6.6 C-MEM): the nightly sync of a site's memory into the replica bank; opt-in by
+  // MYRMIDON_FLEET_MEMORY_SYNC=1 and a hindsight to import into.
+  let stopMemorySync: (() => void) | null = null;
+  const memorySync = fleetMemorySyncFromEnv(db, env, (site, botKey) => createSiteAgentClient(transportOf(site)).memoryExport(botKey));
+  if (memorySync) {
+    stopMemorySync = startFleetMemorySyncLane({
+      service: memorySync,
+      store: fleetMemorySyncStore(db),
+      listSites,
+      listBots: (site) => store.listBotsOnSite(site.companyId, site.name),
+      hourUtc: fleetMemorySyncHourFromEnv(env),
+      log: logger,
+    }).stop;
+  }
+
+  logger.info({ replicas: Boolean(replicas), memorySync: Boolean(memorySync) }, "site-monitor lane started");
   return () => {
     clearInterval(timer);
     stopReplicas?.();
+    stopMemorySync?.();
     clearFleetSiteGauges();
   };
 }

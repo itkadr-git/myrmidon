@@ -262,11 +262,16 @@ async function sourceIssueId(
       return { exists: Boolean(row), issueId, ownerAgentId: row?.agentId ?? null };
     }
     case "agent_error_alert": {
-      const row = await db.select({ id: agents.id })
+      const agentRow = await db.select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
         .then((rows) => rows[0] ?? null);
-      return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+      if (agentRow) return { exists: true, issueId: null, agentId: agentRow.id };
+      const issueRow = await db.select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(issueRow), issueId: issueRow?.id ?? null, agentId: null };
     }
     case "join_request": {
       const row = await db.select({ id: joinRequests.id })

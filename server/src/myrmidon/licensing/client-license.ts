@@ -30,6 +30,7 @@ import {
   writeSync,
 } from "node:fs";
 import path from "node:path";
+import type { DenyListReader } from "./denylist.js";
 import { KNOWN_MODULES, verifyLicense, type TrustedIssuerKey, type VerifyReason } from "./license.js";
 
 export const LICENSE_ENV = "MYR_LICENSE";
@@ -130,6 +131,8 @@ export function moduleStatuses(input: {
   nowSeconds: number;
   trustedKeys: readonly TrustedIssuerKey[];
   installed: readonly string[];
+  /** signed deny-list reader (OPE-8964); absent -> nobody is revoked */
+  denyList?: DenyListReader;
 }): ModuleLicenseStatus[] {
   return KNOWN_MODULES.map((module) => {
     const installed = input.installed.includes(module);
@@ -139,6 +142,13 @@ export function moduleStatuses(input: {
     const result = verifyLicense(input.license.text, input.installId, input.nowSeconds, input.trustedKeys, {
       requiredModule: module,
     });
+    if (
+      result.valid &&
+      input.denyList?.revoked({ licenseId: result.payload?.id, instanceId: input.installId, kid: result.signerKid })
+    ) {
+      // Shown as "invalid" with the support code `revoked` (no new UI state).
+      return { module, installed, state: "invalid" as const, reason: "revoked" as const, expires: null };
+    }
     const expires = result.valid ? (result.payload?.expires ?? null) : null;
     const status: ModuleLicenseStatus = {
       module,

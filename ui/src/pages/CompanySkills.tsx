@@ -2810,7 +2810,10 @@ export function SkillDeliveryCheckSection({
   });
 
   const checkMutation = useMutation({
-    mutationFn: () => companySkillsApi.createTestRun(companyId, skillId, { agentId: selectedAgentId }),
+    mutationFn: () => companySkillsApi.createTestRun(companyId, skillId, {
+      agentId: selectedAgentId,
+      content: t("area.settings-company.company-skills.deliveryCheckPrompt"),
+    }),
     onSuccess: (run) => {
       setActiveRunId(run.id);
       setLastRun(run);

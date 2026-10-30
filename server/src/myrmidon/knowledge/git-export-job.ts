@@ -20,6 +20,7 @@ import { createKnowledgeModule } from "./service.js";
 import { parseKnowledgeTree } from "./domain.js";
 import { buildKnowledgeGitTree, readKnowledgeExportSettings, type KnowledgeExportSettings } from "./git-export.js";
 import { errorMessage, publishKnowledgeExport, type PublishKnowledgeExportResult } from "./git-export-git.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface KnowledgeExportPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -142,7 +143,7 @@ export function startKnowledgeExport(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalHours * 60 * 60 * 1000);
   if (typeof timer.unref === "function") timer.unref();

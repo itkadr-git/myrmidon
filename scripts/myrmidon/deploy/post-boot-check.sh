@@ -20,7 +20,9 @@
 #   4. nginx, LiteLLM, RAGFlow and Hindsight are up (nginx: the unit passed
 #      After=docker and a port answers; the others: their health endpoints);
 #   5. the DNS names other services use resolve inside the docker networks:
-#      mysql, es01, paperclip-server-1 (the RAGFlow lesson of 01.10);
+#      mysql, es01, myrmidon-board plus the legacy alias paperclip-server-1
+#      during the deprecation window (the RAGFlow lesson of 01.10); a resolve
+#      via the legacy name logs a deprecation warning;
 #   6. the host-disk sweep measures a real path: GET /api/myrmidon/host-disk
 #      must report status.usage.measuredPath non-null (1.6.5 F-03: in the
 #      board container `/data` is absent, so without an explicit
@@ -69,8 +71,9 @@ check() { # check <name> <command...>
 # image is caught even when the board answers ok.
 pinned_ref="$(current_image)"
 running_ref=""
-if docker inspect --format '{{.Config.Image}}' "${COMPOSE_SERVICE}-board-check" >/dev/null 2>&1; then :; fi
-running_ref="$(docker ps --filter "name=${COMPOSE_SERVICE}" --format '{{.Image}}' 2>/dev/null | head -n1 || true)"
+# Match by Compose service label rather than container name: a service may
+# carry container_name=myrmidon-board after the rc.17 rename.
+running_ref="$(docker ps --filter "label=com.docker.compose.service=${COMPOSE_SERVICE}" --format '{{.Image}}' 2>/dev/null | head -n1 || true)"
 
 board_health_ok() {
   local body version
@@ -88,7 +91,7 @@ board_health_ok() {
 dockergate_ok() {
   [[ -n "${DOCKERGATE_EXPECT_IMAGE:-}" ]] || { log "post-boot: dockergate: DOCKERGATE_EXPECT_IMAGE not set, check off (release without dockergate change)"; return 0; }
   local running
-  running="$(docker ps --filter "name=dockergate" --format '{{.Image}}' 2>/dev/null | head -n1 || true)"
+  running="$(docker ps --filter "label=com.docker.compose.service=dockergate" --format '{{.Image}}' 2>/dev/null | head -n1 || true)"
   [[ -n "$running" ]] || return 1
   [[ "$running" == "$DOCKERGATE_EXPECT_IMAGE" ]]
 }
@@ -132,17 +135,31 @@ hindsight_ok() {
 }
 
 # --- 5. DNS names other services use -----------------------------------------
+# DEBRAND 1.6.6 (OPE-9318): the fallback list keeps the legacy name only —
+# a boot before the rc.17 rename must not fail on myrmidon-board, which does
+# not resolve yet. Operators add myrmidon-board to DNS_CHECK_NAMES in the same
+# window the rename lands (see docs/myrmidon/board-rename-runbook.md); the
+# label of the check is built from the actual list, and while the legacy name
+# is in it the check logs a deprecation warning (the old name keeps working;
+# the alias is dropped in rc.18).
+BOARD_DNS_LEGACY_NAME="paperclip-server-1"
 dns_names_ok() {
   local -a names=()
-  local n rc=0
+  local n rc=0 label legacy_resolved=0
   IFS=' ' read -r -a names <<<"${DNS_CHECK_NAMES:-mysql es01 paperclip-server-1}"
   for n in "${names[@]}"; do
     if ! docker run --rm --network "${DNS_CHECK_NETWORK:-myrmidon}" \
       "${DNS_CHECK_IMAGE:-busybox:latest}" getent hosts "$n" >/dev/null 2>&1; then
       log "post-boot: dns: $n does not resolve on network ${DNS_CHECK_NETWORK:-myrmidon}"
       rc=1
+    elif [[ "$n" == "$BOARD_DNS_LEGACY_NAME" ]]; then
+      legacy_resolved=1
     fi
   done
+  printf -v label 'dns names resolve (%s)' "${names[*]}"
+  if [[ "$legacy_resolved" == 1 ]]; then
+    log "post-boot: dns: deprecation warning: the legacy board name $BOARD_DNS_LEGACY_NAME still resolves — kept for backward compatibility (OPE-9318); migrate callers to myrmidon-board (alias dropped in rc.18)"
+  fi
   return $rc
 }
 
@@ -180,7 +197,8 @@ check "nginx up" nginx_ok
 check "litellm up" litellm_ok
 check "ragflow up" ragflow_ok
 check "hindsight up" hindsight_ok
-check "dns names resolve (mysql es01 paperclip-server-1)" dns_names_ok
+dns_check_label="dns names resolve (${DNS_CHECK_NAMES:-mysql es01 paperclip-server-1})"
+check "${DNS_CHECK_LABEL:-$dns_check_label}" dns_names_ok
 check "host disk sweep measures a real path" host_disk_measured_ok
 check "systemctl --failed is empty" systemd_failed_ok
 

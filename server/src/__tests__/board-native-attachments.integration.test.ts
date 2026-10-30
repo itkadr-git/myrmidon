@@ -54,6 +54,15 @@ vi.mock("../services/heartbeat.js", async (importOriginal) => ({
     reportRunActivity: async () => undefined,
   }),
 }));
+vi.mock("../services/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/index.js")>()),
+  heartbeatService: () => ({
+    wakeup,
+    getRun: async () => null,
+    getActiveRunForAgent: async () => null,
+    reportRunActivity: async () => undefined,
+  }),
+}));
 
 describe("Board upload receipt to native wake staging", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;

@@ -18,6 +18,10 @@ describe("formatDateTime", () => {
     ).toBe("Sep 7, 2026, 1:02:55 PM");
   });
 
+  it("formats dates in the requested locale", () => {
+    expect(formatDateTime(timestamp, { locale: "ru-RU" })).not.toBe(formatDateTime(timestamp));
+  });
+
   it("formats serialized server timestamps identically to Date values", () => {
     expect(
       formatDateTime(timestamp.toISOString(), { includeSeconds: true }),

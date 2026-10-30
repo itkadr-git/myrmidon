@@ -1,5 +1,13 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
 export { PRODUCT_NAME } from "./myrmidon-product.js";
+export {
+  LEGACY_BLOCKED_IMPORT_RULE_VERSION,
+  createLegacyBlockedImportKey,
+  legacyBlockedClassSchema,
+  legacyBlockedReportRowSchema,
+  type LegacyBlockedClass,
+  type LegacyBlockedReportRow,
+} from "./legacy-blocked.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
@@ -489,6 +497,7 @@ export {
   SECRET_SCOPES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
+  COST_STATUSES,
   FINANCE_EVENT_KINDS,
   FINANCE_DIRECTIONS,
   FINANCE_UNITS,
@@ -2967,8 +2976,10 @@ export * from "./myrmidon-model-providers.js";
 export * from "./myrmidon-bridge-language.js";
 // myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
 export * from "./myrmidon-features.js";
-// myrmidon(1.6.6 MODEL-MENU A): the model menu tree, its defaults and its resolution.
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree and resolver.
 export * from "./myrmidon-model-menu.js";
+// OPE-9499: operator-maintained list-price equivalent for subscription-backed model use.
+export * from "./myrmidon-model-api-pricing.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
@@ -3003,3 +3014,26 @@ export * from "./myrmidon-agent-exchange-feed.js";
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+export * from "./myrmidon-capacity-policy.js";
+export * from "./blocker-graph.js";
+// myrmidon(1.6.6 P1.9 CLAIM-TRANSACTION): the continuation dedupe contract —
+// one deterministic key per (issue, event, head) plus the dedupe outcome and
+// metrics surfaces shared by every continuation producer.
+export * from "./continuation-key.js";
+
+export {
+  INTERACTION_ROUTE_TYPES,
+  interactionRecipientSchema,
+  interactionEscalationStepSchema,
+  interactionRoutingInputSchema,
+  type InteractionRouteType,
+  type InteractionRecipient,
+  type InteractionEscalationStep,
+  type InteractionRoutingInput,
+  type InteractionRoutingMetrics,
+} from "./interaction-routing.js";
+
+// myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed request/result
+// contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
+// operator failures ask for a recovery issue with a deterministic dedupe key.
+export * from "./recovery-factory.js";

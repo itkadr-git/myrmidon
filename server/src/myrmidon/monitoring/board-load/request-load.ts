@@ -208,3 +208,20 @@ export function boardRequestLoadMiddleware(
     });
   };
 }
+/**
+ * Tags a request with the `http_route` lane without journaling it.
+ *
+ * Mounted at the very top of the app, ahead of the auth / actor / run-identity
+ * middleware and of the provider webhook ingress that live outside the `/api`
+ * router: their DB statements (one actor lookup per request) were issued
+ * before {@link boardRequestLoadMiddleware} ran and were counted `untagged`
+ * (OPE-9058). It only attaches the lane; the journal entry and the execution
+ * count stay with the api-router middleware, so nothing is counted twice.
+ */
+export function boardRequestLaneTagMiddleware(lane: BoardLane = "http_route"): RequestHandler {
+  return (_req, _res, next) => {
+    enterLane(lane, () => {
+      next();
+    });
+  };
+}

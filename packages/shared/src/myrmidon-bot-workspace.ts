@@ -154,6 +154,13 @@ export const myrWsOpenResultSchema = z.object({
   recoveryPath: z.string().min(1).optional(),
   /** Original HEAD retained in this ref in the class-D base. */
   recoveryRef: z.string().min(1).optional(),
+  /**
+   * What `open` found wrong with a reused copy (operation left half-way, unresolved
+   * stages, detached head, branch drift) and did about it. Absent for a clean copy.
+   */
+  recovered: z
+    .array(z.object({ problem: z.string().min(1), action: z.string().min(1), detail: z.string().optional() }))
+    .optional(),
 });
 export type MyrWsOpenResult = z.infer<typeof myrWsOpenResultSchema>;
 
@@ -466,12 +473,14 @@ export const runWorkspaceFieldSchema = z.object({
   key: myrWsIssueKeySchema,
   repo: myrWsRepoNameSchema,
   baseRef: myrWsGitBaseRefSchema.optional(),
+  /** Branch of the task's pull request; `myr-ws open --branch` (default `bot/<KEY>`). */
+  branch: myrWsGitBaseRefSchema.optional(),
 });
 export type RunWorkspaceField = z.infer<typeof runWorkspaceFieldSchema>;
 
 /**
  * What the gateway does with the field before starting the model:
- * `myr-ws open <key> <repo> [--base <baseRef>] --json`, then the run starts
+ * `myr-ws open <key> <repo> [--base <baseRef>] [--branch <branch>] --json`, then the run starts
  * with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` and that directory as cwd.
  * Any open failure (exit codes 3/4/5, any other code, timeout, bad output) never fails
  * the run: it starts in `/scratch` with a warning event instead (OPE-8946).

@@ -289,7 +289,15 @@
           "workspaceValidation": "Workspace Validation",
           "configurationValidation": "Configuration Validation",
           "activeRunWatchdog": "Active Watchdog",
-          "issueGraphLiveness": "Task Needs Next Step"
+          "issueGraphLiveness": "Task Needs Next Step",
+          "ciRestart": "CI Restart",
+          "githubAccess": "GitHub Access",
+          "branchRelay": "Branch Relay",
+          "reviewParticipantRestore": "Review Participant Restore",
+          "workspaceMyrWs": "myr-ws Workspace",
+          "devbuild": "Devbuild",
+          "diskSpace": "Disk Space",
+          "operatorAction": "Operator Action"
         },
         "kindHeadline": {
           "missingDisposition": "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
@@ -298,7 +306,15 @@
           "workspaceValidation": "Myrmidon stopped this run because the task's git workspace could not be validated.",
           "configurationValidation": "Myrmidon stopped before dispatching this run because required secret/env bindings are missing.",
           "activeRunWatchdog": "The active run has been silent. Recovery is observing without interrupting it.",
-          "issueGraphLiveness": "Myrmidon could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it."
+          "issueGraphLiveness": "Myrmidon could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
+          "ciRestart": "A CI run needs a restart. Recovery is handling the retry with a deadline.",
+          "githubAccess": "GitHub access failed. Recovery is restoring the connection so pushes, PRs and reviews can continue.",
+          "branchRelay": "The branch relay could not deliver a change. Recovery is re-delivering it.",
+          "reviewParticipantRestore": "A review lost its participant. Recovery is restoring the review route.",
+          "workspaceMyrWs": "The myr-ws workspace bridge is failing. Recovery is restoring it.",
+          "devbuild": "The devbuild gateway is unavailable. Recovery is restoring build offload.",
+          "diskSpace": "Disk space is running out. Recovery is freeing space before runs fail.",
+          "operatorAction": "An operator action is required to move this task forward. Recovery tracked it with a deadline and an owner."
         },
         "stateLabel": {
           "needed": "RECOVERY NEEDED",

@@ -19,6 +19,7 @@ import { agents } from "@myrmidon/db";
 import { createLitellmBudgetGatewayPort, type LitellmBudgetGatewayPort } from "./gateway.js";
 import { syncBudgetProjection, type BudgetProjectionSyncDeps } from "./service.js";
 import { readBudgetProjectionSettings, resolveBudgetProjectionRuntime } from "./settings.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** The base deps every wiring (sweep, routes, immediate pass) builds on. */
 export function budgetProjectionSyncDeps(
@@ -169,7 +170,7 @@ export function startBudgetProjectionSweep(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick().catch(() => {});
   }, 10_000);
   if (typeof timer.unref === "function") timer.unref();

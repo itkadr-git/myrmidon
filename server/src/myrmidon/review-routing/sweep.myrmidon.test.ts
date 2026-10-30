@@ -13,7 +13,7 @@ import {
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
 } from "@myrmidon/shared";
-import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
+import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRoutingSignals, setImmediateNoReviewerSignal } from "./attention.js";
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
@@ -36,6 +36,7 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -48,7 +49,8 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
-  reviewers: Array<{ id: string; role: string }>;
+  managerChain?: Map<string, Array<{ id: string; role: string }>>;
+  reviewers: Array<{ id: string; role: string; invokable?: boolean }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
 }
@@ -57,6 +59,9 @@ function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
+    listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
+      return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
+    },
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
@@ -136,6 +141,53 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 beforeEach(() => resetReviewRoutingSignals());
 
 describe("assignment", () => {
+  it("does not route until the reviewer-less review has aged fifteen minutes", async () => {
+    const t = setup();
+    t.fixture.rows.set("fresh", row("fresh", { updatedAt: NOW }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("fresh")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.wakes).toHaveLength(0);
+
+    t.fixture.rows.set("aged", row("aged", { updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000) }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("aged")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
+  });
+
+  it("prefers the nearest eligible manager in the engineer chain", async () => {
+    const t = setup({}, {
+      managerChain: new Map([[ASSIGNEE, [
+        { id: REV_A, role: "reviewer" },
+        { id: REV_B, role: "reviewer" },
+      ]]]),
+      reviewers: [{ id: REV_B, role: "reviewer" }],
+    });
+    t.fixture.rows.set("manager-chain", row("manager-chain"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("manager-chain")!.assigneeAgentId).toBe(REV_A);
+    expect(t.activities[0]?.details.reviewerAgentId).toBe(REV_A);
+  });
+
+  it("uses the global pool only when the manager chain has no eligible candidate", async () => {
+    const t = setup({}, { managerChain: new Map([[ASSIGNEE, []]]), reviewers: [{ id: REV_B, role: "reviewer" }] });
+    t.fixture.rows.set("fallback", row("fallback"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("fallback")!.assigneeAgentId).toBe(REV_B);
+  });
+
+  it("keeps an explicitly assigned reviewer unchanged", async () => {
+    const t = setup();
+    t.fixture.rows.set("already-assigned", row("already-assigned", {
+      executionPolicy: { stages: [{ id: "review", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] },
+    }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 0, signaled: 0, failed: 0 });
+    expect(t.fixture.rows.get("already-assigned")!.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.activities).toHaveLength(0);
+  });
+
   it("assigns the least loaded reviewer, comments, logs and wakes it", async () => {
     const t = setup({}, { load: new Map([[REV_A, 3], [REV_B, 1]]) });
     t.fixture.rows.set("1", row("1"));
@@ -162,7 +214,7 @@ describe("assignment", () => {
     expect(reviewers.filter((id) => id === REV_B)).toHaveLength(2);
   });
 
-  it("never picks the author or the assignee, even when they are the least loaded reviewers", async () => {
+  it("excludes the task author and current assignee from reviewer candidates", async () => {
     const t = setup(
       {},
       {
@@ -174,9 +226,12 @@ describe("assignment", () => {
         load: new Map([[REV_A, 4]]),
       },
     );
-    t.fixture.rows.set("1", row("1"));
-    await t.sweep.sweep(NOW, { force: true });
-    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_A);
+    t.fixture.rows.set("authored", row("authored", { assigneeAgentId: null }));
+    t.fixture.rows.set("assigned", row("assigned"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 2, signaled: 0 });
+    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.fixture.rows.get("assigned")?.assigneeAgentId).toBe(REV_A);
   });
 
   it("only considers the configured reviewer roles", async () => {
@@ -232,6 +287,78 @@ describe("assignment", () => {
 });
 
 describe("no reviewer available", () => {
+  it("sets one immediate no_reviewer signal until a reviewer is assigned", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    setImmediateNoReviewerSignal({ ...signal, since: new Date(NOW.getTime() + 1000).toISOString() }, true);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", issueId: "1", since: NOW.toISOString() }),
+    ]);
+    setImmediateNoReviewerSignal(signal, false);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("clears stale immediate cards when a successful sweep replaces the company's snapshot", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    replaceReviewRoutingSignals(COMPANY, []);
+
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("sweep clears an immediate card after the task acquires a reviewer", async () => {
+    const t = setup({ enabled: true }, { reviewers: [{ id: REV_A, role: "reviewer" }] });
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1"));
+
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(t.fixture.rows.get("task-1")?.assigneeAgentId).toBe(REV_A);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+  it("sweep clears an immediate card when the task is no longer pending review", async () => {
+    const t = setup();
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1", { status: "done" }));
+
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
   it("raises a no_reviewer signal instead of staying silent", async () => {
     const t = setup({}, { reviewers: [] });
     t.fixture.rows.set("1", row("1"));

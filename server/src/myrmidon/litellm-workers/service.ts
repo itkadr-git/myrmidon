@@ -1,63 +1,75 @@
 // server/src/myrmidon/litellm-workers/service.ts
 //
-// myrmidon(1.6.5 LITELLM-WORKERS A): what a GET reports and what a PUT does.
+// myrmidon(1.6.6 LITELLM-WORKERS restart): what a GET reports and what a PUT does.
 //
-// The whole decision lives here, over three ports (the settings store, the
-// gateway read, the signal delivery), so both routes are thin and the tests
-// run without a database, a container or a signal.
+// The whole decision lives here, over four ports (the settings store, the
+// gateway read, the declared-workers read, the restart), so both routes are
+// thin and the tests run without a database, a container or a restart.
 //
-// Reading the pool size is the delicate part, because a wrong `current` makes
-// a wrong number of signals: one TTIN too many is an over-provisioned box. The
-// size is therefore taken from the most trustworthy source that has one, and
-// the answer says which one it was:
+// The gateway runs as `litellm --num_workers N`, not under gunicorn, so the
+// pool size changes only with a planned restart of its unit: the PUT stores the
+// target, runs the configured restart command with `{workers}` = target and
+// then CONFIRMS the result itself — `applied` is true only when `current`
+// read afterwards equals the target.
+//
+// Reading the pool size is the delicate part, because the confirmation and the
+// "nothing to do" shortcut both rest on it. The size is taken from the most
+// trustworthy source that has one, and the answer says which one it was:
 //
 //   1. the gateway's own pool gauge, when it publishes one;
-//   2. the board's record of what it last observed or delivered — the only
-//      source that knows about a resize the board itself made;
-//   3. the declared baseline (`--num_workers N` of the unit), for a gateway
-//      that publishes nothing and has never been resized;
-//   4. the per-pid hint of the exposition, which a single scrape usually
-//      answers about ONE worker, so it is the last resort and is labelled.
+//   2. the `--num_workers` of the gateway's launch line (the unit file) — what
+//      the process was actually started with;
+//   3. the per-pid hint of the exposition, which a single scrape usually
+//      answers about ONE worker, so it is labelled as the weak source it is;
+//   4. the board's record of what it last confirmed;
+//   5. the declared baseline (`MYRMIDON_LITELLM_WORKERS_BASELINE`).
 //
-// With none of the four there is no `current`, and the resize is refused with
+// With none of the five there is no `current`, and the restart is refused with
 // a sentence rather than guessed: the target is stored (it is the operator's
 // decision) and the answer says the pool was left alone.
 
 import {
   checkLitellmWorkersTarget,
   litellmWorkersCeilings,
-  litellmWorkersSignalSteps,
   readLitellmWorkersRuntime,
-  renderLitellmWorkersSignalCommand,
+  renderLitellmWorkersRestartCommand,
   resolveLitellmWorkersTarget,
   type LitellmWorkersCeilings,
   type LitellmWorkersHostShape,
   type LitellmWorkersMetrics,
-  type LitellmWorkersSignalStep,
   type LitellmWorkersStoredSettings,
 } from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import {
-  createShellLitellmSignalRunner,
-  deliverLitellmWorkersSignals,
+  createShellLitellmRestartRunner,
+  createUnitFileDeclaredWorkers,
+  type LitellmDeclaredWorkersPort,
   type LitellmMetricsRead,
-  type LitellmSignalDelivery,
-  type LitellmSignalRunner,
+  type LitellmRestartDelivery,
+  type LitellmRestartRunner,
   type LitellmWorkersGatewayPort,
 } from "./gateway.js";
 import { unavailableLitellmWorkersMetrics } from "./metrics.js";
 import { inProcessLitellmWorkersLock, type LitellmWorkersLock, type LitellmWorkersStore } from "./settings.js";
 
 /** Where the `current` in an answer came from. */
-export type LitellmWorkersCurrentSource = "gateway" | "last_applied" | "baseline" | "gateway_pids" | "unknown";
+export type LitellmWorkersCurrentSource =
+  | "gateway"
+  | "launch_line"
+  | "gateway_pids"
+  | "last_applied"
+  | "baseline"
+  | "unknown";
 
 export interface LitellmWorkersDeps {
   store: LitellmWorkersStore;
   env: Record<string, string | undefined>;
   /** The gateway read port; null when no gateway endpoint is configured. */
   gateway: LitellmWorkersGatewayPort | null;
-  /** The delivery port; the shell runner unless a test passes a recording one. */
-  signalRunner?: LitellmSignalRunner;
+  /** The launch-line read; the unit-file reader of the declared path unless a test passes one. */
+  declared?: LitellmDeclaredWorkersPort;
+  /** The restart port; the shell runner unless a test passes a recording one. */
+  restartRunner?: LitellmRestartRunner;
   /**
    * Serialises whole resizes. The routes pass the database advisory lock; the
    * default is an in-process queue, enough for one process and for the tests.
@@ -83,19 +95,24 @@ export interface LitellmWorkersView {
   metrics: LitellmWorkersMetrics;
   metricsSource: "gateway" | "unavailable";
   gateway: { configured: boolean; reachable: boolean; error: string | null; workersSource: string | null };
-  apply: { path: "gunicorn-ttin-ttou"; configured: boolean; command: string; container: string };
+  /**
+   * How a new target is applied: a planned restart of the gateway unit.
+   * `interruption` is true because the restart briefly drops requests, which
+   * the card says before the operator confirms.
+   */
+  apply: { path: "restart"; configured: boolean; interruption: boolean };
   observedAt: string | null;
 }
 
 /** A resize: what was asked, what was delivered, and the state afterwards. */
 export interface LitellmWorkersApplyResult {
   view: LitellmWorkersView;
-  /** True when the pool is believed to be at the target now. */
+  /** True only when `current`, read after the restart, equals the target. */
   applied: boolean;
-  /** The signals the difference asked for. */
-  signals: LitellmWorkersSignalStep[];
+  /** True when the restart command was run. */
+  restarted: boolean;
   /** Every command actually run, in order. */
-  deliveries: LitellmSignalDelivery[];
+  deliveries: LitellmRestartDelivery[];
   applyError: string | null;
   /** False when the stored target did not change. */
   changed: boolean;
@@ -107,12 +124,18 @@ interface LitellmWorkersCurrent {
   source: LitellmWorkersCurrentSource;
 }
 
-function resolveCurrent(read: LitellmMetricsRead | null, stored: LitellmWorkersStoredSettings, baseline: number | null): LitellmWorkersCurrent {
-  if (read !== null && read.ok) {
-    if (read.workersSource === "gauge" && read.workers !== null) return { workers: read.workers, source: "gateway" };
-    if (read.workersSource === "pids" && read.workers !== null) {
-      return { workers: read.workers, source: "gateway_pids" };
-    }
+function resolveCurrent(
+  read: LitellmMetricsRead | null,
+  declared: number | null,
+  stored: LitellmWorkersStoredSettings,
+  baseline: number | null,
+): LitellmWorkersCurrent {
+  if (read !== null && read.ok && read.workersSource === "gauge" && read.workers !== null) {
+    return { workers: read.workers, source: "gateway" };
+  }
+  if (declared !== null) return { workers: declared, source: "launch_line" };
+  if (read !== null && read.ok && read.workersSource === "pids" && read.workers !== null) {
+    return { workers: read.workers, source: "gateway_pids" };
   }
   if (stored.observed !== null) return { workers: stored.observed.workers, source: "last_applied" };
   if (baseline !== null) return { workers: baseline, source: "baseline" };
@@ -124,9 +147,16 @@ function resolveCurrent(read: LitellmMetricsRead | null, stored: LitellmWorkersS
  * the endpoint still reports the target, the ceilings and why the live numbers
  * are missing, and only the resize is unavailable.
  */
-async function readGateway(deps: LitellmWorkersDeps): Promise<LitellmMetricsRead | null> {
+async function readGateway(deps: LitellmWorkersDeps, companyId: string): Promise<LitellmMetricsRead | null> {
   if (deps.gateway === null) return null;
-  return deps.gateway.readMetrics();
+  return deps.gateway.readMetrics(companyId);
+}
+
+async function readDeclared(
+  deps: LitellmWorkersDeps,
+  runtime: ReturnType<typeof readLitellmWorkersRuntime>,
+): Promise<number | null> {
+  return (deps.declared ?? createUnitFileDeclaredWorkers(runtime.unitFile)).readDeclaredWorkers();
 }
 
 function buildView(input: {
@@ -162,12 +192,7 @@ function buildView(input: {
       error: read !== null && !read.ok ? read.error : null,
       workersSource: read !== null && read.ok ? read.workersSource : null,
     },
-    apply: {
-      path: "gunicorn-ttin-ttou",
-      configured: true,
-      command: runtime.signal.command,
-      container: runtime.signal.container,
-    },
+    apply: { path: "restart", configured: runtime.restart.command !== null, interruption: true },
     observedAt: stored.observed?.at ?? null,
   };
 }
@@ -180,19 +205,19 @@ export async function readLitellmWorkersView(
   const runtime = readLitellmWorkersRuntime(deps.env);
   const ceilings = litellmWorkersCeilings(runtime.host);
   const stored = await deps.store.read(companyId);
-  const read = await readGateway(deps);
-  const current = resolveCurrent(read, stored, runtime.baseline);
+  const read = await readGateway(deps, companyId);
+  const current = resolveCurrent(read, await readDeclared(deps, runtime), stored, runtime.baseline);
   return buildView({ companyId, stored, ceilings, runtime, read, current });
 }
 
 /**
- * Stores the target and moves the pool to it without a restart.
+ * Stores the target and moves the pool to it with a planned restart.
  *
  * Order matters: the target is validated first (an impossible one is a 400 and
  * nothing is written), then stored — the operator's decision outlives a failed
- * delivery — and then delivered. What the delivery actually did is recorded as
- * the new `observed`, so a retry counts from the real pool instead of from the
- * intention: half a shrink delivered twice would otherwise empty the pool.
+ * restart — then the restart runs, and the result is read back. Only a size
+ * read back is recorded as `observed`: a restart that "returned 0" but left the
+ * old pool must not become the board's belief.
  */
 export async function applyLitellmWorkersTarget(
   deps: LitellmWorkersDeps,
@@ -211,7 +236,7 @@ export async function applyLitellmWorkersTarget(
       maxTarget: ceilings.maxTarget,
     });
   }
-  // One resize at a time per instance: the pool is read, signalled and
+  // One resize at a time per instance: the pool is read, restarted and
   // recorded inside the lock, so a second PUT counts from the first one's result.
   const lock = deps.lock ?? defaultLock;
   return lock.run(() => applyValidatedTarget(deps, input));
@@ -226,56 +251,77 @@ async function applyValidatedTarget(
   const runtime = readLitellmWorkersRuntime(deps.env);
   const ceilings = litellmWorkersCeilings(runtime.host);
 
-  const gatewayRead = await readGateway(deps);
-  const current = resolveCurrent(gatewayRead, await deps.store.read(input.companyId), runtime.baseline);
-  const runner = deps.signalRunner ?? createShellLitellmSignalRunner();
-  const render = (signal: string): string =>
-    renderLitellmWorkersSignalCommand(runtime.signal.command, { signal, container: runtime.signal.container });
+  const gatewayRead = await readGateway(deps, input.companyId);
+  const before = resolveCurrent(
+    gatewayRead,
+    await readDeclared(deps, runtime),
+    await deps.store.read(input.companyId),
+    runtime.baseline,
+  );
 
-  // The signals depend on a known pool size. Without one, nothing is delivered
-  // and the answer says why — see the four sources at the top of this file.
-  const signals = current.workers === null ? [] : litellmWorkersSignalSteps(current.workers, input.target);
-  const refused =
-    current.workers === null
-      ? "the gateway did not report its worker count, so the number of TTIN/TTOU signals cannot be counted; set the declared baseline (MYRMIDON_LITELLM_WORKERS_BASELINE) or expose the pool size in the gateway metrics"
-      : null;
-
-  let deliveries: LitellmSignalDelivery[] = [];
-  let applyError = refused;
-  if (refused === null && signals.length > 0) {
-    const delivered = await deliverLitellmWorkersSignals(runner, signals, render);
-    deliveries = delivered.deliveries;
-    applyError = delivered.error;
+  // A pool already at the target is not restarted: the restart is the one
+  // step that drops requests, and it would change nothing. Only a measured
+  // size counts: the board's own record or a declared baseline may be stale.
+  const measured = (source: LitellmWorkersCurrentSource): boolean => source === "gateway" || source === "launch_line";
+  const alreadyThere = before.workers === input.target && measured(before.source);
+  const command = runtime.restart.command;
+  let refused: string | null = null;
+  if (!alreadyThere) {
+    if (command === null) {
+      refused =
+        "no restart command is configured (MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND), so the board only stored the target; restart the gateway unit with the new --num_workers in the planned window";
+    } else if (before.workers === null) {
+      refused =
+        "the pool size could not be read (no gateway gauge, no readable --num_workers in the unit file, no recorded or declared size), so the restart cannot be confirmed; the board only stored the target";
+    }
   }
 
-  // What the pool is now: the size the signals moved it to, or what the
-  // gateway itself says when the delivery succeeded and it answers.
-  const deliveredCount = deliveries.filter((delivery) => delivery.ok).length;
-  const grew = signals[0]?.signal === "TTIN";
-  const moved = current.workers === null ? null : current.workers + (grew ? deliveredCount : -deliveredCount);
-  const reread = applyError === null ? await readGateway(deps) : null;
-  const rereadWorkers = reread !== null && reread.ok && reread.workers !== null ? reread.workers : null;
-  const observedWorkers = rereadWorkers ?? (applyError === null ? input.target : moved);
+  let deliveries: LitellmRestartDelivery[] = [];
+  let applyError = refused;
+  if (!alreadyThere && refused === null && command !== null) {
+    const rendered = renderLitellmWorkersRestartCommand(command, input.target);
+    const runner = deps.restartRunner ?? createShellLitellmRestartRunner();
+    const result = await runner.run(rendered);
+    deliveries = [{ command: rendered, ok: result.ok, error: result.error }];
+    if (!result.ok) applyError = `the gateway restart failed: ${result.error ?? "unknown failure"}`;
+  }
+  const restarted = deliveries.length > 0;
 
-  const stored = await deps.store.mutate(input.companyId, (before) => ({
+  // The confirmation: what the gateway runs now, read back after the restart.
+  // The board's own record is not a confirmation, so it is left out of the read.
+  let confirmed: LitellmWorkersCurrent | null = null;
+  if (restarted) {
+    const now = resolveCurrent(
+      await readGateway(deps, input.companyId),
+      await readDeclared(deps, runtime),
+      { target: null, observed: null },
+      null,
+    );
+    confirmed = measured(now.source) ? now : null;
+    if (applyError === null) {
+      if (confirmed === null) {
+        applyError =
+          "the gateway was restarted but its new pool size could not be confirmed (no gateway gauge and no readable --num_workers); check the unit";
+      } else if (confirmed.workers !== input.target) {
+        applyError = `the gateway was restarted but runs ${confirmed.workers} worker process(es), not the requested ${input.target}`;
+      }
+    }
+  }
+  const currentAfter: LitellmWorkersCurrent = confirmed ?? before;
+  const observedNow = confirmed ?? (alreadyThere ? before : null);
+
+  const stored = await deps.store.mutate(input.companyId, (previous) => ({
     next: {
       target: input.target,
       observed:
-        observedWorkers === null
-          ? before.observed
-          : { workers: observedWorkers, at: new Date().toISOString() },
+        observedNow === null || observedNow.workers === null
+          ? previous.observed
+          : { workers: observedNow.workers, at: new Date().toISOString() },
     },
-    result: before,
+    result: previous,
   }));
 
-  const after = await readGateway(deps);
-  const currentAfter: LitellmWorkersCurrent =
-    applyError === null && rereadWorkers !== null
-      ? { workers: rereadWorkers, source: "gateway" }
-      : current.workers === null
-        ? { workers: null, source: "unknown" }
-        : { workers: moved, source: "last_applied" };
-
+  const after = await readGateway(deps, input.companyId);
   return {
     view: buildView({
       companyId: input.companyId,
@@ -285,8 +331,8 @@ async function applyValidatedTarget(
       read: after,
       current: currentAfter,
     }),
-    applied: applyError === null,
-    signals,
+    applied: applyError === null && currentAfter.workers === input.target && (restarted || alreadyThere),
+    restarted,
     deliveries,
     applyError,
     changed: (stored.result.target ?? null) !== input.target,

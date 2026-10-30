@@ -40,27 +40,53 @@ export function createPoolChatHttpTransport(options: PoolChatHttpTransportOption
   return {
     provider: options.provider,
     async send(request) {
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        authorization: `Bearer ${options.apiKey}`,
-      };
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      let body: Record<string, unknown>;
       if (options.provider === "google") {
         headers["x-goog-api-key"] = options.apiKey;
-        delete headers.authorization;
-      }
-      const response = await fetch(options.endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
+        body = {
+          contents: request.messages.map((message) => ({
+            // Gemini calls the assistant role "model" and accepts text parts.
+            role: message.role === "assistant" ? "model" : "user",
+            parts: [{ text: message.content }],
+          })),
+          generationConfig: { maxOutputTokens: request.maxOutputTokens },
+        };
+      } else {
+        headers.authorization = `Bearer ${options.apiKey}`;
+        body = {
           model: request.model,
           messages: request.messages,
           max_tokens: request.maxOutputTokens,
-        }),
-      });
+        };
+      }
+      let response: Response;
+      try {
+        response = await fetch(options.endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+      } catch {
+        // Fetch errors can embed the full request URL, including credentials.
+        throw new Error("provider transport failed");
+      }
       if (!response.ok) throw new Error("provider request failed");
-      const payload = (await response.json()) as Record<string, any>;
+      let payload: Record<string, any>;
+      try {
+        const parsed: unknown = await response.json();
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("invalid provider response shape");
+        }
+        payload = parsed as Record<string, any>;
+      } catch {
+        throw new Error("provider response invalid");
+      }
       const text = options.provider === "google"
-        ? payload.candidates?.[0]?.content?.parts?.map((part: any) => part.text).filter((part: any) => typeof part === "string").join("")
+        ? payload.candidates?.[0]?.content?.parts
+          ?.map((part: any) => part?.text)
+          .filter((part: any) => typeof part === "string")
+          .join("")
         : payload.choices?.[0]?.message?.content;
       if (typeof text !== "string" || text.length === 0) throw new Error("provider response invalid");
       const usage = payload.usage ?? payload.usageMetadata ?? {};

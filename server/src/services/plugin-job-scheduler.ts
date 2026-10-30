@@ -41,6 +41,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { parseCron, nextCronTick, validateCron } from "./cron.js";
 import { logger } from "../middleware/logger.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -743,7 +744,7 @@ export function createPluginJobScheduler(
     }
 
     running = true;
-    tickTimer = setInterval(() => {
+    tickTimer = backgroundInterval(() => {
       void tick();
     }, tickIntervalMs);
 

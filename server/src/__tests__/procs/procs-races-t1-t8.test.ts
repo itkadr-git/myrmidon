@@ -49,9 +49,12 @@ import {
   type EmbeddedPostgresTestDatabase,
 } from "../helpers/embedded-postgres.js";
 import {
+  pickFreePort,
   requestApi,
+  startApiProcess,
   startApiProcesses,
   stopApiProcesses,
+  WORKER_ENTRY,
   type ApiProcessHandle,
 } from "./helpers/api-process-harness.js";
 import { heartbeatService } from "../../services/heartbeat.js";
@@ -100,6 +103,10 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
   let connectionString = "";
   let db: Db;
   let processes: ApiProcessHandle[] = [];
+  // The worker's loopback port: the api processes dial it for single routes
+  // (bot containers, plugins, ...); the worker of T3 listens on it. A free port
+  // of its own, so this file never meets the fixed 3101 of a parallel file.
+  let workerLoopbackPort = 0;
 
   beforeAll(async () => {
     baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-procs-races-"));
@@ -139,10 +146,12 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     delete process.env[BOT_CONTAINERS_ENV];
 
     // Start two api processes on the one shared test database
+    workerLoopbackPort = await pickFreePort();
     processes = await startApiProcesses({
       count: 2,
       baseDir,
       connectionString,
+      extraEnv: { MYRMIDON_WORKER_PORT: String(workerLoopbackPort) },
     });
   }, 180_000);
 
@@ -327,44 +336,75 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     expect(adopted.filter((id) => id === expiredRunId)).toEqual([expiredRunId]);
   }, 60_000);
 
-  it("T3: an api process does not change bot container state (409 bot_containers_disabled, no job, card untouched)", async () => {
-    // The caller_not_board_main verdict itself belongs to the docker gate and is
-    // pinned by its own Go tests (tools/dockergate/internal/peer/auth_test.go).
-    // What the two-process stand can check is the Node side of the same
-    // guarantee: the one route that would change a bot container answers a
-    // fixed, specific refusal and leaves the card and the apply journal alone.
-    const companyId = randomUUID();
-    const botId = randomUUID();
-    const adapterConfig = { marker: "t3-unchanged" };
-    await db.insert(companies).values({
-      id: companyId,
-      name: "T3 Stand Company",
-      issuePrefix: `T3${companyId.slice(0, 4).toUpperCase()}`,
-    });
-    await db.insert(agents).values({
-      id: botId,
-      companyId,
-      name: "T3 Bot",
-      role: "general",
-      adapterType: "hermes_gateway",
-      adapterConfig,
-      status: "idle",
-    });
+  describe("T3: bot container apply through the worker", () => {
+    // The route is answered by the worker, so the stand gets one for this test
+    // only (it owns the heartbeat executor and sweeps, which the other races
+    // must not meet): booted here, stopped in afterAll before T4.
+    let worker: ApiProcessHandle | null = null;
 
-    for (const proc of processes) {
-      const response = await requestApi(proc.baseUrl, `/api/myrmidon/agents/${botId}/bot-container/apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
+    beforeAll(async () => {
+      worker = await startApiProcess({
+        baseDir,
+        index: 10,
+        connectionString,
+        role: "worker",
+        entry: WORKER_ENTRY,
+        port: await pickFreePort(),
+        readyTimeoutMs: 360_000,
+        extraEnv: { MYRMIDON_WORKER_PORT: String(workerLoopbackPort) },
       });
-      expect(response.status, response.text.slice(0, 400)).toBe(409);
-      expect(response.text).toContain("bot_containers_disabled");
-    }
+      let ready = await requestApi(worker.baseUrl, "/internal/ready");
+      for (let attempt = 0; ready.status !== 200 && attempt < 240; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        ready = await requestApi(worker.baseUrl, "/internal/ready");
+      }
+      expect(ready.status, `worker readiness: ${ready.text.slice(0, 400)}`).toBe(200);
+    }, 480_000);
 
-    const jobs = await db.select({ id: botApplyJobs.id }).from(botApplyJobs).where(eq(botApplyJobs.botId, botId));
-    expect(jobs).toHaveLength(0);
-    const [after] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, botId));
-    expect(after.adapterConfig).toEqual(adapterConfig);
+    afterAll(async () => {
+      if (worker) await stopApiProcesses([worker]);
+    }, 120_000);
+
+    it("T3: an api process does not change bot container state (409 bot_containers_disabled from the worker, no job, card untouched)", async () => {
+      // The caller_not_board_main verdict itself belongs to the docker gate and is
+      // pinned by its own Go tests (tools/dockergate/internal/peer/auth_test.go).
+      // What the stand can check is the Node side of the same guarantee: the one
+      // route that would change a bot container is a single route (PROCS-1.5): an
+      // api process forwards it to the worker, and the worker answers a fixed,
+      // specific refusal and leaves the card and the apply journal alone.
+      const companyId = randomUUID();
+      const botId = randomUUID();
+      const adapterConfig = { marker: "t3-unchanged" };
+      await db.insert(companies).values({
+        id: companyId,
+        name: "T3 Stand Company",
+        issuePrefix: `T3${companyId.slice(0, 4).toUpperCase()}`,
+      });
+      await db.insert(agents).values({
+        id: botId,
+        companyId,
+        name: "T3 Bot",
+        role: "general",
+        adapterType: "hermes_gateway",
+        adapterConfig,
+        status: "idle",
+      });
+
+      for (const proc of processes) {
+        const response = await requestApi(proc.baseUrl, `/api/myrmidon/agents/${botId}/bot-container/apply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        expect(response.status, response.text.slice(0, 400)).toBe(409);
+        expect(response.text).toContain("bot_containers_disabled");
+      }
+
+      const jobs = await db.select({ id: botApplyJobs.id }).from(botApplyJobs).where(eq(botApplyJobs.botId, botId));
+      expect(jobs).toHaveLength(0);
+      const [after] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, botId));
+      expect(after.adapterConfig).toEqual(adapterConfig);
+    });
   });
 
   it("T4: gateway run reattach (live lease protected, expired lease adopted by survivor)", async () => {

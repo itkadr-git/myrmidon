@@ -187,7 +187,20 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
           {mutation.isPending ? <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-workers-tab.control.applying")}</p> : null}
         </div>
 
+        {data.apply?.interruption ? (
+          <p className="text-sm text-muted-foreground" data-testid="myrmidon-workers-restart-warning">
+            {t("litellmWorkers.restartWarning")}
+            {data.apply.configured ? "" : ` ${t("litellmWorkers.restartNotConfigured")}`}
+          </p>
+        ) : null}
+
         {statusLine ? <p className="text-sm text-muted-foreground">{statusLine}</p> : null}
+
+        {mutation.data && mutation.data.applied === false && mutation.data.applyError ? (
+          <div className="border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive" data-testid="myrmidon-workers-not-confirmed">
+            {t("litellmWorkers.notConfirmed", { reason: mutation.data.applyError })}
+          </div>
+        ) : null}
 
         {mutation.isError ? (
           <div className="border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive" data-testid="myrmidon-workers-error">

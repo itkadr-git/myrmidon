@@ -8,6 +8,7 @@
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { sharedFeaturesService } from "./routes.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export const FEATURE_HEALTH_INTERVAL_ENV = "MYRMIDON_FEATURE_HEALTH_INTERVAL_SEC";
 export const DEFAULT_FEATURE_HEALTH_INTERVAL_SEC = 300;
@@ -45,7 +46,7 @@ export function startFeatureHealthSweep(db: Db, env: Record<string, string | und
       running = false;
     }
   };
-  const interval = setInterval(() => void tick(), readFeatureHealthIntervalMs(env));
+  const interval = backgroundInterval(() => void tick(), readFeatureHealthIntervalMs(env));
   const first = setTimeout(() => void tick(), FIRST_PASS_DELAY_MS);
   interval.unref?.();
   first.unref?.();

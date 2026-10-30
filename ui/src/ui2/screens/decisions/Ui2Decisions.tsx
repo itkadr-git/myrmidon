@@ -12,9 +12,13 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, DecisionOption } from "@myrmidon/shared";
+import type { Agent, AttentionItem, DecisionOption } from "@myrmidon/shared";
 import type { Decision } from "@/api/decisions";
 import { decisionsApi } from "@/api/decisions";
+import { attentionApi } from "@/api/attention";
+import { approvalsApi } from "@/api/approvals";
+import { isInlineResolvable } from "@/lib/attention";
+import { useNavigate } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -56,6 +60,13 @@ export function Ui2Decisions() {
     refetchInterval: 30_000,
   });
 
+  const attentionQuery = useQuery({
+    queryKey: queryKeys.attention(companyId),
+    queryFn: () => attentionApi.list(companyId, { all: true }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -68,6 +79,15 @@ export function Ui2Decisions() {
     for (const agent of agentsQuery.data ?? []) map.set(agent.id, agent.name);
     return map;
   }, [agentsQuery.data]);
+
+  // One queue with a typed row per waiting element: approval, decision or
+  // interaction. Approvals can be approved / rejected in place; the decision
+  // action cards (decide / dismiss with inputs) stay below.
+  const waitingItems = useMemo(() => (attentionQuery.data?.items ?? []).filter((item) =>
+    item.sourceKind === "approval" ||
+    item.sourceKind === "decision" ||
+    item.sourceKind === "issue_thread_interaction",
+  ), [attentionQuery.data]);
 
   const decisions = useMemo(() => {
     const list = openQuery.data ?? [];
@@ -83,6 +103,8 @@ export function Ui2Decisions() {
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
   };
 
+  const navigate = useNavigate();
+
   const decideMutation = useMutation({
     mutationFn: (input: { decisionId: string; optionId: string; values: Record<string, string> }) =>
       decisionsApi.decide(input.decisionId, {
@@ -93,13 +115,19 @@ export function Ui2Decisions() {
     onSuccess: invalidate,
   });
 
+  const approvalMutation = useMutation({
+    mutationFn: (input: { approvalId: string; action: "approve" | "reject" }) =>
+      input.action === "approve" ? approvalsApi.approve(input.approvalId) : approvalsApi.reject(input.approvalId),
+    onSuccess: invalidate,
+  });
+
   const dismissMutation = useMutation({
     mutationFn: (input: { decisionId: string; reason: string | undefined }) =>
       decisionsApi.dismiss(input.decisionId, input.reason),
     onSuccess: invalidate,
   });
 
-  if (openQuery.isLoading) {
+  if (openQuery.isLoading || attentionQuery.isLoading) {
     return (
       <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
         <Ui2SkeletonRows rows={4} />
@@ -107,7 +135,7 @@ export function Ui2Decisions() {
     );
   }
 
-  if (openQuery.isError) {
+  if (openQuery.isError || attentionQuery.isError) {
     return (
       <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
         <Ui2ErrorState
@@ -121,9 +149,39 @@ export function Ui2Decisions() {
   }
 
   const totalOpen = (openQuery.data ?? []).length;
+  // The counter is the number of rows shown in the queue.
+  const queueCount = waitingItems.length;
+  const nothingWaiting = waitingItems.length === 0 && totalOpen === 0;
+
+  const openAttentionItem = (item: AttentionItem) => {
+    const href = item.relatedIssue?.href ?? item.subject.href;
+    if (href) navigate(href);
+  };
 
   return (
     <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
+      <section className="ui2-decisions-waiting" aria-label={t("ui2.decisions.waiting.title")}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{t("ui2.decisions.waiting.title")}</h2>
+          <span className="text-xs text-muted-foreground">{t("ui2.decisions.queue.count", { count: queueCount })}</span>
+        </div>
+        {nothingWaiting ? (
+          <Ui2EmptyStateView title={t("ui2.decisions.waiting.empty.title")} body={t("ui2.decisions.waiting.empty.body")} variant="done" />
+        ) : (
+          <div className="space-y-2" data-testid="ui2-decisions-waiting-list">
+            {waitingItems.map((item) => (
+              <WaitingItem
+                key={item.id}
+                item={item}
+                onOpen={() => openAttentionItem(item)}
+                pending={approvalMutation.isPending && approvalMutation.variables?.approvalId === item.subject.id}
+                onResolve={(action) => approvalMutation.mutate({ approvalId: item.subject.id, action })}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
       <div className="ui2-decisions-filters flex flex-wrap items-center gap-2" role="tablist" aria-label={t("ui2.decisions.filter.all")}>
         {FILTERS.map((candidate) => {
           const label =
@@ -160,13 +218,7 @@ export function Ui2Decisions() {
       </div>
 
       {decisions.length === 0 ? (
-        filter === "all" ? (
-          <Ui2EmptyStateView
-            variant="done"
-            title={t("ui2.decisions.empty.title")}
-            body={t("ui2.decisions.empty.body")}
-          />
-        ) : (
+        filter === "all" ? null : (
           <Ui2EmptyStateView
             variant="filtered"
             title={t("ui2.decisions.empty.filtered.title")}
@@ -377,4 +429,32 @@ function Ui2DecisionCard({
       {busy ? <Ui2SkeletonRows rows={1} dense /> : null}
     </article>
   );
+}
+
+function WaitingItem({
+  item,
+  onOpen,
+  onResolve,
+  pending,
+}: {
+  item: AttentionItem;
+  onOpen: () => void;
+  onResolve: (action: "approve" | "reject") => void;
+  pending: boolean;
+}) {
+  const { t } = useUi2I18n();
+  const label = item.sourceKind === "approval" ? t("ui2.decisions.waiting.approval") : item.sourceKind === "decision" ? t("ui2.decisions.waiting.decision") : t("ui2.decisions.waiting.interaction");
+  const canResolve = item.sourceKind === "approval" && isInlineResolvable(item);
+  return <div className="ui2-decisions-waiting-item flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-card p-3 hover:bg-accent">
+    <button type="button" className="ui2-decisions-waiting-open flex flex-1 items-center justify-between text-left" onClick={onOpen}>
+      <span><span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-xs">{label}</span><span className="font-medium">{item.subject.title ?? item.whyNow}</span><span className="ml-2 text-xs text-muted-foreground">{item.originAgentName ?? ""}</span></span>
+      <span className="text-xs text-muted-foreground">{t("ui2.decisions.card.age", { age: ui2DecisionAge(item.createdAt) })}</span>
+    </button>
+    {canResolve ? (
+      <span className="flex gap-2">
+        <button type="button" className="ui2-waiting-approve rounded-md border border-border px-3 py-1 text-xs hover:bg-accent disabled:opacity-50" disabled={pending} onClick={() => onResolve("approve")}>{t("ui2.decisions.waiting.approve")}</button>
+        <button type="button" className="ui2-waiting-reject rounded-md border border-border px-3 py-1 text-xs hover:bg-accent disabled:opacity-50" disabled={pending} onClick={() => onResolve("reject")}>{t("ui2.decisions.waiting.reject")}</button>
+      </span>
+    ) : null}
+  </div>;
 }

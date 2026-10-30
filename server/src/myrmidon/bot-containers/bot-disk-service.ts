@@ -44,6 +44,7 @@ import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js"; // myrmidon(1.6.4-BOT-CONTAINER-CARD)
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -360,7 +361,7 @@ export function startCloneReportCollection(
       });
     return inFlight;
   };
-  const timer = setInterval(() => void pass(), intervalMs);
+  const timer = backgroundInterval(() => void pass(), intervalMs);
   timer.unref?.();
   void pass();
   return () => {

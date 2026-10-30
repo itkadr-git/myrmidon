@@ -482,6 +482,10 @@ load_config() {
 
 compose() {
   local args=(compose --project-directory "$COMPOSE_DIR")
+  # Keep the historical Compose project when unset: a project-name change also
+  # changes volume/network identities. The rc.17 runbook sets this explicitly
+  # only after data has been migrated/reattached safely.
+  [[ -n "${COMPOSE_PROJECT_NAME:-}" ]] && args+=(--project-name "$COMPOSE_PROJECT_NAME")
   local f
   IFS=':' read -r -a _files <<<"$COMPOSE_FILES"
   for f in "${_files[@]}"; do args+=(-f "$COMPOSE_DIR/$f"); done
@@ -1363,6 +1367,9 @@ component_host_file_exists() {
 # exist on the host (a remote host has no board override) is left out.
 component_host_compose() {
   local args=(compose --project-directory "$COMPOSE_DIR")
+  # Same pinning contract as compose(): explicit COMPOSE_PROJECT_NAME wins,
+  # unset keeps the directory-derived project the host already runs.
+  [[ -n "${COMPOSE_PROJECT_NAME:-}" ]] && args+=(--project-name "$COMPOSE_PROJECT_NAME")
   local f
   IFS=':' read -r -a _ch_files <<<"$COMPOSE_FILES"
   for f in "${_ch_files[@]}"; do args+=(-f "$COMPOSE_DIR/$f"); done

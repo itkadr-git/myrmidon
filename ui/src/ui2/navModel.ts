@@ -103,7 +103,7 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   },
 ];
 
-/** Phone bottom bar: 5 tabs (Center / Decisions / Fleet / Commander / More). */
+/** Phone bottom bar: 6 tabs (Center / Decisions / Agents / Servers / Commander / More). */
 export const UI2_PHONE_TABS: Ui2NavItem[] = [
   { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
   { labelKey: "ui2.nav.waiting", to: "/decisions", icon: CircleAlert, badge: "attention" },

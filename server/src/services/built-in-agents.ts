@@ -304,6 +304,29 @@ const SUMMARIZER_SKILL = readBuiltInTextWithFallback(
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([
   {
+    // myrmidon(ADMIN-ASSISTANT): the instance administrator is a first-class
+    // built-in agent; routing policy lives in myrmidon/admin-assistant.
+    key: "admin-assistant",
+    displayName: "Instance Administrator",
+    featureKeys: ["admin-assistant"],
+    shortPurpose: "Maintains the instance and answers operator administration tasks.",
+    defaultInstructions:
+      `You are ${PN}'s Instance Administrator. Safely inspect and maintain the instance, explain proposed changes, and use only the tools and permissions granted to this agent.`,
+    defaultRole: "administrator",
+    defaultTitle: "Instance Administrator",
+    defaultIcon: "shield",
+    defaultPermissions: {
+      canCreateAgents: false,
+      canCreateSkills: false,
+    },
+    defaultStatus: "paused",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["hermes_gateway", "openclaw_gateway"],
+    defaultAdapterType: "hermes_gateway",
+    defaultAdapterConfig: {},
+    defaultBudgetMonthlyCents: 0,
+  },
+  {
     key: "briefs",
     displayName: "Briefs Agent",
     featureKeys: ["briefs"],

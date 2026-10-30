@@ -69,11 +69,13 @@ export function recoveryLivenessIssueId(eventKey: string): string | null {
  */
 export function createRecoveryLivenessEventReader(
   db: Db,
-): (companyId: string, eventKey: string) => Promise<boolean> {
-  return async (companyId, eventKey) => {
+): (companyId: string, eventKey: string, dbOrTx?: Db) => Promise<boolean> {
+  return async (companyId, eventKey, dbOrTx) => {
     const issueId = recoveryLivenessIssueId(eventKey);
     if (issueId === null) return true;
-    const rows = await db
+    // Inside the unblock transaction the caller passes `tx`: one connection,
+    // and the read sees the transaction's own state (OPE-9078).
+    const rows = await (dbOrTx ?? db)
       .select({ status: issueRecoveryActions.status })
       .from(issueRecoveryActions)
       .where(

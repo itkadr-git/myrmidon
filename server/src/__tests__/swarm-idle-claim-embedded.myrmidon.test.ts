@@ -26,6 +26,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
+  issueRelations,
 } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
@@ -215,7 +216,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
    */
   function sweeper(
     wakeCalls: WakeCall[],
-    settings: { maxActiveTasks?: number } = {},
+    settings: { maxActiveTasks?: number; failWake?: boolean } = {},
   ) {
     const deps = {
       db,
@@ -241,6 +242,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
         opts: { reason?: string; contextSnapshot?: Record<string, unknown> },
       ) => {
         const issueId = String(opts.contextSnapshot?.issueId ?? "");
+        if (settings.failWake) throw new Error("simulated wake admission refusal");
         const [row] = await db
           .select({ assigneeAgentId: issues.assigneeAgentId })
           .from(issues)
@@ -289,6 +291,47 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(wakeCalls[0]?.issueId).toBe(issueId);
     expect(wakeCalls[0]?.reason).toBe(SWARM_MATCHED_WAKE_REASON);
     expect(wakeCalls[0]?.assigneeAtWake).toBe(agentId);
+  });
+
+  it("returns an engineer task to the queue when wake admission fails, then auto-claims it without a lead", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, { name: "free-engineer" });
+    const issueId = await seedTask(companyId, { identifier: "TASK-RETURN" });
+    const failedWakeCalls: WakeCall[] = [];
+
+    const firstPass = await sweeper(failedWakeCalls, { failWake: true }).sweep(NOW);
+
+    expect(firstPass.idleClaimed).toBe(0);
+    expect(firstPass.idleWoken).toBe(0);
+    const [returned] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(returned).toEqual({ status: "todo", assigneeAgentId: null });
+    const released = await db
+      .select({ releasedAt: issueClaims.releasedAt, releaseReason: issueClaims.releaseReason })
+      .from(issueClaims)
+      .where(eq(issueClaims.issueId, issueId));
+    expect(released).toHaveLength(1);
+    expect(released[0]?.releasedAt).not.toBeNull();
+    expect(released[0]?.releaseReason).toBe("swarm_matched_wake_failed");
+
+    const secondPass: WakeCall[] = [];
+    const retry = await sweeper(secondPass).sweep(new Date(NOW.getTime() + 1_000));
+
+    expect(retry.idleClaimed).toBe(1);
+    expect(retry.idleWoken).toBe(1);
+    expect(secondPass).toEqual([{
+      agentId: engineerId,
+      issueId,
+      reason: SWARM_MATCHED_WAKE_REASON,
+      assigneeAtWake: engineerId,
+    }]);
+    const [claimed] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(claimed).toEqual({ status: "todo", assigneeAgentId: engineerId });
   });
 
   it("wakes nobody when the role has no free agent", async () => {
@@ -742,6 +785,41 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
       expect(wakes).toHaveLength(0);
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(issue.assigneeAgentId).toBeNull();
+    });
+
+    it("does not atomically claim a task with an open dependency", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const issueId = await seedTask(companyId, { identifier: "TASK-BLOCKED" });
+      const blockerId = await seedTask(companyId, { identifier: "TASK-BLOCKER" });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+
+      expect(await matchIssue(matcher([]), issueId)).toBeNull();
+      const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(blocked.assigneeAgentId).toBeNull();
+      expect(agentId).toBeTruthy();
+    });
+
+    it("matches a dependency-blocked task after its blocker is completed", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const issueId = await seedTask(companyId, { identifier: "TASK-UNBLOCKED" });
+      const blockerId = await seedTask(companyId, { identifier: "TASK-BLOCKER", status: "done" });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+
+      const pair = await matchIssue(matcher([]), issueId);
+      expect(pair?.issueId).toBe(issueId);
+      expect(pair?.agentId).toBe(agentId);
     });
 
     it("matches one task on its own event and hands it to the free agent", async () => {

@@ -15,6 +15,7 @@ import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { StoredRunPriority } from "../myrmidon-run-priority.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
+import type { ModelApiPricingSettings } from "../myrmidon-model-api-pricing.js";
 // myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
 import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
@@ -151,6 +152,16 @@ export interface InstanceGeneralSettings {
   attentionFailedRunHorizonDays?: number;
   attentionFeedCacheTtlSeconds?: number;
   /**
+   * myrmidon(1.6.6 P1.10): the blocker-graph root fan-out alert limit — a
+   * root holding strictly more than this many blocked issues is reported by
+   * `evaluateRootFanoutAlerts`
+   * (server/src/services/blocker-graph/evaluate-alert.ts); a root exactly at
+   * the limit is not. Changed through the instance settings general row;
+   * absent means the default (10). Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  blockerRootFanoutAlertLimit?: number;
+  /**
    * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
    * how many HTTP processes (`api`) and scheduler processes (`worker`) the
    * deployment asks for, read once at startup. An unusable row stops the board
@@ -256,6 +267,8 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   corpus?: StoredCorpusSettings;
+  /** Operator-maintained API list prices for subscription-backed token estimates. */
+  modelApiPricing?: ModelApiPricingSettings;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and

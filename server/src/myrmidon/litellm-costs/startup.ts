@@ -23,6 +23,7 @@ import { listGatewayBotKeys } from "./bot-keys.js";
 import { resetEmptyCatalogSignals } from "./attention.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { COST_ATTRIBUTION_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface LitellmSweepPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -114,7 +115,7 @@ export function startLitellmCostSweep(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalMs);
   if (typeof timer.unref === "function") timer.unref();

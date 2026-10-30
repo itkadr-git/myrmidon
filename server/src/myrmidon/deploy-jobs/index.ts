@@ -14,6 +14,7 @@ import { hostReportReader } from "./host-report.js";
 import { readDeployJobsSettings } from "./settings.js";
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export { digestProblem, parseDigest, verifyCiImage } from "./domain.js";
 export { deployJobsService } from "./service.js";
@@ -84,7 +85,7 @@ export async function startDeployJobs(db: Db): Promise<() => void> {
   if (!settings.enabled) {
     return () => undefined;
   }
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "deploy jobs tick failed"));
   }, settings.tickMs);
   timer.unref?.();

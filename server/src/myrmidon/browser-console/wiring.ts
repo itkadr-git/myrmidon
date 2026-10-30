@@ -7,7 +7,8 @@ import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/secrets.js";
 import { browserConsoleService, type BrowserConsoleService } from "./service.js";
-import { readScreenConsoleSettings, screenConsoleClient } from "./screen-console-client.js";
+import { BROWSER_CONSOLE_HOST_ENV, lazyScreenConsoleClient } from "./screen-console-client.js";
+import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import { BROWSER_CONSOLE_SECRET_KEY_NAME, readBrowserConsoleSettings } from "./settings.js";
 import { browserConsoleRoutes } from "./routes.js";
 import { registerBrowserConsoleMcpGuard } from "./mcp-guard.js";
@@ -39,7 +40,11 @@ export function myrmidonBrowserConsoleRoutes(db: Db) {
 
   const service = browserConsoleService({
     db,
-    client: screenConsoleClient(readScreenConsoleSettings() ?? { host: "http://localhost.invalid", token: "unset" }),
+    client: lazyScreenConsoleClient(async () => {
+      const host = process.env[BROWSER_CONSOLE_HOST_ENV]?.trim().replace(/\/+$/, "");
+      const token = await resolveOptionalInstanceSecret("browser_console.node_token", "browser-console");
+      return host && token ? { host, token } : null;
+    }),
     settings: readBrowserConsoleSettings(),
     readSecretKey,
   });

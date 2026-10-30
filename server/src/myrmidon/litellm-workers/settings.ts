@@ -159,15 +159,15 @@ export const litellmWorkersSettingsInternals = { readCompanies, mergeGeneral };
 
 /**
  * The advisory-lock key of a resize. The pool belongs to the whole instance
- * (one gateway, one gunicorn master), so the key is one module constant and
+ * (one gateway, one gateway unit), so the key is one module constant and
  * not a company id: two companies resizing at once are the same race.
  */
 export const LITELLM_WORKERS_ADVISORY_LOCK_KEY = "paperclip:myrmidon:litellm-workers:resize";
 
 /**
- * Serialises whole resizes: read the pool, deliver the signals, record the
- * result. Without it two PUTs both read the same `current`, both count their
- * signals from it, and the pool ends above the memory ceiling.
+ * Serialises whole resizes: read the pool, restart the unit, record the
+ * result. Without it two PUTs both read the same `current` and both restart the
+ * gateway for the same target.
  */
 export interface LitellmWorkersLock {
   run<T>(operation: () => Promise<T>): Promise<T>;

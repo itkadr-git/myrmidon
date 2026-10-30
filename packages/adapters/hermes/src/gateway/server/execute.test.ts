@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 
 const runWorkspaceFieldSchema = {
   safeParse(value: unknown): { success: boolean } {
-    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown } | null;
+    const v = value as { key?: unknown; repo?: unknown; baseRef?: unknown; branch?: unknown } | null;
     const ok =
       !!v && typeof v === "object" &&
       typeof v.key === "string" && /^[A-Z][A-Z0-9]*-[0-9]+$/.test(v.key) &&
@@ -40,7 +40,10 @@ const runWorkspaceFieldSchema = {
       (v.baseRef === undefined ||
         (typeof v.baseRef === "string" && v.baseRef.length >= 1 && v.baseRef.length <= 200 &&
           /^[^\s~^:?*[\]\\]+$/.test(v.baseRef))) &&
-      Object.keys(v).every((k) => ["key", "repo", "baseRef"].includes(k));
+      (v.branch === undefined ||
+        (typeof v.branch === "string" && v.branch.length >= 1 && v.branch.length <= 200 &&
+          /^[^\s~^:?*[\]\\]+$/.test(v.branch))) &&
+      Object.keys(v).every((k) => ["key", "repo", "baseRef", "branch"].includes(k));
     return { success: ok };
   },
   parse(value: unknown): unknown {
@@ -614,6 +617,44 @@ describe("execute", () => {
     invalid.context.paperclipWake = { issue: { identifier: "ABC-101" } };
     invalid.context.paperclipBotDiskDefaultRepo = "not a repo";
     expect("workspace" in (await runAndReadBody(invalid))).toBe(false);
+  });
+
+  it("takes the repository and the branch from the task's pull request, the project is only the fallback (OPE-7967)", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "OPE-7967" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/itkadr-git/myrmidon", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "itkadr-git/myrmidon-deploy", number: 82, headRef: "refs/heads/fix/ope-7967" };
+    ctx.context.paperclipBotDiskDefaultRepo = "itkadr-git/other";
+    const body = await runAndReadBody(ctx);
+    // the project's repoRef belongs to the project's repository, so it is not sent for the PR's one
+    expect(body.workspace).toEqual({ key: "OPE-7967", repo: "itkadr-git/myrmidon-deploy", branch: "fix/ope-7967" });
+    expect(runWorkspaceFieldSchema.safeParse(body.workspace).success).toBe(true);
+  });
+
+  it("keeps the project's baseRef when the pull request is in the project's repository, and sends the branch", async () => {
+    const ctx = makeCtx(wsBaseConfig);
+    ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    ctx.context.paperclipPullRequest = { repo: "acme/widgets", headRef: "feature/x" };
+    expect((await runAndReadBody(ctx)).workspace).toEqual({ ...fixture, branch: "feature/x" });
+  });
+
+  it.each([undefined, "", "bad ref^", "--upload-pack=x", "a..b"])(
+    "uses the pull request repository without a branch when its head ref is %j",
+    async (headRef) => {
+      const ctx = makeCtx(wsBaseConfig);
+      ctx.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+      ctx.context.paperclipPullRequest = { repo: "acme/pr-repo", ...(headRef === undefined ? {} : { headRef }) };
+      expect((await runAndReadBody(ctx)).workspace).toEqual({ key: "ABC-101", repo: "acme/pr-repo" });
+    },
+  );
+
+  it("ignores a pull request with an invalid repository", async () => {
+    const bad = makeCtx(wsBaseConfig);
+    bad.context.paperclipWake = { issue: { identifier: "ABC-101" } };
+    bad.context.paperclipWorkspace = { repoUrl: "https://github.com/acme/widgets", repoRef: "main" };
+    bad.context.paperclipPullRequest = { repo: "not a repo", headRef: "feature/x" };
+    expect((await runAndReadBody(bad)).workspace).toEqual(fixture);
   });
 
   it("drops an invalid baseRef instead of sending a body the gateway would reject", async () => {
@@ -1223,6 +1264,179 @@ describe("mapFinalResultForTest", () => {
     });
     expect(result.summary).toBe(output);
     expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
+  });
+
+  it("persists only gateway call identifiers and count metadata with usage, not prompt data", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          call_id: "call-456",
+          usage: {
+            model_call_count: 2,
+            litellm_request_ids: ["req-123"],
+            input_tokens: 120,
+            cached_input_tokens: 30,
+            output_tokens: 45,
+          },
+          prompt: "must not be recorded",
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson).toMatchObject({
+      gatewayCallIds: ["call-456"],
+      litellmRequestIds: ["req-123"],
+      modelCallCount: 2,
+      modelCallCountSource: "gateway_count",
+      usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
+    });
+    expect(JSON.stringify(result.resultJson)).not.toContain("must not be recorded");
+  });
+
+  it("uses explicit gateway model-call count only when call IDs are absent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: { status: "completed", model_call_count: 3, usage: { input_tokens: 1 } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.modelCallCount).toBe(3);
+    expect(result.resultJson?.gatewayCallIds).toEqual([]);
+  });
+
+  it("prefers an explicit call count and keeps partial ID namespaces independent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model_call_count: 7,
+          gateway_call_ids: ["gw-1"],
+          litellm_request_ids: ["gw-1"],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(7);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["gw-1"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["gw-1"]);
+  });
+
+  it("does not infer a count when gateway IDs are partial and LiteLLM IDs are missing", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-ids",
+        status: "completed",
+        payload: { gateway_call_ids: ["gw-1", "gw-2"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBeNull();
+    expect(result.resultJson?.modelCallCountSource).toBe("unknown");
+  });
+
+  it("preserves explicit counts when ID metadata is partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["gw-1"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+  });
+
+  it("prefers reported gateway count when identifier namespaces are partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-count-partial",
+        status: "completed",
+        payload: { model_call_count: 4, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
+  });
+
+  it("uses explicit count carried in usage when terminal envelope lacks one", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["call-a"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+  });
+
+  it("does not infer count by adding IDs from distinct namespaces", () => {
+    const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overflow",
+        status: "completed",
+        payload: { gateway_call_ids: ids, litellm_request_ids: ids.map((id) => `req-${id}`) },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.gatewayCallIds).toEqual(ids.slice(0, 500));
+    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`).slice(0, 500));
+    expect(result.resultJson?.litellmRequestIdsTruncated).toBe(true);
+    expect(result.resultJson?.modelCallCount).toBeNull();
+  });
+  it("counts gateway output call entries when the response has no count metadata", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-output-count", status: "completed", payload: {} },
+      outputChunks: ["🔧 Calling gpt-6-luna", "🔧 Calling gpt-6.1-sol"],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(2);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_metadata");
+  });
+
+  it("keeps explicit count when a gateway call ID list is capped", () => {
+    const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-count", status: "completed", payload: { model_call_count: 125, gateway_call_ids: ids } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    const resultJson = result.resultJson as Record<string, unknown>;
+    expect(resultJson.modelCallCount).toBe(125);
+    expect((resultJson.gatewayCallIds as string[]).length).toBe(125);
+    expect(resultJson.gatewayCallIdsTruncated).toBe(false);
   });
 
   it("maps failed statuses into adapter errors", () => {
@@ -2450,6 +2664,17 @@ describe("execute — managed instructions bundle (G4)", () => {
       const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
       const body = JSON.parse(String(calls.find(([input]) => String(input).endsWith("/v1/runs"))?.[1]?.body));
       expect(body.instructions).toBe("You are agent-a. Be terse.\n\n---\n\nCard instructions string.");
+      expect(body.input).toContain("an AI agent employee in a Myrmidon-managed company.");
+      expect(body.input).toContain("Myrmidon runtime identity:");
+      expect(body.input).not.toContain("Paperclip runtime identity:");
+
+      // Persisted instructions are re-read each run, so a refresh needs no restart.
+      await fs.writeFile(instructionsPath, "Updated Myrmidon instructions.\n", "utf8");
+      await execute(ctx);
+      const secondCalls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+      const postedRuns = secondCalls.filter(([input]) => String(input).endsWith("/v1/runs"));
+      const secondBody = JSON.parse(String(postedRuns[1]?.[1]?.body));
+      expect(secondBody.instructions).toBe("Updated Myrmidon instructions.\n\n---\n\nCard instructions string.");
 
       const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
       expect(logText).toContain(`Loaded agent instructions from ${instructionsPath}`);

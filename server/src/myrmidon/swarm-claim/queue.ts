@@ -15,9 +15,11 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import {
+  swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
@@ -90,7 +92,51 @@ export function unassignedTaskRoutedToRole(role: string) {
     wantedKey === SWARM_DEFAULT_UNASSIGNED_ROLE
       ? sql`(${hasLabel} or not ${hasAnyRoleLabel})`
       : hasLabel;
-  return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
+  const engineerRequired = sql`(
+    lower(btrim(coalesce(${issues.casteKey}, ''))) = 'engineer'
+    or (
+      lower(btrim(coalesce(${issues.casteKey}, ''))) = ''
+      and lower(btrim(coalesce((select nullif(btrim(p.default_caste_key), '') from projects p where p.id = ${issues.projectId}), ''))) = 'engineer'
+    )
+    or ${issues.harnessKind} = 'skill_test'
+    or exists (
+      select 1 from issue_labels il join labels l on l.id = il.label_id
+      where il.issue_id = ${issues.id} and lower(btrim(l.name)) = 'needs-engineer'
+    )
+  )`;
+  return sql`(case
+    when ${engineerRequired} then ${wantedKey} = 'engineer'
+    when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey}
+    else ${labelRoute}
+  end)`;
+}
+
+/** JS twin of the SQL routing rule above, for issue mutation validation. */
+export function taskRequiresEngineer(input: { casteKey?: string | null; projectDefaultCasteKey?: string | null; harnessKind?: string | null; labels?: readonly string[] }): boolean {
+  const caste = input.casteKey?.trim() || input.projectDefaultCasteKey?.trim();
+  return caste?.toLowerCase() === "engineer"
+    || input.harnessKind === "skill_test"
+    || (input.labels ?? []).some((label) => label.trim().toLowerCase() === "needs-engineer");
+}
+
+export function routedRoleForTask(input: { casteKey?: string | null; projectDefaultCasteKey?: string | null; harnessKind?: string | null; labels?: readonly string[] }): string {
+  if (taskRequiresEngineer(input)) return "engineer";
+  const caste = input.casteKey?.trim() || input.projectDefaultCasteKey?.trim();
+  return caste?.toLowerCase() ?? swarmRoleFromLabels(input.labels ?? []) ?? "general";
+}
+
+export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
+  return routedRoleForTask({ labels }) === role.trim().toLowerCase();
+}
+
+export function engineerCasteRequired(
+  taskCasteKey: string | null | undefined,
+  projectDefaultCasteKey: string | null | undefined,
+  roleLabels: readonly string[],
+): boolean {
+  const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
+  if (casteKey) return casteKey.toLowerCase() === "engineer";
+  return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
 }
 
 /**
@@ -157,7 +203,7 @@ export function roleQueueRows(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan, the children are the work.
         sql`not exists (
@@ -278,7 +324,7 @@ export async function listUnassignedQueue(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`not exists (
           select 1

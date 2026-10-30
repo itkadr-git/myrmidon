@@ -7,6 +7,8 @@
 //
 //   issued         -> available, source "app", the App entry name, repository;
 //                     env carries the installation token
+//   repository_required -> absent, with reasonCode "repository_required" and
+//                     the repository patterns the agent is allowed to use
 //   ambiguous      -> unavailable (two Apps match the repository: never a silent pick)
 //   error          -> unavailable (fail closed: no legacy fallback)
 //   not_applicable -> null (the broker keeps its own answer)
@@ -40,6 +42,18 @@ export async function applyGitHubAppIdentity(
   switch (resolution.kind) {
     case "not_applicable":
       return null;
+    case "repository_required":
+      return {
+        summary: {
+          status: "absent",
+          source: "app",
+          reasonCode: "repository_required",
+          reason:
+            "GitHub access is configured, but no repository was named: pass -R owner/repo (or set GH_REPO) or work inside a clone of the repository",
+          availableRepositories: resolution.repositories,
+        },
+        env: {},
+      };
     case "ambiguous":
       return {
         summary: {

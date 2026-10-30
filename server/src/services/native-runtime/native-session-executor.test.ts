@@ -6186,7 +6186,14 @@ describe("native session bounded recovery", () => {
         );
         expect(updateIssue).toHaveBeenCalledWith(
           execution.binding.issueId,
-          { status: "blocked" },
+          {
+            status: "blocked",
+            unblockDescriptor: expect.objectContaining({
+              owner: expect.anything(),
+              action: expect.stringContaining("native session failure"),
+              reasonRef: expect.objectContaining({ kind: "event" }),
+            }),
+          },
           expect.anything(),
         );
       } finally {
@@ -6282,7 +6289,14 @@ describe("native session bounded recovery", () => {
       );
       expect(updateIssue).toHaveBeenCalledWith(
         execution.binding.issueId,
-        { status: "blocked" },
+        {
+            status: "blocked",
+            unblockDescriptor: expect.objectContaining({
+              owner: expect.anything(),
+              action: expect.stringContaining("native session failure"),
+              reasonRef: expect.objectContaining({ kind: "event" }),
+            }),
+          },
         expect.anything(),
       );
     } finally {

@@ -183,6 +183,13 @@ describeEmbeddedPostgres("maintenance holds routines and watchdog sweeps", () =>
     const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const held = await seedAgent(companyId, { lastHeartbeatAt: longAgo });
     const free = await seedAgent(companyId, { lastHeartbeatAt: longAgo });
+    await db.insert(issues).values({
+      companyId,
+      title: "ready task for timer-enabled agent",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: free,
+    });
     await openWindow({ type: "agent", id: held }, companyId);
 
     await heartbeatService(db).tickTimers(new Date());

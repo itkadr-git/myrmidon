@@ -44,6 +44,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { withDefaultEscalationChain } from "./review-escalation-chain.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -3726,6 +3727,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .select({
               id: issues.id,
               companyId: issues.companyId,
+              projectId: issues.projectId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               assigneeUserId: issues.assigneeUserId,
@@ -3746,7 +3748,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
-            issue: sourceBefore,
+            // myrmidon(OPE-9031): senior escalation chain for the round limit.
+            issue: await withDefaultEscalationChain(tx as unknown as Db, sourceBefore, policy),
             policy,
             previousPolicy: policy,
             requestedStatus,

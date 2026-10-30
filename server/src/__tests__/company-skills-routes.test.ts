@@ -2125,6 +2125,35 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it("rejects a test run with only agentId and accepts agentId with content", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+    const agentId = "55555555-5555-4555-8555-555555555555";
+
+    const rejected = await request(app)
+      .post("/api/companies/company-1/skills/skill-1/test-runs")
+      .send({ agentId });
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(400);
+    expect(mockCompanySkillService.createTestRun).not.toHaveBeenCalled();
+
+    const accepted = await request(app)
+      .post("/api/companies/company-1/skills/skill-1/test-runs")
+      .send({ agentId, content: "Delivery check" });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+    expect(mockCompanySkillService.createTestRun).toHaveBeenCalledWith(
+      "company-1",
+      "skill-1",
+      expect.objectContaining({ agentId, content: "Delivery check" }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it.each([
     ["create", "post", "/api/companies/company-1/skills/skill-1/test-runs"],
     ["cancel", "post", "/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222/cancel"],

@@ -4,6 +4,7 @@ import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { readMaintenanceDocument } from './maintenance/store.js';
 import { idleStopRuntimeFromStatus, type IdleStopRuntime } from './idle-stop-runtime.js';
 import { instanceSettingsService } from '../services/instance-settings.js';
+import { backgroundInterval } from "./monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 // Logger type - matches pino Logger interface
 export interface IdleStopLogger {
@@ -71,7 +72,7 @@ export class IdleStopService {
       `Starting IDLE-STOP service: afterSec=${this.config.afterSec}, healthTimeoutMs=${this.config.healthTimeoutMs}`,
     );
 
-    this.sweepInterval = setInterval(() => {
+    this.sweepInterval = backgroundInterval(() => {
       void this.performSweep();
     }, this.config.sweepIntervalMs);
 

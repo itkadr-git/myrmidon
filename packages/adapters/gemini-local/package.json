@@ -2,13 +2,13 @@
   "name": "@myrmidon/adapter-gemini-local",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapters/gemini-local"
   },
   "type": "module",
@@ -52,7 +52,8 @@
   },
   "dependencies": {
     "@myrmidon/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "@myrmidon/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

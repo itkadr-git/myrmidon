@@ -30,6 +30,9 @@ export interface FleetSiteProfile {
   volumeRoot?: string;
   network?: string;
   imageAllowlist?: string[] | readonly string[];
+  /** myrmidon(OPE-8999): the host-port range the site's fleetd hands out for bot gateways (informational; fleetd.json is authoritative). */
+  gatewayPortStart?: number;
+  gatewayPortEnd?: number;
   egressProfile?: string;
 }
 

@@ -13,7 +13,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
-import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
+import { backgroundInterval, laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
@@ -140,6 +140,8 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
 import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@myrmidon/shared";
+import { createIdempotentShutdown } from "./shutdown-once.js"; // myrmidon(OPE-9107)
+import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
@@ -176,6 +178,7 @@ import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.
 import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import { startRootFanoutAlertSweep } from "./myrmidon/monitoring/alerts/root-fanout.js"; // myrmidon(OPE-9165)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
@@ -213,6 +216,7 @@ import {
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
   corpusService,
   createCorpusParseWorker,
+  configureCorpusAdapters,
   resolveCorpusPorts,
 } from "./myrmidon/corpus/index.js";
 import {
@@ -265,6 +269,8 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  processRole: ProcessRoleProfile["role"];
+  ownsBackgroundWork: boolean;
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
@@ -1217,6 +1223,7 @@ async function startServerWithDatabaseTeardown(
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
   await startProcessesSettings(db as any, processSupervisor);
+  configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -1224,6 +1231,11 @@ async function startServerWithDatabaseTeardown(
     // periodic — the workers, exports, spools and plugin jobs stay with the
     // background role.
     backgroundWork: processRoleProfile.runsBackground,
+    // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): only an api child forwards the
+    // single routes to the worker; null for `all` and `worker`.
+    singletonProxy: singletonProxyOptionsFor(processRoleProfile.role, {
+      readProcessesSetting: async () => (await instanceSettingsService(db).getGeneral()).processes,
+    }),
     processSupervisor,
     processBus,
     storageService,
@@ -2294,6 +2306,7 @@ async function startServerWithDatabaseTeardown(
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
     startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+    startRootFanoutAlertSweep(db); // myrmidon(OPE-9165): collect blocker roots every minute
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
@@ -2844,7 +2857,7 @@ async function startServerWithDatabaseTeardown(
       "Automatic database backups enabled",
     );
     if (!backupCatchUp.enabled) // myrmidon(P11)
-    setInterval(() => {
+    backgroundInterval(() => {
       // myrmidon(PROCS-1.7, design OPE-5394 §5.1): the backup is leader-only
       // work; with the multi-process mode on, the api processes skip it.
       if (!leaderLeaseManager.isLeader("backup")) return;
@@ -2948,10 +2961,11 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
-  const shutdown = async (
+  const runShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    logger.info({ signal }, `myrmidon(OPE-9107): shutdown started (runtime pid ${process.pid})`);
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     if (executionControlInterval) clearInterval(executionControlInterval);
@@ -3091,10 +3105,22 @@ async function startServerWithDatabaseTeardown(
     if (exitProcess) process.exit(0);
   };
 
-  process.once("SIGINT", () => {
+  // myrmidon(OPE-9107): one shutdown per process — a second signal, or an
+  // entry point (worker.ts) calling `shutdown()` as well, joins the first run.
+  const shutdown = createIdempotentShutdown(
+    runShutdown,
+    (exitProcess) => {
+      if (exitProcess) process.exit(0);
+    },
+    (signal) => logger.info({ signal }, "shutdown already in progress; joining it"),
+  );
+
+  // `on`, not `once`: a repeated signal must join the running shutdown, not
+  // fall back to the default disposition and kill the process mid-drain.
+  process.on("SIGINT", () => {
     void shutdown("SIGINT", true);
   });
-  process.once("SIGTERM", () => {
+  process.on("SIGTERM", () => {
     void shutdown("SIGTERM", true);
   });
 
@@ -3104,6 +3130,8 @@ async function startServerWithDatabaseTeardown(
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    processRole: processRoleProfile.role,
+    ownsBackgroundWork: processRoleProfile.runsBackground,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {

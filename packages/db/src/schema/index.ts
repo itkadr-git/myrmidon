@@ -96,6 +96,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { interactionEscalations } from "./interaction_escalations.js";
 export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
@@ -136,6 +137,7 @@ export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 // myrmidon(DB-CARE DBC-3): continuation envelopes leave heartbeat_runs.context_snapshot.
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
+export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
 export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
 export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
@@ -240,6 +242,7 @@ export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(
 export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
 export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
 export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
+export { myrmidonFleetMemorySyncs, fleetMemorySyncs } from "./myrmidon_fleet_memory_syncs.js"; // myrmidon(1.6.6 C-MEM): journal of site memory syncs
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.

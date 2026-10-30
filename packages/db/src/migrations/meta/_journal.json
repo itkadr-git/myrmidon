@@ -2471,14 +2471,70 @@
       "idx": 415,
       "version": "7",
       "when": 1792395515000,
-      "tag": "0415_provider_usage_snapshots",
+      "tag": "0415_activity_log_company_action_created_idx",
       "breakpoints": true
     },
     {
       "idx": 416,
       "version": "7",
       "when": 1792395516000,
-      "tag": "0416_provider_usage_warning_deliveries",
+      "tag": "0416_fleet_memory_syncs",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1792399116000,
+      "tag": "0417_heartbeat_runs_provider_quota_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1792402716000,
+      "tag": "0418_preserve_migration_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1792406316000,
+      "tag": "0419_issue_continuation_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1793000000000,
+      "tag": "0420_issue_recovery_actions_dedupe_sla",
+      "breakpoints": true
+    },
+    {
+      "idx": 421,
+      "version": "7",
+      "when": 1793037062471,
+      "tag": "0421_fixed_grim_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 422,
+      "version": "7",
+      "when": 1793037063000,
+      "tag": "0422_interaction_routing",
+      "breakpoints": true
+    },
+    {
+      "idx": 423,
+      "version": "7",
+      "when": 1793037064000,
+      "tag": "0423_provider_usage_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 424,
+      "version": "7",
+      "when": 1793037065000,
+      "tag": "0424_provider_usage_warning_deliveries",
       "breakpoints": true
     }
   ]

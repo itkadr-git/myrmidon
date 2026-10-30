@@ -31,7 +31,6 @@ import {
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
-  MODEL_PROVIDER_PROBE_MODEL,
   modelProviderSecretName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
@@ -99,6 +98,23 @@ export interface ModelProviderCatalogPort {
 }
 
 /** The error a provider answers an invalid key with (maps to 4xx). */
+/**
+ * A tool-call probe failure whose code and text are safe to store and return:
+ * never the provider's response body, headers or the raw exception text.
+ */
+export class ToolCallProbeError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ToolCallProbeError";
+  }
+}
+
+/** Turns any probe failure into `code: short description`. */
+export function normalizeToolCallCheckError(error: unknown): string {
+  if (error instanceof ToolCallProbeError) return `${error.code}: ${error.message}`.slice(0, 200);
+  return "probe_failed: the tool-call probe failed";
+}
+
 export class ProviderAuthError extends Error {
   constructor(message: string) {
     super(message);
@@ -392,6 +408,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   async function checkToolCallCompatibility(input: {
     companyId: string;
     providerId: string;
+    /** Probe model; by default the first model the provider lists on `/models`. */
+    model?: string;
   }): Promise<ModelProviderView> {
     const row = await loadProvider(input.companyId, input.providerId);
     const secretName = row.credentialSecretName;
@@ -400,18 +418,25 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     if (!deps.catalog.probeToolCall) {
       throw unprocessable("tool-call compatibility probing is not configured", { code: "provider_probe_unavailable" });
     }
+    const baseUrl = effectiveBaseUrl(row.type, row.baseUrl);
+    let probeModel = input.model?.trim() || null;
+    if (!probeModel) {
+      const listed = await deps.catalog.listModels({ baseUrl, apiKey });
+      probeModel = listed.models[0] ?? null;
+      if (!probeModel) {
+        throw unprocessable("the provider lists no models, so the tool-call probe has nothing to run on", {
+          code: "provider_no_models",
+        });
+      }
+    }
     const checkedAt = now();
     let compatible = true;
     let errorMessage: string | null = null;
     try {
-      await deps.catalog.probeToolCall({
-        baseUrl: effectiveBaseUrl(row.type, row.baseUrl),
-        apiKey,
-        model: MODEL_PROVIDER_PROBE_MODEL,
-      });
+      await deps.catalog.probeToolCall({ baseUrl, apiKey, model: probeModel });
     } catch (error) {
       compatible = false;
-      errorMessage = (error instanceof Error ? error.message : "probe failed").slice(0, 1000);
+      errorMessage = normalizeToolCallCheckError(error);
     }
     await deps.db.update(modelProviders).set({
       toolCallCompatible: compatible,
@@ -837,7 +862,9 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
     },
 
     async probeToolCall({ baseUrl, apiKey, model }) {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -848,8 +875,11 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
           max_tokens: 64,
         }),
         signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) throw new Error(`provider answered ${response.status}`);
+        });
+      } catch {
+        throw new ToolCallProbeError("provider_unreachable", "the provider could not be reached");
+      }
+      if (!response.ok) throw new ToolCallProbeError(`provider_http_${response.status}`, `the provider answered ${response.status}`);
       // A 200 alone is not compatibility: some resellers answer but substitute their own
       // tools. The reply must carry a tool call for the function we declared.
       const payload = (await response.json().catch(() => null)) as {
@@ -857,7 +887,7 @@ export function createModelProviderCatalogPort(): ModelProviderCatalogPort {
       } | null;
       const calls = payload?.choices?.[0]?.message?.tool_calls ?? [];
       if (!calls.some((call) => call.function?.name === "compatibility_probe")) {
-        throw new Error("provider answered without the requested tool call");
+        throw new ToolCallProbeError("no_tool_call", "the provider answered without the requested tool call");
       }
     },
 

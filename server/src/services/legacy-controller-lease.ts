@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@myrmidon/db";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 // A boot UUID has meaning across containers; a numeric PID does not.
 export const legacyControllerBootId = randomUUID();
@@ -101,7 +102,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
       deadline.unref();
     }
   };
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     if (pending || stopped) return;
     pending = true;
     void assertOwned().catch(lost).finally(() => { pending = false; });

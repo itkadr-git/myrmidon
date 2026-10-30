@@ -2,6 +2,7 @@ import { lt, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { pluginLogs } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 /** Default retention period: 7 days. */
 const DEFAULT_RETENTION_DAYS = 7;
@@ -71,7 +72,7 @@ export function startPluginLogRetention(
   intervalMs: number = 60 * 60 * 1_000,
   retentionDays: number = DEFAULT_RETENTION_DAYS,
 ): () => void {
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     prunePluginLogs(db, retentionDays).catch((err) => {
       logger.warn({ err }, "Plugin log retention sweep failed");
     });

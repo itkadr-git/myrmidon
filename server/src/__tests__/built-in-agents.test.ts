@@ -169,7 +169,13 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("validates the static registry and rejects invalid definitions", () => {
     const definitions = listBuiltInAgentDefinitions();
-    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);
+    expect(definitions.map((definition) => definition.key).sort()).toEqual(["admin-assistant", "briefs", "learning", "reflection-coach", "summarizer"]);
+    const administrator = definitions.find((definition) => definition.key === "admin-assistant");
+    expect(administrator).toMatchObject({
+      defaultRole: "administrator",
+      defaultAdapterType: "hermes_gateway",
+      allowedAdapterTypes: ["hermes_gateway", "openclaw_gateway"],
+    });
     const summarizer = definitions.find((definition) => definition.key === "summarizer");
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",

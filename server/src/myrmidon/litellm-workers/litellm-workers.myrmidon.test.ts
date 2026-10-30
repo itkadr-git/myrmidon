@@ -1,21 +1,23 @@
 // server/src/myrmidon/litellm-workers/litellm-workers.myrmidon.test.ts
 //
-// myrmidon(1.6.5 LITELLM-WORKERS A): the acceptance criteria of the ticket,
-// without a database, a container or a live gateway.
+// myrmidon(1.6.6 LITELLM-WORKERS restart): the acceptance criteria of the
+// ticket, without a database, a container or a live gateway.
 //
-// The three ports of the service are faked (settings store, gateway read,
-// signal delivery), so the tests cover what the ticket asks for exactly: the
-// ceilings of a 6 core / 12 GB box, the memory rejection, the TTIN/TTOU
-// arithmetic of a resize, and that a GET reflects the pool after a PUT.
+// The ports of the service are faked (settings store, gateway read, launch-line
+// read, restart), so the tests cover what the ticket asks for exactly: the
+// ceilings of a 6 core / 12 GB box, the memory rejection, the planned restart
+// that replaces the gunicorn signals, `reachable` and `current` as the board
+// reads them from a gateway that runs `litellm --num_workers N`, and that the
+// result of a restart is confirmed rather than assumed.
 
 import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND,
   LITELLM_WORKERS_BASELINE_ENV,
+  LITELLM_WORKERS_RESTART_COMMAND_ENV,
   checkLitellmWorkersTarget,
   litellmWorkersCeilings,
-  litellmWorkersSignalSteps,
-  renderLitellmWorkersSignalCommand,
+  parseLitellmWorkersFromCommandLine,
+  renderLitellmWorkersRestartCommand,
   type LitellmWorkersCeilings,
 } from "@myrmidon/shared";
 import { HttpError } from "../../errors.js";
@@ -30,7 +32,14 @@ import {
   readPrometheusWorkerGauge,
   readPrometheusWorkerPidCount,
 } from "./metrics.js";
-import { createLitellmWorkersGateway, type LitellmMetricsRead, type LitellmSignalRunner, type LitellmWorkersGatewayPort } from "./gateway.js";
+import {
+  createLitellmWorkersGateway,
+  createUnitFileDeclaredWorkers,
+  type LitellmDeclaredWorkersPort,
+  type LitellmMetricsRead,
+  type LitellmRestartRunner,
+  type LitellmWorkersGatewayPort,
+} from "./gateway.js";
 import {
   inProcessLitellmWorkersLock,
   memoryLitellmWorkersStore,
@@ -40,10 +49,12 @@ import {
 import { applyLitellmWorkersTarget, readLitellmWorkersView, type LitellmWorkersDeps } from "./service.js";
 
 const COMPANY = "2870b911-483a-4091-9f15-183841811143";
+const RESTART_COMMAND = "unit-restart --workers {workers}";
+const RESTART_ENV = { [LITELLM_WORKERS_RESTART_COMMAND_ENV]: RESTART_COMMAND };
 
 const PRODUCTION: LitellmWorkersCeilings = litellmWorkersCeilings({ cores: 6, memoryGb: 12, gbPerWorker: 1.5 });
 
-/** A gateway whose pool the test can move, the way the master would. */
+/** A gateway whose metrics the test controls; the pool gauge is optional. */
 class FakeGateway implements LitellmWorkersGatewayPort {
   workers: number | null;
   workersSource: "gauge" | "pids" | null;
@@ -56,33 +67,55 @@ class FakeGateway implements LitellmWorkersGatewayPort {
     this.workersSource = workersSource;
   }
 
-  async readMetrics(): Promise<LitellmMetricsRead> {
+  async readMetrics(_companyId: string): Promise<LitellmMetricsRead> {
     this.reads += 1;
     if (this.error !== null) return { ok: false, error: this.error };
     return { ok: true, workers: this.workers, workersSource: this.workersSource, metrics: { ...this.metrics } };
   }
 }
 
-/** Records every command, and moves the pool when the fake pool is watching. */
-class FakeRunner implements LitellmSignalRunner {
+/** The launch line of the unit: `--num_workers N`, or unreadable (null). */
+class FakeLaunchLine implements LitellmDeclaredWorkersPort {
+  workers: number | null;
+  constructor(workers: number | null) {
+    this.workers = workers;
+  }
+  async readDeclaredWorkers() {
+    return this.workers;
+  }
+}
+
+/**
+ * Records every restart. A real restart rewrites the unit's `--num_workers`
+ * and brings the gateway back; here that is `onRestart`, which defaults to
+ * moving the launch line to the requested number.
+ */
+class FakeRestart implements LitellmRestartRunner {
   commands: string[] = [];
-  failAt: number | null = null;
-  onDelivered: ((signal: string) => void) | null = null;
+  failWith: string | null = null;
+  onRestart: ((workers: number) => void) | null = null;
 
   async run(command: string) {
     this.commands.push(command);
-    const signal = command.includes("TTIN") ? "TTIN" : "TTOU";
-    if (this.failAt !== null && this.commands.length === this.failAt) {
-      return { ok: false, error: "signal delivery refused" };
-    }
-    this.onDelivered?.(signal);
+    if (this.failWith !== null) return { ok: false, error: this.failWith };
+    this.onRestart?.(Number(/--workers (\d+)/.exec(command)?.[1]));
     return { ok: true, error: null };
   }
 }
 
+/** A restart that really moves the pool the way the unit would. */
+function restartMoving(launchLine: FakeLaunchLine): FakeRestart {
+  const runner = new FakeRestart();
+  runner.onRestart = (workers) => {
+    launchLine.workers = workers;
+  };
+  return runner;
+}
+
 function depsWith(input: {
   gateway?: LitellmWorkersGatewayPort | null;
-  runner?: LitellmSignalRunner;
+  declared?: LitellmDeclaredWorkersPort;
+  runner?: LitellmRestartRunner;
   env?: Record<string, string | undefined>;
   seed?: Record<string, { target: number | null; observed: { workers: number; at: string } | null }>;
 }): LitellmWorkersDeps {
@@ -90,7 +123,10 @@ function depsWith(input: {
     store: memoryLitellmWorkersStore(input.seed ?? {}),
     env: input.env ?? {},
     gateway: input.gateway === undefined ? null : input.gateway,
-    signalRunner: input.runner,
+    // No launch line unless the test gives one: the host's real unit file must
+    // never leak into a test.
+    declared: input.declared ?? new FakeLaunchLine(null),
+    restartRunner: input.runner,
   };
 }
 
@@ -130,25 +166,35 @@ describe("ceilings of the production container (6 cores / 12 GB)", () => {
   });
 });
 
-describe("the signal arithmetic of a resize", () => {
-  it("asks for one TTIN per worker to add", () => {
-    expect(litellmWorkersSignalSteps(4, 5)).toEqual([{ signal: "TTIN", count: 1 }]);
-    expect(litellmWorkersSignalSteps(4, 6)).toEqual([{ signal: "TTIN", count: 2 }]);
+describe("the restart that applies a target", () => {
+  it("fills the target into the configured restart command", () => {
+    expect(renderLitellmWorkersRestartCommand("restart-unit --workers {workers}", 4)).toBe("restart-unit --workers 4");
   });
 
-  it("asks for one TTOU per worker to drop", () => {
-    expect(litellmWorkersSignalSteps(4, 3)).toEqual([{ signal: "TTOU", count: 1 }]);
-    expect(litellmWorkersSignalSteps(4, 1)).toEqual([{ signal: "TTOU", count: 3 }]);
+  it("reads --num_workers from the launch line of the unit", () => {
+    const unit = [
+      "# the window of DNS errors comes from --num_workers 9 in an old comment",
+      "ExecStartPre=/usr/bin/docker create --name litellm-gateway \\",
+      "    --config /app/config.yaml --port 4000 --host 0.0.0.0 --num_workers 2",
+      "ExecStart=/usr/bin/docker start -a litellm-gateway",
+    ].join("\n");
+    expect(parseLitellmWorkersFromCommandLine(unit)).toBe(2);
+    expect(parseLitellmWorkersFromCommandLine("litellm --num_workers=3 --port 4000")).toBe(3);
   });
 
-  it("asks for nothing when the pool is already at the target", () => {
-    expect(litellmWorkersSignalSteps(4, 4)).toEqual([]);
+  it("answers null for a launch line that declares no usable number", () => {
+    expect(parseLitellmWorkersFromCommandLine("litellm --port 4000")).toBeNull();
+    expect(parseLitellmWorkersFromCommandLine("litellm --num_workers 0")).toBeNull();
+    expect(parseLitellmWorkersFromCommandLine("litellm --num_workers two")).toBeNull();
   });
 
-  it("renders the command the delivery path runs", () => {
-    expect(renderLitellmWorkersSignalCommand(DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND, { signal: "TTIN", container: "litellm-gateway" })).toBe(
-      "docker kill -s TTIN litellm-gateway",
-    );
+  it("treats an unreadable unit file as no answer, not as an error", async () => {
+    const port = createUnitFileDeclaredWorkers("/nonexistent/unit", async () => {
+      throw new Error("EACCES");
+    });
+    expect(await port.readDeclaredWorkers()).toBeNull();
+    const readable = createUnitFileDeclaredWorkers("/unit", async () => "ExecStart=litellm --num_workers 2");
+    expect(await readable.readDeclaredWorkers()).toBe(2);
   });
 });
 
@@ -218,7 +264,7 @@ describe("reading the gateway's numbers", () => {
 });
 
 describe("GET the worker count", () => {
-  it("reports the pool the gateway runs, the default target and the live numbers", async () => {
+  it("reports the pool the gateway's own gauge names, the default target and the live numbers", async () => {
     const view = await readLitellmWorkersView(depsWith({ gateway: new FakeGateway(4) }), COMPANY);
     expect(view.current).toBe(4);
     expect(view.currentSource).toBe("gateway");
@@ -228,7 +274,34 @@ describe("GET the worker count", () => {
     expect(view.maxByMemory).toBe(8);
     expect(view.metrics).toEqual({ perWorkerCpu: 42, medianLatencyMs: 210, queueDepth: 3 });
     expect(view.metricsSource).toBe("gateway");
-    expect(view.apply).toEqual({ path: "gunicorn-ttin-ttou", configured: true, command: DEFAULT_LITELLM_WORKERS_SIGNAL_COMMAND, container: "litellm-gateway" });
+    expect(view.apply).toEqual({ path: "restart", configured: false, interruption: true });
+  });
+
+  it("says the apply path is configured once a restart command is set", async () => {
+    const view = await readLitellmWorkersView(depsWith({ gateway: new FakeGateway(2), env: RESTART_ENV }), COMPANY);
+    expect(view.apply).toEqual({ path: "restart", configured: true, interruption: true });
+  });
+
+  it("takes current from the launch line when the exposition names no pool (multiprocess Prometheus)", async () => {
+    // The production shape: /metrics answers, but in multiprocess mode it has no
+    // worker gauge, so the number comes from `--num_workers 2` of the unit.
+    const deps = depsWith({ gateway: new FakeGateway(null, null), declared: new FakeLaunchLine(2) });
+    const view = await readLitellmWorkersView(deps, COMPANY);
+    expect(view.gateway.reachable).toBe(true);
+    expect(view.metricsSource).toBe("gateway");
+    expect(view.current).toBe(2);
+    expect(view.currentSource).toBe("launch_line");
+  });
+
+  it("prefers the launch line over a per-pid hint and over the board's own record", async () => {
+    const deps = depsWith({
+      gateway: new FakeGateway(1, "pids"),
+      declared: new FakeLaunchLine(2),
+      seed: { [COMPANY]: { target: null, observed: { workers: 6, at: "2026-10-01T00:00:00.000Z" } } },
+    });
+    const view = await readLitellmWorkersView(deps, COMPANY);
+    expect(view.current).toBe(2);
+    expect(view.currentSource).toBe("launch_line");
   });
 
   it("reports the stored target over the default", async () => {
@@ -238,7 +311,7 @@ describe("GET the worker count", () => {
     expect(view.targetSource).toBe("settings");
   });
 
-  it("falls back to the declared baseline when the gateway reports no pool", async () => {
+  it("falls back to the declared baseline when nothing reads the pool", async () => {
     const deps = depsWith({ gateway: new FakeGateway(null, null), env: { [LITELLM_WORKERS_BASELINE_ENV]: "4" } });
     const view = await readLitellmWorkersView(deps, COMPANY);
     expect(view.current).toBe(4);
@@ -271,59 +344,144 @@ describe("GET the worker count", () => {
     expect(view.current).toBeNull();
     expect(view.currentSource).toBe("unknown");
   });
+
+  it("still reports current from the launch line while the gateway answers 401 (the pre-fix production state)", async () => {
+    const gateway = new FakeGateway(null, null);
+    gateway.error = "gateway metrics answered HTTP 401";
+    const view = await readLitellmWorkersView(depsWith({ gateway, declared: new FakeLaunchLine(2) }), COMPANY);
+    expect(view.gateway.reachable).toBe(false);
+    expect(view.gateway.error).toBe("gateway metrics answered HTTP 401");
+    expect(view.current).toBe(2);
+    expect(view.currentSource).toBe("launch_line");
+  });
+});
+
+describe("reading /metrics of a gateway over HTTP: reachable and current", () => {
+  const MULTIPROC_EXPOSITION = [
+    "# TYPE litellm_in_flight_requests gauge",
+    "litellm_in_flight_requests 1",
+    'litellm_request_total_latency_metric_bucket{le="0.5"} 10',
+    'litellm_request_total_latency_metric_bucket{le="+Inf"} 20',
+  ].join("\n");
+
+  /** A gateway that checks the path and the key the way the production one does. */
+  function httpGateway(input: { acceptedKey: string; sentKey: string | null }) {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string, init?: { headers?: Record<string, string> }) => {
+      urls.push(url);
+      const auth = init?.headers?.authorization ?? null;
+      if (!url.endsWith("/metrics/")) return new Response("", { status: 307, headers: { location: "/metrics/" } });
+      if (auth !== `Bearer ${input.acceptedKey}`) return new Response("unauthorized", { status: 401 });
+      return new Response(MULTIPROC_EXPOSITION, { status: 200 });
+    }) as unknown as typeof fetch;
+    const gateway = createLitellmWorkersGateway({
+      baseUrl: "http://gateway.test:4000/",
+      fetchImpl,
+      resolveKey: async () => input.sentKey,
+    });
+    return { gateway, urls };
+  }
+
+  it("is reachable with a key that may read /metrics, and current comes from the launch line", async () => {
+    const { gateway, urls } = httpGateway({ acceptedKey: "k-metrics", sentKey: "k-metrics" });
+    const view = await readLitellmWorkersView(depsWith({ gateway, declared: new FakeLaunchLine(2) }), COMPANY);
+    // The slash is part of the request: the bare path is a redirect.
+    expect(urls).toEqual(["http://gateway.test:4000/metrics/"]);
+    expect(view.gateway.reachable).toBe(true);
+    expect(view.gateway.error).toBeNull();
+    expect(view.metricsSource).toBe("gateway");
+    expect(view.metrics.queueDepth).toBe(1);
+    expect(view.metrics.medianLatencyMs).toBe(500);
+    expect(view.current).toBe(2);
+    expect(view.currentSource).toBe("launch_line");
+  });
+
+  it("is not reachable without a key (401), and current is still the launch line, never null", async () => {
+    const { gateway } = httpGateway({ acceptedKey: "k-metrics", sentKey: null });
+    const view = await readLitellmWorkersView(depsWith({ gateway, declared: new FakeLaunchLine(2) }), COMPANY);
+    expect(view.gateway.reachable).toBe(false);
+    expect(view.gateway.error).toBe("gateway metrics answered HTTP 401");
+    expect(view.metricsSource).toBe("unavailable");
+    expect(view.current).toBe(2);
+  });
+
+  it("resolves the key per company on every read", async () => {
+    const asked: string[] = [];
+    const gateway = createLitellmWorkersGateway({
+      baseUrl: "http://gateway.test:4000",
+      fetchImpl: (async () => new Response(MULTIPROC_EXPOSITION, { status: 200 })) as typeof fetch,
+      resolveKey: async (companyId) => {
+        asked.push(companyId);
+        return "k";
+      },
+    });
+    await gateway.readMetrics("company-a");
+    await gateway.readMetrics("company-b");
+    expect(asked).toEqual(["company-a", "company-b"]);
+  });
 });
 
 describe("PUT the worker count", () => {
-  it("grows the pool with one TTIN and reports the new state", async () => {
-    const gateway = new FakeGateway(4);
-    const runner = new FakeRunner();
-    runner.onDelivered = (signal) => {
-      gateway.workers = (gateway.workers ?? 0) + (signal === "TTIN" ? 1 : -1);
-    };
-    const deps = depsWith({ gateway, runner });
-    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 5 });
+  it("restarts the unit with the target and confirms the new pool size", async () => {
+    const launch = new FakeLaunchLine(2);
+    const runner = restartMoving(launch);
+    const deps = depsWith({ gateway: new FakeGateway(null, null), declared: launch, runner, env: RESTART_ENV });
+    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 });
 
-    expect(runner.commands).toEqual(["docker kill -s TTIN litellm-gateway"]);
+    expect(runner.commands).toEqual(["unit-restart --workers 4"]);
+    expect(result.restarted).toBe(true);
     expect(result.applied).toBe(true);
     expect(result.applyError).toBeNull();
-    expect(result.signals).toEqual([{ signal: "TTIN", count: 1 }]);
-    expect(result.view.target).toBe(5);
-    expect(result.view.current).toBe(5);
+    expect(result.view.target).toBe(4);
+    expect(result.view.current).toBe(4);
+    expect(result.view.currentSource).toBe("launch_line");
     expect(result.view.targetSource).toBe("settings");
+    expect((await deps.store.read(COMPANY)).observed?.workers).toBe(4);
   });
 
-  it("shrinks the pool with as many TTOU signals as workers to drop", async () => {
-    const gateway = new FakeGateway(4);
-    const runner = new FakeRunner();
-    runner.onDelivered = (signal) => {
-      gateway.workers = (gateway.workers ?? 0) + (signal === "TTIN" ? 1 : -1);
-    };
-    const result = await applyLitellmWorkersTarget(depsWith({ gateway, runner }), { companyId: COMPANY, target: 2 });
-
-    expect(runner.commands).toEqual([
-      "docker kill -s TTOU litellm-gateway",
-      "docker kill -s TTOU litellm-gateway",
-    ]);
+  it("shrinks the pool with the same single restart", async () => {
+    const launch = new FakeLaunchLine(5);
+    const runner = restartMoving(launch);
+    const result = await applyLitellmWorkersTarget(
+      depsWith({ declared: launch, runner, env: RESTART_ENV }),
+      { companyId: COMPANY, target: 2 },
+    );
+    expect(runner.commands).toEqual(["unit-restart --workers 2"]);
     expect(result.applied).toBe(true);
     expect(result.view.current).toBe(2);
-    expect(result.view.target).toBe(2);
   });
 
-  it("delivers nothing when the pool is already at the target", async () => {
-    const runner = new FakeRunner();
+  it("does not restart when the measured pool is already at the target", async () => {
+    const runner = new FakeRestart();
     const result = await applyLitellmWorkersTarget(
-      depsWith({ gateway: new FakeGateway(5), runner, seed: { [COMPANY]: { target: 5, observed: null } } }),
+      depsWith({ declared: new FakeLaunchLine(5), runner, env: RESTART_ENV, seed: { [COMPANY]: { target: 5, observed: null } } }),
       { companyId: COMPANY, target: 5 },
     );
     expect(runner.commands).toEqual([]);
-    expect(result.signals).toEqual([]);
+    expect(result.restarted).toBe(false);
     expect(result.applied).toBe(true);
     expect(result.changed).toBe(false);
   });
 
-  it("rejects a target above the memory ceiling with a 400 and delivers nothing", async () => {
-    const runner = new FakeRunner();
-    const deps = depsWith({ gateway: new FakeGateway(4), runner });
+  it("restarts anyway when the equal number is only the board's own old record", async () => {
+    const runner = new FakeRestart();
+    const result = await applyLitellmWorkersTarget(
+      depsWith({
+        runner,
+        env: RESTART_ENV,
+        seed: { [COMPANY]: { target: null, observed: { workers: 4, at: "2026-10-01T00:00:00.000Z" } } },
+      }),
+      { companyId: COMPANY, target: 4 },
+    );
+    expect(runner.commands).toEqual(["unit-restart --workers 4"]);
+    // The restart ran but nothing measures the pool: no applied claim.
+    expect(result.applied).toBe(false);
+    expect(result.applyError).toContain("could not be confirmed");
+  });
+
+  it("rejects a target above the memory ceiling with a 400 and restarts nothing", async () => {
+    const runner = new FakeRestart();
+    const deps = depsWith({ declared: new FakeLaunchLine(2), runner, env: RESTART_ENV });
     await expect(applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 9 })).rejects.toBeInstanceOf(HttpError);
     await expect(applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 9 })).rejects.toMatchObject({
       status: 400,
@@ -333,41 +491,70 @@ describe("PUT the worker count", () => {
     expect(await deps.store.read(COMPANY)).toEqual({ target: null, observed: null });
   });
 
-  it("stores the target but refuses to guess the signals when the pool size is unknown", async () => {
-    const runner = new FakeRunner();
-    const deps = depsWith({ runner });
-    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 5 });
+  it("stores the target but runs nothing when no restart command is configured", async () => {
+    const runner = new FakeRestart();
+    const deps = depsWith({ declared: new FakeLaunchLine(2), runner });
+    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 });
+
+    expect(runner.commands).toEqual([]);
+    expect(result.restarted).toBe(false);
+    expect(result.applied).toBe(false);
+    expect(result.applyError).toContain("MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND");
+    expect(result.view.target).toBe(4);
+    expect(result.view.current).toBe(2);
+    expect((await deps.store.read(COMPANY)).target).toBe(4);
+  });
+
+  it("stores the target and refuses to restart blind when the pool size is unknown", async () => {
+    const runner = new FakeRestart();
+    const deps = depsWith({ runner, env: RESTART_ENV });
+    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 });
 
     expect(runner.commands).toEqual([]);
     expect(result.applied).toBe(false);
-    expect(result.applyError).toContain("TTIN/TTOU");
-    expect(result.view.target).toBe(5);
+    expect(result.applyError).toContain("could not be read");
     expect(result.view.current).toBeNull();
     expect(result.view.currentSource).toBe("unknown");
-    expect((await deps.store.read(COMPANY)).target).toBe(5);
+    expect((await deps.store.read(COMPANY)).target).toBe(4);
   });
 
-  it("counts a retry from what was actually delivered, not from the intention", async () => {
-    const gateway = new FakeGateway(4);
-    const runner = new FakeRunner();
-    runner.failAt = 2;
-    runner.onDelivered = (signal) => {
-      gateway.workers = (gateway.workers ?? 0) + (signal === "TTIN" ? 1 : -1);
-    };
-    const deps = depsWith({ gateway, runner });
-    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 1 });
+  it("reports a failed restart and keeps the real pool size", async () => {
+    const runner = new FakeRestart();
+    runner.failWith = "exit 1: unit failed to start";
+    const deps = depsWith({ declared: new FakeLaunchLine(2), runner, env: RESTART_ENV });
+    const result = await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 });
 
-    expect(gateway.workers).toBe(3);
+    expect(result.restarted).toBe(true);
     expect(result.applied).toBe(false);
-    expect(result.applyError).toBe("TTOU was not delivered: signal delivery refused");
-    expect(result.deliveries).toHaveLength(2);
-    expect((await deps.store.read(COMPANY)).observed?.workers).toBe(3);
+    expect(result.applyError).toBe("the gateway restart failed: exit 1: unit failed to start");
+    expect(result.view.current).toBe(2);
+    expect(result.view.target).toBe(4);
+    expect((await deps.store.read(COMPANY)).observed?.workers).toBe(2);
+  });
+
+  it("does not claim applied when the restart returned but the pool is not the target", async () => {
+    // The command exits 0 and the unit still says 2: the board must not believe it.
+    const runner = new FakeRestart();
+    const result = await applyLitellmWorkersTarget(
+      depsWith({ declared: new FakeLaunchLine(2), runner, env: RESTART_ENV }),
+      { companyId: COMPANY, target: 4 },
+    );
+    expect(runner.commands).toEqual(["unit-restart --workers 4"]);
+    expect(result.applied).toBe(false);
+    expect(result.applyError).toBe("the gateway was restarted but runs 2 worker process(es), not the requested 4");
+    expect(result.view.current).toBe(2);
   });
 
   it("keeps the stored target across a resize of another company", async () => {
+    const launch = new FakeLaunchLine(4);
     const store = memoryLitellmWorkersStore({});
-    const runner = new FakeRunner();
-    const deps: LitellmWorkersDeps = { store, env: {}, gateway: new FakeGateway(4), signalRunner: runner };
+    const deps: LitellmWorkersDeps = {
+      store,
+      env: RESTART_ENV,
+      gateway: new FakeGateway(null, null),
+      declared: launch,
+      restartRunner: restartMoving(launch),
+    };
     await applyLitellmWorkersTarget(deps, { companyId: "other-company", target: 2 });
     await applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 });
     expect((await store.read("other-company")).target).toBe(2);
@@ -404,9 +591,9 @@ describe("the unit of perWorkerCpu on the wire", () => {
     });
     try {
       vi.setSystemTime(1_000);
-      await gateway.readMetrics();
+      await gateway.readMetrics(COMPANY);
       vi.setSystemTime(11_000);
-      const second = await gateway.readMetrics();
+      const second = await gateway.readMetrics(COMPANY);
       expect(second.ok && second.metrics.perWorkerCpu).toBe(5);
     } finally {
       vi.useRealTimers();
@@ -421,54 +608,50 @@ describe("the unit of perWorkerCpu on the wire", () => {
 });
 
 describe("two PUTs at once", () => {
-  /** A runner that yields between signals the way a real `docker kill` does. */
-  function slowPool(start: number) {
-    const gateway = new FakeGateway(start);
-    const runner = new FakeRunner();
+  /** A restart that takes a moment, the way a real unit restart does. */
+  function slowUnit(start: number) {
+    const launch = new FakeLaunchLine(start);
+    const runner = restartMoving(launch);
     const originalRun = runner.run.bind(runner);
     runner.run = async (command: string) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       return originalRun(command);
     };
-    runner.onDelivered = (signal) => {
-      gateway.workers = (gateway.workers ?? 0) + (signal === "TTIN" ? 1 : -1);
-    };
-    return { gateway, runner };
+    return { launch, runner };
   }
 
-  it("without a lock both read the same pool and over-grow it (the race the lock closes)", async () => {
-    const { gateway, runner } = slowPool(4);
-    const deps = { ...depsWith({ gateway, runner }), lock: noLitellmWorkersLock() };
+  it("without a lock both read the same pool and both restart (the race the lock closes)", async () => {
+    const { launch, runner } = slowUnit(2);
+    const deps = { ...depsWith({ declared: launch, runner, env: RESTART_ENV }), lock: noLitellmWorkersLock() };
     await Promise.all([
-      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
-      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 }),
     ]);
-    expect(runner.commands.length).toBe(4);
-    expect(gateway.workers).toBe(8);
+    expect(runner.commands.length).toBe(2);
   });
 
-  it("under the lock the second PUT counts from the first one's result: signals only for the delta", async () => {
-    const { gateway, runner } = slowPool(4);
-    const deps = { ...depsWith({ gateway, runner }), lock: inProcessLitellmWorkersLock() };
+  it("under the lock the second PUT sees the first one's result and restarts nothing", async () => {
+    const { launch, runner } = slowUnit(2);
+    const deps = { ...depsWith({ declared: launch, runner, env: RESTART_ENV }), lock: inProcessLitellmWorkersLock() };
     const [first, second] = await Promise.all([
-      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
-      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 }),
     ]);
-    expect(runner.commands).toEqual(["docker kill -s TTIN litellm-gateway", "docker kill -s TTIN litellm-gateway"]);
-    expect(gateway.workers).toBe(6);
+    expect(runner.commands).toEqual(["unit-restart --workers 4"]);
+    expect(launch.workers).toBe(4);
     expect(first.applied && second.applied).toBe(true);
-    expect(second.signals).toEqual([]);
+    expect(second.restarted).toBe(false);
   });
 
-  it("serialises a grow and a shrink of different companies as well: the pool is one per instance", async () => {
-    const { gateway, runner } = slowPool(4);
-    const deps = { ...depsWith({ gateway, runner }), lock: inProcessLitellmWorkersLock() };
+  it("serialises two companies as well: the pool is one per instance", async () => {
+    const { launch, runner } = slowUnit(2);
+    const deps = { ...depsWith({ declared: launch, runner, env: RESTART_ENV }), lock: inProcessLitellmWorkersLock() };
     await Promise.all([
-      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 6 }),
+      applyLitellmWorkersTarget(deps, { companyId: COMPANY, target: 4 }),
       applyLitellmWorkersTarget(deps, { companyId: "other-company", target: 3 }),
     ]);
-    // 4 -> 6 (2 TTIN), then 6 -> 3 (3 TTOU): the pool ends where the last PUT asked.
-    expect(runner.commands.length).toBe(5);
-    expect(gateway.workers).toBe(3);
+    // 2 -> 4, then 4 -> 3: the pool ends where the last PUT asked.
+    expect(runner.commands).toEqual(["unit-restart --workers 4", "unit-restart --workers 3"]);
+    expect(launch.workers).toBe(3);
   });
 });

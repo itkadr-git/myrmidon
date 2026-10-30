@@ -61,12 +61,14 @@ function fakeCatalog(): ModelProviderCatalogPort & {
     async listModels({ baseUrl, apiKey }) {
       calls.push({ baseUrl, apiKey });
       if (apiKey === "bad-key") throw new ProviderAuthError("the provider answered 401");
+      if (apiKey === "no-models-key") return { models: [] };
       if (apiKey === ROTATED_VALUE) return { models: ["model-x", "model-y", "model-z"] };
       return { models: ["model-a", "model-b"] };
     },
     async probeToolCall(input) {
       probes.push(input);
       if (input.apiKey === "probe-fail") throw new Error("tool calls are disabled");
+      if (input.apiKey === "probe-leak") throw new Error("upstream said: Authorization Bearer sk-leaked-secret rejected");
     },
   };
 }
@@ -250,13 +252,54 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     });
     const compatible = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
     expect(compatible.toolCallCompatible).toBe(true);
-    expect(probes[0]?.model).toBe("gpt-4o-mini");
+    expect(probes[0]?.model).toBe("model-a");
     expect(probes[0]?.apiKey).toBe(KEY_VALUE);
     expect(JSON.stringify(compatible)).not.toContain(KEY_VALUE);
     secrets.set(created.credentialSecretName!, "probe-fail");
     const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
     expect(failed.toolCallCompatible).toBe(false);
-    expect(failed.toolCallCheckError).toBe("tool calls are disabled");
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
+  });
+
+  it("probes a provider that has no gpt-4o-mini with a model from its own /models", async () => {
+    companyId = await makeCompany();
+    const { service, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "nomini", key: KEY_VALUE, baseUrl: null },
+    });
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(probes[0]?.model).not.toBe("gpt-4o-mini");
+    await service.checkToolCallCompatibility({ companyId, providerId: created.id, model: "model-b" });
+    expect(probes[1]?.model).toBe("model-b");
+  });
+
+  it("answers a clear no-models error when /models is empty and does not probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets, probes } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "empty", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "no-models-key");
+    await expect(
+      service.checkToolCallCompatibility({ companyId, providerId: created.id }),
+    ).rejects.toMatchObject({ details: { code: "provider_no_models" } });
+    expect(probes).toHaveLength(0);
+  });
+
+  it("never stores or returns the raw exception text of a failed probe", async () => {
+    companyId = await makeCompany();
+    const { service, secrets } = makeService();
+    const created = await service.createProvider({
+      companyId,
+      body: { type: "openai", name: "secret", key: KEY_VALUE, baseUrl: null },
+    });
+    secrets.set(created.credentialSecretName!, "probe-leak");
+    const failed = await service.checkToolCallCompatibility({ companyId, providerId: created.id });
+    expect(failed.toolCallCompatible).toBe(false);
+    expect(failed.toolCallCheckError).not.toContain("sk-leaked-secret");
+    expect(failed.toolCallCheckError).toBe("probe_failed: the tool-call probe failed");
   });
 
   it("reports hasKey false when the secret is gone and never leaks the value", async () => {

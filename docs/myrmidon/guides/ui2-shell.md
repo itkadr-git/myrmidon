@@ -70,11 +70,12 @@ the whole instance on 2.0, and use `?ui=1` yourself to compare against the
 
 Desktop (viewport width 768 px and up):
 
-- A 232 px left rail with the Myrmidon logo, three groups of destinations —
+- A 232 px left rail with the Myrmidon logo, four groups of destinations —
   Observe (Command center, Agents, Servers, Swarm, Costs, Quality), Decide &
-  talk (Wait for me, Commander), Manage (Settings) — a badge on "Wait for me"
-  counting decisions awaiting the owner (99+ past ninety-nine), and an owner
-  footer showing the company name and the active channel ("Web · now").
+  talk (Wait for me, Commander), Manage (Settings), and Plugins — plugin
+  sidebar contributions and launchers supplied by installed plugins — a badge
+  on "Wait for me" counting decisions awaiting the owner (99+ past ninety-nine),
+  and an owner footer showing the company name and active channel ("Web · now").
 - A 56 px top bar: the nest switcher ("All nests" — today it states the
   scope; the multi-project selector arrives later), status chips — colony
   (running agents of total), Fleet (turns into "Fleet: 1 attention" when
@@ -82,14 +83,24 @@ Desktop (viewport width 768 px and up):
   and the "Tell the Commander" entry with a `Ctrl K` hint on it (the shortcut
   itself arrives with the 1.6 chat update; today the palette opens by click),
   and a navy decisions badge next to it.
-- On company settings routes a 10-section settings side panel (General,
-  Members, Access, Secrets, Runs and queue, Budgets, Autonomy, Guardrails,
-  Castes and models, System).
+- On company settings routes a settings side panel with the available sections
+  (General, Members, Access, Secrets, Runs and queue, Budgets, Autonomy,
+  Castes and models, System). Guardrails is temporarily hidden because its
+  screen and route are not implemented yet; it will return when the screen is
+  available. The sidebar contract test checks every displayed path against the
+  App and UI2 route tables.
 
 Mobile (below 768 px): a phone frame — a 56 px header with the logo and
-"Owner · Web" status, and a six-tab bottom bar (Command center / Wait for
-me / Agents / Servers / Commander / More), tab items 60 px tall with touch
-targets of at least 44 px.
+"Owner · Web" status, and a bottom navigation bar with the six standard tabs
+(Command center / Wait for me / Agents / Servers / Commander / More) plus the
+available plugin sidebar contributions and launchers. The plugin section is
+measured with `ResizeObserver` so the page content reserves its actual height;
+tab items are 60 px tall with touch targets of at least 44 px.
+
+Plugin page routes load their UI contribution directly, so opening a plugin URL
+from a fresh UI2 session does not depend on first visiting the sidebar. See
+[`1-6-6-ui2-plugin-nav.md`](../changes/1-6-6-ui2-plugin-nav.md) for the
+implementation and verification record.
 
 Two shell parts are honest stubs for now:
 

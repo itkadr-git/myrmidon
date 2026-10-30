@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
@@ -188,7 +189,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     streamlinedUiEnabled ? (
       <ContextualSidebarFrame
         surface={`plugin:${routeSidebarSlot.id}`}
-        title={routeSidebarSlot.displayName}
+        title={pluginLabel(t, routeSidebarSlot.pluginKey, routeSidebarSlot.id, routeSidebarSlot.displayName)} // myrmidon(OPE-9352)
       >
         <PluginSlotMount
           slot={routeSidebarSlot}

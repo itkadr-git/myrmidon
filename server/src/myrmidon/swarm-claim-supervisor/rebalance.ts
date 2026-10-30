@@ -13,6 +13,7 @@ import type { Db } from "@myrmidon/db";
 import type { SwarmSupervisorReadPort } from "./view.js";
 import { createSwarmSupervisorDbPort } from "./view.js";
 import { clearReleasedAssignee } from "../swarm-claim/store.js";
+import { swarmClaimMetrics } from "../swarm-claim/metrics.js";
 
 export const SUPERVISOR_RELEASE_REASON = "supervisor_rebalance";
 export const SWARM_CLAIM_SUPERVISOR_RELEASE_ACTION = "issue.swarm_claim_supervisor_release";
@@ -227,7 +228,9 @@ export function createSwarmSupervisorReleasePort(
           AND released_at IS NULL
         RETURNING id
       `);
-      return Array.isArray(rows) && rows.length > 0;
+      const released = Array.isArray(rows) && rows.length > 0;
+      if (released) swarmClaimMetrics.recover(releasedReason);
+      return released;
     },
     unassignIssue: (companyId, issueId, agentId, claimId, now) =>
       clearReleasedAssignee(db, { companyId, issueId, agentId, claimId, releaseReason: SUPERVISOR_RELEASE_REASON, now }),

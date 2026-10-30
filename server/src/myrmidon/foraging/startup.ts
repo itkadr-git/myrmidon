@@ -28,6 +28,7 @@ import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { resolveForagingEffectiveSettings } from "./settings.js";
 import { foragingWiring } from "./index.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface ForagingSweepPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -76,7 +77,7 @@ export function startForagingSweep(
       // A changed interval re-arms the timer on the next tick.
       if (timer && (timer as unknown as { _idleTimeout?: number })._idleTimeout !== intervalMs) {
         clearInterval(timer);
-        timer = setInterval(() => {
+        timer = backgroundInterval(() => {
           void tick();
         }, intervalMs);
         if (typeof timer.unref === "function") timer.unref();
@@ -100,7 +101,7 @@ export function startForagingSweep(
 
   const arm = (intervalMs: number) => {
     if (timer) clearInterval(timer);
-    timer = setInterval(() => {
+    timer = backgroundInterval(() => {
       void tick();
     }, intervalMs);
     if (typeof timer.unref === "function") timer.unref();
