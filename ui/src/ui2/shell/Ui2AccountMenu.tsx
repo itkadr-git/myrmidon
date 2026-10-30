@@ -25,7 +25,9 @@ import {
   useMyrmidonUi2PersonalOverride,
   type Ui2PersonalOverride,
 } from "@/ui2/useMyrmidonUi2Enabled";
-import { useHealth } from "@/hooks/useHealth";
+import { useQuery } from "@tanstack/react-query";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 
 interface Ui2AccountMenuProps {
@@ -38,7 +40,10 @@ export function Ui2AccountMenu({ compact = false, trigger, className }: Ui2Accou
   const [open, setOpen] = useState(false);
   const { t } = useTranslation();
   const { selectedCompany } = useCompany();
-  const { data: health } = useHealth();
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
   const signOutMutation = useSignOut();
   const { language, setLanguage } = useAppLanguage();
   const { override, setOverride } = useMyrmidonUi2PersonalOverride();

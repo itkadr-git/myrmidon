@@ -3,14 +3,17 @@
 // and language selection parity in UI2.
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { name: "Test Corp", id: "co-1" } }),
 }));
 
-vi.mock("@/hooks/useHealth", () => ({
-  useHealth: () => ({ data: { status: "ok", deploymentMode: "local" } }),
+vi.mock("@/api/health", () => ({
+  healthApi: {
+    get: vi.fn().mockResolvedValue({ status: "ok", deploymentMode: "local" }),
+  },
 }));
 
 vi.mock("@/hooks/useSignOut", () => ({
@@ -46,8 +49,10 @@ async function act(callback: () => void | Promise<void>) {
 describe("Ui2AccountMenu", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     window.localStorage.clear();
     window.history.replaceState(null, "", "/");
     container = document.createElement("div");
@@ -66,7 +71,11 @@ describe("Ui2AccountMenu", () => {
 
   it("renders the compact trigger and opens the menu with interface switch options", async () => {
     await act(() => {
-      root!.render(<Ui2AccountMenu compact />);
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2AccountMenu compact />
+        </QueryClientProvider>,
+      );
     });
 
     const trigger = container.querySelector('[data-testid="ui2-account-menu-trigger-compact"]');
@@ -104,7 +113,11 @@ describe("Ui2AccountMenu", () => {
     window.localStorage.setItem("myr.ui2.personal", "1");
 
     await act(() => {
-      root!.render(<Ui2AccountMenu />);
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Ui2AccountMenu />
+        </QueryClientProvider>,
+      );
     });
 
     const trigger = container.querySelector('[data-testid="ui2-account-menu-trigger-full"]');
