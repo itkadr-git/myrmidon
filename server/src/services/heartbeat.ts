@@ -2263,6 +2263,65 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+export function computeTransientRetryDelayMs(params: {
+  nextAttempt: number;
+  now?: Date;
+  transientRetryNotBeforeHint?: Date | null;
+  isCooldownOrQuota?: boolean;
+  runFinishedAt?: Date | null;
+  runStartedAt?: Date | null;
+}): number | null {
+  const {
+    nextAttempt,
+    now = new Date(),
+    transientRetryNotBeforeHint,
+    isCooldownOrQuota = false,
+    runFinishedAt,
+    runStartedAt,
+  } = params;
+
+  if (transientRetryNotBeforeHint) {
+    const remainingHintMs = Math.max(
+      0,
+      transientRetryNotBeforeHint.getTime() - now.getTime(),
+    );
+    if (isCooldownOrQuota) {
+      // Cooldown / provider quota: repeat no earlier than retry_after / cooldown,
+      // and exponentially for repeated failures. When the hint has already passed
+      // (remainingHintMs === 0), do not retry immediately (0 ms) — continue
+      // backing off exponentially based on the cooldown window duration.
+      const hintDurationMs = Math.max(
+        60_000,
+        transientRetryNotBeforeHint.getTime() -
+          (runFinishedAt?.getTime() ??
+            runStartedAt?.getTime() ??
+            now.getTime() - 60_000),
+      );
+      const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+      const expDelayMs = Math.min(
+        hintDurationMs * expFactor,
+        GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+      );
+      return Math.max(remainingHintMs, expDelayMs);
+    }
+    return Math.min(
+      remainingHintMs,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  if (isCooldownOrQuota) {
+    const baseDelayMs = 60_000;
+    const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+    return Math.min(
+      baseDelayMs * expFactor,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  return null;
+}
+
 async function resolveRunScopedMentionedSkillKeys(input: {
   db: Db;
   companyId: string;
@@ -15494,18 +15553,14 @@ export function heartbeatService(
     const isCooldownOrQuota =
       readHeartbeatRunErrorFamily(run) === "provider_quota" ||
       Boolean(parseObject(run.resultJson).cooldown);
-    const expFactor = isCooldownOrQuota
-      ? Math.pow(2, Math.max(0, nextAttempt - 1))
-      : 1;
-    const hintDelayMs = transientRetryNotBeforeHint
-      ? Math.min(
-          Math.max(
-            0,
-            (transientRetryNotBeforeHint.getTime() - now.getTime()) * expFactor,
-          ),
-          GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
-        )
-      : null;
+    const hintDelayMs = computeTransientRetryDelayMs({
+      nextAttempt,
+      now,
+      transientRetryNotBeforeHint,
+      isCooldownOrQuota,
+      runFinishedAt: run.finishedAt,
+      runStartedAt: run.startedAt,
+    });
     const computedBaseSchedule =
       opts?.delayMs != null || hintDelayMs != null
         ? nextAttempt <= maxAttempts

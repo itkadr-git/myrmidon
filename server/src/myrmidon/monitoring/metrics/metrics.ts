@@ -368,6 +368,38 @@ async function readRunCounters(db: Db): Promise<{
   return { active, queued, failedTotal };
 }
 
+/** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
+export async function readAgentFailedBeforeModel(
+  db: Db,
+): Promise<Record<string, number>> {
+  try {
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        total: count(),
+      })
+      .from(heartbeatRuns)
+      .where(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = true`,
+      )
+      .groupBy(heartbeatRuns.agentId);
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      if (row.agentId) {
+        result[row.agentId] = Number(row.total);
+      }
+    }
+    for (const [agentId, count] of Object.entries(
+      failedBeforeModelMetrics.getAll(),
+    )) {
+      result[agentId] = Math.max(result[agentId] ?? 0, count);
+    }
+    return result;
+  } catch {
+    return failedBeforeModelMetrics.getAll();
+  }
+}
+
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
 async function readRunDurations(
   db: Db,
@@ -737,7 +769,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
           Promise.resolve().then(() =>
             deps.failedBeforeModel
               ? deps.failedBeforeModel()
-              : failedBeforeModelMetrics.getAll(),
+              : readAgentFailedBeforeModel(deps.db),
           ),
         null as Record<string, number> | null,
       ),

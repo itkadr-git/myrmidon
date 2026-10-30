@@ -16,13 +16,17 @@ import {
 import {
   METRIC_FAMILIES,
   renderMetricsText,
+  readAgentFailedBeforeModel,
   type MetricsSnapshot,
 } from "../myrmidon/monitoring/metrics/metrics.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import {
+  heartbeatService,
+  computeTransientRetryDelayMs,
+} from "../services/heartbeat.js";
 
 describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
   it("classifies LiteLLM deployment cooldown as provider_quota with cooldown delay and failedBeforeModel", () => {
@@ -162,6 +166,130 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
     const rendered = renderMetricsText(sampleSnapshot);
     expect(rendered).toContain("myrmidon_agent_failed_before_model_total");
     expect(rendered).toContain('agent_id="agent-adm"');
+  });
+
+  describe("retry schedule with cooldown and exponential backoff", () => {
+    it("schedules consecutive retries with exponential backoff when cooldown hint is active", () => {
+      const now = new Date("2026-10-30T10:00:00.000Z");
+      const retryNotBefore = new Date("2026-10-30T10:01:00.000Z"); // +60s hint
+      const finishedAt = new Date("2026-10-30T10:00:00.000Z");
+
+      // Attempt 1: honors the 60s cooldown hint
+      const delay1 = computeTransientRetryDelayMs({
+        nextAttempt: 1,
+        now,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay1).toBe(60_000);
+
+      // Attempt 2: exponential backoff (60s * 2^1 = 120s)
+      const delay2 = computeTransientRetryDelayMs({
+        nextAttempt: 2,
+        now,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay2).toBe(120_000);
+
+      // Attempt 3: exponential backoff (60s * 2^2 = 240s)
+      const delay3 = computeTransientRetryDelayMs({
+        nextAttempt: 3,
+        now,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay3).toBe(240_000);
+    });
+
+    it("does not yield 0 or immediate retry after cooldown hint has elapsed (consecutive dueAt increase exponentially)", () => {
+      const finishedAt = new Date("2026-10-30T10:00:00.000Z");
+      const retryNotBefore = new Date("2026-10-30T10:01:00.000Z"); // expired 30s ago
+      const nowAfterCooldown = new Date("2026-10-30T10:01:30.000Z");
+
+      // Attempt 1 after hint elapsed: must NOT be 0 (immediate retry), must be at least base cooldown (60s)
+      const delay1 = computeTransientRetryDelayMs({
+        nextAttempt: 1,
+        now: nowAfterCooldown,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay1).toBe(60_000);
+      const dueAt1 = new Date(nowAfterCooldown.getTime() + delay1!);
+      expect(dueAt1.getTime()).toBe(nowAfterCooldown.getTime() + 60_000);
+
+      // Attempt 2: exponential backoff (120s)
+      const delay2 = computeTransientRetryDelayMs({
+        nextAttempt: 2,
+        now: nowAfterCooldown,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay2).toBe(120_000);
+      const dueAt2 = new Date(nowAfterCooldown.getTime() + delay2!);
+      expect(dueAt2.getTime()).toBe(nowAfterCooldown.getTime() + 120_000);
+
+      // Attempt 3: exponential backoff (240s)
+      const delay3 = computeTransientRetryDelayMs({
+        nextAttempt: 3,
+        now: nowAfterCooldown,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota: true,
+        runFinishedAt: finishedAt,
+      });
+      expect(delay3).toBe(240_000);
+      const dueAt3 = new Date(nowAfterCooldown.getTime() + delay3!);
+      expect(dueAt3.getTime()).toBe(nowAfterCooldown.getTime() + 240_000);
+
+      // Verify consecutive dueAt are strictly monotonic and exponentially spaced
+      expect(dueAt2.getTime() - dueAt1.getTime()).toBeGreaterThan(60_000);
+      expect(dueAt3.getTime() - dueAt2.getTime()).toBeGreaterThan(120_000);
+    });
+
+    it("applies exponential backoff when provider_quota error has no explicit hint", () => {
+      const now = new Date("2026-10-30T10:00:00.000Z");
+
+      const delay1 = computeTransientRetryDelayMs({
+        nextAttempt: 1,
+        now,
+        isCooldownOrQuota: true,
+      });
+      expect(delay1).toBe(60_000);
+
+      const delay2 = computeTransientRetryDelayMs({
+        nextAttempt: 2,
+        now,
+        isCooldownOrQuota: true,
+      });
+      expect(delay2).toBe(120_000);
+    });
+  });
+
+  describe("durable failedBeforeModel metrics aggregation", () => {
+    it("aggregates failed-before-model counts across instances and falls back gracefully", async () => {
+      const fakeDb = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              groupBy: () =>
+                Promise.resolve([
+                  { agentId: "agent-alpha", total: 3 },
+                  { agentId: "agent-beta", total: 1 },
+                ]),
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await readAgentFailedBeforeModel(fakeDb);
+      expect(result["agent-alpha"]).toBe(3);
+      expect(result["agent-beta"]).toBe(1);
+    });
   });
 });
 

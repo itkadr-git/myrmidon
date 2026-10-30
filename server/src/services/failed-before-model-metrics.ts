@@ -2,6 +2,7 @@ export interface FailedBeforeModelMetricsRegistry {
   recordFailure(agentId: string): void;
   get(agentId: string): number;
   getAll(): Record<string, number>;
+  set(agentId: string, count: number): void;
   reset(): void;
 }
 
@@ -17,6 +18,10 @@ export function createFailedBeforeModelMetricsRegistry(): FailedBeforeModelMetri
     },
     getAll(): Record<string, number> {
       return Object.fromEntries(counts.entries());
+    },
+    set(agentId: string, count: number): void {
+      if (!agentId) return;
+      counts.set(agentId, count);
     },
     reset(): void {
       counts.clear();
