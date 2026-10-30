@@ -74,8 +74,8 @@ import {
 } from "./pr-policy.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
-import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
-export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
@@ -231,7 +231,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           reviewerAgentId: review.reviewerAgentId,
           stageId: review.stageId,
         });
-        if (wakeState.activeRun || wakeState.pendingWake) continue;
+        if (wakeState.activeRun || wakeState.pendingWake || wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) continue;
         // `updatedAt` is not a review-progress signal: comments and unrelated
         // issue edits can move it forward. The persisted wake marker is the
         // last reviewer-delivery attempt, so use it as the idle baseline when
@@ -246,7 +246,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           (row.executionState ?? {}) as Record<string, unknown>,
         );
         const currentStage = review.stageId;
-        const activeRunCount = await deps.store.countActiveRunsForIssue(companyId, review.reviewerAgentId, row.id);
+        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
         if (activeRunCount > 0) continue;
         if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
         // Persist the wake request before dispatch: a failure while enqueuing
@@ -753,6 +753,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
       const requestedAt = new Date().toISOString();
       const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
+      if (lastWakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+        log.warn({ issueId: row.id, reviewerId, attempts: lastWakeState.attempts }, "review routing wake retry limit reached");
+        return null;
+      }
       const attempt = lastWakeState.attempts + 1;
       await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
       await deps.wakeReviewer(reviewerId, {

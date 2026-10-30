@@ -66,6 +66,7 @@ export interface ReviewRoutingStore {
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
+  countActiveRunsForAgent(companyId: string, agentId: string): Promise<number>;
   countActiveRunsForIssue(companyId: string, agentId: string, issueId: string): Promise<number>;
   routingHistory(companyId: string, issueIds: readonly string[]): Promise<Map<string, RoutingHistory>>;
   reviewWakeState(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }): Promise<{
@@ -241,6 +242,17 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       return load;
     },
 
+    async countActiveRunsForAgent(companyId, agentId) {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
+        ));
+      return count ?? 0;
+    },
     async countActiveRunsForIssue(companyId, agentId, issueId) {
       const [result] = await db
         .select({ count: sql<number>`count(*)::int` })
