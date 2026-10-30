@@ -1,5 +1,5 @@
 {
-  "id": "f4904c5c-1d20-46b1-b7cc-9407b2b981fd",
+  "id": "aa8ac63f-1948-4cf3-8b0c-1eb94776d1e7",
   "prevId": "20084129-d97b-4670-b2b3-4ad51c0dc750",
   "version": "7",
   "dialect": "postgresql",
@@ -33532,6 +33532,37 @@
           "primaryKey": false,
           "notNull": false
         },
+        "route_type": {
+          "name": "route_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "addressee_queue": {
+          "name": "addressee_queue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "timeout_at": {
+          "name": "timeout_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "escalation_chain": {
+          "name": "escalation_chain",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "escalation_level": {
+          "name": "escalation_level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "created_by_user_id": {
           "name": "created_by_user_id",
           "type": "text",
@@ -33731,6 +33762,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "issue_thread_interactions_pending_timeout_idx": {
+          "name": "issue_thread_interactions_pending_timeout_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "timeout_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"issue_thread_interactions\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -33842,7 +33895,16 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "issue_thread_interactions_route_address_timeout_check": {
+          "name": "issue_thread_interactions_route_address_timeout_check",
+          "value": "\"issue_thread_interactions\".\"route_type\" IS NULL OR \"issue_thread_interactions\".\"timeout_at\" IS NOT NULL"
+        },
+        "issue_thread_interactions_route_address_check": {
+          "name": "issue_thread_interactions_route_address_check",
+          "value": "\"issue_thread_interactions\".\"route_type\" IS NULL OR ((CASE WHEN \"issue_thread_interactions\".\"addressee_agent_id\" IS NULL THEN 0 ELSE 1 END) + (CASE WHEN \"issue_thread_interactions\".\"addressee_user_id\" IS NULL THEN 0 ELSE 1 END) + (CASE WHEN \"issue_thread_interactions\".\"addressee_queue\" IS NULL THEN 0 ELSE 1 END) = 1 AND \"issue_thread_interactions\".\"timeout_at\" IS NOT NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.issue_tree_hold_members": {
@@ -35257,12 +35319,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "responsible_agent_id": {
-          "name": "responsible_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "issue_number": {
           "name": "issue_number",
           "type": "integer",
@@ -35610,27 +35666,6 @@
             },
             {
               "expression": "responsible_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_responsible_agent_idx": {
-          "name": "issues_company_responsible_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "responsible_agent_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -36375,19 +36410,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "created_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issues_responsible_agent_id_agents_id_fk": {
-          "name": "issues_responsible_agent_id_agents_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "responsible_agent_id"
           ],
           "columnsTo": [
             "id"

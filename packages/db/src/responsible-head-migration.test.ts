@@ -18,7 +18,7 @@ afterEach(async () => {
 
 async function migrationStatements(): Promise<string[]> {
   const migrationSql = await readFile(
-    fileURLToPath(new URL("./migrations/0422_colorful_jazinda.sql", import.meta.url)),
+    fileURLToPath(new URL("./migrations/0423_colorful_jazinda.sql", import.meta.url)),
     "utf8",
   );
   return migrationSql
@@ -27,7 +27,7 @@ async function migrationStatements(): Promise<string[]> {
     .filter((statement) => statement.length > 0);
 }
 
-d("migration 0422 responsible head backfill", () => {
+d("migration 0423 responsible head backfill", () => {
   it("populates responsible_agent_id and clears responsible_user_id for bot issues, leaving human-created issues intact", async () => {
     const dbh = await startEmbeddedPostgresTestDatabase("resp-head-migration-");
     cleanups.push(() => dbh.cleanup());

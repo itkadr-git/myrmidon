@@ -6367,6 +6367,11 @@ function getActorIdentityPart(req: Request): string {
             : [],
         ),
       );
+      if (issueId) {
+        const issue = await issueService(db).getById(issueId);
+        if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
+        wakePayload.eventRevision = issue.updatedAt.toISOString();
+      }
     }
     // myrmidon(WAKE-BIND): a wake must always carry its task. Accept the
     // documented top-level issueId, and for a manual wake with no issue at all
@@ -6398,6 +6403,15 @@ function getActorIdentityPart(req: Request): string {
     // container floor alone. A public wake must not claim it.
     if (typeof req.body.idempotencyKey === "string" && req.body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
       throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`);
+    }
+    const issueId =
+      typeof wakePayload?.issueId === "string" ? wakePayload.issueId :
+      typeof wakePayload?.taskId === "string" ? wakePayload.taskId : null;
+    if (issueId) {
+      const issue = await issueService(db).getById(issueId);
+      if (issue?.companyId === agent.companyId) {
+        wakePayload = { ...(wakePayload ?? {}), eventRevision: issue.updatedAt.toISOString() };
+      }
     }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
