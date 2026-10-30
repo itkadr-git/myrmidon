@@ -96,6 +96,9 @@ jobs:
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
+          # (same rule as rel/* PRs: only while the selection fits MAX_FAST_FILES_PER_PACKAGE; full-ci label keeps full).
+          PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -110,7 +113,10 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            case "$BASE_REF" in
+              rel/*) args+=(--release-fast) ;;
+              *) if [ "$EVENT" = "pull_request" ] && [ "$PR_FAST" = "true" ]; then args+=(--release-fast); fi ;;
+            esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -127,7 +133,7 @@ jobs:
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -268,7 +274,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -339,7 +345,7 @@ jobs:
     name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 50
     steps:
       - name: Checkout repository
@@ -411,7 +417,7 @@ jobs:
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -570,7 +576,7 @@ jobs:
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
