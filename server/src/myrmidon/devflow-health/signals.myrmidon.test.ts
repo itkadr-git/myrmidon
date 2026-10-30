@@ -11,6 +11,20 @@ describe("DEVFLOW runtime signals", () => {
       { companyId: "company-a", subjectId: "issue-a", durationMs: 60_000, dedupKey: "devflow:company-a:reviewQueueAgeMs:issue-a" },
     ]);
   });
+  it("delivers codeTasksOnNoncodingRoles alert when exceeding threshold", () => {
+    const sample = {
+      companyId: "company-a",
+      subjectId: "issue-code-1",
+      subjectKind: "issue" as const,
+      title: "Code Task on Noncoding Role",
+      metric: "codeTasksOnNoncodingRolesMs" as const,
+      since: "2026-10-27T19:30:00Z",
+    };
+    expect(buildDevflowSignals([sample], { codeTasksOnNoncodingRolesMs: 30 * 60_000 + 1 }, now)).toEqual([]);
+    expect(buildDevflowSignals([sample], { codeTasksOnNoncodingRolesMs: 30 * 60_000 }, now)).toMatchObject([
+      { companyId: "company-a", subjectId: "issue-code-1", durationMs: 30 * 60_000, dedupKey: "devflow:company-a:codeTasksOnNoncodingRolesMs:issue-code-1" },
+    ]);
+  });
   it("preserves the first failure until a successful completion, ignoring reruns in progress", () => {
     expect(redCiSince([
       { conclusion: "failure", at: "2026-10-27T18:00:00Z" },

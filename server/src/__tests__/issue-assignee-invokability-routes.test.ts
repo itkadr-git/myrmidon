@@ -337,7 +337,7 @@ describe("issue assignee invokability guard", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
-  it.each(["todo", "blocked", "in_progress"])(
+  it.each(["todo", "blocked"])(
     "lets a non-engineer who already holds a code issue move it to %s",
     async (status) => {
       const existing = makeIssue({
@@ -350,12 +350,30 @@ describe("issue assignee invokability guard", () => {
 
       const res = await request(createApp(boardActor())).patch(`/api/issues/${existing.id}`).send({ status });
 
-      // The gate must not interfere: a status move by the current holder is never
-      // refused as "requires an engineer" (other validators may still apply).
+      // Moving to todo or blocked is permitted for current holder
       expect(res.status).not.toBe(422);
       expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
     },
   );
+
+  it("rejects moving a code issue to in_progress when held by a non-engineer", async () => {
+    const existing = makeIssue({
+      status: "in_review",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_progress" });
+
+    // 1.6.6 GUARD-RETURN: Gated with clear error and hint
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "issue_requires_engineer" });
+    expect(res.body.details.hint).toBeDefined();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
 });
 
 describe("agent delegation cycle guard", () => {

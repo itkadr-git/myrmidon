@@ -1,6 +1,7 @@
-import { agents, issues, issueWorkProducts, activityLog, connectionEventDeliveries, instanceSettings, type Db } from "@myrmidon/db";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { agents, issues, issueWorkProducts, activityLog, connectionEventDeliveries, instanceSettings, projects, type Db } from "@myrmidon/db";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { buildDevflowSignals, redCiSince, type DevflowSample, type DevflowSignal } from "./signals.js";
+import { isDevProjectCodeIssue } from "../guard-return/domain.js";
 
 /** Read only persisted sources; no GitHub polling, model call, or wakeup. */
 export async function collectDevflowHealth(db: Db, companyId: string, now = new Date()): Promise<DevflowSignal[]> {
@@ -12,6 +13,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     engineerIdleMs: "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS",
     reviewQueueAgeMs: "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS",
     redCiMs: "MYRMIDON_DEVFLOW_RED_CI_MS",
+    codeTasksOnNoncodingRolesMs: "MYRMIDON_DEVFLOW_CODE_TASKS_NONCODING_MS",
   })) {
     if (process.env[envKey]?.trim()) thresholds[metric] = Number(process.env[envKey]);
   }
@@ -54,6 +56,62 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     })));
     if (since) samples.push({ companyId, subjectId: issue.id, subjectKind: "issue", title: issue.title, metric: "redCiMs", since });
   }
+
+  const candidateIssues = await db
+    .select({
+      id: issues.id,
+      title: issues.title,
+      labels: issues.labels,
+      casteKey: issues.casteKey,
+      harnessKind: issues.harnessKind,
+      executionWorkspacePreference: issues.executionWorkspacePreference,
+      executionState: issues.executionState,
+      updatedAt: issues.updatedAt,
+      projectDefaultCasteKey: projects.defaultCasteKey,
+      projectName: projects.name,
+    })
+    .from(issues)
+    .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    .leftJoin(projects, eq(projects.id, issues.projectId))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        inArray(issues.status, ["in_progress", "in_review"]),
+        ne(agents.role, "engineer"),
+      ),
+    );
+
+  for (const issue of candidateIssues) {
+    const prs = await db
+      .select({ id: issueWorkProducts.id })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.issueId, issue.id), eq(issueWorkProducts.type, "pull_request")))
+      .limit(1);
+
+    if (
+      isDevProjectCodeIssue({
+        labels: issue.labels as any,
+        casteKey: issue.casteKey,
+        projectDefaultCasteKey: issue.projectDefaultCasteKey,
+        projectName: issue.projectName,
+        harnessKind: issue.harnessKind,
+        executionWorkspacePreference: issue.executionWorkspacePreference,
+        hasPullRequest: prs.length > 0,
+        hasReviewState: Boolean(issue.executionState && (issue.executionState as any).stages),
+      })
+    ) {
+      samples.push({
+        companyId,
+        subjectId: issue.id,
+        subjectKind: "issue",
+        title: issue.title,
+        metric: "codeTasksOnNoncodingRolesMs",
+        since: new Date(issue.updatedAt).toISOString(),
+      });
+    }
+  }
+
   // One card per subject/metric even when a PR has multiple registered products.
   const signals = buildDevflowSignals(samples, thresholds, now);
   return [...new Map(signals.map((s) => [s.dedupKey, s])).values()];
