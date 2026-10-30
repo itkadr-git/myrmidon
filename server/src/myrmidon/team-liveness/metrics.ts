@@ -36,7 +36,7 @@ export interface TeamLivenessMetrics {
   wakes: number;
   /** Runs progress-based run liveness interrupted. */
   stalledRuns: number;
-  /** Successful runs classified empty_response/plan_only by liveness; this is a proxy, not a comment-only action audit. */
+  /** Audit of runs whose only outcome was an issue comment, with no commit/PR work product or status change. */
   emptyRunsByAgent: Array<{ agentId: string; count: number }>;
 }
 
@@ -67,15 +67,9 @@ export async function countEmptyRunsByAgent(
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "succeeded"),
         gte(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`, since.toISOString()),
-        sql`(
-          exists (
-            select 1 from issue_comments
-            where issue_comments.created_by_run_id = ${heartbeatRuns.id}
-          )
-          or (
-            ${heartbeatRuns.livenessState} in ('empty_response', 'plan_only')
-            and ${heartbeatRuns.livenessReason} ilike 'Run succeeded without useful output%'
-          )
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
         )`,
         sql`not exists (
           select 1 from issue_work_products

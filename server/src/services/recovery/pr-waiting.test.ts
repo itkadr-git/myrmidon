@@ -169,4 +169,22 @@ describe("isIssueWaitingForPullRequestCi", () => {
     const waiting = await isIssueWaitingForPullRequestCi(db, { companyId, issueId }, mockResolver as any);
     expect(waiting).toBe(true);
   });
+
+  it("returns false when prResolver throws an error (e.g. outage or rate limit)", async () => {
+    const db = createMockDb({
+      id: "prod-1",
+      status: "open",
+      reviewState: "none",
+      healthStatus: "healthy",
+      metadata: { repo: "org/repo", number: 1, ci: "pending" },
+      url: "https://github.com/org/repo/pull/1",
+    });
+    const mockResolver = {
+      resolve: async () => {
+        throw new Error("GitHub rate limit or outage");
+      },
+    };
+    const waiting = await isIssueWaitingForPullRequestCi(db, { companyId, issueId }, mockResolver as any);
+    expect(waiting).toBe(false);
+  });
 });

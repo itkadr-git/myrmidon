@@ -88,7 +88,9 @@ export async function isIssueWaitingForPullRequestCi(
         if (head.ci === "not_green") return false;
         return head.ci === "pending" || head.ci === "green";
       } catch {
-        // Fall back to stored product and metadata checks above
+        // Resolver failed (e.g. GitHub outage or rate limit): do not fall back to stale
+        // metadata to suppress the author; return false when live PR state cannot be verified.
+        return false;
       }
     }
   }

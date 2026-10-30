@@ -369,15 +369,9 @@ async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ 
     .where(
       and(
         eq(heartbeatRuns.status, "succeeded"),
-        sql`(
-          exists (
-            select 1 from issue_comments
-            where issue_comments.created_by_run_id = ${heartbeatRuns.id}
-          )
-          or (
-            ${heartbeatRuns.livenessState} in ('empty_response', 'plan_only')
-            and ${heartbeatRuns.livenessReason} ilike 'Run succeeded without useful output%'
-          )
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
         )`,
         sql`not exists (
           select 1 from issue_work_products

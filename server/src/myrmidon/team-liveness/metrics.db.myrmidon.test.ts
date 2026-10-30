@@ -146,14 +146,24 @@ describeEmbeddedPostgres("team liveness metrics", () => {
     });
   }
 
-  async function recordEmptyRun(companyId: string, agentId: string, at: Date) {
+  async function recordEmptyRun(companyId: string, agentId: string, at: Date, issueId?: string) {
+    const runId = randomUUID();
+    const targetIssueId = issueId ?? (await seedIssue(companyId));
     await db.insert(heartbeatRuns).values({
+      id: runId,
       companyId,
       agentId,
       status: "succeeded",
-      livenessState: "empty_response",
-      livenessReason: "Run succeeded without useful output",
       finishedAt: at,
+      updatedAt: at,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: targetIssueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: runId,
+      createdAt: at,
       updatedAt: at,
     });
   }
