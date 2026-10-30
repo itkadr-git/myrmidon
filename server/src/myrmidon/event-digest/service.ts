@@ -64,18 +64,18 @@ export class EventDigestService {
     const current = this.buffers.get(agentId) ?? [];
     const alreadyPrepared = this.preparedDigests.get(agentId) ?? [];
     const combined = [...alreadyPrepared, ...current];
+    if (triggeringEvent) {
+      combined.push(triggeringEvent);
+    }
 
-    if (combined.length === 0 && !triggeringEvent) {
+    if (combined.length === 0) {
       return null;
     }
 
-    if (current.length > 0) {
-      this.preparedDigests.set(agentId, combined);
-      this.buffers.delete(agentId);
-    }
+    this.preparedDigests.set(agentId, combined);
+    this.buffers.delete(agentId);
 
-    const allEvents = triggeringEvent ? [...combined, triggeringEvent] : combined;
-    return this.buildDigest(agentId, allEvents);
+    return this.buildDigest(agentId, combined);
   }
 
   /**
@@ -139,12 +139,33 @@ export class EventDigestService {
       const deliveredDigest = this.prepareDigest(buffered.agentId, buffered)!;
 
       try {
-        await deps.wakeup(buffered.agentId, {
+        const wakeResult = await deps.wakeup(buffered.agentId, {
           wakeReason: buffered.type,
           priority: buffered.priority,
           triggeringEvent: buffered,
           eventDigest: deliveredDigest,
         });
+
+        if (
+          wakeResult === null ||
+          wakeResult === false ||
+          (typeof wakeResult === "object" &&
+            wakeResult !== null &&
+            "woken" in wakeResult &&
+            !(wakeResult as any).woken) ||
+          (typeof wakeResult === "object" &&
+            wakeResult !== null &&
+            "created" in wakeResult &&
+            !(wakeResult as any).created)
+        ) {
+          this.rollbackPendingDigest(buffered.agentId);
+          return {
+            woken: false,
+            event: buffered,
+            digest: this.getPendingDigest(buffered.agentId),
+          };
+        }
+
         this.commitPendingDigest(buffered.agentId);
 
         return {

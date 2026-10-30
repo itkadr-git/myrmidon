@@ -33,6 +33,8 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  normalizePaperclipWakePayload,
+  normalizePaperclipWakeEventDigest,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
@@ -3384,6 +3386,67 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
     expect(
       parsed.taskWatchdog.terminalLeafSummaries.length,
     ).toBeLessThanOrEqual(25);
+  });
+});
+
+describe("eventDigest in PaperclipWakePayload", () => {
+  it("normalizes and preserves structured eventDigest in wake payload", () => {
+    const rawPayload = {
+      reason: "security_incident",
+      eventDigest: {
+        agentId: "agent-test-1",
+        issueId: "issue-123",
+        events: [
+          {
+            id: "evt-1",
+            agentId: "agent-test-1",
+            issueId: "issue-123",
+            type: "heartbeat",
+            priority: "P4",
+            payload: { status: "alive" },
+            timestamp: "2026-10-30T10:00:00.000Z",
+          },
+          {
+            id: "evt-2",
+            agentId: "agent-test-1",
+            issueId: "issue-123",
+            type: "security_incident",
+            priority: "P0",
+            payload: { alert: "breach" },
+            timestamp: "2026-10-30T10:05:00.000Z",
+          },
+        ],
+        eventCount: 2,
+        oldestEventAt: "2026-10-30T10:00:00.000Z",
+        newestEventAt: "2026-10-30T10:05:00.000Z",
+      },
+    };
+
+    const normalized = normalizePaperclipWakePayload(rawPayload);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.eventDigest).not.toBeNull();
+    expect(normalized?.eventDigest?.agentId).toBe("agent-test-1");
+    expect(normalized?.eventDigest?.issueId).toBe("issue-123");
+    expect(normalized?.eventDigest?.eventCount).toBe(2);
+    expect(normalized?.eventDigest?.events).toHaveLength(2);
+    expect(normalized?.eventDigest?.events[0].type).toBe("heartbeat");
+    expect(normalized?.eventDigest?.events[1].type).toBe("security_incident");
+
+    const serialized = stringifyPaperclipWakePayload(rawPayload);
+    const reparsed = JSON.parse(serialized ?? "{}");
+    expect(reparsed.eventDigest).toBeDefined();
+    expect(reparsed.eventDigest.eventCount).toBe(2);
+    expect(reparsed.eventDigest.events[0].type).toBe("heartbeat");
+  });
+
+  it("handles null or missing eventDigest gracefully", () => {
+    const rawPayload = {
+      reason: "routine_wake",
+      eventDigest: null,
+    };
+    const normalized = normalizePaperclipWakePayload(rawPayload);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.eventDigest).toBeNull();
   });
 });
 

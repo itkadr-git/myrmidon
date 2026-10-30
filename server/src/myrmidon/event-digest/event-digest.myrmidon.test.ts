@@ -342,13 +342,16 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
         ),
       ).rejects.toThrow("Downstream database connection failure");
 
-      // 3. Verify that the buffered event was NOT lost and remains preserved in the digest
+      // 3. Verify that the buffered event and triggering event were NOT lost and remain preserved in the digest
       const preservedDigest = sharedService.getPendingDigest(agentId);
       expect(preservedDigest).not.toBeNull();
-      expect(preservedDigest?.eventCount).toBe(1);
-      expect(preservedDigest?.events[0].type).toBe("heartbeat");
+      expect(preservedDigest?.eventCount).toBe(2);
+      expect(preservedDigest?.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "security_incident",
+      ]);
 
-      // 4. Verify subsequent successful wake delivers the preserved event along with new wake
+      // 4. Verify subsequent successful wake delivers the preserved events along with new wake
       const succeedingHeartbeat = {
         wakeup: vi.fn().mockResolvedValue({ created: true }),
       };
@@ -365,9 +368,10 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
         { reason: string; contextSnapshot: Record<string, unknown> },
       ];
       const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
-      expect(deliveredDigest.eventCount).toBe(2);
+      expect(deliveredDigest.eventCount).toBe(3);
       expect(deliveredDigest.events.map((e: any) => e.type)).toEqual([
         "heartbeat",
+        "security_incident",
         "ci_completed",
       ]);
 
@@ -405,6 +409,76 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
 
       // Now buffer is completely drained
       expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("preserves both accumulated events and triggering event when prepareDigest is rolled back (early-return / null wake)", () => {
+      const service = new EventDigestService();
+      const agentId = "agent-rollback-trigger-test";
+
+      // 1. Accumulate P4 event
+      service.recordEvent({ agentId, type: "heartbeat", payload: { ping: true } });
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Prepare digest with triggering event (P1 / P0)
+      const triggerEvent = {
+        id: "trigger-123",
+        agentId,
+        type: "ci_completed",
+        priority: "P1" as const,
+        payload: { status: "success" },
+        timestamp: new Date(),
+      };
+      const staged = service.prepareDigest(agentId, triggerEvent);
+      expect(staged?.eventCount).toBe(2);
+      expect(staged?.events.map((e) => e.type)).toEqual(["heartbeat", "ci_completed"]);
+
+      // 3. Downstream wake encounters early return null (e.g. conversation check / disabled agent chat)
+      // Rollback is invoked
+      service.rollbackPendingDigest(agentId);
+
+      // 4. Verify that AFTER rollback, pending digest contains BOTH accumulated events AND the triggering event!
+      const afterRollback = service.getPendingDigest(agentId);
+      expect(afterRollback).not.toBeNull();
+      expect(afterRollback?.eventCount).toBe(2);
+      expect(afterRollback?.events.map((e) => e.type)).toEqual(["heartbeat", "ci_completed"]);
+
+      // 5. Subsequent prepare and commit cleanly deliver and clear both
+      const nextStage = service.prepareDigest(agentId);
+      expect(nextStage?.eventCount).toBe(2);
+      service.commitPendingDigest(agentId);
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("preserves accumulated digest and triggering event when downstream wake returns null / not created", async () => {
+      const agentId = "agent-early-null";
+      const sharedService = getSharedEventDigestService();
+
+      // Accumulate P4
+      await dispatchAgentEvent(
+        { agentId, type: "heartbeat", payload: { seq: 1 } },
+        { wakeup: vi.fn() },
+      );
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // Downstream wakeup returns null (early return / no wake run created)
+      const nullHeartbeat = {
+        wakeup: vi.fn().mockResolvedValue(null),
+      };
+
+      const result = await dispatchAgentEvent(
+        { agentId, type: "issue_unblock_requested", payload: { issueId: "OPE-9657" } },
+        nullHeartbeat,
+      );
+
+      expect(result.woken).toBe(false);
+      // Both the P4 heartbeat and the P1 unblock trigger MUST be preserved in the buffer!
+      const pending = sharedService.getPendingDigest(agentId);
+      expect(pending).not.toBeNull();
+      expect(pending?.eventCount).toBe(2);
+      expect(pending?.events.map((e) => e.type)).toEqual([
+        "heartbeat",
+        "issue_unblock_requested",
+      ]);
     });
   });
 });
