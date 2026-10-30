@@ -10,67 +10,66 @@ import { createPgReviewRoutingStore } from "./store.js";
 const support = await getEmbeddedPostgresTestSupport();
 const describeWithDb = support.supported ? describe : describe.skip;
 
-describeWithDb("review routing SQL wake state", () => {
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let db!: ReturnType<typeof createDb>;
-  let companyId: string;
-  let reviewerId: string;
+describeWithDb("Postgres review routing wake state", () => {
+  let stopDatabase: (() => Promise<void>) | undefined;
+  let db: ReturnType<typeof createDb> | undefined;
+  const companyId = randomUUID();
+  const reviewerId = randomUUID();
   const issueIds: string[] = [];
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("review-routing-wake-");
-    db = createDb(tempDb.connectionString);
-    const [company] = await db.insert(companies).values({ name: `wake-${randomUUID()}`, issuePrefix: `RW${randomUUID().slice(0, 8).toUpperCase()}` }).returning();
-    companyId = company!.id;
-    const [reviewer] = await db.insert(agents).values({ companyId, name: `reviewer-${randomUUID()}`, role: "reviewer" }).returning();
-    reviewerId = reviewer!.id;
-  }, 60_000);
+    const database = await startEmbeddedPostgresTestDatabase();
+    stopDatabase = database.stop;
+    db = createDb(database.pool);
+    await db.insert(companies).values({ id: companyId, name: "review-routing-test", status: "active" });
+    await db.insert(agents).values({ id: reviewerId, companyId, name: "reviewer", role: "reviewer", status: "idle", runtimeConfig: {} });
+  }, 120_000);
 
   afterEach(async () => {
-    if (issueIds.length) await db.delete(issues).where(eq(issues.companyId, companyId));
-    issueIds.length = 0;
-  });
-
-  afterAll(async () => {
     if (db && companyId) {
       await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
       await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
       await db.delete(issues).where(eq(issues.companyId, companyId));
+      issueIds.length = 0;
+    }
+  });
+
+  afterAll(async () => {
+    if (db) {
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }
-    await tempDb?.cleanup();
+    await stopDatabase?.();
   });
 
   async function makeIssue() {
-    const [issue] = await db.insert(issues).values({ companyId, title: `wake-state-${randomUUID()}`, status: "in_review", assigneeAgentId: reviewerId }).returning();
-    issueIds.push(issue!.id);
-    return issue!.id;
+    const id = randomUUID();
+    await db!.insert(issues).values({ id, companyId, identifier: `TEST-${id.slice(0, 8)}`, title: "review wake state", status: "in_review", priority: "normal", executionState: { currentParticipant: { type: "agent", agentId: reviewerId } } });
+    issueIds.push(id);
+    return id;
   }
 
-  it("reads active run, queued wake, and last wake facts from SQL", async () => {
+  it("reports active runs, pending wake requests, and the latest persisted wake", async () => {
     const activeIssueId = await makeIssue();
     const queuedIssueId = await makeIssue();
     const completedIssueId = await makeIssue();
-    const store = createPgReviewRoutingStore(db);
+    const store = createPgReviewRoutingStore(db!);
 
-    await db.insert(heartbeatRuns).values({ companyId, agentId: reviewerId, invocationSource: "on_demand", status: "running", nativeIssueId: activeIssueId });
+    await db!.insert(heartbeatRuns).values({ companyId, agentId: reviewerId, invocationSource: "on_demand", status: "running", nativeIssueId: activeIssueId });
     const active = await store.reviewWakeState({ companyId, issueId: activeIssueId, reviewerAgentId: reviewerId, stageId: "review" });
-    expect(active.activeRun).toBe(true);
-    expect(active.pendingWake).toBe(false);
-    expect(active.lastWakeAt).toBeNull();
+    expect(active).toMatchObject({ activeRun: true, pendingWake: false, attempts: 0, lastWakeAt: null });
 
-    await db.insert(agentWakeupRequests).values({ companyId, agentId: reviewerId, source: "test", payload: { issueId: queuedIssueId }, status: "queued" });
-    const queued = await store.reviewWakeState({ companyId, issueId: queuedIssueId, reviewerAgentId: reviewerId, stageId: "review" });
-    expect(queued.pendingWake).toBe(true);
+    await db!.insert(agentWakeupRequests).values({ companyId, agentId: reviewerId, status: "queued", source: "review", payload: { issueId: queuedIssueId } });
+    const pending = await store.reviewWakeState({ companyId, issueId: queuedIssueId, reviewerAgentId: reviewerId, stageId: "review" });
+    expect(pending).toMatchObject({ activeRun: false, pendingWake: true, attempts: 0, lastWakeAt: null });
 
-    const lastWake = new Date("2026-10-26T06:10:00.000Z");
-    await store.recordReviewWake({ companyId, issueId: completedIssueId, reviewerAgentId: reviewerId, stageId: "review", at: lastWake, attempt: 2 });
+    const lastWake = new Date(Date.now() - 60_000);
+    await db!.insert(activityLog).values({ companyId, action: "review_routing_wake_requested", entityType: "issue", entityId: completedIssueId, details: { issueId: completedIssueId, reviewerAgentId: reviewerId, stageId: "review", attempt: 3, requestedAt: lastWake.toISOString() } });
     const completed = await store.reviewWakeState({ companyId, issueId: completedIssueId, reviewerAgentId: reviewerId, stageId: "review" });
     expect(completed.activeRun).toBe(false);
     expect(completed.pendingWake).toBe(false);
-    expect(completed.attempts).toBe(2);
+    expect(completed.attempts).toBe(3);
     expect(completed.lastWakeAt).toEqual(lastWake);
   });
 });
