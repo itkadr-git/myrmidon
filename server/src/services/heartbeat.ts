@@ -11112,7 +11112,23 @@ export function heartbeatService(
       source: input.run.invocationSource as WakeupOptions["source"],
       triggerDetail: input.run.triggerDetail as WakeupOptions["triggerDetail"],
     });
-    return responsibleUserId ?? null;
+    if (!responsibleUserId) {
+      throw new HttpError(
+        422,
+        "Unable to resolve responsible user for heartbeat run dispatch",
+        {
+          code: "responsible_user_unresolved",
+          runId: input.run.id,
+          agentId: input.run.agentId,
+          companyId: input.run.companyId,
+          issueId: input.issueContext?.id ?? null,
+          invocationSource: input.run.invocationSource,
+          triggerDetail: input.run.triggerDetail,
+          wakeReason: readNonEmptyString(input.contextSnapshot.wakeReason),
+        },
+      );
+    }
+    return responsibleUserId;
   }
 
   async function resolveResponsibleUserIdForRunContext(
@@ -28889,7 +28905,24 @@ export function heartbeatService(
             source,
             triggerDetail,
           });
-        return queuedResponsibleUserId ?? null;
+        if (!queuedResponsibleUserId) {
+          throw new HttpError(
+            422,
+            "Unable to resolve responsible user for heartbeat run dispatch",
+            {
+              code: "responsible_user_unresolved",
+              agentId,
+              companyId: agent.companyId,
+              issueId: issueId ?? null,
+              source,
+              triggerDetail,
+              wakeReason: readNonEmptyString(
+                enrichedContextSnapshot.wakeReason,
+              ),
+            },
+          );
+        }
+        return queuedResponsibleUserId;
       })();
       return queuedResponsibleUserIdPromise;
     };
