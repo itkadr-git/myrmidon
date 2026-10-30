@@ -83,11 +83,11 @@ function makeStore(fx: Fixture) {
     },
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
-      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: null };
+      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
     recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
-      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: null };
+      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
     },
     applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
