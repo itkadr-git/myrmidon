@@ -34,6 +34,7 @@ const SETTINGS: TaskPrSyncSettings = {
 /** A fake GitHub: returns the state recorded for each PR number, never the network. */
 function fakeResolver(
   stateByNumber: Record<number, "open" | "draft" | "merged" | "closed" | "unknown">,
+  mergeableByNumber: Record<number, "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null> = {},
 ): PullRequestMergeDetailsResolver {
   return vi.fn<PullRequestMergeDetailsResolver>(async (_companyId, reference) => {
     const state = stateByNumber[reference.number] ?? "unknown";
@@ -43,6 +44,7 @@ function fakeResolver(
       headSha: state === "merged" ? `sha-${reference.number}` : null,
       workProductState: state === "unknown" ? undefined : state,
       draft: state === "draft",
+      mergeable: mergeableByNumber[reference.number] ?? null,
     };
   });
 }
@@ -78,6 +80,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     companyId?: string;
     agentId?: string;
     identifier?: string;
+    executionState?: Record<string, unknown>;
     products: Array<{ number: number; status?: string; updatedAt?: Date }>;
   }) {
     const issueNum = ++seedCounter;
@@ -112,6 +115,7 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
       status: input.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      ...(input.executionState ? { executionState: input.executionState } : {}),
       ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
     for (const product of input.products) {
@@ -344,5 +348,72 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
 
     const [targetIssue] = await db.select().from(issues).where(eq(issues.id, targetIssueId));
     expect(targetIssue!.status).toBe("done");
+  });
+
+  it("returns an in_review issue to author with in_progress when PR is conflicting", async () => {
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "conflict-company",
+      issuePrefix: "CONF",
+    });
+    await db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const seeded = await seed({
+      companyId,
+      agentId: reviewerAgentId,
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+      products: [{ number: 999 }],
+    });
+
+    const sweep = sweepFor(fakeResolver({ 999: "open" }, { 999: "CONFLICTING" }));
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+    expect(result.returned).toBe(1);
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(updated!.status).toBe("in_progress");
+    expect(updated!.assigneeAgentId).toBe(authorAgentId);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("влей свежий main");
+    expect(comments[0]!.body).toContain("merge conflict");
   });
 });
