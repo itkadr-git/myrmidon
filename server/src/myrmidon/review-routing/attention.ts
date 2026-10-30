@@ -14,11 +14,9 @@
 //     merge steward.
 //
 // The sweep REPLACES the whole set of a company on every pass
-// (`replaceReviewRoutingSignals`): a card exists exactly while its condition
-// held at the last pass, and disappears on the next pass after the task gets
-// a reviewer, a verdict, or leaves review. The registry is process-level and
-// recomputed within one pass after a restart; nothing is persisted (the same
-// "computed on the fly" shape as the stale-block cards).
+// (`replaceReviewRoutingSignals`). Successful snapshots reconcile immediate
+// route-origin `no_reviewer` cards too: they preserve the original timestamp
+// while the condition remains true and disappear when the sweep clears it.
 
 import type { AttentionSeverity } from "@myrmidon/shared";
 
@@ -65,6 +63,7 @@ export function prSignalSubjectId(repository: string, number: number): string {
 }
 
 const signalsByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
+const immediateNoReviewerByCompany = new Map<string, Map<string, ReviewRoutingSignal>>();
 
 /** Registry key: a task may hold one card per kind; PR cards key on the synthetic subject. */
 function signalKey(signal: ReviewRoutingSignal): string {
@@ -72,31 +71,60 @@ function signalKey(signal: ReviewRoutingSignal): string {
 }
 
 /**
- * Replaces the company's signals with `next`. A signal that already exists for
- * the same task and kind keeps its original `since`, so the card's timestamps
- * do not move on every pass.
+ * Replaces the company's signals with `next`. Existing signal timestamps
+ * remain stable across passes.
  */
 export function replaceReviewRoutingSignals(companyId: string, next: ReviewRoutingSignal[]): void {
   const previous = signalsByCompany.get(companyId);
-  if (next.length === 0) {
-    signalsByCompany.delete(companyId);
-    return;
-  }
+  const immediate = immediateNoReviewerByCompany.get(companyId);
   const byKey = new Map<string, ReviewRoutingSignal>();
   for (const signal of next) {
-    const before = previous?.get(signalKey(signal));
-    byKey.set(signalKey(signal), before ? { ...signal, since: before.since } : signal);
+    const key = signalKey(signal);
+    const before = immediate?.get(key) ?? previous?.get(key);
+    byKey.set(key, before ? { ...signal, since: before.since } : signal);
   }
-  signalsByCompany.set(companyId, byKey);
+  // A completed sweep is authoritative: replace the visible snapshot and drop
+  // immediate route overlays that are absent from it. Keeping a second overlay
+  // out of readReviewRoutingSignals prevents stale sweep entries resurfacing
+  // after a route has explicitly cleared a signal.
+  for (const key of immediate?.keys() ?? []) {
+    if (!byKey.has(key)) immediate?.delete(key);
+  }
+  if (immediate?.size === 0) immediateNoReviewerByCompany.delete(companyId);
+  if (byKey.size === 0) signalsByCompany.delete(companyId);
+  else signalsByCompany.set(companyId, byKey);
 }
 
 export function readReviewRoutingSignals(companyId: string): ReviewRoutingSignal[] {
   return [...(signalsByCompany.get(companyId)?.values() ?? [])];
 }
 
+export function setImmediateNoReviewerSignal(
+  signal: ReviewRoutingSignal,
+  unresolved: boolean,
+): void {
+  const current = signalsByCompany.get(signal.companyId) ?? new Map<string, ReviewRoutingSignal>();
+  const immediate = immediateNoReviewerByCompany.get(signal.companyId) ?? new Map<string, ReviewRoutingSignal>();
+  const key = signalKey({ ...signal, kind: "no_reviewer" });
+  if (unresolved) {
+    const previous = immediate.get(key) ?? current.get(key);
+    const next = previous ? { ...signal, since: previous.since } : signal;
+    immediate.set(key, next);
+    current.set(key, next);
+  } else {
+    immediate.delete(key);
+    current.delete(key);
+  }
+  if (immediate.size === 0) immediateNoReviewerByCompany.delete(signal.companyId);
+  else immediateNoReviewerByCompany.set(signal.companyId, immediate);
+  if (current.size === 0) signalsByCompany.delete(signal.companyId);
+  else signalsByCompany.set(signal.companyId, current);
+}
+
 /** Test helper: forget every recorded signal. */
 export function resetReviewRoutingSignals(): void {
   signalsByCompany.clear();
+  immediateNoReviewerByCompany.clear();
 }
 
 export function reviewRoutingSignalDedupKey(signal: ReviewRoutingSignal): string {

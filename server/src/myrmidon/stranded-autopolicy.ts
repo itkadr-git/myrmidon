@@ -174,6 +174,8 @@ export function decideStrandedAutoPolicy(input: {
    * never taken over; it is blocked with an agent owner instead.
    */
   hasExecutionWorkflow?: boolean;
+  /** A corrective handoff already used its final attempt; do not retry it again. */
+  successfulRunHandoffExhausted?: boolean;
   /**
    * OPE-9072: the target is the agent `adm`. It cannot decide a review stage
    * (approve answers 403), so it is never made a reviewer: the issue is
@@ -194,11 +196,11 @@ export function decideStrandedAutoPolicy(input: {
   if (input.assigneePaused) {
     return { kind: "vendor_default", attemptsInWindow: input.attemptsInWindow, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
-  if (input.maxAttemptsPerDay > 0 && input.attemptsInWindow < input.maxAttemptsPerDay) {
+  if (!input.successfulRunHandoffExhausted && input.maxAttemptsPerDay > 0 && input.attemptsInWindow < input.maxAttemptsPerDay) {
     return { kind: "retry", attempt: input.attemptsInWindow + 1, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
   const targetAgentId = input.managerAgentId ?? input.escalationAgentId ?? null;
-  if (targetAgentId && (input.hasExecutionWorkflow || input.targetIsAdm)) {
+  if (targetAgentId && (input.successfulRunHandoffExhausted || input.hasExecutionWorkflow || input.targetIsAdm)) {
     return {
       kind: "disposition_blocked",
       ownerAgentId: targetAgentId,
@@ -400,7 +402,9 @@ export function buildStrandedAutoPolicyManagerReviewComment(input: {
 export function issueHasExistingExecutionWorkflow(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
+  hasOpenPullRequest?: boolean;
 }): boolean {
+  if (issue.hasOpenPullRequest === true) return true;
   if (issue.executionPolicy != null) return true;
 
   const state = issue.executionState;

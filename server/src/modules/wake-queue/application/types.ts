@@ -45,12 +45,15 @@ export type IssueSnapshot = {
   parentId: string | null;
   originId: string | null;
   originRunId: string | null;
+  /** Issue caste/role used by continuation admission; null keeps the gate fail-open. */
+  issueRole: string | null;
 };
 
 export type InvokableAgentSnapshot = {
   id: string;
   companyId: string;
   name: string | null;
+  role: string | null;
   invokable: boolean;
 };
 
