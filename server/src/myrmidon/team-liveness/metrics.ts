@@ -36,8 +36,16 @@ export interface TeamLivenessMetrics {
   wakes: number;
   /** Runs progress-based run liveness interrupted. */
   stalledRuns: number;
-  /** Audit of runs whose only outcome was an issue comment, with no commit/PR work product or status change. */
+  /** Audit of runs whose only outcome was an issue comment, with no work product, status change, or other action. */
   emptyRunsByAgent: Array<{ agentId: string; count: number }>;
+  /** Subset of empty runs whose only comments matched CI status polling patterns. */
+  ciStatusRunsByAgent?: Array<{ agentId: string; count: number }>;
+}
+
+export const CI_STATUS_COMMENT_SQL = sql`issue_comments.body ~* '(exact[- ]head|ci run|ci result|ci status|ci checks|checks pending|waiting for ci|ci[- ]wait|ci ещё идёт|опрос ci|still in progress)'`;
+
+export interface CountEmptyRunsOptions {
+  onlyCiStatus?: boolean;
 }
 
 /** How many wake requests the company saw since the given instant. */
@@ -58,7 +66,19 @@ export async function countEmptyRunsByAgent(
   db: Db,
   companyId: string,
   since: Date,
+  options?: CountEmptyRunsOptions,
 ): Promise<Array<{ agentId: string; count: number }>> {
+  const commentFilter = options?.onlyCiStatus
+    ? sql`exists (
+        select 1 from issue_comments
+        where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+          and ${CI_STATUS_COMMENT_SQL}
+      )`
+    : sql`exists (
+        select 1 from issue_comments
+        where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+      )`;
+
   const rows = await db
     .select({ agentId: heartbeatRuns.agentId, total: count() })
     .from(heartbeatRuns)
@@ -67,21 +87,19 @@ export async function countEmptyRunsByAgent(
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "succeeded"),
         gte(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`, since.toISOString()),
-        sql`exists (
-          select 1 from issue_comments
-          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
-        )`,
+        commentFilter,
         sql`not exists (
           select 1 from issue_work_products
           where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
         )`,
         sql`not exists (
+          select 1 from issues
+          where issues.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
           select 1 from activity_log
           where activity_log.run_id = ${heartbeatRuns.id}
-            and (
-              (activity_log.action = 'issue.updated' and activity_log.details->>'status' is not null)
-              or activity_log.action = 'issue.status_changed'
-            )
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
         )`,
       ),
     )
@@ -101,11 +119,12 @@ export async function readTeamLivenessMetrics(
   windowMs: number = TEAM_LIVENESS_METRIC_WINDOW_MS,
 ): Promise<TeamLivenessMetrics> {
   const from = new Date(now.getTime() - windowMs);
-  const [resumes, wakes, stalledRuns, emptyRunsByAgent] = await Promise.all([
+  const [resumes, wakes, stalledRuns, emptyRunsByAgent, ciStatusRunsByAgent] = await Promise.all([
     autoResumeMetrics(db, companyId, from),
     countWakesSince(db, companyId, from),
     countRunStallInterrupts(db, { companyId, since: from }),
     countEmptyRunsByAgent(db, companyId, from),
+    countEmptyRunsByAgent(db, companyId, from, { onlyCiStatus: true }),
   ]);
   return {
     companyId,
@@ -117,5 +136,6 @@ export async function readTeamLivenessMetrics(
     wakes,
     stalledRuns,
     emptyRunsByAgent,
+    ciStatusRunsByAgent,
   };
 }

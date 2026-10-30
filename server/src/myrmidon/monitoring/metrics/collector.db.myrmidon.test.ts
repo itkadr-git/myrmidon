@@ -136,11 +136,19 @@ describeEmbeddedPostgres("metrics collector", () => {
   it("exports empty-response run counts by agent to the monitoring scrape", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId, "engineer");
-    await seedRun(companyId, agentId, {
+    const runId = await seedRun(companyId, agentId, {
       status: "succeeded",
       finishedAt: NOW,
-      livenessState: "empty_response",
-      livenessReason: "Run succeeded without useful output",
+    });
+    const issueId = await seedIssue(companyId);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: runId,
+      createdAt: NOW,
+      updatedAt: NOW,
     });
     const snapshot = await collectMetricsSnapshot({
       db,

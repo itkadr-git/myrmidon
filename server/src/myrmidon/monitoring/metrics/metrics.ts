@@ -378,12 +378,13 @@ async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ 
           where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
         )`,
         sql`not exists (
+          select 1 from issues
+          where issues.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
           select 1 from activity_log
           where activity_log.run_id = ${heartbeatRuns.id}
-            and (
-              (activity_log.action = 'issue.updated' and activity_log.details->>'status' is not null)
-              or activity_log.action = 'issue.status_changed'
-            )
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
         )`,
         gte(heartbeatRuns.finishedAt, windowStart),
       ),

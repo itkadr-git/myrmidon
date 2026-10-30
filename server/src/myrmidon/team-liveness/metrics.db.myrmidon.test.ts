@@ -337,7 +337,119 @@ describeEmbeddedPostgres("team liveness metrics", () => {
       createdAt: new Date(now.getTime() - 30 * 60 * 1000),
     });
 
+    // Run 4: multiple comments in a single run -> counted once
+    const run4Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run4Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 5 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 5 * 60 * 1000),
+    });
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        body: "First comment: exact head f00d, CI checks pending",
+        createdByRunId: run4Id,
+        createdAt: new Date(now.getTime() - 5 * 60 * 1000),
+        updatedAt: new Date(now.getTime() - 5 * 60 * 1000),
+      },
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        body: "Second comment: CI run still in progress",
+        createdByRunId: run4Id,
+        createdAt: new Date(now.getTime() - 5 * 60 * 1000),
+        updatedAt: new Date(now.getTime() - 5 * 60 * 1000),
+      },
+    ]);
+
+    // Run 5: comment-only run with unrelated comment -> counted in emptyRuns, but NOT in ciStatusRuns
+    const run5Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run5Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 4 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 4 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Investigated root cause, preparing architecture proposal",
+      createdByRunId: run5Id,
+      createdAt: new Date(now.getTime() - 4 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 4 * 60 * 1000),
+    });
+
+    // Run 6: comment + another mutation in activity_log (not just status change) -> excluded
+    const run6Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run6Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 3 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 3 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Created subtask",
+      createdByRunId: run6Id,
+      createdAt: new Date(now.getTime() - 3 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 3 * 60 * 1000),
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      runId: run6Id,
+      action: "issue.assigned",
+      entityType: "issue",
+      entityId: issueId,
+      details: { assigneeAgentId: agentId },
+      createdAt: new Date(now.getTime() - 3 * 60 * 1000),
+    });
+
+    // Run 7: comment + created issue in issues table -> excluded
+    const run7Id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: run7Id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(now.getTime() - 2 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 2 * 60 * 1000),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: run7Id,
+      createdAt: new Date(now.getTime() - 2 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 2 * 60 * 1000),
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: "SUB-1",
+      title: "Subtask",
+      createdByRunId: run7Id,
+    });
+
     const metrics = await readTeamLivenessMetrics(db, companyId, now);
-    expect(metrics.emptyRunsByAgent).toEqual([{ agentId, count: 1 }]);
+    // Runs 1, 4, 5 are comment-only runs without any work products or other actions
+    expect(metrics.emptyRunsByAgent).toEqual([{ agentId, count: 3 }]);
+    // Runs 1 and 4 have CI status polling comments; run 5 does not
+    expect(metrics.ciStatusRunsByAgent).toEqual([{ agentId, count: 2 }]);
   });
 });
