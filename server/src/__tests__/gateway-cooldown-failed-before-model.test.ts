@@ -22,7 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService } from "../services/heartbeat.js";
 
 describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
   it("classifies LiteLLM deployment cooldown as provider_quota with cooldown delay and failedBeforeModel", () => {
@@ -147,6 +147,8 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       runDurationSecondsP50: null,
       runDurationSecondsP95: null,
       roleQueueTasks: [],
+      reviewTasksWithoutReviewer: 0,
+      blockedTasksWithoutAssignee: 0,
       swarmClaimsActive: 0,
       swarmClaimsTotal: 0,
       agentErrorSignals: 0,

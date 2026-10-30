@@ -991,7 +991,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_review_tasks_without_reviewer",
       "Issues in review without an assigned reviewer participant.",
       "gauge",
-      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer ?? 0)}`],
     ),
   );
   blocks.push(
@@ -999,7 +999,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_blocked_tasks_without_assignee",
       "Blocked issues without an assignee.",
       "gauge",
-      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee ?? 0)}`],
     ),
   );
   blocks.push(
