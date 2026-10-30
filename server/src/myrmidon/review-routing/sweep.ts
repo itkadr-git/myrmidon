@@ -214,7 +214,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
         deps.store.loadByAgent(companyId),
       ]);
-      reviewerPool = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      reviewerPool = agentRows.map((agent) => ({
+        id: agent.id,
+        role: agent.role,
+        invokable: agent.invokable ?? true,
+        load: load.get(agent.id) ?? 0,
+      }));
       return reviewerPool;
     };
     const pool = globalPool;
@@ -456,7 +461,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       deps.store.openPrTaskLoadByAgent(companyId, "review"),
       deps.store.openPrTaskLoadByAgent(companyId, "merge"),
     ]);
-    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
+    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ ...agent, invokable: agent.invokable ?? true, load: 0 }));
     const stewards: ReviewerCandidate[] = stewardRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
     const openReviewByAgent = new Map(openReviewLoad);
     const openMergeByAgent = new Map(openMergeLoad);
