@@ -63,6 +63,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { renderModelInstructionSection } from "./model-instruction-profiles.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 // myrmidon(P4): run-scoped MCP servers, prompt via stdin, spawn envelope check
 import {
@@ -196,6 +197,10 @@ export function buildPrompt(
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
 
+  const model = cfgString(config.model) || cfgString(ctx.config?.model) || cfgString(context.model) || "";
+  const provider = cfgString(config.provider) || cfgString(ctx.config?.provider) || cfgString(context.provider) || "";
+  const modelDirectivesMarkdown = renderModelInstructionSection(model, provider);
+
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
     agentName,
@@ -220,6 +225,7 @@ export function buildPrompt(
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
+    modelInstructionProfile: modelDirectivesMarkdown,
   };
 
   const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
@@ -230,6 +236,7 @@ export function buildPrompt(
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
     rendered,
+    modelDirectivesMarkdown,
   ]);
 }
 
