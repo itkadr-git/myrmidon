@@ -221,7 +221,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
 
       // Board-confirmed closed (done/cancelled) tasks of this bot: the lookback rows plus the
       // unbounded store query, so a directory of a task closed long ago is still confirmed.
-      const closedMap = new Map<string, WsClosedKeyEntry>();
+      const closedMap = new Map<string, WsClosedKeyObject>();
       for (const row of keyed) {
         if (row.status === "done" || row.status === "cancelled") {
           const key = row.identifier as string;
