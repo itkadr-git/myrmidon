@@ -4,7 +4,7 @@ CREATE INDEX "issues_company_responsible_agent_idx" ON "issues" USING btree ("co
 WITH RECURSIVE agent_roots AS (
   SELECT id AS root_id, id AS agent_id, company_id, 0 AS depth
   FROM agents
-  WHERE reports_to IS NULL
+  WHERE reports_to IS NULL AND status != 'terminated' AND status != 'paused'
 
   UNION ALL
 
@@ -16,7 +16,7 @@ WITH RECURSIVE agent_roots AS (
 company_default_roots AS (
   SELECT DISTINCT ON (company_id) id AS root_id, company_id
   FROM agents
-  WHERE reports_to IS NULL AND status != 'terminated'
+  WHERE reports_to IS NULL AND status != 'terminated' AND status != 'paused'
   ORDER BY company_id,
     CASE
       WHEN lower(trim(name)) IN ('adm', 'bbq', 'work', 'life', 'dispatch') THEN 0

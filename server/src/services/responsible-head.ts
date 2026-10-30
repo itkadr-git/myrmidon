@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, projects } from "@myrmidon/db";
+import { isAgentStatusInvokable } from "@myrmidon/shared";
 
 type DbReader = Pick<Db, "select">;
 
@@ -9,6 +10,7 @@ const KNOWN_HEAD_NAMES = ["adm", "bbq", "work", "life", "dispatch"];
 /**
  * Traverses reportsTo up the hierarchy starting from the given agent ID
  * to find the top-level agent (where reportsTo is null).
+ * Returns null if the root agent is non-invokable (e.g. paused or terminated).
  */
 export async function resolveAgentHeadId(
   reader: DbReader,
@@ -34,13 +36,16 @@ export async function resolveAgentHeadId(
     }
 
     if (!agent.reportsTo) {
+      if (!isAgentStatusInvokable(agent.status)) {
+        return null;
+      }
       return agent.id;
     }
 
     currentId = agent.reportsTo;
   }
 
-  return currentId;
+  return null;
 }
 
 /**
@@ -65,17 +70,19 @@ export async function resolveCompanyDomainHeadId(
         eq(agents.companyId, companyId),
         isNull(agents.reportsTo),
         ne(agents.status, "terminated"),
+        ne(agents.status, "paused"),
       ),
     )
     .orderBy(asc(agents.createdAt));
 
-  if (rootAgents.length === 0) {
+  const invokable = rootAgents.filter((a) => isAgentStatusInvokable(a.status));
+  if (invokable.length === 0) {
     return null;
   }
 
   // Exact match on known head names
   for (const known of KNOWN_HEAD_NAMES) {
-    const match = rootAgents.find(
+    const match = invokable.find(
       (a) => a.name.trim().toLowerCase() === known,
     );
     if (match) return match.id;
@@ -83,14 +90,14 @@ export async function resolveCompanyDomainHeadId(
 
   // Prefix match on known head names
   for (const known of KNOWN_HEAD_NAMES) {
-    const match = rootAgents.find(
+    const match = invokable.find(
       (a) => a.name.trim().toLowerCase().startsWith(known),
     );
     if (match) return match.id;
   }
 
   // Fallback to earliest created active root agent
-  return rootAgents[0]?.id ?? null;
+  return invokable[0]?.id ?? null;
 }
 
 /**
@@ -98,8 +105,8 @@ export async function resolveCompanyDomainHeadId(
  * 1. If assigneeAgentId is given: root of reportsTo chain.
  * 2. If unassigned:
  *    a. If projectId is given: root of project.leadAgentId's reportsTo chain.
- *    b. Company-domain head (active root agent in company, e.g. adm, bbq, etc.).
- * 3. Fallback: root of createdByAgentId (if agent).
+ *    b. Fallback: root of createdByAgentId (if agent).
+ *    c. Company-domain head (active root agent in company, e.g. adm, bbq, etc.).
  */
 export async function resolveResponsibleHeadAgentId(
   reader: DbReader,
@@ -127,13 +134,13 @@ export async function resolveResponsibleHeadAgentId(
     }
   }
 
-  const domainHead = await resolveCompanyDomainHeadId(reader, companyId);
-  if (domainHead) return domainHead;
-
   if (options.createdByAgentId) {
     const head = await resolveAgentHeadId(reader, companyId, options.createdByAgentId);
     if (head) return head;
   }
+
+  const domainHead = await resolveCompanyDomainHeadId(reader, companyId);
+  if (domainHead) return domainHead;
 
   return null;
 }

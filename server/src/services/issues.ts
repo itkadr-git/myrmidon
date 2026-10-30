@@ -10095,6 +10095,22 @@ export function issueService(db: Db) {
         let responsibleAgentId: string | null = null;
         if (issueData.responsibleAgentId !== undefined) {
           responsibleAgentId = issueData.responsibleAgentId ?? null;
+          if (responsibleAgentId) {
+            const [agent] = await tx
+              .select({ id: agents.id })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, responsibleAgentId),
+                  eq(agents.companyId, companyId),
+                ),
+              );
+            if (!agent) {
+              throw unprocessable(
+                "responsibleAgentId must belong to the same company",
+              );
+            }
+          }
         } else if (issueData.createdByAgentId || actorRunId) {
           responsibleAgentId = await resolveResponsibleHeadAgentId(
             tx,
@@ -10107,8 +10123,22 @@ export function issueService(db: Db) {
           );
         }
 
+        let effectiveResponsibleUserId: string | null = responsibleUserId;
+        if (responsibleAgentId) {
+          if (issueData.sourceTrust?.disposition === "quarantined") {
+            effectiveResponsibleUserId = responsibleUserId;
+          } else if (
+            issueData.responsibleUserId !== undefined &&
+            trustExplicitResponsibleUserId === true
+          ) {
+            effectiveResponsibleUserId = issueData.responsibleUserId;
+          } else {
+            effectiveResponsibleUserId = null;
+          }
+        }
+
         if (issueData.sourceTrust?.disposition === "quarantined") {
-          if (!responsibleUserId) {
+          if (!effectiveResponsibleUserId) {
             throw unprocessable(
               "Low-trust output cannot be quarantined without a promotion owner",
             );
@@ -10121,7 +10151,7 @@ export function issueService(db: Db) {
             ? {
                 sourceTrust: {
                   ...issueData.sourceTrust,
-                  promotionOwnerUserId: responsibleUserId,
+                  promotionOwnerUserId: effectiveResponsibleUserId,
                 },
               }
             : {}),
@@ -10178,7 +10208,7 @@ export function issueService(db: Db) {
               : {}),
           }))),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
-          responsibleUserId,
+          responsibleUserId: effectiveResponsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
@@ -10817,6 +10847,22 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (issueData.responsibleAgentId !== undefined) {
+        if (issueData.responsibleAgentId) {
+          const [agent] = await dbOrTx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.id, issueData.responsibleAgentId),
+                eq(agents.companyId, existing.companyId),
+              ),
+            );
+          if (!agent) {
+            throw unprocessable(
+              "responsibleAgentId must belong to the same company",
+            );
+          }
+        }
         patch.responsibleAgentId = issueData.responsibleAgentId;
         if (patch.responsibleAgentId && issueData.responsibleUserId === undefined) {
           patch.responsibleUserId = null;

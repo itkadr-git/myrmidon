@@ -72,6 +72,7 @@ import type {
 } from "@myrmidon/shared";
 import {
   acceptIssueThreadInteractionSchema,
+  isAgentStatusInvokable,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
@@ -588,11 +589,18 @@ function isEquivalentCreateRequest(
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
 ) {
+  const addresseeAgentMatches =
+    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) ||
+    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+  const addresseeUserMatches =
+    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) ||
+    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
-    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) &&
-    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) &&
+    addresseeAgentMatches &&
+    addresseeUserMatches &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -3366,6 +3374,75 @@ export function issueThreadInteractionService(
         );
       }
 
+      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+        const cannotTargetAgent =
+          normalizedData.kind === "request_confirmation" &&
+          (normalizedData.payload.toolAction !== undefined ||
+            normalizedData.payload.secretProposal !== undefined);
+
+        if (!cannotTargetAgent) {
+          const [issueRow] = await db
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, issue.id),
+                eq(issues.companyId, issue.companyId),
+              ),
+            );
+
+          let candidateHeadId: string | null = null;
+          if (issueRow?.responsibleAgentId) {
+            if (issueRow.responsibleAgentId !== actor.agentId) {
+              candidateHeadId = issueRow.responsibleAgentId;
+            }
+          } else {
+            const headId = await resolveAgentHeadId(db, issue.companyId, actor.agentId);
+            if (headId && headId !== actor.agentId) {
+              candidateHeadId = headId;
+            }
+          }
+          if (candidateHeadId) {
+            const candidateAgent = await db
+              .select({
+                id: agents.id,
+                companyId: agents.companyId,
+                name: agents.name,
+                reportsTo: agents.reportsTo,
+                status: agents.status,
+              })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, candidateHeadId),
+                  eq(agents.companyId, issue.companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+
+            if (
+              candidateAgent &&
+              isAgentStatusInvokable(candidateAgent.status)
+            ) {
+              const invokability = await evaluateAgentInvokabilityFromDb(
+                db,
+                candidateAgent,
+              );
+              if (invokability.invokable) {
+                normalizedData.addresseeAgentId = candidateHeadId;
+                normalizedData.addresseeUserId = null;
+                data.addresseeAgentId = candidateHeadId;
+                data.addresseeUserId = null;
+              }
+            }
+          }
+        }
+      }
+
       if (normalizedData.addresseeAgentId) {
         if (normalizedData.addresseeAgentId === actor.agentId) {
           throw unprocessable(
@@ -3529,31 +3606,8 @@ export function issueThreadInteractionService(
               lockForUpdate: true,
             });
           }
-          let addresseeAgentId = data.addresseeAgentId ?? null;
-          let addresseeUserId = data.addresseeUserId ?? null;
-
-          if (!addresseeAgentId && !addresseeUserId && actor.agentId) {
-            const cannotTargetAgent =
-              data.kind === "request_confirmation" &&
-              (data.payload.toolAction !== undefined ||
-                data.payload.secretProposal !== undefined);
-
-            if (!cannotTargetAgent) {
-              let candidateHeadId: string | null = null;
-              if (issueRow.responsibleAgentId && issueRow.responsibleAgentId !== actor.agentId) {
-                candidateHeadId = issueRow.responsibleAgentId;
-              } else {
-                const headId = await resolveAgentHeadId(tx, issue.companyId, actor.agentId);
-                if (headId && headId !== actor.agentId) {
-                  candidateHeadId = headId;
-                }
-              }
-              if (candidateHeadId) {
-                addresseeAgentId = candidateHeadId;
-                addresseeUserId = null;
-              }
-            }
-          }
+          const addresseeAgentId = normalizedData.addresseeAgentId ?? null;
+          const addresseeUserId = normalizedData.addresseeUserId ?? null;
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
