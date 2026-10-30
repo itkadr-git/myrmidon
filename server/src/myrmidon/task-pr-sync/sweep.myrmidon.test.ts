@@ -70,37 +70,49 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     await tempDb?.cleanup();
   });
 
+  let seedCounter = 0;
+
   async function seed(input: {
     status?: string;
+    updatedAt?: Date;
+    companyId?: string;
+    agentId?: string;
+    identifier?: string;
     products: Array<{ number: number; status?: string; updatedAt?: Date }>;
   }) {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
+    const issueNum = ++seedCounter;
+    const companyId = input.companyId ?? randomUUID();
+    const agentId = input.agentId ?? randomUUID();
     const issueId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "company-a",
-      issuePrefix: companyId.replace(/-/g, "").slice(0, 8).toUpperCase(),
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "agent-a",
-      role: "engineer",
-      status: "idle",
-      adapterType: "process",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    if (!input.companyId) {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "company-a",
+        issuePrefix: companyId.replace(/-/g, "").slice(0, 8).toUpperCase(),
+      });
+    }
+    if (!input.agentId) {
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "agent-a",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      identifier: `SYNC-${issueId.slice(0, 4)}`,
+      identifier: input.identifier ?? `SYNC-${issueNum}-${issueId.slice(0, 8)}`,
       title: "Task a",
       status: input.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
     for (const product of input.products) {
       await db.insert(issueWorkProducts).values({
@@ -348,5 +360,70 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(result.skippedPass).toBe(true);
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("in_progress");
+  });
+
+  it("prevents candidate starvation: 120 candidates, batchMax=50, oldest 100 open, 1 newer merged settles within 3 passes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-anti-starve",
+      issuePrefix: "STARVE",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-a",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const prResolutions: Record<number, "open" | "merged"> = {};
+    const baseTime = 1_700_000_000_000;
+    let targetIssueId = "";
+
+    // 120 candidates:
+    // 0..99 (oldest 100): open PRs
+    // 100..119 (newer 20): open PRs, except one merged PR (index 110)
+    for (let i = 0; i < 120; i++) {
+      const prNumber = 1000 + i;
+      const isTarget = i === 110;
+      prResolutions[prNumber] = isTarget ? "merged" : "open";
+      const seeded = await seed({
+        companyId,
+        agentId,
+        identifier: `STARVE-${i + 1}`,
+        updatedAt: new Date(baseTime + i * 1000),
+        products: [{ number: prNumber }],
+      });
+      if (isTarget) {
+        targetIssueId = seeded.issueId;
+      }
+    }
+
+    const sweep = sweepFor(fakeResolver(prResolutions));
+
+    // Pass 1: processes candidates 0..49 (all open -> settled: 0)
+    const pass1 = await sweep.sweep({ settings: SETTINGS, force: true, batchMax: 50 });
+    expect(pass1.settled).toBe(0);
+    const [afterPass1] = await db.select().from(issues).where(eq(issues.id, targetIssueId));
+    expect(afterPass1!.status).toBe("in_progress");
+
+    // Pass 2: processes candidates 50..99 (all open -> settled: 0)
+    const pass2 = await sweep.sweep({ settings: SETTINGS, force: true, batchMax: 50 });
+    expect(pass2.settled).toBe(0);
+    const [afterPass2] = await db.select().from(issues).where(eq(issues.id, targetIssueId));
+    expect(afterPass2!.status).toBe("in_progress");
+
+    // Pass 3: processes candidates 100..119 (including the merged target)
+    const pass3 = await sweep.sweep({ settings: SETTINGS, force: true, batchMax: 50 });
+    expect(pass3.settled).toBeGreaterThanOrEqual(1);
+
+    const [targetIssue] = await db.select().from(issues).where(eq(issues.id, targetIssueId));
+    expect(targetIssue!.status).toBe("done");
   });
 });

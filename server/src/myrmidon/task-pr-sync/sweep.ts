@@ -20,7 +20,7 @@
 // recorded on the work product (`metadata.lastMergedSha`) so a re-run that somehow
 // sees the same merge does not comment twice.
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, notInArray, or } from "drizzle-orm";
 import {
   approvals,
   issueApprovals,
@@ -83,6 +83,8 @@ function loadTaskPrSyncServices() {
   return taskPrSyncServices;
 }
 
+/** Statuses the sweep may rewrite; a task in any other status is not a candidate. */
+const CANDIDATE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);
 const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
@@ -304,6 +306,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
   const now = deps.now ?? (() => new Date());
   let lastRunAt = 0;
   let inFlight = false;
+  let cursor: { updatedAt: Date; id: string } | null = null;
   let workProductsPromise: Promise<ReturnType<
     typeof import("../../services/work-products.js").workProductService
   >> | null = null;
@@ -542,6 +545,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       /** Bypass the interval gate (tests call the pass directly). */
       force?: boolean;
       batchMax?: number;
+      cursor?: { updatedAt: Date; id: string } | null;
     }): Promise<TaskPrSyncSweepResult> => {
       const settings = opts?.settings ?? readTaskPrSyncSettings(deps.env ?? process.env);
       if (!settings.enabled) return { ...EMPTY_RESULT, skippedPass: true };
@@ -556,24 +560,71 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       inFlight = true;
       const result: TaskPrSyncSweepResult = { ...EMPTY_RESULT };
       try {
+        if (opts?.cursor !== undefined) {
+          cursor = opts.cursor;
+        }
         const batchMax = Math.max(1, opts?.batchMax ?? settings.batchMax);
-        const candidates = await deps.db
-          .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
-          .from(issues)
-          .innerJoin(
-            issueWorkProducts,
-            and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
-          )
-          .where(inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]))
-          .orderBy(asc(issues.updatedAt))
-          .limit(batchMax);
-        const issueIds = candidates.map((row) => row.id);
+
+        async function fetchCandidates(
+          cursorAfter: { updatedAt: Date; id: string } | null,
+          limit: number,
+          excludeIds: string[] = [],
+        ) {
+          if (limit <= 0) return [];
+          const conditions = [
+            inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]),
+          ];
+          if (cursorAfter) {
+            conditions.push(
+              or(
+                gt(issues.updatedAt, cursorAfter.updatedAt),
+                and(eq(issues.updatedAt, cursorAfter.updatedAt), gt(issues.id, cursorAfter.id)),
+              )!,
+            );
+          }
+          if (excludeIds.length > 0) {
+            conditions.push(notInArray(issues.id, excludeIds));
+          }
+          return deps.db
+            .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
+            .from(issues)
+            .innerJoin(
+              issueWorkProducts,
+              and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
+            )
+            .where(and(...conditions))
+            .orderBy(asc(issues.updatedAt), asc(issues.id))
+            .limit(limit);
+        }
+
+        let candidates = await fetchCandidates(cursor, batchMax);
+        if (candidates.length < batchMax && cursor !== null) {
+          const wrapCandidates = await fetchCandidates(
+            null,
+            batchMax - candidates.length,
+            candidates.map((c) => c.id),
+          );
+          candidates = [...candidates, ...wrapCandidates];
+        }
+
+        if (candidates.length > 0) {
+          const last = candidates[candidates.length - 1]!;
+          cursor = { updatedAt: last.updatedAt, id: last.id };
+        } else {
+          cursor = null;
+        }
+
+        const issueIds = [...new Set(candidates.map((row) => row.id))];
         if (issueIds.length === 0) {
           lastRunAt = at.getTime();
           return result;
         }
 
-        const issueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const rawIssueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const issueMap = new Map(rawIssueRows.map((row) => [row.id, row]));
+        const issueRows = issueIds
+          .map((id) => issueMap.get(id))
+          .filter((row): row is typeof issues.$inferSelect => row !== undefined);
         const productRows = await deps.db
           .select()
           .from(issueWorkProducts)
@@ -675,6 +726,10 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       } finally {
         inFlight = false;
       }
+    },
+    getCursor: () => (cursor ? { ...cursor } : null),
+    resetCursor: () => {
+      cursor = null;
     },
   };
 }
