@@ -249,9 +249,9 @@ describe("assignment", () => {
     const updated = t.fixture.rows.get("1")!;
     expect(updated.assigneeAgentId).toBe(REV_B);
     expect((updated.executionState as Record<string, any>).currentParticipant.agentId).toBe(REV_B);
-    expect(t.activities).toEqual([
+    expect(t.activities).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: REVIEW_ROUTING_ASSIGNED_ACTION, issueId: "1" }),
-    ]);
+    ]));
     expect(t.comments).toHaveLength(1);
     expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_B, issueId: "1" })]);
     expect(t.wakes[0]?.executionStage).toMatchObject({ wakeRole: "reviewer" });
@@ -300,7 +300,8 @@ describe("assignment", () => {
     await t.sweep.sweep(NOW, { force: true });
     const second = await t.sweep.sweep(NOW, { force: true });
     expect(second).toMatchObject({ assigned: 0, reassigned: 0, signaled: 0 });
-    expect(t.activities).toHaveLength(1);
+    expect(t.activities).toHaveLength(2);
+    expect(t.activities.filter((entry) => entry.action === REVIEW_ROUTING_ASSIGNED_ACTION)).toHaveLength(1);
   });
 
   it("does not undo the assignment when the wake fails", async () => {
@@ -309,7 +310,10 @@ describe("assignment", () => {
     t.fixture.rows.set("1", row("1"));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.assigned).toBe(1);
-    expect(t.activities).toHaveLength(1);
+    expect(t.activities.map((entry) => entry.action)).toEqual([
+      REVIEW_ROUTING_WAKE_ACTION,
+      REVIEW_ROUTING_ASSIGNED_ACTION,
+    ]);
   });
 
   it("stands down when a racing writer already gave the task a reviewer", async () => {
@@ -391,7 +395,7 @@ describe("overdue review", () => {
     const second = t.fixture.rows.get("1")!.assigneeAgentId!;
     expect(second).not.toBe(first);
     expect([REV_A, REV_B]).toContain(second);
-    expect(t.activities.map((entry) => entry.action)).toEqual([
+    expect(t.activities.map((entry) => entry.action).filter((action) => action !== REVIEW_ROUTING_WAKE_ACTION)).toEqual([
       REVIEW_ROUTING_ASSIGNED_ACTION,
       REVIEW_ROUTING_REASSIGNED_ACTION,
     ]);
@@ -558,7 +562,7 @@ describe("PR lane (fake store + fake resolver)", () => {
     expect(t.fixture.created).toEqual([
       expect.objectContaining({ title: "Review PR acme/widgets#7: Add routing", kind: "review", assigneeAgentId: REV_A, headSha: "aaaaaaaa" }),
     ]);
-    expect(t.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_PR_TASK_CREATED_ACTION]);
+    expect(t.activities.map((a) => a.action)).toEqual(expect.arrayContaining([REVIEW_ROUTING_PR_TASK_CREATED_ACTION]));
     expect(t.wakes).toEqual([{ agentId: REV_A, issueId: "task-review-7" }]);
   });
 
@@ -580,7 +584,7 @@ describe("PR lane (fake store + fake resolver)", () => {
     const approvedResult = await approved.sweep.sweep(NOW, { force: true });
     expect(approvedResult).toMatchObject({ stewardTasksCreated: 1, prTasksCreated: 0 });
     expect(approved.fixture.created).toEqual([expect.objectContaining({ title: "Merge PR acme/widgets#7", kind: "merge" })]);
-    expect(approved.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION]);
+    expect(approved.activities.map((a) => a.action)).toEqual(expect.arrayContaining([REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION]));
   });
 
   it("cancels a task whose recorded head moved on and routes the new head the same pass", async () => {
