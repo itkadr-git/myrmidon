@@ -116,7 +116,7 @@ test("parseReplicationStatus parses standard and error psql outputs", () => {
 
 test("generateStandbyConfig includes required streaming parameters", () => {
   const cfg = generateStandbyConfig("board");
-  assert.match(cfg, /primary_conninfo = 'host=10\.10\.100\.1/);
+  assert.match(cfg, /primary_conninfo = 'host=(?:10\.10\.100\.1|primary\.internal)/);
   assert.match(cfg, /primary_slot_name = 'standby_board_slot'/);
   assert.match(cfg, /hot_standby = 'on'/);
   assert.match(cfg, /restore_command = /);
@@ -318,7 +318,7 @@ test("runCli commands output structured JSON and return correct exit codes", () 
       if (failoverPromoted) {
         return { exitCode: 0, stdout: "f\n", stderr: "" };
       }
-      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-30 11:59:00+00\n", stderr: "" };
+      return { exitCode: 0, stdout: `t|1/1000|1/1000|${new Date(Date.now() - 5000).toISOString()}\n`, stderr: "" };
     }
     if (sql.includes("pg_current_wal_lsn")) {
       return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
