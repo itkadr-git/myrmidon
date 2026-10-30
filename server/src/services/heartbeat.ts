@@ -384,6 +384,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
+  refreshRunTelemetrySnapshot,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
@@ -3592,6 +3593,7 @@ const heartbeatRunListColumns = {
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   sessionIdBefore: heartbeatRuns.sessionIdBefore,
   sessionIdAfter: heartbeatRuns.sessionIdAfter,
   logStore: heartbeatRuns.logStore,
@@ -3713,6 +3715,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
           ${heartbeatRuns.resultJson} -> 'cost_usd',
           ${heartbeatRuns.resultJson} -> 'costUsd'
         ),
+        'runTelemetry', ${heartbeatRuns.resultJson} -> 'runTelemetry',
         'truncated', true,
         'truncationReason', 'oversized_result_json',
         'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
@@ -3725,6 +3728,7 @@ const heartbeatRunSafeColumns = {
   ...getTableColumns(heartbeatRuns),
   processGroupId: heartbeatRunProcessGroupIdColumn,
   resultJson: heartbeatRunSafeResultJsonColumn,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
 } as const;
 
 const heartbeatRunSqlAsciiSafeColumns = {
@@ -3732,6 +3736,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
   processGroupId: heartbeatRunProcessGroupIdColumn,
   error: sql<string | null>`NULL`.as("error"),
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
@@ -3898,6 +3903,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 export interface WakeupOptions {
+  /** Revision timestamp observed when the wake event was admitted. */
+  eventRevision?: string | null;
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -9658,10 +9665,16 @@ export function heartbeatService(
           effect.previousStatus !== effect.status
         ) {
           clearHeartbeatRunRuntimeStatus(effect.runId);
-          void emitAgentTaskRunById(db, {
-            runId: effect.runId,
-            companyId: effect.companyId,
-          });
+          void (async () => {
+            await refreshRunTelemetrySnapshot(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+            await emitAgentTaskRunById(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+          })();
         }
       }
     }
@@ -20977,10 +20990,7 @@ export function heartbeatService(
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(
-      billedCostUsd,
-      billingType,
-    );
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage =
       inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
@@ -21561,9 +21571,19 @@ export function heartbeatService(
     if (!tx || typeof tx.insert !== "function") {
       return { created: false };
     }
+    let resolvedCompanyId = companyId;
+    if (!resolvedCompanyId && typeof tx.select === "function") {
+      try {
+        const agent = await tx.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+        resolvedCompanyId = agent?.companyId;
+      } catch {
+        // Ignore unsupported mock transaction queries.
+      }
+    }
+    if (!resolvedCompanyId) return { created: false };
     const source = opts.source ?? "on_demand";
     const reason = opts.reason ?? null;
-    const payload = opts.payload ? { ...opts.payload } : null;
+    let payload = opts.payload ? { ...opts.payload } : null;
     if (payload) {
       delete payload.queuedCommentInterrupt;
       delete payload.manualUserWake;
@@ -21575,34 +21595,37 @@ export function heartbeatService(
       readNonEmptyString(payload?.taskId);
     const key = opts.idempotencyKey ??
       `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
-    let resolvedCompanyId = companyId;
-    if (!resolvedCompanyId && typeof tx.select === "function") {
-      try {
-        const agent = await tx
-          .select()
-          .from(agents)
-          .where(eq(agents.id, agentId))
-          .then((rows) => rows[0] ?? null);
-        resolvedCompanyId = agent?.companyId;
-      } catch {
-        // Query failed on mock tx
+    if (resolvedIssueId && !payload?.eventRevision) {
+      const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
+        .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))
+        .then((rows) => rows[0]?.updatedAt?.toISOString() ?? null)
+        .catch(() => null);
+      if (eventRevision) {
+        payload = { ...(payload ?? {}), eventRevision };
+        contextSnapshot.eventRevision = eventRevision;
       }
     }
-    if (!resolvedCompanyId) {
-      return { created: false };
-    }
-    await tx.insert(agentWakeupRequests).values({
+    const request: typeof agentWakeupRequests.$inferInsert = {
       companyId: resolvedCompanyId,
       agentId,
       source,
       triggerDetail: opts.triggerDetail ?? null,
       reason,
-      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      payload: resolvedIssueId
+        ? {
+            ...(payload ?? {}),
+            issueId: resolvedIssueId,
+            ...(Object.keys(contextSnapshot).length > 0
+              ? { contextSnapshot }
+              : {}),
+          }
+        : payload,
       status: "queued",
       requestedByActorType: opts.requestedByActorType ?? null,
       requestedByActorId: opts.requestedByActorId ?? null,
       idempotencyKey: key,
-    });
+    };
+    await tx.insert(agentWakeupRequests).values(request);
     return { created: true };
   }
 
@@ -27375,6 +27398,12 @@ export function heartbeatService(
             );
           }
         }
+        if (finalizedRun) {
+          await refreshRunTelemetrySnapshot(db, {
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+          });
+        }
       } catch (err) {
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
@@ -28429,6 +28458,16 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    const comment = payload?.comment && typeof payload.comment === "object" && !Array.isArray(payload.comment)
+      ? payload.comment as Record<string, unknown>
+      : null;
+    const commentRevision = typeof comment?.createdAt === "string" ? comment.createdAt :
+      typeof comment?.created_at === "string" ? comment.created_at :
+      typeof payload?.timestamp === "string" ? payload.timestamp : null;
+    if (!payload?.eventRevision && commentRevision) payload = { ...(payload ?? {}), eventRevision: commentRevision };
+    if (!payload?.eventRevision && opts.eventRevision) payload = { ...(payload ?? {}), eventRevision: opts.eventRevision };
+    const eventRevision = readNonEmptyString(payload?.eventRevision);
+    if (eventRevision) enrichedContextSnapshot.eventRevision = eventRevision;
     // myrmidon(N4-WAKE-ISSUE-CONTEXT): a wake that names its task only in the
     // resolved context (contextSnapshot.issueId) must also carry the
     // identifier in the payload consumers read first: the agent's wake

@@ -139,8 +139,9 @@ flowchart LR
 ## Что умеет сегодня
 
 Релизные заметки — в [docs/myrmidon/CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)
-(английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Главное на
-версии 1.6.4 (последний выпуск; 1.6.5-rc.14 — текущий кандидат в выпуски):
+(английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Текущий
+предварительный выпуск — [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
+последний стабильный выпуск — [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
 
 ### Работа и агенты
 
@@ -279,15 +280,17 @@ flowchart LR
 - **Интерфейс 2.0 и язык.** Оболочка 2.0 и шесть экранов на новых данных (за
   флагом `enableMyrmidonUi2`, по умолчанию выключено) и язык доски RU/EN на
   пользователя ([ui2-shell](docs/myrmidon/guides/ui2-shell.ru.md)).
+- **1.6.6 — ограниченные guardrails для вывода прогонов.** Необязательное
+  обнаружение по флагу сканирует ограниченное окно вывода, ограничивает число
+  событий и редактирует/обрезает фрагменты; см. [руководство](docs/myrmidon/guides/guardrails-run-output.ru.md).
 
 ### Новое в линейке 1.6
 
 Полные заметки по каждому выпуску:
 [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md) и [страница
-выпусков](https://github.com/itkadr-git/myrmidon/releases) — последний:
-[1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
-— текущий кандидат в выпуски.
+выпусков](https://github.com/itkadr-git/myrmidon/releases). Последний стабильный:
+[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5);
+текущий предварительный: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
 
 - **1.6.3 — один выкат для всех компонентов.** `deploy.sh --release`
   обновляет доску, dockergate, fleetd и образы ботов в одно окно

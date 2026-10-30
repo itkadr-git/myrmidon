@@ -5,18 +5,18 @@ import postgres from "postgres";
 import { applyPendingMigrations } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0422_clear_stale_replay_holds.sql";
+const MIGRATION_FILE = "0423_clear_stale_replay_holds.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbedded = support.supported ? describe : describe.skip;
 
-describeEmbedded("migration 0422 clear stale replay holds", () => {
+describeEmbedded("migration 0423 clear stale replay holds", () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
   it("deduplicates historical holds, clears >24h stale holds on workable issues, and protects ineligible rows", async () => {
-    const database = await startEmbeddedPostgresTestDatabase("paperclip-migration-0422-");
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-migration-0423-");
     cleanups.push(database.cleanup);
     const sql = postgres(database.connectionString, { max: 1 });
     cleanups.push(async () => sql.end());
@@ -131,7 +131,7 @@ describeEmbedded("migration 0422 clear stale replay holds", () => {
       VALUES (${actionRecent}, ${companyId}, ${issueRecentId}, 'execution_reconciliation', 'uncertain_provider_action', ${randomUUID()}, 'hold', 'resolved', '{"automaticRecovery": {"replay": "blocked"}}'::jsonb, NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours')
     `;
 
-    // Apply migration 0422
+    // Apply migration 0423
     const migrationSql = await readFile(new URL(`./migrations/${MIGRATION_FILE}`, import.meta.url), "utf8");
     await sql.unsafe(migrationSql);
 
@@ -141,13 +141,13 @@ describeEmbedded("migration 0422 clear stale replay holds", () => {
 
     const [rowDedup2] = await sql`SELECT "evidence" FROM "issue_recovery_actions" WHERE "id" = ${actionDedupe2}`;
     expect((rowDedup2.evidence as any).automaticRecovery.replay).toBe("cleared");
-    expect((rowDedup2.evidence as any).automaticRecovery.replayClearedBy).toBe("migration_0422_dedupe");
+    expect((rowDedup2.evidence as any).automaticRecovery.replayClearedBy).toBe("migration_0423_dedupe");
     expect((rowDedup2.evidence as any).automaticRecovery.previousEvidence).toEqual({ automaticRecovery: { replay: "blocked" } });
 
     // Verify 2: Stale (>24h) branch on safe workable issue
     const [rowStale] = await sql`SELECT "evidence" FROM "issue_recovery_actions" WHERE "id" = ${actionStale}`;
     expect((rowStale.evidence as any).automaticRecovery.replay).toBe("cleared");
-    expect((rowStale.evidence as any).automaticRecovery.replayClearedBy).toBe("migration_0422_stale");
+    expect((rowStale.evidence as any).automaticRecovery.replayClearedBy).toBe("migration_0423_stale");
     expect((rowStale.evidence as any).automaticRecovery.previousEvidence).toEqual({ automaticRecovery: { replay: "blocked" } });
 
     // Verify 3: Protected rows remained untouched
@@ -176,17 +176,17 @@ describeEmbedded("migration 0422 clear stale replay holds", () => {
     expect((rowRecent.evidence as any).automaticRecovery.replay).toBe("blocked");
 
     // Verify 4: Durable activity_log entries
-    const auditRows = await sql`SELECT * FROM "activity_log" WHERE "actor_id" = 'migration_0422' AND "action" = 'issue.execution_recovery_settled'`;
+    const auditRows = await sql`SELECT * FROM "activity_log" WHERE "actor_id" = 'migration_0423' AND "action" = 'issue.execution_recovery_settled'`;
     expect(auditRows.length).toBe(2);
 
     const dedupeAudit = auditRows.find((r) => (r.details as any).actionId === actionDedupe2);
     expect(dedupeAudit).toBeDefined();
-    expect((dedupeAudit!.details as any).reason).toContain("migration_0422_dedupe");
+    expect((dedupeAudit!.details as any).reason).toContain("migration_0423_dedupe");
     expect((dedupeAudit!.details as any).previousEvidence).toEqual({ automaticRecovery: { replay: "blocked" } });
 
     const staleAudit = auditRows.find((r) => (r.details as any).actionId === actionStale);
     expect(staleAudit).toBeDefined();
-    expect((staleAudit!.details as any).reason).toContain("migration_0422_stale");
+    expect((staleAudit!.details as any).reason).toContain("migration_0423_stale");
     expect((staleAudit!.details as any).previousEvidence).toEqual({ automaticRecovery: { replay: "blocked" } });
   }, 30_000);
 });
