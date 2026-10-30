@@ -137,6 +137,8 @@ jobs:
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF: ${{ github.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
@@ -146,29 +148,29 @@ jobs:
           # A merge-group candidate is a merge commit over its base: the same
           # base..head diff the PR was checked with, on top of the fresh main.
           if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
-            if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if [ -n "${BASE:-}" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
               args+=(--base "$BASE" --head "$HEAD")
             else
               # Fail safe: without a comparable base the plan cannot pick a
               # tier, so run every lane.
-              echo "::warning::base commit $BASE not found; forcing the full tier"
+              echo "::warning::base commit ${BASE:-} not found; forcing the full tier"
             fi
-            if [ "$FULL_LABEL" = "true" ]; then
+            if [ "${FULL_LABEL:-}" = "true" ]; then
               args+=(--force-full)
-            elif [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]] || [[ "$HEAD_REF" =~ rel/* ]]; then
-              echo "Release stream detected ($PR_TITLE / $BASE_REF / $HEAD_REF): applying --release-fast"
+            elif [[ "${PR_TITLE:-}" =~ (rc\.[0-9]+|release) ]] || [[ "${BASE_REF:-}" =~ ^rel/ ]] || [[ "${HEAD_REF:-}" =~ ^rel/ ]]; then
+              echo "Release stream detected ($PR_TITLE / ${BASE_REF:-} / ${HEAD_REF:-}): applying --release-fast"
               args+=(--release-fast)
             fi
-            if [ "$EVENT" = "pull_request" ] && [ -n "$PR_NUMBER" ]; then
+            if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
               pr_head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null || true)"
-              if [ -n "$pr_head" ] && [ "$HEAD" != "$pr_head" ]; then
-                echo "::warning title=Obsolete Run::Commit $HEAD is superseded by head $pr_head on PR #$PR_NUMBER. Running minimal docs tier."
+              if [ -n "$pr_head" ] && [ "${HEAD:-}" != "$pr_head" ]; then
+                echo "::warning title=Obsolete Run::Commit ${HEAD:-} is superseded by head $pr_head on PR #$PR_NUMBER. Running minimal docs tier."
                 args=(plan --out "$RUNNER_TEMP/plan.json" --tier docs)
               fi
             fi
           fi
           is_rel="false"
-          if [ "$REF" = "refs/heads/main" ] || [[ "$REF" =~ ^refs/tags/ ]] || [[ "$PR_TITLE" =~ (rc\.[0-9]+|release) ]] || [[ "$BASE_REF" =~ rel/* ]] || [[ "$HEAD_REF" =~ rel/* ]]; then
+          if [ "${REF:-}" = "refs/heads/main" ] || [[ "${REF:-}" =~ ^refs/tags/ ]] || [[ "${PR_TITLE:-}" =~ (rc\.[0-9]+|release) ]] || [[ "${BASE_REF:-}" =~ ^rel/ ]] || [[ "${HEAD_REF:-}" =~ ^rel/ ]]; then
             is_rel="true"
           fi
           echo "is_release=$is_rel" >> "$GITHUB_OUTPUT"
