@@ -286,6 +286,7 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  blockerGraphRootsResponseSchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -3676,6 +3677,25 @@ registry.registerPath({
 });
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/blocker-graph/roots",
+  tags: ["issues"],
+  summary: "Get root blocker issues sorted by dependent fanout",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(blockerGraphRootsResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
 
 registry.registerPath({
   method: "get",

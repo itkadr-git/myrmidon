@@ -224,6 +224,16 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 			return derr
 		}
 		ans.body, ans.ctype = trimmed, jsonType
+		if cr.Form == policy.FormBot && rt.Suffix != route.SuffixNext {
+			registerCtx, cancel := context.WithTimeout(ctx, def)
+			_, err := rs.g.opt.Disk.Ensure(registerCtx, rt.BotKey)
+			cancel()
+			if err != nil {
+				rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_register_failed", BotKey: rt.BotKey, Reason: "create"})
+			} else {
+				rs.g.log.Write(Line{Event: "disk_project_registered", BotKey: rt.BotKey})
+			}
+		}
 	}
 	rs.respond(ans)
 	return nil

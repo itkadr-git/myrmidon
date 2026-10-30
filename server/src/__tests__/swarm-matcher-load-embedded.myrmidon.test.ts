@@ -296,6 +296,22 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
     });
 
+    it("does not event-claim a task with an open blocker", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-blocked-event");
+      const blocker = await seedTask(companyId, { status: "in_progress" });
+      const blocked = await seedTask(companyId);
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blocker,
+        relatedIssueId: blocked,
+        type: "blocks",
+      });
+      const result = await matchIssue(deps([], { maxActiveTasks: 1 }), blocked);
+      expect(result).toBeNull();
+      expect(await assigneeOf(blocked)).toBeNull();
+      expect(await openTasksOf(agent)).toHaveLength(0);
+    });
     it("counts a task that is both assigned and leased once", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");

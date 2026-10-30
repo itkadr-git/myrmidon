@@ -22,7 +22,7 @@ import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 import { execute } from "./execute.js";
 import { listHermesSkills, reconcileHermesPaperclipSkills } from "./skills.js";
 
-// myrmidon(H1): Paperclip-managed skills belong in the agent's own Hermes
+// myrmidon(H1): Myrmidon-managed skills belong in the agent's own Hermes
 // profile (<HERMES_HOME>/skills), and one agent's run never prunes another's.
 
 let root: string;
@@ -278,11 +278,11 @@ describe("a skill is only delivered when the link proves it", () => {
         executeConfig(profileA, ["company-a/skill-a"], { paperclipRuntimeSkills: [] }),
         onLog,
       ),
-    ).rejects.toThrow(/no Paperclip-managed source to link/);
+    ).rejects.toThrow(/no Myrmidon-managed source to link/);
 
     const stderr = stderrLines(onLog);
     expect(stderr).toContain("company-a/skill-a");
-    expect(stderr).toContain("no Paperclip-managed source to link");
+    expect(stderr).toContain("no Myrmidon-managed source to link");
     expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
   });
 
