@@ -491,6 +491,15 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
                 summary: diffReady.finding.summary,
                 diff: diffReady.finding.diff,
                 detectedAt: startedAt,
+                ...(read.page ? {
+                  provenance: {
+                    requestId: read.page.request_id,
+                    sourceUrl: read.page.url,
+                    fetchedAt: read.page.fetched_at,
+                    contentSha256: read.page.content_sha256,
+                    scannerVerdict: read.page.scanner_verdict,
+                  },
+                } : {}),
               });
             } catch (err) {
               result.errors += 1;
