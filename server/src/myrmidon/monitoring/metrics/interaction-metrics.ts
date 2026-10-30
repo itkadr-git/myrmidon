@@ -40,11 +40,31 @@ export function interactionMetricsReadPort(db: Db): InteractionMetricsReadPort {
   return {
     async read() {
       return db.transaction(async (tx) => {
-        const interactions = await tx.execute(sql`
-          SELECT status, created_at, resolved_at, timeout_at, addressee_agent_id,
-            addressee_user_id, addressee_queue, escalation_level
-          FROM issue_thread_interactions
+        await tx.execute(sql`SET TRANSACTION READ ONLY`);
+        const routingColCheck = await tx.execute(sql`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'issue_thread_interactions'
+              AND column_name = 'timeout_at'
+          ) AS has_routing
         `);
+        const hasRouting = Boolean((routingColCheck as unknown as Array<{ has_routing: boolean }>)[0]?.has_routing);
+
+        const interactions = hasRouting
+          ? await tx.execute(sql`
+              SELECT status, created_at, resolved_at, timeout_at, addressee_agent_id,
+                addressee_user_id, addressee_queue, escalation_level
+              FROM issue_thread_interactions
+            `)
+          : await tx.execute(sql`
+              SELECT status, created_at, resolved_at,
+                NULL::timestamptz AS timeout_at,
+                addressee_agent_id, addressee_user_id,
+                NULL::text AS addressee_queue,
+                0::integer AS escalation_level
+              FROM issue_thread_interactions
+            `);
         const escalations = await tx.execute(sql`
           SELECT level, count(*)::integer AS count FROM interaction_escalations GROUP BY level ORDER BY level
         `);
@@ -56,11 +76,11 @@ export function interactionMetricsReadPort(db: Db): InteractionMetricsReadPort {
             addresseeAgentId: row.addressee_agent_id == null ? null : String(row.addressee_agent_id),
             addresseeUserId: row.addressee_user_id == null ? null : String(row.addressee_user_id),
             addresseeQueue: row.addressee_queue == null ? null : String(row.addressee_queue),
-            escalationLevel: Number(row.escalation_level),
+            escalationLevel: Number(row.escalation_level ?? 0),
           })),
           escalations: Array.from(escalations).map((row) => ({ level: Number(row.level), count: Number(row.count) })),
         };
-      }, { isolationLevel: "repeatable read", readOnly: true });
+      }, { isolationLevel: "repeatable read" });
     },
   };
 }
@@ -86,11 +106,18 @@ export async function collectInteractionMetrics(port: InteractionMetricsReadPort
   };
 }
 
-export function renderInteractionMetrics(snapshot: InteractionMetricsSnapshot | null, role: string): string {
-  const labels = `role=${JSON.stringify(role)}`;
+function escapeLabelValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+export function renderInteractionMetricBlocks(snapshot: InteractionMetricsSnapshot | null, role: string): string[] {
+  const labels = `role="${escapeLabelValue(role)}"`;
+  if (!snapshot) {
+    return INTERACTION_METRIC_FAMILIES.map((name, i) =>
+      `# HELP ${name} Interaction SLA metric (source unavailable).\n# TYPE ${name} ${i === 2 ? "counter" : i === 4 ? "histogram" : "gauge"}`,
+    );
+  }
   const blocks: string[] = [];
-  if (!snapshot) return INTERACTION_METRIC_FAMILIES.map((name, i) =>
-    `# HELP ${name} Interaction SLA metric (source unavailable).\n# TYPE ${name} ${i === 2 ? "counter" : i === 4 ? "histogram" : "gauge"}\n`).join("\n");
   function family(name: string, help: string, type: string, samples: string[]) {
     blocks.push(`# HELP ${name} ${help}\n# TYPE ${name} ${type}\n${samples.join("\n")}`);
   }
@@ -104,5 +131,9 @@ export function renderInteractionMetrics(snapshot: InteractionMetricsSnapshot | 
     `${name}_bucket{${labels},le="+Inf"} ${snapshot.ack.count}`,
     `${name}_sum{${labels}} ${snapshot.ack.sum}`, `${name}_count{${labels}} ${snapshot.ack.count}`,
   ]);
-  return blocks.join("\n\n") + "\n";
+  return blocks;
+}
+
+export function renderInteractionMetrics(snapshot: InteractionMetricsSnapshot | null, role: string): string {
+  return renderInteractionMetricBlocks(snapshot, role).join("\n\n") + "\n";
 }
