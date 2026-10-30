@@ -19,6 +19,7 @@ export { chunkDocumentText } from "./chunking/chunker.js";
 export { createDocumentIngestionPipeline } from "./ingest/embedding-pipeline.js";
 export { createDocumentParserClient } from "./parser/document-parser-client.js";
 export { createHttpDocumentParser } from "./parser/http-document-parser.js";
+export * from "./import/ragflow.js";
 export {
   installPgvectorIntoEmbeddedCluster,
   type PgvectorInstall,
