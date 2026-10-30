@@ -231,17 +231,21 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           reviewerAgentId: review.reviewerAgentId,
           stageId: review.stageId,
         });
-        if (wakeState.activeRun || wakeState.pendingWake || wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) continue;
-        // `updatedAt` is not a review-progress signal: comments and unrelated
-        // issue edits can move it forward. The persisted wake marker is the
-        // last reviewer-delivery attempt, so use it as the idle baseline when
-        // available and fall back to the row timestamp only for first delivery.
-        const lastActivity = wakeState.lastWakeAt ?? row.updatedAt ?? row.createdAt;
-        const idleMs = now.getTime() - lastActivity.getTime();
-        if (idleMs < REVIEW_WAKE_STALE_AFTER_MS) continue;
+        if (wakeState.activeRun || wakeState.pendingWake) continue;
+        if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+          log.error({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; operator action required");
+          continue;
+        }
+        // Recorded failed dispatches retry on bounded backoff, independent of
+        // the initial 30-minute stale threshold.
+        if (wakeState.lastWakeAt) {
+          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, wakeState.attempts - 1));
+          if (now.getTime() - wakeState.lastWakeAt.getTime() < backoffMs) continue;
+        } else {
+          const lastActivity = row.updatedAt ?? row.createdAt;
+          if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
+        }
         const attempt = wakeState.attempts + 1;
-        const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempt - 1));
-        if (wakeState.lastWakeAt && now.getTime() - wakeState.lastWakeAt.getTime() < backoffMs) continue;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
         );

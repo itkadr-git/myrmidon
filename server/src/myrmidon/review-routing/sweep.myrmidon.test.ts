@@ -265,29 +265,33 @@ describe("review wake liveness", () => {
     expect(t.wakes).toHaveLength(0);
   });
 
-  it("caps exponential retry backoff at 60 minutes", async () => {
+  it("caps exponential retry backoff at 60 minutes and skips exhausted retries", async () => {
     const t = setup({}, { wakeStates: new Map([
-      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 59 * 60_000), attempts: 12 }],
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 59 * 60_000), attempts: 5 }],
     ]) });
     expect(REVIEW_WAKE_MAX_BACKOFF_MS).toBe(60 * 60_000);
-    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 12)).toBe(60 * 60_000);
-    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 11)).toBe(60 * 60_000);
+    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 5)).toBe(60 * 60_000);
     t.fixture.rows.set("1", pending("1", REV_A));
     expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
     const retryAt = new Date(NOW.getTime() + 60_000);
     expect((await t.sweep.sweep(retryAt, { force: true })).woken).toBe(1);
-    expect(t.wakes[0]?.retryAttempt).toBe(13);
+    expect(t.wakes[0]?.retryAttempt).toBe(6);
+
+    const exhausted = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000), attempts: REVIEW_WAKE_MAX_ATTEMPTS }],
+    ]) });
+    exhausted.fixture.rows.set("1", pending("1", REV_A));
+    expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    expect(exhausted.wakes).toHaveLength(0);
   });
-  it("uses a ten-minute retry after a recorded failed dispatch and stops after the retry limit", async () => {
+  it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
     const t = setup({}, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 10 * 60_000), attempts: 1 }],
-      ["2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000), attempts: REVIEW_WAKE_MAX_ATTEMPTS }],
     ]) });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_B));
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
-    expect(t.wakes.map(({ issueId, retryAttempt }) => ({ issueId, retryAttempt }))).toEqual([{ issueId: "1", retryAttempt: 2 }]);
+    expect(t.wakes[0]?.retryAttempt).toBe(2);
   });
 
   it("does not wake a review before 30 minutes or inside retry backoff", async () => {
