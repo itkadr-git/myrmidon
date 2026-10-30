@@ -539,6 +539,7 @@ function existingProject(): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    developmentProcess: null,
     codebase: {
       workspaceId: null,
       repoUrl: null,
@@ -718,6 +719,8 @@ describe("LLM Wiki plugin scaffold", () => {
       "wiki_update_index",
       "wiki_list_backlinks",
       "wiki_list_pages",
+      "wiki_rollback_page",
+      "wiki_list_revisions",
     ]);
     expect(manifest.ui?.slots?.map((slot) => slot.type)).toEqual([
       "sidebar",
@@ -3493,6 +3496,150 @@ Duplicate headings receive stable suffixes.
     expect(files.get("wiki/concepts/plugin-boundaries.md")).toContain("Plugin Boundaries");
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_pages"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
+  });
+
+  it("rejects probe markers and severe truncation without force and reason (OPE-9762)", async () => {
+    const harness = createTestHarness({ manifest });
+    const files = new Map<string, string>([
+      ["wiki/concepts/original.md", "# Original Concept\n\n" + "This is a detailed paragraph documenting the architecture and design decisions for this system.\n".repeat(10)],
+    ]);
+    harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+      const value = files.get(relativePath);
+      if (value == null) throw new Error("missing");
+      return value;
+    };
+    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+      files.set(relativePath, contents);
+      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    };
+
+    await plugin.definition.setup(harness.ctx);
+
+    // 1. Rejects probe marker __probe
+    await expect(harness.executeTool("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/original.md",
+      contents: "# Test\n\n__probe existence check\n",
+    })).rejects.toThrow("probe marker '__probe' detected");
+
+    // 2. Rejects single line < 20 chars
+    await expect(harness.executeTool("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/original.md",
+      contents: "ping",
+    })).rejects.toThrow("single line shorter than 20 characters");
+
+    // 3. Rejects truncation < 20% of previous size
+    await expect(harness.executeTool("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/original.md",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
+    })).rejects.toThrow("less than 20% of previous revision");
+
+    // 4. Overwrite succeeds when explicit force and reason are provided
+    const forced = await harness.executeTool<{ data?: { hash: string } }>("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/original.md",
+      contents: "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
+      force: true,
+      reason: "Intentional page reduction for stub",
+    });
+    expect(forced.data?.hash).toHaveLength(64);
+    expect(files.get("wiki/concepts/original.md")).toBe(
+      "# Truncated Concept\n\nThis is a short summary replacement that is longer than twenty characters.",
+    );
+  });
+
+  it("provides read-only list/get without writes and supports revisions/rollback (OPE-9762)", async () => {
+    const harness = createTestHarness({ manifest });
+    const files = new Map<string, string>([
+      ["wiki/concepts/page-a.md", "# Page A\n\nFull content of page A."],
+    ]);
+    harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+      const value = files.get(relativePath);
+      if (value == null) throw new Error("missing");
+      return value;
+    };
+    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+      files.set(relativePath, contents);
+      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    };
+
+    const revisionStore: Array<{ id: string; path: string; content_hash: string; summary: string | null; metadata: Record<string, unknown> | null; created_at: string }> = [];
+    harness.ctx.db.execute = async (sql: string, params?: unknown[]) => {
+      harness.dbExecutes.push({ sql, params });
+      if (sql.includes("wiki_page_revisions") && params) {
+        revisionStore.push({
+          id: String(params[0]),
+          path: String(params[3]),
+          content_hash: String(params[4]),
+          summary: params[5] ? String(params[5]) : null,
+          metadata: params[8] ? JSON.parse(String(params[8])) : null,
+          created_at: new Date().toISOString(),
+        });
+      }
+      return { rowCount: 1, rows: [] };
+    };
+    harness.ctx.db.query = async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      harness.dbQueries.push({ sql, params });
+      if (sql.includes("wiki_page_revisions")) {
+        if (params && params.length >= 5) {
+          const matched = revisionStore.find((r) => r.id === params[4]);
+          return (matched ? [matched] : []) as unknown as T[];
+        }
+        return revisionStore as unknown as T[];
+      }
+      if (sql.includes("wiki_pages")) {
+        return [{ id: "page-1", path: "wiki/concepts/page-a.md", title: "Page A" }] as unknown as T[];
+      }
+      return [] as unknown as T[];
+    };
+
+    await plugin.definition.setup(harness.ctx);
+
+    // List pages via tool without writing
+    const pages = await harness.executeTool<{ data?: { pages: Array<{ path: string }> } }>("wiki_list_pages", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+    });
+    expect(pages.data?.pages).toHaveLength(1);
+    expect(pages.data?.pages[0]?.path).toBe("wiki/concepts/page-a.md");
+
+    // Read page via tool without writing
+    const read = await harness.executeTool<{ content?: string; data?: { contents?: string } }>("wiki_read_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/page-a.md",
+    });
+    expect(read.data?.contents ?? read.content).toContain("Full content of page A.");
+
+    // Write a new revision
+    const writeResult = await harness.executeTool<{ data?: { revisionId: string } }>("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/concepts/page-a.md",
+      contents: "# Page A Revised\n\nUpdated contents for revision test.",
+      summary: "Second revision",
+    });
+    const revId = writeResult.data?.revisionId;
+    expect(revId).toBeTruthy();
+
+    // Rollback to first revision
+    const firstRevId = revisionStore[0]?.id;
+    if (firstRevId) {
+      const rollbackResult = await harness.executeTool<{ data?: { path: string } }>("wiki_rollback_page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: "wiki/concepts/page-a.md",
+        revisionId: firstRevId,
+        reason: "Reverting to original revision",
+      });
+      expect(rollbackResult.data?.path).toBe("wiki/concepts/page-a.md");
+    }
   });
 
   it("blocks agent-tool writes to AGENTS.md but allows explicit board edits", async () => {

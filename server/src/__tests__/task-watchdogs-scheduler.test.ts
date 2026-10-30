@@ -93,16 +93,19 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     return id;
   }
 
+  let nextIssueNumber = 10_000;
+
   async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
     const id = overrides.id ?? randomUUID();
+    const issueNum = overrides.issueNumber ?? nextIssueNumber++;
     await db.insert(issues).values({
       id,
       companyId,
       title: overrides.title ?? "Watched issue",
       status: overrides.status ?? "done",
       priority: overrides.priority ?? "medium",
-      identifier: overrides.identifier ?? `WDOG-${Math.floor(Math.random() * 10_000)}`,
-      issueNumber: overrides.issueNumber ?? Math.floor(Math.random() * 10_000),
+      identifier: overrides.identifier ?? `WDOG-${issueNum}`,
+      issueNumber: issueNum,
       parentId: overrides.parentId,
       assigneeAgentId: overrides.assigneeAgentId,
       originKind: overrides.originKind,
@@ -166,6 +169,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
     return { service, wakes };
   }
+
+  beforeEach(() => {
+    nextIssueNumber = 10_000;
+  });
 
   it("creates one reusable watchdog issue and wakes the watchdog on the initial stopped state", async () => {
     const companyId = await seedCompany();
