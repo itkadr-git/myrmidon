@@ -194,6 +194,7 @@ import {
   activityLog,
   approvals,
   assets,
+  authUsers,
   chatActions,
   chatConversations,
   chatDeliveries,
@@ -30662,7 +30663,7 @@ export function heartbeatService(
                     ? await tx.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, recipientAgentId))
                     : [];
                   const [recipientUser] = recipientUserId
-                    ? await tx.select({ id: users.id, name: users.name }).from(users).where(eq(users.id, recipientUserId))
+                    ? await tx.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(eq(authUsers.id, recipientUserId))
                     : [];
                   const [currentAgentRow] = await tx
                     .select({ id: agents.id, name: agents.name })
