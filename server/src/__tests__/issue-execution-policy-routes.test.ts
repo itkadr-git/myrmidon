@@ -92,6 +92,15 @@ function registerModuleMocks() {
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async () => ({ enabled: false })),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: () => ({
+      listReviewerAgents: vi.fn(async () => []),
+      loadByAgent: vi.fn(async () => new Map()),
+    }),
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),

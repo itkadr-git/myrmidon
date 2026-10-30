@@ -1139,6 +1139,8 @@ describe("agent live run routes", () => {
   });
 
   describe("exact failed chat run retry", () => {
+    const retryIssueRevision = new Date("2026-10-26T00:00:00.000Z");
+    const retryIssueRevisionIso = retryIssueRevision.toISOString();
     const retryBody = {
       failedRunId: failedChatRunId,
       reason: "retry_failed_run",
@@ -1166,6 +1168,7 @@ describe("agent live run routes", () => {
       mockIssueService.getById.mockResolvedValue({
         id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
         assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+        updatedAt: retryIssueRevision,
       });
       mockChatRunRetries.prepareFailedChatRunRetry.mockResolvedValue({
         actionId: retryActionId,
@@ -1198,7 +1201,7 @@ describe("agent live run routes", () => {
       }));
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
         requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
-        payload: { issueId: failedChatIssueId },
+        payload: { issueId: failedChatIssueId, eventRevision: retryIssueRevisionIso },
       }));
     });
 
@@ -1542,6 +1545,25 @@ describe("agent live run routes", () => {
       expect(fixture.db.transaction).not.toHaveBeenCalled();
     });
 
+    it("adds the issue revision to a non-chat retry payload", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({
+        ...selectedRun,
+        contextSnapshot: { ...selectedRun.contextSnapshot, source: "board" },
+      });
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+        updatedAt: retryIssueRevision,
+      });
+      const res = await requestApp(
+        await createApp(createFailedChatRetryDb(false).db, undefined, { chatRunRetries: mockChatRunRetries }),
+        (url) => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId,
+        expect.objectContaining({ payload: expect.objectContaining({ eventRevision: retryIssueRevisionIso }) }));
+    });
+
     it("preserves non-chat retry using only the selected run's server task fields", async () => {
       const fixture = createFailedChatRetryDb(false);
       mockHeartbeatService.getRun.mockResolvedValue({
@@ -1573,6 +1595,7 @@ describe("agent live run routes", () => {
             issueId: failedChatIssueId,
             taskId: failedChatIssueId,
             taskKey: "PAP-FAILED-CHAT",
+            eventRevision: retryIssueRevisionIso,
           },
         }),
       );
