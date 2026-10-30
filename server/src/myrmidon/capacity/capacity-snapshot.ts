@@ -138,7 +138,7 @@ export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
 
   const obj = data as Record<string, unknown>;
   if (obj.version !== 1) {
-    throw new Error(`Invalid snapshot version: ${String(obj.version)}`);
+    throw new Error(`Invalid snapshot version (${String(obj.version)}): version must be 1`);
   }
 
   if (!isValidIsoDate(obj.capturedAt)) {
@@ -146,14 +146,14 @@ export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
   }
 
   if (!obj.scope || typeof obj.scope !== "object") {
-    throw new Error("Missing or invalid scope object");
+    throw new Error("Missing or invalid scope: scope must be an object");
   }
   const scope = obj.scope as Record<string, unknown>;
   if (typeof scope.release !== "string" || !scope.release.trim()) {
-    throw new Error("Invalid scope.release");
+    throw new Error("Invalid scope.release: scope.release must be a non-empty string");
   }
   if (!isValidUuid(scope.companyId)) {
-    throw new Error(`Invalid scope.companyId UUID: ${String(scope.companyId)}`);
+    throw new Error(`Invalid scope.companyId (${String(scope.companyId)}): scope.companyId must be a valid UUID`);
   }
 
   if (!obj.metrics || typeof obj.metrics !== "object") {
@@ -171,12 +171,6 @@ export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
     throw new Error("Snapshot must contain issues and issueRelations arrays");
   }
 
-  if (metrics.totalOpenIssues !== obj.issues.length) {
-    throw new Error(
-      `metrics.totalOpenIssues (${metrics.totalOpenIssues}) does not match issues count (${obj.issues.length})`,
-    );
-  }
-
   const issueIds = new Set<string>();
 
   for (const issue of obj.issues) {
@@ -185,38 +179,38 @@ export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
     }
     for (const key of Object.keys(issue)) {
       if (FORBIDDEN_CONTENT_KEYS.has(key.toLowerCase())) {
-        throw new Error(`Forbidden key "${key}" found in issue snapshot`);
+        throw new Error(`Forbidden text/secret field "${key}" found in issue snapshot`);
       }
     }
     const item = issue as Record<string, unknown>;
 
     if (!isValidUuid(item.id)) {
-      throw new Error(`Invalid issue id UUID: ${String(item.id)}`);
+      throw new Error(`Invalid issue id (${String(item.id)}): must be a valid UUID`);
     }
     issueIds.add(item.id as string);
 
     if (typeof item.identifier !== "string" || !IDENTIFIER_REGEX.test(item.identifier)) {
-      throw new Error(`Invalid issue identifier: ${String(item.identifier)}`);
+      throw new Error(`Invalid issue identifier (${String(item.identifier)}): must be a valid identifier`);
     }
 
     if (!isValidUuid(item.companyId)) {
-      throw new Error(`Invalid issue companyId: ${String(item.companyId)}`);
+      throw new Error(`Invalid issue companyId (${String(item.companyId)}): must be a valid UUID`);
     }
 
     if (item.projectId !== null && !isValidUuid(item.projectId)) {
-      throw new Error(`Invalid issue projectId: ${String(item.projectId)}`);
+      throw new Error(`Invalid issue projectId (${String(item.projectId)}): must be a valid UUID`);
     }
 
     if (item.parentId !== null && !isValidUuid(item.parentId)) {
-      throw new Error(`Invalid issue parentId: ${String(item.parentId)}`);
+      throw new Error(`Invalid issue parentId (${String(item.parentId)}): must be a valid UUID`);
     }
 
     if (typeof item.status !== "string" || !VALID_STATUSES.has(item.status)) {
-      throw new Error(`Invalid issue status: ${String(item.status)}`);
+      throw new Error(`Invalid issue status (${String(item.status)}): must be a valid status`);
     }
 
     if (typeof item.priority !== "string" || !VALID_PRIORITIES.has(item.priority)) {
-      throw new Error(`Invalid issue priority: ${String(item.priority)}`);
+      throw new Error(`Invalid issue priority (${String(item.priority)}): must be a valid priority`);
     }
 
     if (item.casteKey !== null && typeof item.casteKey !== "string") {
@@ -258,29 +252,35 @@ export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
     }
     for (const key of Object.keys(rel)) {
       if (FORBIDDEN_CONTENT_KEYS.has(key.toLowerCase())) {
-        throw new Error(`Forbidden key "${key}" found in relation snapshot`);
+        throw new Error(`Forbidden text/secret field "${key}" found in relation snapshot`);
       }
     }
     const item = rel as Record<string, unknown>;
 
     if (!isValidUuid(item.id)) {
-      throw new Error(`Invalid relation id: ${String(item.id)}`);
+      throw new Error(`Invalid relation id (${String(item.id)}): must be a valid UUID`);
     }
     if (!isValidUuid(item.companyId)) {
-      throw new Error(`Invalid relation companyId: ${String(item.companyId)}`);
+      throw new Error(`Invalid relation companyId (${String(item.companyId)}): must be a valid UUID`);
     }
     if (!isValidUuid(item.issueId)) {
-      throw new Error(`Invalid relation issueId: ${String(item.issueId)}`);
+      throw new Error(`Invalid relation issueId (${String(item.issueId)}): must be a valid UUID`);
     }
     if (!isValidUuid(item.relatedIssueId)) {
-      throw new Error(`Invalid relation relatedIssueId: ${String(item.relatedIssueId)}`);
+      throw new Error(`Invalid relation relatedIssueId (${String(item.relatedIssueId)}): must be a valid UUID`);
     }
     if (item.type !== "blocks") {
-      throw new Error(`Invalid relation type (expected "blocks"): ${String(item.type)}`);
+      throw new Error(`Invalid relation type (${String(item.type)}): type must be "blocks"`);
     }
     if (!isValidIsoDate(item.createdAt)) {
       throw new Error(`Invalid relation createdAt: ${String(item.createdAt)}`);
     }
+  }
+
+  if (metrics.totalOpenIssues !== obj.issues.length) {
+    throw new Error(
+      `metrics.totalOpenIssues (${metrics.totalOpenIssues}) does not match issues.length (${obj.issues.length})`,
+    );
   }
 
   const typedSnapshot = data as CapacityPolicySnapshot;
