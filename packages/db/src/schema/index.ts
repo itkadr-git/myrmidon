@@ -96,6 +96,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { interactionEscalations } from "./interaction_escalations.js";
 export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
