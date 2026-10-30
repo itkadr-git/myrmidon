@@ -84,6 +84,7 @@ function makeStore(fx: Fixture) {
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
       return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
     },
+    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
       const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
@@ -240,6 +241,26 @@ describe("review wake liveness", () => {
     expect(t.wakes[0]?.retryAttempt).toBe(2);
   });
 
+  it("reserves the one-dispatch budget before an attempted wake, even when it rejects", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_B));
+    t.wakeReviewer.mockRejectedValueOnce(new Error("first dispatch failed"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.failed).toBe(1);
+    expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("intentional return changes the participant/stage so a later sweep does not wake the former reviewer", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    // Simulate the ordinary returned transition: current participant and stage move off review.
+    t.fixture.rows.set("1", { ...pending("1", REV_A), executionState: { status: "pending", currentStageId: "implementation", currentStageType: "work", currentParticipant: { type: "agent", agentId: ASSIGNEE } } });
+    expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    expect(t.wakeReviewer).not.toHaveBeenCalled();
+  });
+
   it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
     const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
     t.fixture.load.set(REV_A, 12);
@@ -283,6 +304,7 @@ describe("review wake liveness", () => {
     exhausted.fixture.rows.set("1", pending("1", REV_A));
     expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
     expect(exhausted.wakes).toHaveLength(0);
+    expect(exhausted.fixture.escalations).toEqual([expect.objectContaining({ companyId: COMPANY, issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
   });
   it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
     const t = setup({}, { wakeStates: new Map([

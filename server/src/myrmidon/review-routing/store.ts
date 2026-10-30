@@ -76,6 +76,7 @@ export interface ReviewRoutingStore {
     attempts: number;
   }>;
   recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
+  recordReviewWakeEscalation(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; attempts: number; at: Date }): Promise<void>;
   /**
    * Re-reads the issue under a lock, applies `build(fresh)` when `guard(fresh)`
    * holds, and returns the updated row; null when the guard failed, the row is
@@ -333,6 +334,15 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         lastWakeAt: lastWake?.requestedAt ?? null,
         attempts: lastWake?.attempt ?? 0,
       };
+    },
+
+    async recordReviewWakeEscalation({ companyId, issueId, reviewerAgentId, stageId, attempts, at }) {
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "review_routing_sweep",
+        action: "issue.review_routing.wake_escalation_required", entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
+        details: { reviewerAgentId, stageId, attempts, owner: "ADM", nextAction: "inspect reviewer runtime and manually replay the review wake; preserve stage unless intentionally returned" },
+        createdAt: at,
+      });
     },
 
     async recordReviewWake({ companyId, issueId, reviewerAgentId, stageId, at, attempt }) {

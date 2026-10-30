@@ -233,7 +233,8 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
         if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
-          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; operator action required");
+          await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
+          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
           continue;
         }
         // Recorded failed dispatches retry on bounded backoff, independent of
@@ -255,6 +256,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
         // Persist the wake request before dispatch: a failure while enqueuing
         // still observes the cooldown on the next sweep rather than looping.
+        reviewersWoken.add(review.reviewerAgentId); // Reserve the per-reviewer dispatch budget even if dispatch rejects.
         await deps.store.recordReviewWake({
           companyId,
           issueId: row.id,
@@ -270,7 +272,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           executionStage: wakeContext as unknown as Record<string, unknown>,
           retryAttempt: attempt,
         });
-        reviewersWoken.add(review.reviewerAgentId);
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
         result.woken += 1;
       } catch (err) {
