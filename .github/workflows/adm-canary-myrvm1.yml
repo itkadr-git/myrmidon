@@ -19,4 +19,9 @@ jobs:
         with:
           version: 9.15.4
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
+      - run: |
+          set -euo pipefail
+          pnpm run preflight:workspace-links
+          pnpm -r --filter '!@myrmidon/paperclip-runner' typecheck
+          pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
+      - run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
