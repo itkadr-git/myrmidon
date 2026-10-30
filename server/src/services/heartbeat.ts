@@ -104,6 +104,7 @@ import {
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { processRole } from "./process-role.js"; // myrmidon(OPE-10011): role default of `executesRuns`
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
@@ -20663,8 +20664,14 @@ export function heartbeatService(
   // The worker-side listener of the `notify` mode: a process that executes runs
   // subscribes to `run_queued` and starts locally; every bus (re-)listen runs
   // the resweep dogon. An api process never subscribes.
+  // myrmidon(OPE-10011): absent `executesRuns` follows THIS process's role
+  // (T1.1). Only the heartbeat index.ts builds passes it; the ~30 others that
+  // routes and services build did not, so in an api child each of them armed
+  // its own resweep, which then dispatched and admitted runs in the api process.
+  const roleExecutesRuns =
+    options.executesRuns ?? processRole(runtimeEnv as NodeJS.ProcessEnv).executesRuns;
   const runQueuedBusListener =
-    options.processBus && (options.executesRuns ?? true)
+    options.processBus && roleExecutesRuns
       ? createRunQueuedBusListener(options.processBus, {
           startNextQueuedRunForAgent: (agentId) => startNextQueuedRunForAgent(agentId),
           sweepQueuedWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
@@ -20677,7 +20684,7 @@ export function heartbeatService(
   // under a test runner and switchable with MYRMIDON_QUEUED_RESWEEP=0 — see
   // queuedResweepArmDecision.
   const queuedResweepArming = queuedResweepArmDecision(runtimeEnv, {
-    runsBackground: options.executesRuns ?? true,
+    runsBackground: roleExecutesRuns,
   });
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
