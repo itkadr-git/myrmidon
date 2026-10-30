@@ -40,7 +40,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene, repack } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -80,6 +80,7 @@ function rig({ desired, plan, rules, inventory, executor, gatherParts, board = f
     imageGeneration: "myr-v1.6.5-rc.5",
     settings,
     hygiene,
+    repack,
   });
   return { loop, logs, states, executed, board };
 }
@@ -609,5 +610,16 @@ describe("botd loop: cache hygiene and pressure triggers (1.6.6 OPE-10039)", () 
     assert.equal(passes, 1);
     await r.loop.onPressure("hard");
     assert.equal(passes, 2);
+  });
+
+  it("invokes repack hook on every pass when provided", async () => {
+    let repackCalled = 0;
+    const r = rig({
+      repack: async () => {
+        repackCalled++;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(repackCalled, 1);
   });
 });

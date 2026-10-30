@@ -257,6 +257,13 @@ export function createLoop(deps) {
             log(`botd loop: hygiene failed: ${errMessage(err)}`);
           }
         }
+        if (typeof deps.repack === "function") {
+          try {
+            await deps.repack({ startedAt });
+          } catch (err) {
+            log(`botd loop: git-base repack failed: ${errMessage(err)}`);
+          }
+        }
         // the pass summary: what the cycle actually touched. Silent when the pass
         // did nothing observable (an all-cooldown pass must not re-spam the log).
         const deferredCount = Object.values(tally.deferred).reduce((s, n) => s + n, 0);
