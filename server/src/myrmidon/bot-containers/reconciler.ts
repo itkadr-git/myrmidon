@@ -316,8 +316,8 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         limits: { memoryMb: spec.memoryMb, cpus: spec.cpus, pidsLimit: spec.pidsLimit },
       },
       {
-        profileHash: status.restartHash ?? "",
-        imageDigest: status.image ?? "",
+        profileHash: status.restartHash ?? profile.restartHash,
+        imageDigest: status.image || spec.image,
         limits: {
           memoryMb: status.memoryMb ?? spec.memoryMb,
           cpus: status.cpus ?? spec.cpus,

@@ -147,6 +147,7 @@ describe("T3 regressions against production profile, placement, routing and drif
           container: { host: "t3-a" },
           apiBaseUrl: "http://old:18701",
         },
+        runtimeConfig: {},
       }),
       ensureApiServerKey: async () => ({ value: "secret-val", secretId: "secret-1", version: 1 }),
       saveAdapterConfig: async (_agent, cfg) => {
