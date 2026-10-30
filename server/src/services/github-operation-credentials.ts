@@ -21,6 +21,7 @@ import { isLowTrustQuarantined } from "./source-trust.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
 import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import { onResetGitHubAppTokenCache } from "../myrmidon/github-shared-identity/index.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -211,6 +212,8 @@ export function clearGitHubOperationCredentialCache(): void {
   githubCredentialCache.clear();
 }
 
+onResetGitHubAppTokenCache(clearGitHubOperationCredentialCache);
+
 /** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
@@ -222,15 +225,16 @@ export async function resolveGitHubOperationCredentials(
     repository?: string | null;
   },
 ) {
+  const { run, context } = await captureRunIdentity(db, input);
+  if (!context) throw forbidden("This run predates managed GitHub credentials");
+
   const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
-  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${normalizedRepo}`;
+  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
   const cached = githubCredentialCache.get(cacheKey);
   if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
     return cached.result;
   }
 
-  const { run, context } = await captureRunIdentity(db, input);
-  if (!context) throw forbidden("This run predates managed GitHub credentials");
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};
   // A sponsored guest's responsible person is an internal accountability field,
