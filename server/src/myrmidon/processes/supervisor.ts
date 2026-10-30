@@ -111,6 +111,13 @@ export interface SupervisorChildRecord {
 export interface ProcessSupervisor {
   /** Apply a new settings value; no-op when nothing relevant changed. */
   apply(settings: ProcessesSettings): Promise<void>;
+  /**
+   * myrmidon(OPE-10011): registers the worker's startup listener on the public
+   * port as the supervisor's own. In single it is the single-mode listener; in
+   * split it is closed once the children are ready (right away if they already
+   * are).
+   */
+  adoptPublicListener(handle: SupervisorListenerHandle): Promise<void>;
   /** Current lifecycle state, for the settings view and for tests. */
   state(): SupervisorState;
   /** Live children registry snapshot. */
@@ -380,10 +387,20 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
     // startup listener is registered with the supervisor at wiring time, so
     // `publicListener` non-null is the single-mode steady state.
     if (state === "single" && publicListener !== null) return;
+    const before = state;
     state = "drainingToSingle";
     clearNoChildGrace();
     // reusePort lets the worker open :3100 while the children still serve it.
-    await openOwnListener();
+    try {
+      await openOwnListener();
+    } catch (err) {
+      // myrmidon(OPE-10011): nothing was drained yet — go back to where the
+      // move started, so the next apply retries it instead of finding the
+      // supervisor stuck in drainingToSingle (where moveToSplit is a no-op).
+      state = before;
+      if (before === "split" || before === "startingSplit") scheduleNoChildGrace();
+      throw err;
+    }
     for (const slot of liveChildren()) {
       drainChild(slot);
     }
@@ -391,17 +408,44 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
     d.log.info({}, "myrmidon(PROCS-1.2): back to single — worker serves the public port alone");
   }
 
-  return {
-    apply: async (next: ProcessesSettings) => {
-      if (shuttingDown) return;
-      const previous = desired;
-      desired = next;
+  async function applyNow(next: ProcessesSettings): Promise<void> {
+    if (shuttingDown) return;
+    const previous = desired;
+    desired = next;
+    try {
       if (next.mode === "split") {
         if (previous?.mode === "split" && previous.apiCount === next.apiCount) return;
         await moveToSplit(next);
         return;
       }
       await moveToSingle();
+    } catch (err) {
+      // myrmidon(OPE-10011): a failed move is not "converged" — forget it, so
+      // the same value applied again retries instead of hitting the no-op.
+      desired = previous;
+      throw err;
+    }
+  }
+
+  // myrmidon(OPE-10011): applies run one at a time in arrival order. The first
+  // apply of a worker waits for its startup listener (index.ts); an apply that
+  // arrives meanwhile must not see the transient drainingToSingle and drop.
+  let applyQueue: Promise<void> = Promise.resolve();
+
+  return {
+    apply: (next: ProcessesSettings) => {
+      const run = applyQueue.then(() => applyNow(next));
+      applyQueue = run.catch(() => undefined);
+      return run;
+    },
+
+    async adoptPublicListener(handle: SupervisorListenerHandle) {
+      if (shuttingDown) return;
+      if (!publicListener?.listening) publicListener = handle;
+      d.log.info({ state }, "myrmidon(OPE-10011): worker startup listener registered with the supervisor");
+      // The children got ready before the worker bound its listener: split is
+      // already in force, so the worker leaves the public port right away.
+      if (state === "split") await closeOwnListener(SUPERVISOR_DRAIN_GRACE_MS);
     },
 
     state: () => state,
