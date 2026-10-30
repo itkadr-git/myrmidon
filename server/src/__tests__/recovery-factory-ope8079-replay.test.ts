@@ -7,6 +7,7 @@ import {
   ISSUE_RECOVERY_ACTION_KINDS,
   type IssueRecoveryActionKind,
   type RecoveryFactoryRequest,
+  buildRecoveryDedupeKey,
 } from "@myrmidon/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -174,7 +175,11 @@ function classifyOpe8079OperatorSignal(signal: {
       throw new Error(`Unknown operator action source issue: ${signal.issueId}`);
   }
 
-  const dedupeKey = `recovery:${kind}:${cause}:${signal.issueId}`;
+  const dedupeKey = buildRecoveryDedupeKey({
+    kind,
+    cause,
+    scope: signal.issueId,
+  });
   return { kind, cause, dedupeKey };
 }
 
@@ -315,7 +320,6 @@ describePg("recovery-factory-ope8079-replay PostgreSQL acceptance", () => {
       const nextCheckAt = new Date(Date.now() + policy.slaMinutes * 60_000).toISOString();
       const request: RecoveryFactoryRequest = {
         kind: classification.kind,
-        cause: classification.cause,
         dedupeKey: classification.dedupeKey,
         sourceIssueId,
         owner: { agentId: ownerAgent.id },
@@ -328,6 +332,7 @@ describePg("recovery-factory-ope8079-replay PostgreSQL acceptance", () => {
           sourceDescription: item.sourceDescription,
           sourceQuote: item.sourceQuote,
           signalAction: item.signal.action,
+          cause: classification.cause,
         },
       };
 
@@ -357,7 +362,9 @@ describePg("recovery-factory-ope8079-replay PostgreSQL acceptance", () => {
     expect(distinctKinds.size).toBe(9);
 
     // Criterion 4: Exactly 9 distinct causes (9/9)
-    const distinctCauses = new Set(generatedRequests.map((r) => r.cause));
+    const distinctCauses = new Set(
+      generatedRequests.map((r) => (r.evidence as { cause: string }).cause),
+    );
     expect(distinctCauses.size).toBe(9);
 
     // Criterion 5: Exactly 9 distinct dedupeKeys (9/9)
