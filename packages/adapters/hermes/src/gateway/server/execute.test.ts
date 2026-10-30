@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, errorResult, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -3612,8 +3612,9 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
 
-    const ctx = makeCtx();
-    const result = await execute(ctx, { fetch: fetchMock });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
     expect(result.failedBeforeModel).toBe(true);
@@ -3655,8 +3656,9 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
 
-    const ctx = makeCtx();
-    const result = await execute(ctx, { fetch: fetchMock });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
     expect(result.failedBeforeModel).toBe(false);
@@ -3692,8 +3694,9 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
 
-    const ctx = makeCtx();
-    const result = await execute(ctx, { fetch: fetchMock });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
     expect(result.failedBeforeModel).toBe(true);
@@ -3704,5 +3707,35 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(diffMs).toBeLessThanOrEqual(125_000);
     expect(result.resultJson?.modelResponseStarted).toBe(false);
     expect(result.resultJson?.failedBeforeModel).toBe(true);
+  });
+
+  it("marks failedBeforeModel: false when errorResult is invoked after modelResponseStarted: true", () => {
+    const error = new Error("Gateway stream broke mid-generation");
+    const state = { modelResponseStarted: true };
+    const result = errorResult(error, (t) => t, state);
+
+    expect(result.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.modelResponseStarted).toBe(true);
+    expect(result.resultJson?.failed_before_model).toBeUndefined();
+  });
+
+  it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-non-cooldown",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "SyntaxError: Unexpected token in JSON",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-1",
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.cooldown).toBeUndefined();
+    expect(result.errorFamily).not.toBe("provider_quota");
   });
 });

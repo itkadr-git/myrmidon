@@ -268,6 +268,70 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       });
       expect(delay2).toBe(120_000);
     });
+
+    it("recognizes cooldown marker in terminal adapter resultJson for heartbeat retry scheduling", () => {
+      const now = new Date("2026-10-30T10:00:00.000Z");
+      const retryNotBefore = "2026-10-30T10:02:00.000Z";
+
+      // Result with structured LiteLLM cooldown
+      const terminalResult = mapFinalResultForTest({
+        terminal: {
+          runId: "run-terminal-cooldown",
+          status: "failed",
+          payload: {
+            error_code: 429,
+            error_type: "rate_limit_error",
+            error: {
+              code: 429,
+              type: "rate_limit_error",
+              retry_after: 120,
+            },
+          },
+        },
+        outputChunks: [],
+        sessionKey: "session-cooldown",
+        strategy: "issue",
+      });
+
+      expect(terminalResult.resultJson?.cooldown).toBe(true);
+      expect(terminalResult.errorFamily).toBe("provider_quota");
+
+      // Verify that heartbeat retry logic extracts isCooldownOrQuota
+      const runResult = terminalResult.resultJson as Record<string, unknown>;
+      const isCooldownOrQuota =
+        terminalResult.errorFamily === "provider_quota" ||
+        Boolean(runResult.cooldown);
+
+      expect(isCooldownOrQuota).toBe(true);
+
+      const delay = computeTransientRetryDelayMs({
+        nextAttempt: 1,
+        now,
+        transientRetryNotBeforeHint: retryNotBefore,
+        isCooldownOrQuota,
+      });
+
+      // 120s from hint
+      expect(delay).toBe(120_000);
+
+      // And non-cooldown terminal failure does NOT set cooldown flag
+      const nonCooldownResult = mapFinalResultForTest({
+        terminal: {
+          runId: "run-non-cooldown",
+          status: "failed",
+          payload: {
+            status: "failed",
+            error: "SyntaxError: Unexpected token",
+          },
+        },
+        outputChunks: [],
+        sessionKey: "session-non-cooldown",
+        strategy: "issue",
+      });
+
+      expect(nonCooldownResult.resultJson?.cooldown).toBeUndefined();
+      expect(nonCooldownResult.errorFamily).not.toBe("provider_quota");
+    });
   });
 
   describe("durable failedBeforeModel metrics aggregation", () => {

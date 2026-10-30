@@ -1747,7 +1747,7 @@ export function mapFinalResultForTest(input: {
       modelResponseStarted,
       failedBeforeModel,
       ...(failedBeforeModel ? { failed_before_model: true } : {}),
-      ...(isCooldownOrRateLimit ? { cooldown: true } : {}),
+      ...(isCooldown ? { cooldown: true } : {}),
       ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
@@ -1988,7 +1988,11 @@ async function settlePredecessorRun(input: {
   return finalStatus !== null;
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+export function errorResult(
+  err: unknown,
+  redactText: TextRedactor = sanitizeSensitiveText,
+  stateOrModelResponseStarted?: ExecutionState | { modelResponseStarted?: boolean } | boolean,
+): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
@@ -2032,6 +2036,12 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     classified?.family ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
 
+  const modelResponseStarted =
+    typeof stateOrModelResponseStarted === "boolean"
+      ? stateOrModelResponseStarted
+      : Boolean(stateOrModelResponseStarted?.modelResponseStarted);
+  const failedBeforeModel = !modelResponseStarted;
+
   return {
     exitCode: 1,
     signal: null,
@@ -2040,7 +2050,7 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     errorFamily,
     retryNotBefore,
     errorMessage,
-    failedBeforeModel: true,
+    failedBeforeModel,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
@@ -2051,9 +2061,9 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
       errorFamily,
       errorMessage,
       retryNotBefore,
-      modelResponseStarted: false,
-      failedBeforeModel: true,
-      failed_before_model: true,
+      modelResponseStarted,
+      failedBeforeModel,
+      ...(failedBeforeModel ? { failed_before_model: true } : {}),
       ...(isCooldown ? { cooldown: true } : {}),
     },
   };
@@ -2627,7 +2637,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
-  void consumeEvents({
+  try {
+    void consumeEvents({
     ctx,
     baseUrl,
     headers: eventHeaders,
@@ -2830,18 +2841,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // status is itself verified termination, so acknowledge cancellation the
   // same way the "cancelled" branch does instead of returning a result the
   // platform's cancelRun will 409 despite the run being genuinely done.
-  if (ctx.signal?.aborted) {
-    return {
-      ...finalResult,
-      resultJson: {
-        ...finalResult.resultJson,
-        executionCancellation: {
-          state: "acknowledged",
-          acknowledgedAt: new Date().toISOString(),
-          forced: false,
+    if (ctx.signal?.aborted) {
+      return {
+        ...finalResult,
+        resultJson: {
+          ...finalResult.resultJson,
+          executionCancellation: {
+            state: "acknowledged",
+            acknowledgedAt: new Date().toISOString(),
+            forced: false,
+          },
         },
-      },
-    };
+      };
+    }
+    return finalResult;
+  } catch (err) {
+    controller.abort();
+    return errorResult(err, redactText, state);
   }
-  return finalResult;
 }
