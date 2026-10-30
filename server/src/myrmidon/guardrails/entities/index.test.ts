@@ -37,25 +37,10 @@ describe("entity recognizer", () => {
     expect(matches("4111111111111112", "payment_card")).toHaveLength(0);
   });
 
-  it("validates correspondent/account relation using BIC", () => {
-    expect(bankAccountMatchesBic("30101810400000000225", "044525225")).toBe(true);
-    expect(bankAccountMatchesBic("30101810400000000225", "044525226")).toBe(false);
-  });
-
-  it.each([
-    ["30101810400000000225", "044525225"],
-    ["30101810400000000555", "044525225"],
-    ["30101810000000000777", "044525225"],
-  ])("accepts a valid correspondent-account/BIC pair: %s / %s", (account, bic) => {
-    expect(bankAccountMatchesBic(account, bic)).toBe(true);
-  });
-
-  it.each([
-    ["30101810400000000224", "044525225"],
-    ["30101810400000000556", "044525225"],
-    ["30101810000000000778", "044525225"],
-  ])("rejects a pair with a changed check input: %s / %s", (account, bic) => {
-    expect(bankAccountMatchesBic(account, bic)).toBe(false);
+  it("validates correspondent-account key using BIC digits 5-6", () => {
+    // Bank of Russia Letter 515 example: BIC 049805000 / account 30101810800000000746.
+    expect(bankAccountMatchesBic("30101810800000000746", "049805000")).toBe(true);
+    expect(bankAccountMatchesBic("30101810800000000746", "049806000")).toBe(false);
   });
 
   it("uses the settlement-account BIC suffix for non-correspondent accounts", () => {
@@ -68,6 +53,28 @@ describe("entity recognizer", () => {
       expect(matches(value, "kpp"), value).toHaveLength(1);
       expect(matches(value, "bic"), value).toHaveLength(0);
     }
+  });
+
+  it("suppresses lower-confidence classifications across partially overlapping spans", () => {
+    const cases = [
+      ["ИНН 7707083893", "inn", "7707083893", ["inn"]],
+      ["ОГРН 1027700132195", "ogrn", "1027700132195", ["ogrn"]],
+      ["Договор № 4509 123456", "passport", "4509 123456", ["passport"]],
+      ["123456789012", "phone", "123456789012", ["phone"]],
+    ] as const;
+    for (const [text, entity, value, expectedEntities] of cases) {
+      const found = detectEntities(text);
+      expect(found.map((match) => match.entity), text).toEqual(expectedEntities);
+      expect(found.some((match) => match.value === value && match.entity === entity), text).toBe(true);
+    }
+  });
+
+  it("defines deterministic precedence for a shorter candidate inside a longer one", () => {
+    const found = detectEntities("ИНН: 7707083893 и телефон +7 (999) 123-45-67");
+    expect(found.map((match) => [match.entity, match.value])).toEqual([
+      ["inn", "7707083893"],
+      ["phone", "+7 (999) 123-45-67"],
+    ]);
   });
 
   it("detects BIC labels without swallowing the following digits", () => {

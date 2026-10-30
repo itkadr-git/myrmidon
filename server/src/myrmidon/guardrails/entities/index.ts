@@ -67,15 +67,23 @@ export function detectEntities(text: string, dictionary?: DictionaryMatcher): En
   if (dictionary) for (const hit of dictionary.find(text)) {
     if (hit.start >= 0 && hit.end > hit.start && hit.end <= text.length) result.push({ entity: "dictionary", value: text.slice(hit.start, hit.end), score: hit.score ?? 0.5, start: hit.start, end: hit.end });
   }
-  return result.sort((a,b) => a.start - b.start || b.score - a.score || b.end - a.end);
+  // Prefer higher-confidence matches for overlapping spans to avoid masking the same
+  // identifier twice (for example, a validated tax number also matching the phone rule).
+  const ordered = result.sort((a, b) => b.score - a.score || a.start - b.start || b.end - a.end);
+  const selected: EntityMatch[] = [];
+  for (const match of ordered) {
+    if (selected.some((winner) => match.start < winner.end && winner.start < match.end)) continue;
+    selected.push(match);
+  }
+  return selected.sort((a,b) => a.start - b.start || b.score - a.score || b.end - a.end);
 }
 
 /** Validate a settlement/correspondent account against a nine-digit BIC. */
 export function bankAccountMatchesBic(account: string, bic: string): boolean {
   const a = digits(account), b = digits(bic);
   if (a.length !== 20 || b.length !== 9) return false;
-  // Settlement accounts use the BIC's last three digits; correspondent
-  // accounts use 0 plus BIC digits 5-6 (1-based), with the same keying rule.
+  // Correspondent-account check prefix: 0 + BIC digits 5-6 (1-based).
+  // Settlement accounts use the BIC's final three digits.
   const prefix = a.startsWith("3") ? `0${b.slice(4, 6)}` : b.slice(-3);
   const check = prefix + a;
   const weights = [7, 1, 3];
