@@ -142,6 +142,21 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
   });
 
+  it("renders myrmidon_runs_queued with reason labels when queued runs have wait reasons", () => {
+    const text = renderMetricsText(
+      snapshot({
+        runsQueued: 143,
+        runsQueuedByReason: [
+          { reason: "global_cap", count: 98 },
+          { reason: "agent_concurrency", count: 45 },
+        ],
+      }),
+    );
+    expect(text).toContain('myrmidon_runs_queued{role="all"} 143');
+    expect(text).toContain('myrmidon_runs_queued{role="all",reason="global_cap"} 98');
+    expect(text).toContain('myrmidon_runs_queued{role="all",reason="agent_concurrency"} 45');
+  });
+
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
   // the metric names stay, the label set grows. A worker scrape renders
   // role="worker" on every family, the api processes role="api".

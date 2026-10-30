@@ -68,7 +68,7 @@ describeEmbeddedPostgres("queued run resweep (part A of T1.4)", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(status = "active") {
+  async function seedAgent(status = "active", maxConcurrentRuns = 1) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     await db.insert(companies).values({
@@ -86,7 +86,7 @@ describeEmbeddedPostgres("queued run resweep (part A of T1.4)", () => {
       status,
       adapterType: "codex_local",
       adapterConfig: {},
-      runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns } },
       permissions: {},
     });
     return { companyId, agentId };
@@ -229,5 +229,15 @@ describeEmbeddedPostgres("queued run resweep (part A of T1.4)", () => {
     expect(outcome).toEqual({ agents: 0, started: 0, failed: 0 });
     expect((await readRun(queuedRunId))?.status).toBe("queued");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("starts queued runs for an agent with multiple slots when one run is already running", async () => {
+    const { companyId, agentId } = await seedAgent("active", 2);
+    const queuedRunId = await seedQueuedRun(companyId, agentId);
+    await seedRunningRun(companyId, agentId);
+
+    const started = await heartbeat.resumeQueuedRuns();
+    expect(started.length).toBeGreaterThanOrEqual(1);
+    expect(started.map((r: any) => r.id)).toContain(queuedRunId);
   });
 });

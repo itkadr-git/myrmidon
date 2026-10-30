@@ -277,4 +277,29 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
       unsubscribe();
     }
   });
+
+  it("decorates queued runs with queuedReason from contextSnapshot.waitReason", () => {
+    const heartbeat = heartbeatService(db);
+    const queuedRun = {
+      id: "run-queued-1",
+      companyId,
+      agentId,
+      issueId,
+      status: "queued" as const,
+      contextSnapshot: { waitReason: "global_cap" },
+    };
+    const decorated = heartbeat.decorateActiveRunStatus(queuedRun);
+    expect(decorated.queuedReason).toBe("global_cap");
+
+    const unqueuedRun = {
+      id: "run-running-1",
+      companyId,
+      agentId,
+      issueId,
+      status: "running" as const,
+      contextSnapshot: {},
+    };
+    const decoratedRunning = heartbeat.decorateActiveRunStatus(unqueuedRun);
+    expect(decoratedRunning.queuedReason).toBeNull();
+  });
 });

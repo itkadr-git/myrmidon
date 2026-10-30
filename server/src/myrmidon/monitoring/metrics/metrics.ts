@@ -183,6 +183,7 @@ export interface MetricsSnapshotFields {
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  runsQueuedByReason?: Array<{ reason: string; count: number }>;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -339,6 +340,7 @@ async function readRunCounters(db: Db): Promise<{
   active: number;
   queued: number;
   failedTotal: number;
+  queuedByReason?: Array<{ reason: string; count: number }>;
 }> {
   const rows = await db
     .select({
@@ -356,7 +358,28 @@ async function readRunCounters(db: Db): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
-  return { active, queued, failedTotal };
+  let queuedByReason: Array<{ reason: string; count: number }> = [];
+  if (queued > 0) {
+    try {
+      const reasonRows = await db
+        .select({
+          reason: sql<string>`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`,
+          total: count(),
+        })
+        .from(heartbeatRuns)
+        .where(
+          sql`${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry')`,
+        )
+        .groupBy(sql`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`);
+      queuedByReason = reasonRows.map((r) => ({
+        reason: String(r.reason),
+        count: Number(r.total),
+      }));
+    } catch {
+      // Best effort fallback
+    }
+  }
+  return { active, queued, failedTotal, queuedByReason };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -696,6 +719,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedByReason: runCounters.queuedByReason,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
@@ -890,7 +914,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_queued",
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
-      [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+      snapshot.runsQueuedByReason && snapshot.runsQueuedByReason.length > 0
+        ? [
+            `myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`,
+            ...snapshot.runsQueuedByReason.map(
+              (entry) =>
+                `myrmidon_runs_queued{${R},reason="${escapeLabelValue(entry.reason)}"} ${formatSampleValue(entry.count)}`,
+            ),
+          ]
+        : [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
     ),
   );
   blocks.push(
