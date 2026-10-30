@@ -46,10 +46,12 @@ import {
   RUNTIME_CONNECTION_TOOL_DEFINITIONS,
   RUNTIME_INTENT_TOOL_DEFINITIONS,
 } from "../services/connection-tool-definitions.js";
+import { boardLoadRequestMiddleware } from "../myrmidon/monitoring/board-load/index.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
+  router.use(boardLoadRequestMiddleware());
   const service = connectionIntentService(db);
 
   router.post("/runtime-tools/github/credentials", async (req, res) => {

@@ -120,6 +120,27 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
     }
   });
 
+  it("applies the agent defaults to integration board keys (source: board_key)", async () => {
+    const { companyId } = await seedCompanyWithIssues(ISSUE_LIST_AGENT_DEFAULT_LIMIT + 5);
+    const boardKeyActor = {
+      type: "board" as const,
+      source: "board_key" as const,
+      userId: `user-${randomUUID()}`,
+      companyIds: [companyId],
+      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: false,
+      keyId: randomUUID(),
+    };
+    const res = await request(routeApp(ctx.db, boardKeyActor as never, issueRoutes))
+      .get(`/api/companies/${companyId}/issues`)
+      .expect(200);
+    expect(res.body).toHaveLength(ISSUE_LIST_AGENT_DEFAULT_LIMIT);
+    expect(res.headers.etag).toMatch(/^"compact-issues:/);
+    for (const row of res.body) {
+      expect(row, `description present on ${row.id}`).not.toHaveProperty("description");
+    }
+  });
+
   it("rejects an agent limit above the agent maximum with the pagination hint", async () => {
     const { companyId } = await seedCompanyWithIssues(1);
     const res = await request(routeApp(ctx.db, await agentActor(companyId) as never, issueRoutes))
