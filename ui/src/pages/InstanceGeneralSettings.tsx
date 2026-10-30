@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -56,7 +56,6 @@ type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
-  const navigate = useNavigate();
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

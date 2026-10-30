@@ -51,7 +51,8 @@
   },
   "dependencies": {
     "@myrmidon/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "@myrmidon/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

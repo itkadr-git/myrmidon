@@ -88,6 +88,7 @@ import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admissi
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
 import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
@@ -3935,6 +3936,32 @@ async function buildAttentionFeedSnapshot(
             summaryExcerpt: excerpt(feature.whyNow),
             images: [],
           },
+        }));
+      }
+
+      // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
+      // the existing attention runtime. Recovery removes the card automatically.
+      for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
+        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
+            title: signal.title, identifier: null, status: "warning",
+            href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
+          exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
+          dedupKey: signal.dedupKey, severity: "medium",
+          activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },
         }));
       }
 

@@ -7,19 +7,15 @@
 import { useState } from "react";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstanceSecretSettings } from "@/hooks/useInstanceSecretSettings";
-import { useUi2I18n } from "../../../i18n/Ui2I18n";
+import { useUi2I18n, type Ui2I18nContextValue } from "../../../i18n/Ui2I18n";
 import { Ui2Section } from "../../../components/ui2Primitives";
 
-const SECRET_REFS_KEYS = {
-  title: "ui2.settings.secrets.title",
-  hint: "ui2.settings.secrets.hint",
-  descriptions: {
-    "bot.disk.dockergate_token": "ui2.settings.secrets.descriptions.bot.disk.dockergate_token",
-    "bot.egress.proxy_token": "ui2.settings.secrets.descriptions.bot.egress.proxy_token",
-    "browser_console.node_token": "ui2.settings.secrets.descriptions.browser_console.node_token",
-    "test.connector.client_secret": "ui2.settings.secrets.descriptions.test.connector.client_secret",
-  },
-} as const;
+function ui2SettingDescription(t: Ui2I18nContextValue["t"], name: string, fallback: string): string {
+  const key = `ui2.settings.system.secretRefs.settingDescriptions.${name.replace(/[.-]/g, "_")}`;
+  const translated = t(key as never);
+  return translated === key ? fallback : translated;
+}
+
 
 export function Ui2InstanceSecretSettings() {
   const { t } = useUi2I18n();
@@ -31,7 +27,7 @@ export function Ui2InstanceSecretSettings() {
   if (data.settingsLoading || data.settingsError || data.settings.length === 0) return null;
 
   return (
-    <Ui2Section title={t(SECRET_REFS_KEYS.title)} footer={t(SECRET_REFS_KEYS.hint)}>
+    <Ui2Section title={t("ui2.settings.secrets.title")} footer={t("ui2.settings.secrets.hint")}>
       {data.settings.map((setting) => (
         <div key={setting.name} className="ui2-secret-ref flex flex-col gap-2 rounded-md border border-border p-3" data-testid={`ui2-secret-setting-${setting.name}`}>
           <span className="text-sm font-medium">
@@ -39,9 +35,8 @@ export function Ui2InstanceSecretSettings() {
               ? t("ui2.settings.system.secretRefs.toolOauthProvider", {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
-              : t(
-                  SECRET_REFS_KEYS.descriptions[setting.name as keyof typeof SECRET_REFS_KEYS.descriptions] ?? "ui2.settings.secrets.hint",
-                )}
+              : ui2SettingDescription(t, setting.name, setting.description)}
+
           </span>
           <span className="font-mono text-xs text-muted-foreground">{setting.name}</span>
           <span className="text-sm" data-testid={`ui2-secret-setting-source-${setting.name}`}>

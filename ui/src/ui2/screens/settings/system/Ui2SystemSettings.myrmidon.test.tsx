@@ -10,6 +10,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2SystemSettings } from "./Ui2SystemSettings";
@@ -59,9 +60,11 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <Ui2I18nProvider initialLocale="en">
-            <Ui2SystemSettings />
-          </Ui2I18nProvider>
+          <MemoryRouter>
+            <Ui2I18nProvider initialLocale="en">
+              <Ui2SystemSettings />
+            </Ui2I18nProvider>
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
