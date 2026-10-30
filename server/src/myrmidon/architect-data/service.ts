@@ -126,11 +126,15 @@ export async function getHermesCompressionEvents(
   for (const agent of agentRows) {
     if (results.length >= limit) break;
 
-    // Check possible directory names: agent id or agent name
-    const candidateDirs = [
-      path.join(rootDir, agent.id, "hermes", "logs"),
-      path.join(rootDir, agent.name, "hermes", "logs"),
-    ];
+    // Check possible directory names: agent id or agent name (deduplicated)
+    const candidateDirs = Array.from(
+      new Set(
+        [
+          agent.id ? path.join(rootDir, agent.id, "hermes", "logs") : null,
+          agent.name ? path.join(rootDir, agent.name, "hermes", "logs") : null,
+        ].filter((d): d is string => Boolean(d)),
+      ),
+    );
 
     for (const logDir of candidateDirs) {
       if (!fs.existsSync(logDir)) continue;

@@ -49,37 +49,39 @@ const instanceAdminActor = {
 const architectActor = {
   type: "agent",
   agentId: ARCHITECT_AGENT_ID,
+  companyId: COMPANY_ID,
   companyIds: [COMPANY_ID],
 };
 
 const engineerActor = {
   type: "agent",
   agentId: ENGINEER_AGENT_ID,
+  companyId: COMPANY_ID,
   companyIds: [COMPANY_ID],
 };
 
 /** Create a mock DB returning test rows */
 function createMockDb(): Db {
+  const queryResult = [
+    {
+      id: ARCHITECT_AGENT_ID,
+      name: "adm-architect",
+      role: "architect",
+      companyId: COMPANY_ID,
+    },
+  ];
+
+  const chain = {
+    where: (_cond: unknown) => chain,
+    limit: (_n: number) => Promise.resolve(queryResult),
+    orderBy: () => chain,
+    then: (resolve: (val: unknown) => unknown, reject?: (err: unknown) => unknown) =>
+      Promise.resolve(queryResult).then(resolve, reject),
+  };
+
   return {
     select: (_fields?: unknown) => ({
-      from: (table: unknown) => ({
-        where: (_cond: unknown) => ({
-          limit: (n: number) => {
-            // Check if querying agents table
-            return Promise.resolve([
-              {
-                id: ARCHITECT_AGENT_ID,
-                name: "adm-architect",
-                role: "architect",
-                companyId: COMPANY_ID,
-              },
-            ]);
-          },
-          orderBy: () => ({
-            limit: () => Promise.resolve([]),
-          }),
-        }),
-      }),
+      from: (_table: unknown) => chain,
     }),
   } as unknown as Db;
 }
