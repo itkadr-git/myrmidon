@@ -2628,6 +2628,17 @@ describe("execute — managed instructions bundle (G4)", () => {
       const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
       const body = JSON.parse(String(calls.find(([input]) => String(input).endsWith("/v1/runs"))?.[1]?.body));
       expect(body.instructions).toBe("You are agent-a. Be terse.\n\n---\n\nCard instructions string.");
+      expect(body.input).toContain("an AI agent employee in a Myrmidon-managed company.");
+      expect(body.input).toContain("Myrmidon runtime identity:");
+      expect(body.input).not.toContain("Paperclip runtime identity:");
+
+      // Persisted instructions are re-read each run, so a refresh needs no restart.
+      await fs.writeFile(instructionsPath, "Updated Myrmidon instructions.\n", "utf8");
+      await execute(ctx);
+      const secondCalls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+      const postedRuns = secondCalls.filter(([input]) => String(input).endsWith("/v1/runs"));
+      const secondBody = JSON.parse(String(postedRuns[1]?.[1]?.body));
+      expect(secondBody.instructions).toBe("Updated Myrmidon instructions.\n\n---\n\nCard instructions string.");
 
       const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
       expect(logText).toContain(`Loaded agent instructions from ${instructionsPath}`);
