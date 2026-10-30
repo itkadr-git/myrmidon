@@ -6129,6 +6129,7 @@ async function listIssueBlockedInboxAttentionMap(
         Date.now() - blockerBlockedAt.getTime() >=
           UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
     });
+    const overdueBlockerIssue = overdueBlocker ? issuesById.get(overdueBlocker.issueId) : undefined;
     const blockedByUnassignedBlocker =
       finding?.state === "blocked_by_unassigned_issue" ||
       (finding?.state === "unassigned_blocked_issue_overdue" &&
@@ -6141,7 +6142,7 @@ async function listIssueBlockedInboxAttentionMap(
           state: "needs_attention",
           reason: "blocked_by_unassigned_issue",
           severity: "high",
-          stoppedSinceAt: overdueBlocker?.blockedTransitionAt ?? overdueBlocker?.updatedAt ?? overdueBlocker?.createdAt ?? row.updatedAt,
+          stoppedSinceAt: overdueBlocker?.blockedTransitionAt ?? overdueBlockerIssue?.updatedAt ?? overdueBlockerIssue?.createdAt ?? row.updatedAt,
           owner: { type: "unknown", agentId: null, userId: null, label: null },
           action: {
             label: "Assign overdue blocked issue",
