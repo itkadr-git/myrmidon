@@ -16,7 +16,7 @@ services:
       POSTGRES_USER: ${STANDBY_PG_USER:-paperclip}
       POSTGRES_PASSWORD: ${STANDBY_PG_PASSWORD:-paperclip}
       POSTGRES_DB: ${STANDBY_BOARD_DB:-paperclip}
-      PRIMARY_HOST: ${PRIMARY_PG_HOST:-10.10.100.1}
+      PRIMARY_HOST: ${PRIMARY_PG_HOST:-primary.internal}
       PRIMARY_PORT: ${PRIMARY_BOARD_PORT:-5432}
       PRIMARY_SLOT: ${BOARD_REPL_SLOT:-standby_board_slot}
     command:
@@ -24,7 +24,7 @@ services:
       - -c
       - hot_standby=on
       - -c
-      - primary_conninfo=host=${PRIMARY_PG_HOST:-10.10.100.1} port=${PRIMARY_BOARD_PORT:-5432} user=${BOARD_REPL_USER:-myr_replicator} application_name=myrmidon_board_standby connect_timeout=10
+      - primary_conninfo=host=${PRIMARY_PG_HOST:-primary.internal} port=${PRIMARY_BOARD_PORT:-5432} user=${BOARD_REPL_USER:-myr_replicator} application_name=myrmidon_board_standby connect_timeout=10
       - -c
       - primary_slot_name=${BOARD_REPL_SLOT:-standby_board_slot}
       - -c
@@ -48,7 +48,7 @@ services:
       POSTGRES_USER: ${STANDBY_HINDSIGHT_USER:-hindsight}
       POSTGRES_PASSWORD: ${STANDBY_HINDSIGHT_PASSWORD:-hindsight}
       POSTGRES_DB: ${STANDBY_HINDSIGHT_DB:-hindsight}
-      PRIMARY_HOST: ${PRIMARY_PG_HOST:-10.10.100.1}
+      PRIMARY_HOST: ${PRIMARY_PG_HOST:-primary.internal}
       PRIMARY_PORT: ${PRIMARY_HINDSIGHT_PORT:-5432}
       PRIMARY_SLOT: ${HINDSIGHT_REPL_SLOT:-standby_hindsight_slot}
     command:
@@ -56,7 +56,7 @@ services:
       - -c
       - hot_standby=on
       - -c
-      - primary_conninfo=host=${PRIMARY_PG_HOST:-10.10.100.1} port=${PRIMARY_HINDSIGHT_PORT:-5432} user=${HINDSIGHT_REPL_USER:-hindsight_replicator} application_name=hindsight_standby connect_timeout=10
+      - primary_conninfo=host=${PRIMARY_PG_HOST:-primary.internal} port=${PRIMARY_HINDSIGHT_PORT:-5432} user=${HINDSIGHT_REPL_USER:-hindsight_replicator} application_name=hindsight_standby connect_timeout=10
       - -c
       - primary_slot_name=${HINDSIGHT_REPL_SLOT:-standby_hindsight_slot}
       - -c

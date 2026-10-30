@@ -12,7 +12,7 @@ import path from "node:path";
  */
 
 export const DEFAULT_CONFIG = {
-  primaryHost: "10.10.100.1",
+  primaryHost: process.env.PRIMARY_PG_HOST || "primary.internal",
   primaryBoardPort: 5432,
   primaryHindsightPort: 5432,
   standbyHost: "127.0.0.1",
