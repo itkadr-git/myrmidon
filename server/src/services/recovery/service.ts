@@ -2112,6 +2112,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...(input.extraContext ?? {}),
           },
           "normal_model",
@@ -2126,6 +2127,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...(input.extraContext ?? {}),
           },
           "normal_model",

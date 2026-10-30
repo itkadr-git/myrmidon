@@ -30763,18 +30763,24 @@ export function heartbeatService(
                 : `recovery:${recoveryToken}`
               : eventRevision;
 
-            const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
-            if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
-              companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
-            }) === "deduped") {
-              await tx.insert(agentWakeupRequests).values({
-                ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
-                reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
-                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
-                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
-                finishedAt: new Date(),
-              });
-              return { kind: "skipped" as const };
+            const alreadyClaimedKey =
+              readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) ??
+              readNonEmptyString(payload?.continuationClaimKey);
+
+            if (!alreadyClaimedKey) {
+              const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
+              if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+                companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
+              }) === "deduped") {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
+                  status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
             }
 
             enrichedContextSnapshot.continuationEventId = revision;
@@ -30783,6 +30789,7 @@ export function heartbeatService(
             const extraRecoveryProps = {
               ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
               ...(recoveryHead ? { continuationHead: recoveryHead } : {}),
+              ...(alreadyClaimedKey ? { continuationClaimKey: alreadyClaimedKey } : {}),
             };
             payload = {
               ...(payload ?? {}),
