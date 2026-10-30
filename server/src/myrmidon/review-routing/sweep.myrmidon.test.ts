@@ -223,6 +223,19 @@ describe("review wake liveness", () => {
     expect(t.wakes).toHaveLength(0);
   });
 
+  it("uses the persisted wake time instead of a later issue update", async () => {
+    const lastWakeAt = new Date(NOW.getTime() - 31 * 60_000);
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt, attempts: 1 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      updatedAt: new Date(NOW.getTime() - 2 * 60_000),
+    }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(2);
+  });
+
   it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
     const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
     t.fixture.load.set(REV_A, 12);

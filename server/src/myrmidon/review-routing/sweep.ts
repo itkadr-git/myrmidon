@@ -232,7 +232,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           stageId: review.stageId,
         });
         if (wakeState.activeRun || wakeState.pendingWake) continue;
-        const lastActivity = row.updatedAt ?? row.createdAt;
+        // `updatedAt` is not a review-progress signal: comments and unrelated
+        // issue edits can move it forward. The persisted wake marker is the
+        // last reviewer-delivery attempt, so use it as the idle baseline when
+        // available and fall back to the row timestamp only for first delivery.
+        const lastActivity = wakeState.lastWakeAt ?? row.updatedAt ?? row.createdAt;
         const idleMs = now.getTime() - lastActivity.getTime();
         if (idleMs < REVIEW_WAKE_STALE_AFTER_MS) continue;
         const attempt = wakeState.attempts + 1;
@@ -747,10 +751,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   ) {
     try {
       const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
+      const requestedAt = new Date().toISOString();
       const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
       const attempt = lastWakeState.attempts + 1;
-      const at = new Date();
-      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at, attempt });
+      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
       await deps.wakeReviewer(reviewerId, {
         issueId: row.id,
         reason: "execution_review_requested",
