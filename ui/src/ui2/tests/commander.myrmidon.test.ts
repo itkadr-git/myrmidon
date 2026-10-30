@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
-import { UI2_MESSAGES } from "../i18n/locales";
+import { ui2Messages } from "../i18n/locales";
 import { Ui2I18nProvider } from "../i18n/Ui2I18n";
 import { Ui2Commander } from "../screens/commander/Ui2Commander";
 
@@ -85,8 +85,8 @@ describe("myrmidon(UI2) commander route and navigation contracts", () => {
   });
 
   it("defines ui2.screens.commander in both EN and RU locales", () => {
-    expect(UI2_MESSAGES.en["ui2.screens.commander"]).toBe("Command Center");
-    expect(UI2_MESSAGES.ru["ui2.screens.commander"]).toBe("Командный центр");
+    expect(ui2Messages.en["ui2.screens.commander"]).toBe("Command Center");
+    expect(ui2Messages.ru["ui2.screens.commander"]).toBe("Командный центр");
   });
 });
 
@@ -118,12 +118,13 @@ describe("myrmidon(UI2) commander widget sources and empty states (ia-v2 §4)", 
       root!.render(
         React.createElement(
           QueryClientProvider,
-          { client },
-          React.createElement(
-            Ui2I18nProvider,
-            { initialLocale: locale },
-            React.createElement(Ui2Commander)
-          )
+          {
+            client,
+            children: React.createElement(
+              Ui2I18nProvider,
+              { initialLocale: locale, children: React.createElement(Ui2Commander) }
+            ),
+          }
         )
       );
     });

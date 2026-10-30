@@ -13,7 +13,7 @@ import { decisionsApi } from "@/api/decisions";
 import { attentionApi } from "@/api/attention";
 import { queryKeys } from "@/lib/queryKeys";
 import { useUi2I18n } from "../../i18n/Ui2I18n";
-import { Ui2Page, Ui2Section, Ui2Tile, Ui2EmptyState } from "../../components/ui2Primitives";
+import { Ui2Page, Ui2Section, Ui2Tile, Ui2Tiles, Ui2EmptyState } from "../../components/ui2Primitives";
 import { Ui2ErrorState, Ui2SkeletonRows } from "../../components/ui2StateViews";
 
 export function Ui2Commander() {
@@ -78,12 +78,12 @@ export function Ui2Commander() {
   return (
     <Ui2Page title={t("ui2.commander.title")} subtitle={t("ui2.commander.subtitle")}>
       <Ui2Section title={t("ui2.commander.attention.title")}>
-        <Ui2TilesRow>
+        <Ui2Tiles>
           <Ui2Tile label={t("ui2.commander.attention.total")} value={String(attentionCount)} tone={attentionCount ? "warning" : "ok"} />
           <Ui2Tile label={t("ui2.commander.attention.approvals")} value={String(pendingApprovals.length)} />
           <Ui2Tile label={t("ui2.commander.attention.decisions")} value={String(openDecisions.length)} />
           <Ui2Tile label={t("ui2.commander.attention.interactions")} value={String(interactionCount)} />
-        </Ui2TilesRow>
+        </Ui2Tiles>
         {attentionCount === 0 ? <Ui2EmptyState title={t("ui2.commander.empty.attention")} /> : null}
       </Ui2Section>
 
@@ -122,12 +122,12 @@ export function Ui2Commander() {
           }
         >
           {summary ? (
-            <Ui2TilesRow>
+            <Ui2Tiles>
               <Ui2Tile label={t("ui2.commander.fleet.active")} value={String(summary.agents.active)} />
               <Ui2Tile label={t("ui2.commander.fleet.running")} value={String(summary.agents.running)} tone="ok" />
               <Ui2Tile label={t("ui2.commander.fleet.paused")} value={String(summary.agents.paused)} />
               <Ui2Tile label={t("ui2.commander.fleet.errors")} value={String(summary.agents.error)} tone={summary.agents.error ? "danger" : "ok"} />
-            </Ui2TilesRow>
+            </Ui2Tiles>
           ) : (
             <Ui2EmptyState title={t("ui2.commander.empty.fleet")} />
           )}
@@ -135,8 +135,4 @@ export function Ui2Commander() {
       </div>
     </Ui2Page>
   );
-}
-
-function Ui2TilesRow({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{children}</div>;
 }
