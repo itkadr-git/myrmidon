@@ -3,6 +3,7 @@
 // Sections land as real screens with their waves (UI-0c re-skins the ones
 // that already have data; the rest stay skeleton rows). Rendered inside the
 // ui2 shell for any /company/settings/* route under the flag.
+import clsx from "clsx";
 import { NavLink } from "@/lib/router";
 import { useTranslation } from "@/i18n";
 import { useUi2I18nOptional } from "../i18n/Ui2I18n";
@@ -15,6 +16,7 @@ export const UI2_SETTINGS_SECTIONS = [
   { key: "runs", path: "/company/settings/runs-queue" },
   { key: "budgets", path: "/company/settings/budgets" },
   { key: "autonomy", path: "/company/settings/autonomy" },
+  { key: "guards", path: "/company/settings/guards" },
   { key: "castes", path: "/company/settings/castes" },
   { key: "system", path: "/company/settings/system" },
   { key: "language", path: "/company/settings/language" },
@@ -29,7 +31,7 @@ export function Ui2SettingsSidebar() {
   };
   return (
     <nav
-      className="myr-ui2__settings-nav"
+      className="myr-ui2__settings-nav myr-ui2-settings-sidebar"
       aria-label={t("ui2.settings.navLabel")}
       style={{
         display: "flex",
@@ -46,6 +48,9 @@ export function Ui2SettingsSidebar() {
         <NavLink
           key={section.key}
           to={section.path}
+          className={({ isActive }) =>
+            clsx("myr-ui2-settings-item", isActive && "myr-ui2-settings-item--active")
+          }
           style={({ isActive }) => ({
             display: "flex",
             alignItems: "center",

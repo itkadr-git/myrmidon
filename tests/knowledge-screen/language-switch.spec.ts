@@ -27,7 +27,7 @@ test.describe("UI2 Language Switch", () => {
     await expect(shell).toBeVisible();
 
     // Verify initial English state
-    const sidebar = page.locator(".myr-ui2-settings-sidebar");
+    const sidebar = page.locator(".myr-ui2-settings-sidebar, .myr-ui2__settings-nav");
     await expect(sidebar).toBeVisible();
     await expect(sidebar).toContainText("General");
     await expect(sidebar).toContainText("Language");
@@ -37,7 +37,7 @@ test.describe("UI2 Language Switch", () => {
     expect(sidebarText).not.toMatch(/ui2\.(settings|nav)\./);
 
     // Click Russian in the top bar or settings language switch
-    const ruButton = page.locator(".ui2-language-switch button[lang='ru']").first();
+    const ruButton = page.locator(".ui2-language-switch button[lang='ru'], .ui2-language-switch-option[lang='ru']").first();
     await expect(ruButton).toBeVisible();
     await ruButton.click();
 
@@ -79,13 +79,13 @@ test.describe("UI2 Language Switch", () => {
     await expect(shell).toBeVisible();
 
     // Check phone header and compact LanguageSwitch
-    const phoneHeader = page.locator(".myr-ui2__phone-header");
+    const phoneHeader = page.locator(".myr-ui2__phone-header, .myr-ui2-phone-header");
     await expect(phoneHeader).toBeVisible();
     const phoneSwitch = phoneHeader.locator(".ui2-language-switch");
     await expect(phoneSwitch).toBeVisible();
 
     // Switch to Russian via phone header
-    const ruPhoneBtn = phoneSwitch.locator("button[lang='ru']");
+    const ruPhoneBtn = phoneSwitch.locator("button[lang='ru'], .ui2-language-switch-option[lang='ru']").first();
     await expect(ruPhoneBtn).toBeVisible();
     await ruPhoneBtn.click();
 

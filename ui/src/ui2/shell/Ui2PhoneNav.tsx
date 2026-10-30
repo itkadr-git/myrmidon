@@ -107,7 +107,7 @@ export function Ui2PhoneHeader() {
   };
   return (
     <div
-      className="myr-ui2__phone-header"
+      className="myr-ui2__phone-header myr-ui2-phone-header"
       style={{
         height: "var(--myr-phone-topbar-height)",
         display: "flex",
