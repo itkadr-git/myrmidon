@@ -11,6 +11,7 @@ import {
   DEFAULT_SCENT_CLASSIFIER_MODEL,
   readScentSettings,
 } from "@myrmidon/shared";
+import { SCENT_KEY_SECRET_ENV } from "../../scent/queue.js";
 import { entry, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 
@@ -27,8 +28,7 @@ export const swarmScentFeature: FeatureDefinition = {
     const settings = readScentSettings((ctx.general as Record<string, unknown> | null)?.swarm, ctx.env);
     const secretName =
       settings.apiKeySecretName?.trim() ||
-      ctx.env.SCENT_KEY_SECRET_ENV?.trim() ||
-      ctx.env.MYRMIDON_EVALS_API_KEY_SECRET?.trim() ||
+      ctx.env[SCENT_KEY_SECRET_ENV]?.trim() ||
       "MYRMIDON_EVALS_API_KEY";
     const baseUrl = ctx.ports.scent.baseUrl();
 
@@ -59,8 +59,7 @@ export const swarmScentFeature: FeatureDefinition = {
 
     const secretName =
       settings.apiKeySecretName?.trim() ||
-      ctx.env.SCENT_KEY_SECRET_ENV?.trim() ||
-      ctx.env.MYRMIDON_EVALS_API_KEY_SECRET?.trim() ||
+      ctx.env[SCENT_KEY_SECRET_ENV]?.trim() ||
       "MYRMIDON_EVALS_API_KEY";
     const hasSecret = await ctx.ports.scent.hasSecret(secretName);
     if (!hasSecret) {

@@ -59,7 +59,7 @@ export const swarmClaimFeature: FeatureDefinition = {
     const base = {
       lastSuccessAt: iso(latestOf(out.lastSuccessAt, lastMatchedAt)),
       ...errorFields(out),
-      effect: { label: "tasks assigned to free agents in 24 h", value: matched },
+      effect: { label: "issues claimed in 24 h", value: matched },
     };
     if (out.lastOk === false) {
       return makeHealth("failing", `the last sweep pass failed: ${out.lastError ?? "unknown error"}`, base);

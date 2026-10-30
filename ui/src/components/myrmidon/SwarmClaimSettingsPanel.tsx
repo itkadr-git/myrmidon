@@ -43,7 +43,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { api } from "@/api";
 import { secretsApi } from "@/api/secrets";
-import { useCompany } from "@/context/CompanyContext";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { useTranslation } from "@/i18n";
 import {
@@ -665,7 +665,8 @@ export function SwarmScentSettingsPanelView({
   onSave,
 }: SwarmScentSettingsPanelViewProps) {
   const { t } = useTranslation();
-  const { selectedCompanyId } = useCompany();
+  const companyContext = useOptionalCompany();
+  const selectedCompanyId = companyContext?.selectedCompanyId;
 
   const secretsQuery = useQuery({
     queryKey: ["companySecrets", selectedCompanyId],

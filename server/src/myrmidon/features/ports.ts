@@ -217,7 +217,7 @@ export function createDbFeaturePorts(db: Db): FeaturePorts {
         const [row] = await db
           .select({ id: litellmModels.id })
           .from(litellmModels)
-          .where(eq(litellmModels.model, model.trim()))
+          .where(eq(litellmModels.modelName, model.trim()))
           .limit(1);
         return Boolean(row);
       },

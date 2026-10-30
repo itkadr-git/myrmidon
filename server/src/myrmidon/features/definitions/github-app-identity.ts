@@ -51,12 +51,12 @@ export const githubAppIdentityFeature: FeatureDefinition = {
         entry(
           "Configured Apps",
           totalApps,
-          totalApps > 0 ? "database" : "default",
+          totalApps > 0 ? "settings" : "default",
         ),
         entry(
           "Companies with active shared identity",
           enabledCompanies,
-          enabledCompanies > 0 ? "database" : "default",
+          enabledCompanies > 0 ? "settings" : "default",
         ),
       ],
     };
