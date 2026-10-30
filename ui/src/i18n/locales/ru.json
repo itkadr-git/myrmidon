@@ -140,7 +140,8 @@
       "autonomy": "Автономия",
       "guards": "Ограждения",
       "castes": "Касты и модели",
-      "system": "Система"
+      "system": "Система",
+      "language": "Язык"
     }
   },
   "connectorPanel": {

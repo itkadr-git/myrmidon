@@ -8,6 +8,8 @@ import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 
 function PhoneTab({
   to,
@@ -93,7 +95,12 @@ function PhoneTab({
 import type { Gauge as GaugeIcon } from "lucide-react";
 
 export function Ui2PhoneHeader() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   return (
     <div
       className="myr-ui2__phone-header"
@@ -108,9 +115,12 @@ export function Ui2PhoneHeader() {
       }}
     >
       <MyrmidonLockup className="max-h-6 w-auto" decorative />
-      <span style={{ marginLeft: "auto", fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-        {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
-      </span>
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+        <LanguageSwitch compact />
+        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
+          {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
+        </span>
+      </div>
     </div>
   );
 }
@@ -124,7 +134,12 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
 }
 
 export function Ui2PhoneTabBar() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
 

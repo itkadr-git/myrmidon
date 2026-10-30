@@ -5,7 +5,7 @@
 // ui2 shell for any /company/settings/* route under the flag.
 import { NavLink } from "@/lib/router";
 import { useTranslation } from "@/i18n";
-import { useUi2I18n } from "../i18n/Ui2I18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 
 export const UI2_SETTINGS_SECTIONS = [
   { key: "general", path: "/company/settings" },
@@ -22,12 +22,16 @@ export const UI2_SETTINGS_SECTIONS = [
 ] as const;
 
 export function Ui2SettingsSidebar() {
-  const { t: tUi2 } = useUi2I18n();
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   return (
     <nav
       className="myr-ui2__settings-nav"
-      aria-label={tUi2("ui2.settings.navLabel")}
+      aria-label={t("ui2.settings.navLabel")}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -56,7 +60,7 @@ export function Ui2SettingsSidebar() {
             textDecoration: "none",
           })}
         >
-          {tUi2(`ui2.settings.${section.key}` as never)}
+          {t(`ui2.settings.${section.key}`)}
         </NavLink>
       ))}
     </nav>

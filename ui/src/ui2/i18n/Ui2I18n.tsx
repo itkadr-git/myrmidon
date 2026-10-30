@@ -75,12 +75,14 @@ const Ui2I18nContext = createContext<Ui2I18nContextValue | null>(null);
 
 export function Ui2I18nProvider({
   children,
-  initialLocale = readStoredLocale() ?? readAppLanguage() ?? UI2_DEFAULT_LOCALE,
+  initialLocale,
 }: {
   children: ReactNode;
   initialLocale?: Ui2Locale;
 }) {
-  const [locale, setLocaleState] = useState<Ui2Locale>(() => readStoredLocale() ?? initialLocale);
+  const [locale, setLocaleState] = useState<Ui2Locale>(
+    () => initialLocale ?? readStoredLocale() ?? readAppLanguage() ?? UI2_DEFAULT_LOCALE,
+  );
 
   useEffect(() => {
     const syncLocale = (event: StorageEvent) => {
@@ -94,7 +96,6 @@ export function Ui2I18nProvider({
 
   const setLocale = useCallback((next: Ui2Locale) => {
     persistLocale(next);
-    try { window.localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, next); } catch { /* session choice still applies */ }
     setLocaleState(next);
   }, []);
 

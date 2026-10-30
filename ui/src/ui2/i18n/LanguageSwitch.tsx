@@ -35,7 +35,6 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
             onClick={() => {
               setLocale(candidate);
               void setAppLanguage(candidate);
-              document.querySelector(".myr-ui2")?.setAttribute("lang", candidate);
             }}
           >
             {candidate === "ru" ? t("ui2.settings.language.ru") : t("ui2.settings.language.en")}
