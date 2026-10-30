@@ -1,54 +1,25 @@
-# 1.7 BUDGET-CONFIG: hierarchy limits act on run admission (OPE-7911)
+---
+divergence-section: 1.7 — BUDGET-CONFIG A: лимиты расхода по уровням иерархии, API и журнал изменений
+---
 
-## what
+## changelog-en
 
-The per-level spend limits of BUDGET-CONFIG A (`budget_limits`) now take
-effect on run admission in the queue. Until this change the rows were
-configurable — the Budgets screen, the journal, the usage view and the
-effective-limit resolver — but nothing on the run path read them; only the
-vendor `budget_policies` arms of `getInvocationBlock` did. This closes the
-epic's queue-side acceptance: a limit change acts on the next admission of
-the next run, within a minute, no restart.
+### Queue admission enforces budget limits (1.7-BUDGET-CONFIG-ADMISSION)
 
-## how it decides
+- Hierarchy spend limits (`budget_limits`) now take effect on run admission in the queue.
+- `getInvocationBlock` checks effective limits (issue -> foraging -> caste -> project nest -> company nest) against spend from `litellm_cost_events` and sweep state.
+- Only hard, active, over-budget limits block runs; soft limits and default signal-only mode do not refuse admission.
+- Raising a limit via API or UI takes effect immediately without restart.
 
-Every admission (`getInvocationBlock`, the same gate the vendor budget
-policies and the quota gate already use) resolves fresh from the database:
+## changelog-ru
 
-1. the effective limit for the issue — issue → foraging → caste → project
-   nest → company nest, the resolver's precedence (deepest wins);
-2. the spend of that limit's own level, ref and period (the spend is counted
-   at the source level, never re-derived at a shallower one);
-3. the limit row's own mode and the global "signal only" flag
-   (`instance_settings.general.budgetLimits`, env override
-   `MYRMIDON_BUDGET_LIMITS_SIGNAL_ONLY`).
+### Допуск в очередь учитывает лимиты расхода (1.7-BUDGET-CONFIG-ADMISSION)
 
-Only a **hard, active** limit whose period spend is strictly over its amount
-refuses the run, with a reason naming the level, the spend and the limit
-(`Budget limit exceeded for caste engineer: spent $6.00 of the $5.00 limit
-…`). Soft rows never refuse on admission (the B pause machinery owns soft);
-signal-only (the corrupt-data-safe default, ON) never refuses at all.
-Raising the limit through the screen (or the API) lets the very next
-admission through — there is no cache.
+- Лимиты расхода иерархии (`budget_limits`) теперь действуют при допуске запуска в очереди.
+- `getInvocationBlock` проверяет эффективный лимит (задача -> фуражировка -> каста -> гнездо-проект -> гнездо-компания) по расходу `litellm_cost_events` и состоянию свипа.
+- Только жёсткие (`hard`), активные и превышенные лимиты блокируют запуск; мягкие (`soft`) лимиты и режим «только сигнал» по умолчанию не блокируют допуск.
+- Повышение лимита через API или интерфейс начинает действовать немедленно без перезапуска.
 
-## wiring
+## divergence
 
-- `server/src/myrmidon/budget-limits/admission.ts` — the decision core
-  (`decideBudgetLimitAdmission`, pure) and the db-backed evaluator
-  (`evaluateBudgetLimitAdmission`).
-- `budgetService` gains an optional hook
-  `resolveBudgetLimitAdmissionBlock`; absent = vendor behaviour (nothing
-  blocks, the same optionality B used for its mode hook).
-- `heartbeat.ts` wires the hook for the real server (the queue, the wakeup
-  request gate and the plugin wakeup paths all call
-  `getInvocationBlock`, so they inherit the gate).
-
-## tests
-
-- `admission.unit.test.ts` — the decision core: over/equal boundary,
-  signal-only, soft, no-limit, level→scope mapping, period wording.
-- `admission.db.myrmidon.test.ts` — against embedded postgres through the
-  real `budgetService`: deeper level wins, the raise-through-the-store
-  frees the next admission (the "within a minute" acceptance), the default
-  signal-only never refuses while enforce does, and an absent hook keeps
-  the vendor behaviour.
+| 1.7-BUDGET-CONFIG-ADMISSION | Лимиты иерархии A действуют при допуске запуска в очереди: каждый `getInvocationBlock` (тот же гейт, что у вендорских budget_policies и токен-квоты) заново разрешает эффективный лимит задачи (задача → фуражировка → каста → гнездо-проект → гнездо-компания, прецедентность резолвера A), считает расход уровня/ссылки/периода этого лимита (`litellm_cost_events`, foraging — состояние свипа) и отказывает запуску, только если режим строки `hard`, строка активна и расход за период строго больше суммы; причина называет уровень, расход и лимит. Soft при допуске не отказывает (паузы — часть B); глобальный «только сигнал» (умолчание ВКЛ) не отказывает вовсе. Хук `resolveBudgetLimitAdmissionBlock` в `BudgetServiceHooks` (отсутствие хука = вендорское поведение), проводка в `heartbeat.ts` — все пути допуска (очередь, гейт побудок, плагинные побудки) наследуют гейт; кэша нет — поднятие лимита освобождает уже следующий допуск | Наши файлы: `server/src/myrmidon/budget-limits/admission.ts`, тесты `admission.unit.test.ts` + `admission.db.myrmidon.test.ts`, фрагмент `docs/myrmidon/changes/1-7-budget-limits-admission.md`, разделы в `docs/myrmidon/guides/budget-limits{.ru,}.md`; в вендоре помечены `myrmidon(1.7-BUDGET-CONFIG)`: `server/src/services/budgets.ts` (хук + рука в `getInvocationBlock`), `server/src/services/heartbeat.ts` (проводка) | Эпик 1.7 BUDGET-CONFIG: критерий «изменение лимита действует в очереди в течение минуты без рестарта» — очередь ранее читала только вендорские budget_policies, иерархия A ни на что не влияла | `server/src/myrmidon/budget-limits/admission.unit.test.ts` (граница over/equal, signal-only, soft, без лимита, уровень→скоуп, формулировка периода), `admission.db.myrmidon.test.ts` на живом embedded Postgres через реальный `budgetService` (глубокий уровень выигрывает; подъём лимита стором освобождает следующий допуск; дефолт signal-only не отказывает, enforce отказывает; без хука — вендорское поведение) | Вместе со слоем A (разделы 1.7-BUDGET-CONFIG-A) | #1837 |

@@ -116,15 +116,9 @@ describeEmbeddedPostgres("budget-limit admission against the real service (1.7 B
     // enforcement leg of every test below is observable.
     return {
       getGeneral: async () => ({ budgetLimits: { signalOnly: false } }),
-      updateGeneral: async () => ({}),
-    } as unknown as Parameters<typeof readResolvedSignalOnly>[0];
+    };
   }
 
-  function eqId(id: string) {
-    // Small local helper: `eq(agents.id, id)` without pulling drizzle into
-    // the test header (the production evaluator does the join properly).
-    return sqlEq("agents", "id", id);
-  }
 
   it("a hard caste limit over its month refuses the next admission — deeper task limit wins first", async () => {
     const { companyId, agentId, issueId } = await seed();
@@ -172,8 +166,7 @@ describeEmbeddedPostgres("budget-limit admission against the real service (1.7 B
     // The default settings state (no stored key) resolves signal-only ON.
     const defaultSettings = {
       getGeneral: async () => ({}),
-      updateGeneral: async () => ({}),
-    } as unknown as Parameters<typeof readResolvedSignalOnly>[0];
+    };
     const block = await evaluateBudgetLimitAdmission({ db }, {
       companyId,
       agentId,

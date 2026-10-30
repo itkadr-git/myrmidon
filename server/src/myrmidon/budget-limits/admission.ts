@@ -29,7 +29,11 @@ import type { Db } from "@myrmidon/db";
 
 import { createBudgetLimitStore } from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
-import { readResolvedSignalOnly, type BudgetLimitsSettingsService } from "./settings.js";
+import { readResolvedSignalOnly } from "./settings.js";
+
+export type BudgetLimitsGeneralSettingsReader = {
+  getGeneral: () => Promise<unknown>;
+};
 import { createForagingBudgetStatePort } from "./foraging-port.js";
 
 /** A minimal slice of the limit row the over-predicate reads. */
@@ -146,7 +150,7 @@ export interface BudgetLimitAdmissionInput {
   /** Fall-back when the issue row has no project (the queue passes both). */
   projectId: string | null;
   /** The instance settings reader for the global signal-only flag. */
-  settings: BudgetLimitsSettingsService;
+  settings: BudgetLimitsGeneralSettingsReader;
 }
 
 /**
