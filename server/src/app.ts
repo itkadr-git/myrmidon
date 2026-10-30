@@ -718,6 +718,39 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   };
 }
 
+export interface PluginReadinessRecord {
+  pluginId: string;
+  pluginKey: string;
+  readyAt: number;
+}
+
+export interface PluginReadinessState {
+  boardReadyAt: number | null;
+  plugins: Map<string, PluginReadinessRecord>;
+}
+
+export function createPluginReadinessRouter(pluginReadiness: PluginReadinessState): Router {
+  const router = Router();
+  router.get("/plugins/readiness", (req, res) => {
+    if (!req.actor?.userId && req.actor?.type !== "agent") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const boardReadyAt = pluginReadiness.boardReadyAt;
+    res.json({
+      boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
+      plugins: Array.from(pluginReadiness.plugins.values(), (plugin) => ({
+        pluginId: plugin.pluginId,
+        pluginKey: plugin.pluginKey,
+        readyAt: new Date(plugin.readyAt).toISOString(),
+        readyAfterBoardReadyMs:
+          boardReadyAt === null ? null : plugin.readyAt - boardReadyAt,
+      })),
+    });
+  });
+  return router;
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -962,23 +995,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.get("/plugins/readiness", (req, res) => {
-    if (!req.actor?.userId) {
-      res.status(401).json({ error: "Authentication required" });
-      return;
-    }
-    const boardReadyAt = pluginReadiness.boardReadyAt;
-    res.json({
-      boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
-      plugins: Array.from(pluginReadiness.plugins.values(), (plugin) => ({
-        pluginId: plugin.pluginId,
-        pluginKey: plugin.pluginKey,
-        readyAt: new Date(plugin.readyAt).toISOString(),
-        readyAfterBoardReadyMs:
-          boardReadyAt === null ? null : plugin.readyAt - boardReadyAt,
-      })),
-    });
-  });
+  api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
   // guard below is load the board really served, so it is measured too.
@@ -1284,21 +1301,6 @@ export async function createApp(
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
-  lifecycle.on("plugin.ready", ({ pluginId, pluginKey }) => {
-    const readyAt = Date.now();
-    pluginReadiness.plugins.set(pluginId, { pluginId, pluginKey, readyAt });
-    logger.info(
-      {
-        pluginId,
-        pluginKey,
-        boardReadyAt: pluginReadiness.boardReadyAt,
-        readyAt,
-        readyAfterBoardReadyMs:
-          pluginReadiness.boardReadyAt === null ? null : readyAt - pluginReadiness.boardReadyAt,
-      },
-      "plugin readiness: ready",
-    );
-  });
   const scheduler = createPluginJobScheduler({
     db,
     jobStore,

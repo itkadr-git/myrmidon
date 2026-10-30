@@ -1378,9 +1378,6 @@ async function startServerWithDatabaseTeardown(
       server.listen(listenPort, primaryListenHost, onBound);
     }
   });
-  const startupStartedAt = Date.now();
-  const pluginReadiness = (app as { locals: { pluginReadiness?: { boardReadyAt: number | null } } }).locals.pluginReadiness;
-  if (pluginReadiness) pluginReadiness.boardReadyAt = startupStartedAt;
   startupListenerBound = true;
 
   // Register before reporting API readiness so drain/failover can resolve the
