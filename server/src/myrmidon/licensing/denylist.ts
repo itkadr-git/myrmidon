@@ -44,6 +44,19 @@ export function denyStatePath(env: NodeJS.ProcessEnv): string {
   return (env[DENY_STATE_PATH_ENV] ?? "").trim() || path.join(licenseDir(env), DENY_STATE_NAME);
 }
 
+/**
+ * Atomically writes the signed deny-list JSON to `file`.
+ * Creates the file with 0644 mode via a temporary file and rename in the same
+ * directory to prevent partial reads by active checks. Never creates the target directory.
+ */
+export function writeDenyListFile(file: string, denyListRaw: string): void {
+  const dir = path.dirname(file);
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp.${process.pid}.${Date.now()}`);
+  const content = Buffer.from(denyListRaw.trim() + "\n", "utf8");
+  writeFileSync(tmp, content, { mode: 0o644 });
+  renameSync(tmp, file);
+}
+
 function b64urlDecode(part: unknown): Buffer {
   if (typeof part !== "string" || !/^[A-Za-z0-9_-]+$/.test(part)) throw new Error("not base64url");
   return Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64");

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { moduleStatuses } from "./client-license.js";
-import { createDenyListReader } from "./denylist.js";
+import { createDenyListReader, writeDenyListFile } from "./denylist.js";
 import { keyId, verifyLicense } from "./license.js";
 
 const INSTALL_ID = "myr-0123456789abcdef0123";
@@ -147,5 +147,13 @@ describe("deny-list in the licensing check", () => {
     const reader = createDenyListReader({ env: () => env, trustedKeys: [k.publicKey] });
     writeFileSync(path.join(dir, "license.deny.json"), denyFile(k.privateKey, { instance_ids: [INSTALL_ID] }));
     expect(reader.revoked({ instanceId: INSTALL_ID })).toBe(true);
+  });
+
+  it("writeDenyListFile writes atomically with 0644 mode and overwrites cleanly", () => {
+    const k = keys();
+    const denyTarget = path.join(dir, "license.deny.json");
+    const content = denyFile(k.privateKey, { ids: ["lic-1"], serial: 10 });
+    writeDenyListFile(denyTarget, content);
+    expect(readFileSync(denyTarget, "utf8")).toBe(content.trim() + "\n");
   });
 });
