@@ -8615,6 +8615,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier: string | null;
     title: string;
+    status?: string | null;
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
@@ -8667,6 +8668,11 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   externalChatProvider?: string | null;
   nativeRunner?: boolean;
+  wakePayload?: {
+    ciResult?: PullRequestCiResult | null;
+    pullRequestsCi?: PullRequestCiResult[] | null;
+    [key: string]: unknown;
+  } | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -8861,31 +8867,45 @@ export function buildPaperclipTaskMarkdown(input: {
         fenceTaskText(input.taskPlan.body.trim()),
       );
     }
-    const wakeCi = (input.wakePayload.ciResult ?? null) as PullRequestCiResult | null;
-    if (wakeCi) {
-      lines.push(
-        "",
-        "Pull Request CI Status (board-verified on exact head SHA):",
-        `- Repository: ${wakeCi.repository} (PR #${wakeCi.pullNumber})`,
-        `- Head SHA: ${wakeCi.headSha ?? "unknown"}`,
-        `- CI Result: ${wakeCi.conclusion.toUpperCase()} (${wakeCi.summary})`,
-        `- Status: ${wakeCi.status}`,
-        `- Checked at: ${wakeCi.checkedAt}`,
-      );
-      if (wakeCi.completedAt) {
-        lines.push(`- Completed at: ${wakeCi.completedAt}`);
-      }
-      if (wakeCi.failedJobs && wakeCi.failedJobs.length > 0) {
-        lines.push("- Failed jobs:");
-        for (const job of wakeCi.failedJobs) {
-          lines.push(`  - ${job.name}: ${job.conclusion} (${job.url})`);
+    const wakePayload = input.wakePayload;
+    const prsCi = (
+      Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
+        ? wakePayload.pullRequestsCi
+        : wakePayload?.ciResult
+          ? [wakePayload.ciResult]
+          : []
+    ) as PullRequestCiResult[];
+
+    if (prsCi.length > 0) {
+      lines.push("", "Pull Request CI Status (board-verified on exact head SHA):");
+      for (const ci of prsCi) {
+        lines.push(
+          `- Repository: ${ci.repository} (PR #${ci.pullNumber})`,
+          `  - Head SHA: ${ci.headSha ?? "unknown"}`,
+          `  - CI Result: ${ci.conclusion.toUpperCase()} (${ci.summary})`,
+          `  - Authoritative: ${ci.authoritative ? "true" : "false"}`,
+          `  - Status: ${ci.status}`,
+          `  - Checked at: ${ci.checkedAt}`,
+        );
+        if (ci.completedAt) {
+          lines.push(`  - Completed at: ${ci.completedAt}`);
+        }
+        if (ci.failedJobs && ci.failedJobs.length > 0) {
+          lines.push("  - Failed jobs:");
+          for (const job of ci.failedJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
         }
       }
+
+      const allAuthoritative = prsCi.every((ci) => ci.authoritative);
       if (issue.status === "in_review") {
         lines.push(
           "",
           "Reviewer directive:",
-          "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`.",
+          allAuthoritative
+            ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
+            : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
         );
       } else {
         lines.push(
@@ -22773,6 +22793,7 @@ export function heartbeatService(
               id: issueRef.id,
               identifier: issueRef.identifier,
               title: issueRef.title,
+              status: issueRef.status,
               workMode: issueRef.workMode,
               conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
@@ -22784,6 +22805,7 @@ export function heartbeatService(
         attachmentOmissions: paperclipWakePayload?.attachmentOmissions,
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
+        wakePayload: paperclipWakePayload,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),

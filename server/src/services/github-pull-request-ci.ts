@@ -1,6 +1,6 @@
 import type { Db } from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { issueWorkProducts, issues } from "@myrmidon/db";
+import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import type { FetchLike } from "./github-external-object-provider.js";
 import {
   DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
@@ -44,6 +44,7 @@ export type PullRequestCiStatus =
   | "queued"
   | "pending"
   | "no_checks"
+  | "unavailable"
   | "unknown";
 
 export type PullRequestCiConclusion =
@@ -56,6 +57,10 @@ export type PullRequestCiConclusion =
   | "action_required"
   | "skipped"
   | "no_checks"
+  | "missing"
+  | "denied"
+  | "incomplete"
+  | "unavailable"
   | "unknown";
 
 export interface PullRequestCiResult {
@@ -66,6 +71,7 @@ export interface PullRequestCiResult {
   status: PullRequestCiStatus;
   conclusion: PullRequestCiConclusion;
   summary: string;
+  authoritative: boolean;
   checkedAt: string;
   completedAt: string | null;
   totalRuns: number;
@@ -82,18 +88,47 @@ export function summarizeCheckRuns(
   status: PullRequestCiStatus;
   conclusion: PullRequestCiConclusion;
   summary: string;
+  authoritative: boolean;
   completedAt: string | null;
   totalRuns: number;
   successfulRuns: number;
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
 } {
+  const meta = runs as unknown as {
+    authoritative?: boolean;
+    status?: PullRequestCiStatus;
+    conclusion?: PullRequestCiConclusion;
+    summary?: string;
+    incomplete?: boolean;
+  };
+
+  if (
+    meta?.conclusion === "missing" ||
+    meta?.conclusion === "denied" ||
+    meta?.conclusion === "unavailable" ||
+    meta?.conclusion === "incomplete"
+  ) {
+    return {
+      status: meta.status ?? "unavailable",
+      conclusion: meta.conclusion,
+      summary: meta.summary ?? `checks ${meta.conclusion}`,
+      authoritative: false,
+      completedAt: null,
+      totalRuns: runs.length,
+      successfulRuns: 0,
+      failedRuns: 0,
+      failedJobs: [],
+    };
+  }
+
   const totalRuns = runs.length;
   if (totalRuns === 0) {
     return {
-      status: "pending",
-      conclusion: "no_checks",
-      summary: "no checks reported",
+      status: meta?.status ?? "pending",
+      conclusion: meta?.conclusion ?? "no_checks",
+      summary: meta?.summary ?? "no checks reported",
+      authoritative: false,
       completedAt: null,
       totalRuns: 0,
       successfulRuns: 0,
@@ -169,6 +204,7 @@ export function summarizeCheckRuns(
     status,
     conclusion,
     summary,
+    authoritative: meta?.authoritative ?? true,
     completedAt: latestCompletedAt,
     totalRuns,
     successfulRuns,
@@ -177,14 +213,29 @@ export function summarizeCheckRuns(
   };
 }
 
+export type CheckRunsFetchResult = PullRequestCiJob[] & {
+  authoritative: boolean;
+  status?: PullRequestCiStatus;
+  conclusion?: PullRequestCiConclusion;
+  summary?: string;
+  incomplete?: boolean;
+};
+
 export async function fetchCommitCheckRuns(
   owner: string,
   repo: string,
   headSha: string,
   token: string | null,
   fetchImpl: FetchLike = fetch,
-): Promise<PullRequestCiJob[]> {
-  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?per_page=100&filter=latest`;
+  options: { maxPages?: number } = {},
+): Promise<CheckRunsFetchResult> {
+  const maxPages = options.maxPages ?? 10;
+  const allRuns: PullRequestCiJob[] = [];
+  let page = 1;
+  let totalCount: number | null = null;
+  let fetchFailed = false;
+  let failStatus: number | null = null;
+
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
     "user-agent": "myrmidon-ci-resolver",
@@ -193,45 +244,117 @@ export async function fetchCommitCheckRuns(
     headers.authorization = `Bearer ${token}`;
   }
 
-  const res = await fetchImpl(url, { headers });
-  if (!res.ok) {
-    if (res.status === 404 || res.status === 422) {
-      return [];
+  while (page <= maxPages) {
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(headSha)}/check-runs?per_page=100&page=${page}&filter=latest`;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { headers });
+    } catch {
+      fetchFailed = true;
+      break;
     }
-    throw new Error(`GitHub check-runs API returned HTTP ${res.status}`);
+
+    if (!res.ok) {
+      failStatus = res.status;
+      fetchFailed = true;
+      break;
+    }
+
+    const data = (await res.json().catch(() => null)) as {
+      total_count?: number;
+      check_runs?: Array<{
+        id: number;
+        name: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+        started_at: string | null;
+        completed_at: string | null;
+      }>;
+    } | null;
+
+    if (!data || !Array.isArray(data.check_runs)) {
+      fetchFailed = true;
+      break;
+    }
+
+    if (typeof data.total_count === "number") {
+      totalCount = data.total_count;
+    }
+
+    for (const cr of data.check_runs) {
+      allRuns.push({
+        id: cr.id,
+        name: cr.name,
+        status: (cr.status === "completed" || cr.status === "in_progress" || cr.status === "queued"
+          ? cr.status
+          : "in_progress") as "queued" | "in_progress" | "completed",
+        conclusion: cr.conclusion as PullRequestCiJob["conclusion"],
+        url: cr.html_url,
+        startedAt: cr.started_at ?? null,
+        completedAt: cr.completed_at ?? null,
+      });
+    }
+
+    if (data.check_runs.length < 100 || (totalCount !== null && allRuns.length >= totalCount)) {
+      break;
+    }
+
+    page++;
   }
 
-  const data = (await res.json()) as {
-    total_count?: number;
-    check_runs?: Array<{
-      id: number;
-      name: string;
-      status: string;
-      conclusion: string | null;
-      html_url: string;
-      started_at: string | null;
-      completed_at: string | null;
-    }>;
-  };
+  const result = allRuns as CheckRunsFetchResult;
 
-  const checkRuns = Array.isArray(data.check_runs) ? data.check_runs : [];
-  return checkRuns.map((cr) => ({
-    id: cr.id,
-    name: cr.name,
-    status: (cr.status === "completed" || cr.status === "in_progress" || cr.status === "queued"
-      ? cr.status
-      : "in_progress") as "queued" | "in_progress" | "completed",
-    conclusion: cr.conclusion as PullRequestCiJob["conclusion"],
-    url: cr.html_url,
-    startedAt: cr.started_at ?? null,
-    completedAt: cr.completed_at ?? null,
-  }));
+  if (fetchFailed && allRuns.length === 0) {
+    result.authoritative = false;
+    if (failStatus === 404) {
+      result.status = "unavailable";
+      result.conclusion = "missing";
+      result.summary = "checks missing (commit or check-runs not found)";
+    } else if (failStatus === 403 || failStatus === 401) {
+      result.status = "unavailable";
+      result.conclusion = "denied";
+      result.summary = "checks unavailable (access denied)";
+    } else if (failStatus === 422) {
+      result.status = "unavailable";
+      result.conclusion = "unavailable";
+      result.summary = "checks unavailable (unprocessable commit SHA)";
+    } else {
+      result.status = "unavailable";
+      result.conclusion = "unavailable";
+      result.summary = `checks unavailable (HTTP ${failStatus ?? "network_error"})`;
+    }
+  } else if (fetchFailed || (totalCount !== null && allRuns.length < totalCount)) {
+    result.authoritative = false;
+    result.incomplete = true;
+    result.status = "in_progress";
+    result.conclusion = "incomplete";
+    result.summary = `incomplete checks (${allRuns.length}/${totalCount ?? "unknown"} runs retrieved)`;
+  } else if (allRuns.length === 0) {
+    result.authoritative = false;
+    result.status = "pending";
+    result.conclusion = "no_checks";
+    result.summary = "no checks reported";
+  } else {
+    result.authoritative = true;
+  }
+
+  return result;
 }
 
 export interface PullRequestCiResolverOptions {
   fetch?: FetchLike;
   tokenProvider?: (companyId: string, repository: string) => Promise<string | null> | string | null;
   secretNames?: readonly string[];
+  prResolver?: (
+    companyId: string,
+    reference: GitHubPullRequestReference,
+  ) => Promise<{
+    headSha: string | null;
+    headRef: string | null;
+    access?: "denied";
+    state?: string;
+  }>;
 }
 
 export interface PullRequestCiResolver {
@@ -262,7 +385,7 @@ export function createPullRequestCiResolver(
     options.tokenProvider ??
     ((companyId: string, repository: string) =>
       resolveGitHubRepositoryToken(db, companyId, repository, secretNames, fetchImpl));
-  const prResolver = createPullRequestMergeDetailsResolver(db);
+  const prResolver = options.prResolver ?? createPullRequestMergeDetailsResolver(db);
 
   return {
     async resolveForPullRequest(
@@ -274,6 +397,26 @@ export function createPullRequestCiResolver(
       const headSha = prDetails.headSha;
       const headRef = prDetails.headRef;
 
+      if ((prDetails as { access?: string }).access === "denied") {
+        return {
+          repository: repoKey,
+          pullNumber: reference.number,
+          headSha: null,
+          headRef: null,
+          status: "unavailable",
+          conclusion: "denied",
+          summary: "checks unavailable (access denied)",
+          authoritative: false,
+          checkedAt: new Date().toISOString(),
+          completedAt: null,
+          totalRuns: 0,
+          successfulRuns: 0,
+          failedRuns: 0,
+          failedJobs: [],
+          runs: [],
+        };
+      }
+
       if (!headSha) {
         return {
           repository: repoKey,
@@ -283,6 +426,7 @@ export function createPullRequestCiResolver(
           status: "unknown",
           conclusion: "unknown",
           summary: "head SHA unknown",
+          authoritative: false,
           checkedAt: new Date().toISOString(),
           completedAt: null,
           totalRuns: 0,
@@ -336,6 +480,15 @@ export function createPullRequestCiResolver(
     },
 
     async resolveForIssue(companyId: string, issueId: string): Promise<PullRequestCiResult[]> {
+      const references = new Map<string, GitHubPullRequestReference>();
+      const addRef = (ref: GitHubPullRequestReference) => {
+        const key = `${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}#${ref.number}`;
+        if (!references.has(key)) {
+          references.set(key, ref);
+        }
+      };
+
+      // 1. Work products for this issue
       const products = await db
         .select()
         .from(issueWorkProducts)
@@ -347,24 +500,90 @@ export function createPullRequestCiResolver(
           ),
         );
 
-      const references = new Map<string, GitHubPullRequestReference>();
       for (const product of products) {
-        if (product.type !== "pull_request" && product.type !== "pullRequest") continue;
-        const refs = extractGitHubPullRequestReferences([product.url, product.title]);
-        for (const [key, ref] of refs.entries()) {
-          references.set(key, ref);
+        const candidateTexts: unknown[] = [product.url, product.title];
+        if (product.metadata && typeof product.metadata === "object") {
+          const meta = product.metadata as Record<string, unknown>;
+          candidateTexts.push(meta.url, meta.prUrl, meta.html_url);
+          const repo = typeof meta.repo === "string" ? meta.repo : typeof meta.repository === "string" ? meta.repository : null;
+          const num = typeof meta.number === "number" ? meta.number : typeof meta.prNumber === "number" ? meta.prNumber : null;
+          if (repo && num) {
+            candidateTexts.push(`${repo}#${num}`);
+          }
+          try {
+            candidateTexts.push(JSON.stringify(meta));
+          } catch {
+            // ignore JSON error
+          }
+        }
+        for (const ref of extractGitHubPullRequestReferences(candidateTexts)) {
+          addRef(ref);
         }
       }
 
-      if (references.size === 0) {
-        const [issue] = await db
-          .select({ description: issues.description })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
-        if (issue?.description) {
-          const refs = extractGitHubPullRequestReferences([issue.description]);
-          for (const [key, ref] of refs.entries()) {
-            references.set(key, ref);
+      // 2. Issue description and title
+      const [issue] = await db
+        .select({ description: issues.description, title: issues.title })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+      if (issue) {
+        for (const ref of extractGitHubPullRequestReferences([issue.description, issue.title])) {
+          addRef(ref);
+        }
+      }
+
+      // 3. Issue comments
+      const comments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            isNull(issueComments.deletedAt),
+          ),
+        );
+      for (const comment of comments) {
+        if (comment.body) {
+          for (const ref of extractGitHubPullRequestReferences([comment.body])) {
+            addRef(ref);
+          }
+        }
+      }
+
+      // 4. Child issues (e.g. delegated deployment or sub-tasks)
+      const childIssues = await db
+        .select({ id: issues.id, description: issues.description, title: issues.title })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.parentId, issueId), isNull(issues.deletedAt)));
+
+      for (const child of childIssues) {
+        for (const ref of extractGitHubPullRequestReferences([child.description, child.title])) {
+          addRef(ref);
+        }
+        const childProducts = await db
+          .select()
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.issueId, child.id),
+              isNull(issueWorkProducts.deletedAt),
+            ),
+          );
+        for (const cp of childProducts) {
+          const candidateTexts: unknown[] = [cp.url, cp.title];
+          if (cp.metadata && typeof cp.metadata === "object") {
+            const meta = cp.metadata as Record<string, unknown>;
+            candidateTexts.push(meta.url, meta.prUrl, meta.html_url);
+            const repo = typeof meta.repo === "string" ? meta.repo : typeof meta.repository === "string" ? meta.repository : null;
+            const num = typeof meta.number === "number" ? meta.number : typeof meta.prNumber === "number" ? meta.prNumber : null;
+            if (repo && num) {
+              candidateTexts.push(`${repo}#${num}`);
+            }
+          }
+          for (const ref of extractGitHubPullRequestReferences(candidateTexts)) {
+            addRef(ref);
           }
         }
       }

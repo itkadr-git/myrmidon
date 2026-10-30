@@ -7,15 +7,16 @@ import {
 } from "../github-pull-request-ci.js";
 
 describe("summarizeCheckRuns", () => {
-  it("returns no_checks for empty runs", () => {
+  it("returns no_checks and non-authoritative for empty runs", () => {
     const summary = summarizeCheckRuns([]);
     expect(summary.status).toBe("pending");
     expect(summary.conclusion).toBe("no_checks");
+    expect(summary.authoritative).toBe(false);
     expect(summary.totalRuns).toBe(0);
     expect(summary.failedJobs).toEqual([]);
   });
 
-  it("returns success when all check runs succeed or are skipped", () => {
+  it("returns success and authoritative: true when all check runs succeed or are skipped", () => {
     const runs: PullRequestCiJob[] = [
       {
         id: 1,
@@ -40,6 +41,7 @@ describe("summarizeCheckRuns", () => {
     const summary = summarizeCheckRuns(runs);
     expect(summary.status).toBe("completed");
     expect(summary.conclusion).toBe("success");
+    expect(summary.authoritative).toBe(true);
     expect(summary.totalRuns).toBe(2);
     expect(summary.successfulRuns).toBe(2);
     expect(summary.failedRuns).toBe(0);
@@ -47,7 +49,7 @@ describe("summarizeCheckRuns", () => {
     expect(summary.completedAt).toBe("2026-10-30T04:05:00Z");
   });
 
-  it("returns failure with failedJobs list when any check run fails", () => {
+  it("returns failure with failedJobs list and authoritative: true when any check run fails", () => {
     const runs: PullRequestCiJob[] = [
       {
         id: 101,
@@ -81,6 +83,7 @@ describe("summarizeCheckRuns", () => {
     const summary = summarizeCheckRuns(runs);
     expect(summary.status).toBe("completed");
     expect(summary.conclusion).toBe("failure");
+    expect(summary.authoritative).toBe(true);
     expect(summary.totalRuns).toBe(3);
     expect(summary.successfulRuns).toBe(1);
     expect(summary.failedRuns).toBe(2);
@@ -101,6 +104,42 @@ describe("summarizeCheckRuns", () => {
       },
     ]);
     expect(summary.completedAt).toBe("2026-10-30T04:12:00Z");
+  });
+
+  it("marks missing or denied or incomplete runs as non-authoritative", () => {
+    const deniedRuns = Object.assign([] as PullRequestCiJob[], {
+      authoritative: false,
+      conclusion: "denied" as const,
+      status: "unavailable" as const,
+      summary: "checks unavailable (access denied)",
+    });
+    const deniedSummary = summarizeCheckRuns(deniedRuns);
+    expect(deniedSummary.authoritative).toBe(false);
+    expect(deniedSummary.conclusion).toBe("denied");
+    expect(deniedSummary.status).toBe("unavailable");
+
+    const incompleteRuns = Object.assign(
+      [
+        {
+          id: 1,
+          name: "test-1",
+          status: "completed" as const,
+          conclusion: "success" as const,
+          url: "https://example.com",
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      {
+        authoritative: false,
+        conclusion: "incomplete" as const,
+        status: "in_progress" as const,
+        summary: "incomplete checks",
+      },
+    );
+    const incSummary = summarizeCheckRuns(incompleteRuns);
+    expect(incSummary.authoritative).toBe(false);
+    expect(incSummary.conclusion).toBe("incomplete");
   });
 
   it("returns in_progress and pending when some checks are running without failures", () => {
@@ -195,7 +234,7 @@ describe("fetchCommitCheckRuns", () => {
     );
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.github.com/repos/itkadr-git/myrmidon-deploy/commits/abcdef1234567890abcdef1234567890abcdef12/check-runs?per_page=100&filter=latest",
+      "https://api.github.com/repos/itkadr-git/myrmidon-deploy/commits/abcdef1234567890abcdef1234567890abcdef12/check-runs?per_page=100&page=1&filter=latest",
       {
         headers: {
           accept: "application/vnd.github+json",
@@ -205,6 +244,7 @@ describe("fetchCommitCheckRuns", () => {
       },
     );
 
+    expect(result.authoritative).toBe(true);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({
       id: 11,
@@ -217,21 +257,98 @@ describe("fetchCommitCheckRuns", () => {
     });
   });
 
-  it("returns empty array on 404 or 422", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
+  it("paginates through multiple pages when total_count > 100", async () => {
+    const page1Runs = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      name: `job-${i + 1}`,
+      status: "completed",
+      conclusion: "success",
+      html_url: `https://github.com/itkadr-git/myrmidon/runs/${i + 1}`,
+      started_at: "2026-10-30T04:00:00Z",
+      completed_at: "2026-10-30T04:01:00Z",
+    }));
+    const page2Runs = [
+      {
+        id: 101,
+        name: "job-101",
+        status: "completed",
+        conclusion: "success",
+        html_url: "https://github.com/itkadr-git/myrmidon/runs/101",
+        started_at: "2026-10-30T04:00:00Z",
+        completed_at: "2026-10-30T04:01:00Z",
+      },
+    ];
+
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("&page=1")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            total_count: 101,
+            check_runs: page1Runs,
+          }),
+        };
+      }
+      if (url.includes("&page=2")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            total_count: 101,
+            check_runs: page2Runs,
+          }),
+        };
+      }
+      return { ok: false, status: 404 };
     });
 
     const result = await fetchCommitCheckRuns(
       "itkadr-git",
-      "myrmidon-deploy",
-      "missing-sha",
-      null,
+      "myrmidon",
+      "head-sha-with-many-runs",
+      "mock-token",
       mockFetch as never,
     );
 
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(101);
+    expect(result.authoritative).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks 404 and 403 as non-authoritative missing/denied", async () => {
+    const mockFetch404 = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+    });
+
+    const result404 = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon-deploy",
+      "missing-sha",
+      null,
+      mockFetch404 as never,
+    );
+
+    expect(result404.authoritative).toBe(false);
+    expect(result404.conclusion).toBe("missing");
+    expect(result404).toHaveLength(0);
+
+    const mockFetch403 = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+    });
+
+    const result403 = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon-deploy",
+      "denied-sha",
+      null,
+      mockFetch403 as never,
+    );
+
+    expect(result403.authoritative).toBe(false);
+    expect(result403.conclusion).toBe("denied");
   });
 });
 
@@ -303,6 +420,7 @@ describe("createPullRequestCiResolver", () => {
     expect(ciResult.headRef).toBe("bot/OPE-9525");
     expect(ciResult.status).toBe("completed");
     expect(ciResult.conclusion).toBe("success");
+    expect(ciResult.authoritative).toBe(true);
     expect(ciResult.totalRuns).toBe(2);
     expect(ciResult.failedJobs).toHaveLength(0);
 
@@ -313,5 +431,126 @@ describe("createPullRequestCiResolver", () => {
       number: 124,
     });
     expect(cachedResult).toEqual(ciResult);
+  });
+
+  it("handles denied access or missing head SHA as non-authoritative", async () => {
+    const mockDb = { select: vi.fn() };
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      prResolver: async () => ({
+        headSha: null,
+        headRef: null,
+        access: "denied",
+      }),
+    });
+
+    const res = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon-deploy",
+      number: 57,
+    });
+
+    expect(res.authoritative).toBe(false);
+    expect(res.status).toBe("unavailable");
+    expect(res.conclusion).toBe("denied");
+  });
+
+  it("resolves CI for linked deploy PR discovered via issue work products and comments", async () => {
+    // Mock DB queries for resolveForIssue
+    const mockWorkProducts = [
+      {
+        url: "https://github.com/itkadr-git/myrmidon/pull/2024",
+        title: "PR #2024",
+        metadata: {
+          repo: "itkadr-git/myrmidon-deploy",
+          number: 57,
+        },
+      },
+    ];
+    const mockIssue = {
+      title: "Task with deploy",
+      description: "Deployment PR: https://github.com/itkadr-git/myrmidon-deploy/pull/57",
+    };
+    const mockComments = [
+      {
+        body: "Verified against itkadr-git/myrmidon-deploy#57 head",
+      },
+    ];
+
+    const mockDb = {
+      select: vi.fn().mockImplementation((fields?: unknown) => {
+        return {
+          from: vi.fn().mockImplementation((table: unknown) => {
+            return {
+              where: vi.fn().mockImplementation(async () => {
+                // Table checks
+                const tableName = (table as { _?: { name?: string } })?._?.name;
+                if (tableName === "issue_work_products") {
+                  return mockWorkProducts;
+                }
+                if (tableName === "issue_comments") {
+                  return mockComments;
+                }
+                if (tableName === "issues") {
+                  if (fields && typeof fields === "object" && "parentId" in (fields as Record<string, unknown>)) {
+                    return [];
+                  }
+                  return [mockIssue];
+                }
+                return [];
+              }),
+            };
+          }),
+        };
+      }),
+    };
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      prResolver: async (_companyId, ref) => {
+        if (ref.repo === "myrmidon-deploy" && ref.number === 57) {
+          return {
+            headSha: "028fc07deploy",
+            headRef: "bot/OPE-7264",
+          };
+        }
+        return {
+          headSha: "2588e25myrmidon",
+          headRef: "bot/OPE-9964",
+        };
+      },
+      fetch: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          total_count: 1,
+          check_runs: [
+            {
+              id: 99,
+              name: "deploy-validation",
+              status: "completed",
+              conclusion: "success",
+              html_url: "https://github.com/itkadr-git/myrmidon-deploy/runs/99",
+              started_at: "2026-10-30T05:00:00Z",
+              completed_at: "2026-10-30T05:05:00Z",
+            },
+          ],
+        }),
+      }) as never,
+      tokenProvider: async () => "mock-token",
+    });
+
+    const results = await resolver.resolveForIssue("comp-1", "issue-1");
+    expect(results).toHaveLength(2);
+
+    const deployCi = results.find((r) => r.repository === "itkadr-git/myrmidon-deploy");
+    expect(deployCi).toBeDefined();
+    expect(deployCi?.pullNumber).toBe(57);
+    expect(deployCi?.headSha).toBe("028fc07deploy");
+    expect(deployCi?.status).toBe("completed");
+    expect(deployCi?.conclusion).toBe("success");
+    expect(deployCi?.authoritative).toBe(true);
+
+    const myrmidonCi = results.find((r) => r.repository === "itkadr-git/myrmidon");
+    expect(myrmidonCi).toBeDefined();
+    expect(myrmidonCi?.pullNumber).toBe(2024);
   });
 });
