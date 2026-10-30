@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
   createDb,
   heartbeatRuns,
@@ -54,6 +55,7 @@ vi.mock("../services/heartbeat.js", async (importOriginal) => {
 });
 
 const PR_URL = "https://github.com/acme/app/pull/1830";
+const RESPONSIBLE_USER_ID = "responsible-user";
 
 describeEmbeddedPostgres("review stage recovery (route level)", () => {
   let db!: ReturnType<typeof createDb>;
@@ -62,6 +64,19 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-review-stage-recovery-routes-");
     db = createDb(tempDb.connectionString);
+    // The agent's comment is stored "on behalf of" the run's responsible user,
+    // and `issue_comments.on_behalf_of_user_id` references the auth `user`
+    // table. In production that user always exists; the fixture has to create it,
+    // otherwise every agent comment insert fails with a foreign-key violation (500).
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: RESPONSIBLE_USER_ID,
+      name: "Responsible User",
+      email: "responsible-user@example.test",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
   }, 20_000);
 
   afterAll(async () => {
@@ -120,7 +135,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
       status: "running",
       invocationSource: "automation",
       startedAt: new Date(),
-      responsibleUserId: "responsible-user",
+      responsibleUserId: RESPONSIBLE_USER_ID,
       contextSnapshot: { issueId, wakeReason: "execution_review_requested" },
     });
     await db.insert(issues).values({
@@ -130,7 +145,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
       status: input.status,
       priority: "high",
       assigneeAgentId: reviewerAgentId,
-      responsibleUserId: "responsible-user",
+      responsibleUserId: RESPONSIBLE_USER_ID,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       ...(input.status === "in_review"
