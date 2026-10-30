@@ -77,7 +77,7 @@ describeEmbedded("migration 0422 clear stale replay holds", () => {
 
     // 6. Protected: issue has unblock_descriptor (>24h hold) -> should NOT be cleared by stale branch
     const issueDescId = randomUUID();
-    await sql`INSERT INTO "issues" ("id", "company_id", "title", "status", "priority", "unblock_descriptor") VALUES (${issueDescId}, ${companyId}, 'issue with unblock descriptor', 'todo', 'medium', '{"reason":"waiting on approval"}'::jsonb)`;
+    await sql`INSERT INTO "issues" ("id", "company_id", "title", "status", "priority", "unblock_descriptor") VALUES (${issueDescId}, ${companyId}, 'issue with unblock descriptor', 'todo', 'medium', '{"action":"waiting on approval","owner":"board"}'::jsonb)`;
     const actionDesc = randomUUID();
     await sql`
       INSERT INTO "issue_recovery_actions" ("id", "company_id", "source_issue_id", "kind", "cause", "fingerprint", "next_action", "status", "evidence", "created_at", "updated_at")

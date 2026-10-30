@@ -245,7 +245,7 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
     it("idle-pickup skips tasks with unblockDescriptor (OPE-7707)", async () => {
       const { companyId, agentId, issueId } = await seed();
       await db.update(issues).set({
-        unblockDescriptor: { reason: "waiting_on_human" } as any,
+        unblockDescriptor: { action: "waiting_on_human", owner: "board" },
       }).where(eq(issues.id, issueId));
 
       const enqueueWakeup = enqueueSpy();

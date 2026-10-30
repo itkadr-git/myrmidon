@@ -165,6 +165,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
 
   it("clears expired replay holds older than 24 hours on safe workable tasks", async () => {
     const { companyId, issueId, action } = await seed();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
     // Age the recovery action past 24 hours
     await db
       .update(issueRecoveryActions)
@@ -199,7 +200,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
     const { issueId: descIssueId, action: descAction } = await seed();
     await db
       .update(issues)
-      .set({ unblockDescriptor: { reason: "waiting on human", owner: { userId: randomUUID() } } })
+      .set({ unblockDescriptor: { action: "waiting on human", owner: { userId: randomUUID() } } })
       .where(eq(issues.id, descIssueId));
     await db
       .update(issueRecoveryActions)
