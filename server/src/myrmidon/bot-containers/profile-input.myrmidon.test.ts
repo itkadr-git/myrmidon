@@ -1223,9 +1223,15 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       buildHermesProfileInput(source({ role: "engineer", adapterConfig: { lsp: { mode: "off" } } }), settings()).input.lsp,
     ).toEqual({ enabled: false });
     expect(
-      buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings()).input
-        .lsp?.enabled,
+      buildHermesProfileInput(
+        source({ role: "general", adapterConfig: { container: { enabled: true, memoryMb: 1024 }, lsp: { mode: "limited" } } }),
+        settings(),
+      ).input.lsp?.enabled,
     ).toBe(true);
+    // Pinning limited mode without container memory safely disables it with a warning.
+    const unconfigured = buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings());
+    expect(unconfigured.input.lsp).toEqual({ enabled: false });
+    expect(unconfigured.warnings).toContain("lsp: limited language server disabled because container memory limit is unknown");
     // Full keeps Hermes server defaults and writes the exclusion-only block.
     const { input } = buildHermesProfileInput(source({ role: "full", adapterConfig: { lsp: { mode: "full" } } }), settings());
     expect(input.lsp).toMatchObject({ enabled: true, excludeRoots: ["**/node_modules/**", "**/dist/**"] });
@@ -1250,8 +1256,18 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
   });
 
   it("is deterministic: the same role and settings give the same hashes", () => {
-    const one = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
-    const two = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
+    const one = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
+    const two = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
     expect(one.restartHash).toBe(two.restartHash);
     expect(one.filesHash).toBe(two.filesHash);
   });
