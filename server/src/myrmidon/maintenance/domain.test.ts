@@ -162,6 +162,18 @@ describe("maintenance tick decisions", () => {
       expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
     });
 
+    it("the grace is configurable", () => {
+      for (const graceMs of [1_000, 60_000]) {
+        const threshold = now.getTime() + 60_000 + graceMs;
+        expect(isStuckOpenWindow(entering, new Date(threshold - 1), graceMs)).toBe(false);
+        expect(isStuckOpenWindow(entering, new Date(threshold), graceMs)).toBe(true);
+        expect(isStuckOpenWindow(entering, new Date(threshold + 1_000), graceMs)).toBe(true);
+      }
+      const at = new Date(now.getTime() + 60_000 + 5_000);
+      expect(isStuckOpenWindow(entering, at, 1_000)).toBe(true);
+      expect(isStuckOpenWindow(entering, at, 60_000)).toBe(false);
+    });
+
     it("does not retire deployment-wide windows with the agent backstop", () => {
       const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
       expect(isStuckOpenWindow(window({ type: "instance" }, null), past)).toBe(false);
