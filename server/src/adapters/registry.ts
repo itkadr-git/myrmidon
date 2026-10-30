@@ -796,6 +796,8 @@ const kimiLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
+  listModels: listGatewayModels,
+  refreshModels: refreshGatewayModels,
 };
 
 const hermesLocalAdapter: ServerAdapterModule = {

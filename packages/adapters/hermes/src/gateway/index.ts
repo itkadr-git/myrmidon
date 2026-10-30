@@ -2,6 +2,7 @@ import type { AdapterSessionManagement, ServerAdapterModule } from "@myrmidon/ad
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
 import { listGatewaySkills, syncGatewaySkills } from "./server/myrmidon-skills.js";
 import { execute, getConfigSchema, sessionCodec, stopGatewayRunForBoard, testEnvironment } from "./server/index.js";
+import { listGatewayModels, refreshGatewayModels } from "./models.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
@@ -72,6 +73,8 @@ export function createServerAdapter(): ServerAdapterModule {
     listSkills: listGatewaySkills,
     syncSkills: syncGatewaySkills,
     models,
+    listModels: listGatewayModels,
+    refreshModels: refreshGatewayModels,
     // myrmidon(HERMES-RUN-REATTACH): board-side stop for runs the board is
     // not actively supervising; the heartbeat cancellation path uses it to
     // free the gateway slot immediately.
@@ -86,3 +89,11 @@ export function createServerAdapter(): ServerAdapterModule {
     getConfigSchema,
   };
 }
+
+export {
+  listGatewayModels,
+  refreshGatewayModels,
+  resetGatewayModelsCacheForTests,
+  resolveGatewayBaseUrl,
+  resolveGatewayApiKey,
+} from "./models.js";
