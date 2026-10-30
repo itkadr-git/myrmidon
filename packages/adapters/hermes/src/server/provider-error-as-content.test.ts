@@ -97,7 +97,7 @@ describe("provider error responses disguised as content", () => {
       stdout: "The server is (sometimes) overloaded due to high user traffic. Please retry!\n\nsession_id: test-session-123\n",
       stderr: "",
       pid: 1234,
-      startedAt: new Date(),
+      startedAt: new Date().toISOString(),
     });
 
     const { ctx, onLog } = makeCtx();
@@ -120,7 +120,7 @@ describe("provider error responses disguised as content", () => {
       stdout: "Task completed successfully with all criteria met.\n\nsession_id: test-session-456\n",
       stderr: "",
       pid: 1234,
-      startedAt: new Date(),
+      startedAt: new Date().toISOString(),
     });
 
     const { ctx } = makeCtx();
