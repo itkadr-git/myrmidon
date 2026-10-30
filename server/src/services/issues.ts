@@ -3380,6 +3380,7 @@ type IssueBlockerAttentionNode = {
   status: string;
   priority: string;
   createdAt: Date;
+  updatedAt?: Date | null;
   blockedTransitionAt: Date | null;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
@@ -3395,6 +3396,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "status"
   | "priority"
   | "createdAt"
+  | "updatedAt"
   | "blockedTransitionAt"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -3726,13 +3728,14 @@ async function listIssueBlockerAttentionMap(
   const attentionMap = new Map<string, IssueBlockerAttention>();
   const overdueUnassignedIds = new Set<string>();
   for (const row of issueRows) {
+    const rowBlockedAt = row.blockedTransitionAt ?? row.updatedAt ?? row.createdAt;
     if (row.status !== "blocked") {
       attentionMap.set(row.id, createIssueBlockerAttention());
     } else if (
       !row.assigneeAgentId &&
       !row.assigneeUserId &&
-      row.blockedTransitionAt &&
-      Date.now() - row.blockedTransitionAt.getTime() >=
+      rowBlockedAt &&
+      Date.now() - rowBlockedAt.getTime() >=
         UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS
     ) {
       overdueUnassignedIds.add(row.id);
@@ -3786,6 +3789,7 @@ async function listIssueBlockerAttentionMap(
           status: issues.status,
           priority: issues.priority,
           createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
@@ -3813,6 +3817,7 @@ async function listIssueBlockerAttentionMap(
           status: issues.status,
           priority: issues.priority,
           createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
@@ -3871,6 +3876,7 @@ async function listIssueBlockerAttentionMap(
           status: row.status,
           priority: row.priority,
           createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
           blockedTransitionAt: row.blockedTransitionAt,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
@@ -4424,13 +4430,14 @@ async function listIssueBlockerAttentionMap(
 
     const overdueUnassignedBlockerCount = topLevelEdges.filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
+      const blockerBlockedAt = blocker?.blockedTransitionAt ?? blocker?.updatedAt ?? blocker?.createdAt;
       return overdueUnassignedIds.has(edge.blockerIssueId) &&
         !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId) &&
         blocker?.status === "blocked" &&
         !blocker.assigneeAgentId &&
         !blocker.assigneeUserId &&
-        blocker.blockedTransitionAt &&
-        Date.now() - blocker.blockedTransitionAt.getTime() >=
+        blockerBlockedAt &&
+        Date.now() - blockerBlockedAt.getTime() >=
           UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
     }).length;
     attentionMap.set(
@@ -4686,6 +4693,7 @@ async function listIssueReviewAttentionMap(
         originId: issues.originId,
         status: issues.status,
         createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
         blockedTransitionAt: issues.blockedTransitionAt,
       })
       .from(issues)
@@ -4741,6 +4749,7 @@ async function listIssueReviewAttentionMap(
       title: issue.title,
       status: issue.status,
       createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
       blockedTransitionAt: issue.blockedTransitionAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
@@ -5847,6 +5856,7 @@ async function listIssueBlockedInboxAttentionMap(
       status: issue.status,
       priority: issue.priority,
       createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
       blockedTransitionAt: issue.blockedTransitionAt,
       projectId: issue.projectId,
       goalId: issue.goalId,
@@ -6107,11 +6117,12 @@ async function listIssueBlockedInboxAttentionMap(
     const finding = findingByIssueId.get(row.id);
     const overdueBlocker = (finding?.dependencyPath ?? []).find((pathNode) => {
       const pathIssue = issuesById.get(pathNode.issueId);
+      const blockerBlockedAt = pathIssue?.blockedTransitionAt ?? pathIssue?.updatedAt ?? pathIssue?.createdAt;
       return pathIssue?.status === "blocked" &&
         !pathIssue.assigneeAgentId &&
         !pathIssue.assigneeUserId &&
-        pathIssue.blockedTransitionAt &&
-        Date.now() - pathIssue.blockedTransitionAt.getTime() >=
+        blockerBlockedAt &&
+        Date.now() - blockerBlockedAt.getTime() >=
           UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS;
     });
     const blockedByUnassignedBlocker =
@@ -6126,7 +6137,7 @@ async function listIssueBlockedInboxAttentionMap(
           state: "needs_attention",
           reason: "blocked_by_unassigned_issue",
           severity: "high",
-          stoppedSinceAt: overdueBlocker?.blockedTransitionAt ?? row.updatedAt,
+          stoppedSinceAt: overdueBlocker?.blockedTransitionAt ?? overdueBlocker?.updatedAt ?? overdueBlocker?.createdAt ?? row.updatedAt,
           owner: { type: "unknown", agentId: null, userId: null, label: null },
           action: {
             label: "Assign overdue blocked issue",
@@ -6145,7 +6156,7 @@ async function listIssueBlockedInboxAttentionMap(
           state: "needs_attention",
           reason: "unassigned_blocked_issue_overdue",
           severity: "high",
-          stoppedSinceAt: row.blockedTransitionAt,
+          stoppedSinceAt: row.blockedTransitionAt ?? row.updatedAt ?? row.createdAt,
           owner: { type: "unknown", agentId: null, userId: null, label: null },
           action: {
             label: "Assign overdue blocked issue",
@@ -6259,12 +6270,13 @@ async function listIssueBlockedInboxAttentionMap(
       issueRows,
     );
     for (const issue of issueRows) {
+      const issueBlockedAt = issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt;
       if (
         issue.status === "blocked" &&
         !issue.assigneeAgentId &&
         !issue.assigneeUserId &&
-        issue.blockedTransitionAt &&
-        Date.now() - issue.blockedTransitionAt.getTime() >=
+        issueBlockedAt &&
+        Date.now() - issueBlockedAt.getTime() >=
           UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS &&
         !blockerAttention.has(issue.id)
       ) {

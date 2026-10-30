@@ -103,6 +103,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     executionState?: Record<string, unknown> | null;
     description?: string | null;
     createdAt?: Date;
+    updatedAt?: Date;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -122,6 +123,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       executionState: input.executionState ?? null,
       description: input.description ?? null,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
     return id;
   }
@@ -845,6 +847,31 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       title: "Open blocker",
       status: "todo",
     });
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    expect(rows.find((row) => row.id === oldBlockerId)?.blockedInboxAttention).toMatchObject({
+      reason: "unassigned_blocked_issue_overdue",
+      state: "needs_attention",
+      action: { label: "Assign overdue blocked issue" },
+    });
+  });
+
+  it("includes unassigned blocked issues in attention after thirty minutes when blockedTransitionAt is null using updatedAt fallback", async () => {
+    const { companyId } = await createCompany("PBO2");
+    const oldBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBO2-1",
+      title: "Unassigned blocked issue without transition timestamp",
+      status: "blocked",
+      createdAt: new Date(Date.now() - 90 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 31 * 60 * 1000),
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBO2-2",
+      title: "Open blocker",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: oldBlockerId });
     const rows = await svc.list(companyId, { attention: "blocked" });
     expect(rows.find((row) => row.id === oldBlockerId)?.blockedInboxAttention).toMatchObject({
       reason: "unassigned_blocked_issue_overdue",

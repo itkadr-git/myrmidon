@@ -25,6 +25,8 @@ export interface IssueLivenessIssueInput {
   title: string;
   status: string;
   createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  statusUpdatedAt?: Date | string | null;
   blockedTransitionAt?: Date | string | null;
   projectId?: string | null;
   goalId?: string | null;
@@ -153,7 +155,9 @@ function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathE
     identifier: issue.identifier,
     title: issue.title,
     status: issue.status,
-    blockedTransitionAt: issue.blockedTransitionAt ?? null,
+    blockedTransitionAt: (issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt)
+      ? new Date(readDateMs(issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt)!)
+      : null,
   };
 }
 
@@ -559,11 +563,14 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   for (const issue of input.issues) {
     if (issue.status !== "blocked") continue;
+    const blockedSinceMs = readDateMs(
+      issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt,
+    );
     if (
       issue.assigneeAgentId ||
       issue.assigneeUserId ||
-      !issue.blockedTransitionAt ||
-      nowMs - (readDateMs(issue.blockedTransitionAt) ?? nowMs) <
+      blockedSinceMs == null ||
+      nowMs - blockedSinceMs <
         UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
