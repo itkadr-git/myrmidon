@@ -13,6 +13,21 @@ import { settledReplayHoldWhere } from "./human-unblock.js";
 
 type IssueRecoveryAction = typeof issueRecoveryActions.$inferSelect;
 
+export interface AutomaticRecoveryEvidence {
+  replay?: string;
+  replayClearedBy?: string;
+  replayClearedByType?: string;
+  replayClearedAt?: string;
+  replayClearedNote?: string | null;
+  previousEvidence?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ReplayHoldEvidence {
+  automaticRecovery?: AutomaticRecoveryEvidence;
+  [key: string]: unknown;
+}
+
 export interface ClearSettledReplayBlockActor {
   actorType: "agent" | "user";
   actorId: string;

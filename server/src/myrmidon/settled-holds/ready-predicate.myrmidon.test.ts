@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AskUserQuestionsPayload } from "@myrmidon/shared";
 import {
   agentWakeupRequests,
   agents,
@@ -227,12 +228,23 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
 
     it("idle-pickup skips tasks waiting on pending thread interactions (OPE-7707)", async () => {
       const { companyId, agentId, issueId } = await seed();
+      const interactionPayload: AskUserQuestionsPayload = {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "clarify requirements",
+            selectionMode: "single",
+            options: [{ id: "opt1", label: "Option 1" }],
+          },
+        ],
+      };
       await db.insert(issueThreadInteractions).values({
         companyId,
         issueId,
         status: "pending",
         kind: "ask_user_questions",
-        payload: { version: 1, questions: [{ id: "q1", question: "clarify requirements", header: "q1" }] } as any,
+        payload: interactionPayload,
       });
 
       const enqueueWakeup = enqueueSpy();
@@ -387,12 +399,23 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
     it("tasks waiting on pending thread interactions are excluded from swarm queues (OPE-7707)", async () => {
       const { companyId, issueId } = await seed();
       await seedSettledAction(companyId, issueId, "cleared");
+      const interactionPayload: AskUserQuestionsPayload = {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "clarify",
+            selectionMode: "single",
+            options: [{ id: "opt1", label: "Option 1" }],
+          },
+        ],
+      };
       await db.insert(issueThreadInteractions).values({
         companyId,
         issueId,
         status: "pending",
         kind: "ask_user_questions",
-        payload: { version: 1, questions: [{ id: "q1", question: "clarify", header: "q1" }] } as any,
+        payload: interactionPayload,
       });
 
       expect(await listRoleQueue(db, companyId, "engineer")).toEqual([]);

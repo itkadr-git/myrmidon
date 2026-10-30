@@ -9,12 +9,21 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { subscribeCompanyLiveEvents } from "../../services/live-events.js";
+import type { RequestConfirmationPayload } from "@myrmidon/shared";
 import {
   clearExpiredReplayHolds,
   clearSettledReplayBlock,
   clearSettledReplayHoldsForIssue,
   clearSettledReplayHoldsOnAuthoritativeRunSuccess,
+  type AutomaticRecoveryEvidence,
+  type ReplayHoldEvidence,
 } from "./clear.js";
+
+function getAutomaticRecovery(action: typeof issueRecoveryActions.$inferSelect | undefined): AutomaticRecoveryEvidence | undefined {
+  if (!action) return undefined;
+  const evidence = action.evidence as ReplayHoldEvidence;
+  return evidence.automaticRecovery;
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,14 +58,16 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
     const [issue] = await db.insert(issues).values({
       companyId, title: "held", status: "blocked", priority: "medium", assigneeAgentId: agentId,
     }).returning();
+    if (!issue) throw new Error("Seed failed to insert issue");
     const runId = randomUUID();
     const [action] = await db.insert(issueRecoveryActions).values({
-      companyId, sourceIssueId: issue!.id, kind: "execution_reconciliation", status: "resolved",
+      companyId, sourceIssueId: issue.id, kind: "execution_reconciliation", status: "resolved",
       outcome: "blocked", cause: "uncertain_provider_action", fingerprint: randomUUID(),
       evidence: { runId, actionOutcome: "unknown", automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
       nextAction: "Automatic recovery stopped.",
     }).returning();
-    return { companyId, issueId: issue!.id, agentId, action: action! };
+    if (!action) throw new Error("Seed failed to insert recovery action");
+    return { companyId, issueId: issue.id, agentId, action };
   }
 
   it("sets replay to cleared, keeps other evidence, and records who/when/note", async () => {
@@ -160,7 +171,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
     );
     expect(clearedIds).toContain(action.id);
     const [persisted] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
-    expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+    expect(getAutomaticRecovery(persisted)?.replay).toBe("cleared");
   });
 
   it("clears expired replay holds older than 24 hours on safe workable tasks", async () => {
@@ -175,8 +186,8 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
     const clearedCount = await clearExpiredReplayHolds(db);
     expect(clearedCount).toBeGreaterThanOrEqual(1);
     const [persisted] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
-    expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
-    expect((persisted!.evidence as any).automaticRecovery.replayClearedNote).toContain("expired (>24h");
+    expect(getAutomaticRecovery(persisted)?.replay).toBe("cleared");
+    expect(getAutomaticRecovery(persisted)?.replayClearedNote).toContain("expired (>24h");
   });
 
   it("leaves expired replay hold intact if task is blocked or has side effects/external wait", async () => {
@@ -215,7 +226,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
       issueId: pendingInterIssueId,
       status: "pending",
       kind: "request_confirmation",
-      payload: { version: 1, prompt: "confirm?" } as any,
+      payload: { version: 1, prompt: "confirm?" } satisfies RequestConfirmationPayload,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -230,25 +241,25 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, blockedAction.id));
-    expect((persistedBlocked!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    expect(getAutomaticRecovery(persistedBlocked)?.replay).toBe("blocked");
 
     const [persistedReview] = await db
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, reviewAction.id));
-    expect((persistedReview!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    expect(getAutomaticRecovery(persistedReview)?.replay).toBe("blocked");
 
     const [persistedDesc] = await db
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, descAction.id));
-    expect((persistedDesc!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    expect(getAutomaticRecovery(persistedDesc)?.replay).toBe("blocked");
 
     const [persistedPendingInter] = await db
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, pendingInterAction.id));
-    expect((persistedPendingInter!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    expect(getAutomaticRecovery(persistedPendingInter)?.replay).toBe("blocked");
   });
 
   describe("clearSettledReplayHoldsOnAuthoritativeRunSuccess", () => {
@@ -274,7 +285,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
-      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+      expect(getAutomaticRecovery(persisted)?.replay).toBe("cleared");
     });
 
     it("leaves hold intact when run is stale/non-current (assignee mismatch)", async () => {
@@ -299,7 +310,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
-      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+      expect(getAutomaticRecovery(persisted)?.replay).toBe("blocked");
     });
 
     it("leaves hold intact when issue is assigned to a user", async () => {
@@ -324,7 +335,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
-      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+      expect(getAutomaticRecovery(persisted)?.replay).toBe("blocked");
     });
 
     it("does not clear hold if run started before hold was created (OPE-7707)", async () => {
@@ -350,7 +361,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
-      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+      expect(getAutomaticRecovery(persisted)?.replay).toBe("blocked");
     });
 
     it("clears hold if run started after hold was created (OPE-7707)", async () => {
@@ -376,7 +387,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
-      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
+      expect(getAutomaticRecovery(persisted)?.replay).toBe("cleared");
     });
   });
 });
