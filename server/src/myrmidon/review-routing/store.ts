@@ -39,6 +39,7 @@ import {
 import { REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
+import { issueNeedsReviewer } from "./policy.js";
 
 export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
@@ -68,6 +69,8 @@ export interface ReviewRoutingStore {
     engineerId: string,
     roles: readonly string[],
   ): Promise<ReviewerAgentRow[]>;
+  countUnroutedReviewIssues(companyId: string, asOf?: Date): Promise<number>;
+  countBlockedWithoutAssignee(): Promise<number>;
   /** Invokable agents of the company whose role is one of `roles`. */
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
@@ -186,9 +189,16 @@ function toRoutingIssue(row: typeof issues.$inferSelect): RoutingIssue {
     responsibleUserId: row.responsibleUserId ?? null,
     executionPolicy: row.executionPolicy,
     executionState: row.executionState,
-    // myrmidon(HUMAN-REVIEW-WAIT): the human wait must reach issueNeedsReviewer.
     reviewPolicy: row.reviewPolicy ?? null,
   };
+}
+
+/** Snapshot metrics use the same semantic check as routing. */
+export async function countUnroutedReviewIssues(db: Db): Promise<number> {
+  const store = createPgReviewRoutingStore(db);
+  const companyIds = await store.listActiveCompanyIds();
+  const counts = await Promise.all(companyIds.map((companyId) => store.countUnroutedReviewIssues(companyId, new Date())));
+  return counts.reduce((total, countValue) => total + countValue, 0);
 }
 
 export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
@@ -200,21 +210,34 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
 
     async listInReviewIssues(companyId, limit) {
       const rows = await db
-        .select()
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          reviewPolicy: issues.reviewPolicy,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          updatedAt: issues.updatedAt,
+        })
         .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_review"),
-            isNull(issues.hiddenAt),
-            isNull(issues.conversationAgentId),
-            isNull(issues.conversationUserId),
-          ),
-        )
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ))
         .orderBy(issues.updatedAt, issues.id)
         .limit(limit);
       return rows.map((row) => ({
-        ...toRoutingIssue(row),
+        ...toRoutingIssue(row as typeof issues.$inferSelect),
         companyId: row.companyId,
         identifier: row.identifier,
         title: row.title,
@@ -243,6 +266,48 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         managerId = manager.reportsTo ?? null;
       }
       return result;
+    },
+
+    async countUnroutedReviewIssues(companyId, asOf = new Date()) {
+      const rows = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
+          updatedAt: issues.updatedAt,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          reviewPolicy: issues.reviewPolicy,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ));
+      const recoveryCutoff = asOf.getTime() - 15 * 60 * 1000;
+      return rows.filter((row) => issueNeedsReviewer({
+        ...row,
+        reviewPathRecoveryEligible: row.updatedAt.getTime() <= recoveryCutoff,
+        reviewRecoveryNow: asOf,
+        reviewRecoveryUpdatedAt: row.updatedAt,
+      })).length;
+    },
+
+    async countBlockedWithoutAssignee() {
+      const [row] = await db
+        .select({ total: sql<number>`count(*)` })
+        .from(issues)
+        .where(and(eq(issues.status, "blocked"), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), isNull(issues.hiddenAt)));
+      return Number(row?.total ?? 0);
     },
 
     async listReviewerAgents(companyId, roles) {
