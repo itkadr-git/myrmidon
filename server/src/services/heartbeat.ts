@@ -71,6 +71,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
+import { createPullRequestCiResolver, type PullRequestCiResult } from "./github-pull-request-ci.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -8127,7 +8128,21 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  let ciResult: PullRequestCiResult | null = null;
+  let pullRequestsCi: PullRequestCiResult[] = [];
+  if (issueId) {
+    try {
+      const ciResolver = createPullRequestCiResolver(input.db);
+      pullRequestsCi = await ciResolver.resolveForIssue(input.companyId, issueId);
+      ciResult = pullRequestsCi[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
+  }
+
   const payload = {
+    ciResult,
+    pullRequestsCi,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
     // The canonical envelope is `contextSnapshot.executionContinuation`;
@@ -8845,6 +8860,40 @@ export function buildPaperclipTaskMarkdown(input: {
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
         fenceTaskText(input.taskPlan.body.trim()),
       );
+    }
+    const wakeCi = (input.wakePayload.ciResult ?? null) as PullRequestCiResult | null;
+    if (wakeCi) {
+      lines.push(
+        "",
+        "Pull Request CI Status (board-verified on exact head SHA):",
+        `- Repository: ${wakeCi.repository} (PR #${wakeCi.pullNumber})`,
+        `- Head SHA: ${wakeCi.headSha ?? "unknown"}`,
+        `- CI Result: ${wakeCi.conclusion.toUpperCase()} (${wakeCi.summary})`,
+        `- Status: ${wakeCi.status}`,
+        `- Checked at: ${wakeCi.checkedAt}`,
+      );
+      if (wakeCi.completedAt) {
+        lines.push(`- Completed at: ${wakeCi.completedAt}`);
+      }
+      if (wakeCi.failedJobs && wakeCi.failedJobs.length > 0) {
+        lines.push("- Failed jobs:");
+        for (const job of wakeCi.failedJobs) {
+          lines.push(`  - ${job.name}: ${job.conclusion} (${job.url})`);
+        }
+      }
+      if (issue.status === "in_review") {
+        lines.push(
+          "",
+          "Reviewer directive:",
+          "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`.",
+        );
+      } else {
+        lines.push(
+          "",
+          "CI directive:",
+          "The board automatically tracks CI on the exact head SHA of the PR. Do not call `gh pr checks`.",
+        );
+      }
     }
   }
   if (ancestors.length > 0) {

@@ -1,6 +1,9 @@
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { heartbeatRuns, agentWakeupRequests } from "@myrmidon/db";
+import { createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
@@ -117,6 +120,61 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
+      if (name === "pull_request_ci_status") {
+        const args = (params.arguments && typeof params.arguments === "object"
+          ? params.arguments
+          : {}) as { repository?: string; pullNumber?: number };
+        const ciResolver = createPullRequestCiResolver(db);
+
+        if (args.repository && typeof args.pullNumber === "number") {
+          const [owner, repo] = args.repository.split("/");
+          if (!owner || !repo) {
+            throw new Error(`Invalid repository format: ${args.repository}. Expected 'owner/repo'.`);
+          }
+          const result = await ciResolver.resolveForPullRequest(claims.company_id, {
+            owner,
+            repo,
+            number: args.pullNumber,
+          });
+          res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
+          return;
+        }
+
+        const [run] = await db
+          .select({ nativeIssueId: heartbeatRuns.nativeIssueId, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
+
+        let issueId = run?.nativeIssueId;
+        if (!issueId && run?.wakeupRequestId) {
+          const [wake] = await db
+            .select({ issueId: agentWakeupRequests.issueId })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+          issueId = wake?.issueId ?? null;
+        }
+
+        if (!issueId) {
+          res.json({
+            jsonrpc: "2.0",
+            id,
+            result: resultContent({ error: "No active issue associated with this run, and no repository/pullNumber provided" }),
+          });
+          return;
+        }
+
+        const prs = await ciResolver.resolveForIssue(claims.company_id, issueId);
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: resultContent({
+            issueId,
+            pullRequests: prs,
+            primaryCiResult: prs[0] ?? null,
+          }),
+        });
+        return;
+      }
       res.status(404).json({
         jsonrpc: "2.0",
         id,
@@ -138,6 +196,48 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
     res.json(await service.request(runtimeClaims(req), input.service));
+  });
+  router.post("/runtime-tools/ci/status", async (req, res) => {
+    const claims = runtimeClaims(req);
+    const ciResolver = createPullRequestCiResolver(db);
+    const repository = typeof req.body?.repository === "string" ? req.body.repository : null;
+    const pullNumber = typeof req.body?.pullNumber === "number" ? req.body.pullNumber : null;
+
+    if (repository && pullNumber) {
+      const [owner, repo] = repository.split("/");
+      if (!owner || !repo) return res.status(400).json({ error: "Invalid repository format" });
+      const result = await ciResolver.resolveForPullRequest(claims.company_id, {
+        owner,
+        repo,
+        number: pullNumber,
+      });
+      return res.json(result);
+    }
+
+    const [run] = await db
+      .select({ nativeIssueId: heartbeatRuns.nativeIssueId, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
+
+    let issueId = run?.nativeIssueId;
+    if (!issueId && run?.wakeupRequestId) {
+      const [wake] = await db
+        .select({ issueId: agentWakeupRequests.issueId })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+      issueId = wake?.issueId ?? null;
+    }
+
+    if (!issueId) {
+      return res.status(400).json({ error: "No issue found for run and no repository/pullNumber provided" });
+    }
+
+    const prs = await ciResolver.resolveForIssue(claims.company_id, issueId);
+    return res.json({
+      issueId,
+      pullRequests: prs,
+      primaryCiResult: prs[0] ?? null,
+    });
   });
   return router;
 }

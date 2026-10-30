@@ -335,12 +335,12 @@ async function safeJson(response: Response) {
 const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
 
 /** The resolver reads PR/issue state only: a read-only, single-repository token. */
-const READ_ONLY_APP_PERMISSIONS = {
+export const READ_ONLY_APP_PERMISSIONS = {
   contents: "read",
   pull_requests: "read",
+  checks: "read",
   issues: "none",
   actions: "none",
-  checks: "none",
   deployments: "none",
   environments: "none",
   workflows: "none",
@@ -355,6 +355,16 @@ const READ_ONLY_APP_PERMISSIONS = {
  *   3. null (anonymous), as before.
  * Neither a token nor an App key is logged or returned in an error.
  */
+export async function resolveGitHubRepositoryToken(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  fetchImpl?: FetchLike,
+) {
+  return defaultTokenProvider(db, companyId, repository, secretNames, fetchImpl);
+}
+
 export async function defaultTokenProvider(
   db: Db,
   companyId: string,
