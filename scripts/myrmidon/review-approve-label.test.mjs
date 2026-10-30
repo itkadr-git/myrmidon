@@ -88,21 +88,30 @@ describe("decideApproveLabel", () => {
     assert.equal(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "success" }).action, "label");
   });
 
-  it("holds merge when main CI is failure (red main)", () => {
-    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "failure" });
-    assert.equal(decision.action, "hold");
-    assert.equal(decision.reason, "main-red");
+  it("labels approved PR but holds auto-merge when main CI is failure (red main)", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "failure", autoMerge: true });
+    assert.equal(decision.action, "label");
+    assert.equal(decision.autoMerge, false);
+    assert.equal(decision.holdMerge, true);
   });
 
-  it("holds merge when main CI is pending or missing", () => {
-    assert.deepEqual(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress" }), {
-      action: "hold",
-      reason: "main-in_progress",
+  it("labels approved PR and allows auto-merge when main CI is in_progress after green", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress", autoMerge: true });
+    assert.equal(decision.action, "label");
+    assert.equal(decision.autoMerge, true);
+  });
+
+  it("holds auto-merge for an already labeled PR when main CI is failure", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL] },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "failure",
+      autoMerge: true,
     });
-    assert.deepEqual(decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "missing" }), {
-      action: "hold",
-      reason: "main-missing",
-    });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "main-red");
   });
 
   it("is a no-op when the label is already there and autoMerge is inactive", () => {
@@ -156,7 +165,7 @@ describe("decideApproveLabel", () => {
   });
 });
 
-function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD } = {}) {
+function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastCompletedMain = null } = {}) {
   const labeled = [];
   const autoMerged = [];
   const autoDisabled = [];
@@ -181,6 +190,13 @@ function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD } = {}) {
     },
     async mainCiConclusion() {
       return mainCi;
+    },
+    async mainCiDetails() {
+      return {
+        status: mainCi,
+        conclusion: mainCi,
+        lastCompleted: lastCompletedMain,
+      };
     },
     async addLabel(n) {
       labeled.push(n);
@@ -216,8 +232,8 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.deepEqual(results.map((r) => [r.prNumber, r.action]), [[1, "label"], [2, "skip"], [3, "skip"], [4, "noop"]]);
   });
 
-  // Acceptance Criterion 1: test main красный -> без merge
-  it("acceptance: holds merge when main CI is red (failure), increments backoff and performs no label/merge", async () => {
+  // Acceptance Criterion 1: test main failure -> labels PR, does not enable auto-merge, increments pause/backoff
+  it("acceptance: main failure -> labels PR, does not enable auto-merge, increments pause/backoff", async () => {
     const store = createMemoryStateStore();
     const github = fakeGitHub({
       1: { pr: open(HEAD), ci: "success" },
@@ -236,18 +252,96 @@ describe("runOnce with green main protection and auto-merge", () => {
     });
 
     assert.equal(paused, true);
-    assert.equal(consecutiveFailures, 1);
+    assert.equal(consecutiveFailures, 1, "consecutiveFailures should increment on failure");
     assert.equal(backoffUntil, "2026-10-30T10:00:30.000Z");
-    assert.deepEqual(github.labeled, [], "No labels should be added when main is red");
+    assert.deepEqual(github.labeled, [1, 2], "PRs should still be labeled so CI can run");
     assert.deepEqual(github.autoMerged, [], "No auto-merge should be enabled when main is red");
 
     const r1 = results.find((r) => r.prNumber === 1);
-    assert.equal(r1.action, "hold");
-    assert.equal(r1.reason, "main-red");
+    assert.equal(r1.action, "label");
+    assert.equal(r1.autoMerge, false);
 
     const saved = await store.load();
     assert.equal(saved.consecutiveFailures, 1);
     assert.equal(saved.mainStatus, "failure");
+  });
+
+  // Acceptance Case: main in_progress после зелёного → метка ставится, автовливание не останавливается, пауза не растёт
+  it("acceptance: main in_progress after green -> labels PR, does not hold auto-merge, pause does not grow", async () => {
+    const store = createMemoryStateStore({
+      consecutiveFailures: 0,
+      backoffUntil: null,
+      mainStatus: "success",
+      lastCompletedStatus: "success",
+    });
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "in_progress", lastCompletedMain: "success" });
+
+    const { results, paused, consecutiveFailures, backoffUntil } = await runOnce({
+      comments,
+      repo: REPO,
+      github,
+      stateStore: store,
+      autoMerge: true,
+    });
+
+    assert.equal(paused, false);
+    assert.equal(consecutiveFailures, 0);
+    assert.equal(backoffUntil, null);
+    assert.deepEqual(github.labeled, [1], "PR should be labeled");
+    assert.deepEqual(github.autoMerged, [1], "Auto-merge should be enabled");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "label");
+    assert.equal(r1.autoMerge, true);
+  });
+
+  // Acceptance Case: main in_progress после красного → автовливание стоит (метка ставится, пауза не растёт)
+  it("acceptance: main in_progress after red -> labels PR, holds auto-merge, pause does not grow", async () => {
+    const store = createMemoryStateStore({
+      consecutiveFailures: 1,
+      backoffUntil: null,
+      mainStatus: "failure",
+      lastCompletedStatus: "failure",
+    });
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "in_progress", lastCompletedMain: "failure" });
+
+    const { results, paused, consecutiveFailures } = await runOnce({
+      comments,
+      repo: REPO,
+      github,
+      stateStore: store,
+      autoMerge: true,
+    });
+
+    assert.equal(paused, true);
+    assert.equal(consecutiveFailures, 1, "consecutiveFailures should not grow during in_progress");
+    assert.deepEqual(github.labeled, [1], "PR should still be labeled so CI can run");
+    assert.deepEqual(github.autoMerged, [], "Auto-merge should be held");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "label");
+    assert.equal(r1.autoMerge, false);
+  });
+
+  // Acceptance Case: disables auto-merge on an already auto-merged PR when main is red
+  it("acceptance: disables auto-merge on an already auto-merged PR when main is red", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD, [APPROVED_LABEL], true), ci: "success" },
+    }, { mainCi: "failure" });
+
+    const { results } = await runOnce({
+      comments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.autoDisabled, [1]);
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.disableAutoMerge, true);
   });
 
   // Acceptance Criterion 2: test зелёный -> возобновление
@@ -313,29 +407,33 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.equal(r1.reason, "already-labeled");
   });
 
-  it("skips merge cycle during active backoff window", async () => {
+  it("skips auto-merge during active backoff window while still labeling PRs", async () => {
     const future = new Date("2026-10-30T10:05:00Z").toISOString();
     const store = createMemoryStateStore({
       consecutiveFailures: 2,
       backoffUntil: future,
       mainStatus: "failure",
+      lastCompletedStatus: "failure",
     });
     const github = fakeGitHub({
       1: { pr: open(HEAD), ci: "success" },
     }, { mainCi: "failure" });
 
     const now = new Date("2026-10-30T10:01:00Z");
-    const { paused, backoffUntil } = await runOnce({
+    const { paused, backoffUntil, consecutiveFailures } = await runOnce({
       comments,
       repo: REPO,
       github,
       stateStore: store,
       now,
+      autoMerge: true,
     });
 
     assert.equal(paused, true);
     assert.equal(backoffUntil, future);
-    assert.deepEqual(github.labeled, []);
+    assert.equal(consecutiveFailures, 2, "consecutiveFailures should not increment while in backoff");
+    assert.deepEqual(github.labeled, [1], "PR should still be labeled during backoff");
+    assert.deepEqual(github.autoMerged, [], "Auto-merge should not be enabled during backoff");
   });
 
   it("does not write in a dry run, and counts a failed GitHub call", async () => {

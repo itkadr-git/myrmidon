@@ -50,6 +50,11 @@ export const DEFAULT_BASE_BRANCH = "main";
 export const DEFAULT_BASE_DELAY_MS = 30_000;
 export const DEFAULT_MAX_DELAY_MS = 1_800_000;
 export const DEFAULT_BACKOFF_FACTOR = 2;
+export const RED_MAIN_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out"]);
+
+export function isRedMain(conclusion) {
+  return typeof conclusion === "string" && RED_MAIN_CONCLUSIONS.has(conclusion.toLowerCase());
+}
 
 const APPROVE_WORDS = /\b(?:APPROVE|APPROVED|LGTM)\b/i;
 const NON_APPROVE_WORDS =
@@ -174,7 +179,8 @@ function headMatches(pinned, actual) {
  * The decision for one PR. `pr` is {state, draft, merged, headSha, labels, autoMerge},
  * `headCommittedAt` a Date or null, `ci` is the conclusion of the `CI result`
  * check run of the head ("success", "failure", "in_progress", "missing", ...),
- * `mainCi` is the conclusion of the `CI result` check run of main ("success", ...).
+ * `mainCi` is the conclusion of the `CI result` check run of main ("success", ...),
+ * `isMainRed` indicates whether main auto-merge is currently held.
  */
 export function decideApproveLabel({
   verdict,
@@ -182,6 +188,7 @@ export function decideApproveLabel({
   headCommittedAt,
   ci,
   mainCi = "success",
+  isMainRed = false,
   autoMerge = false,
 }) {
   if (!verdict) return { action: "skip", reason: "no-verdict" };
@@ -195,15 +202,37 @@ export function decideApproveLabel({
   }
   if (ci !== "success") return { action: "skip", reason: `ci-${ci}` };
 
-  // MAIN GUARD: main must be green to merge or label for merge
-  if (mainCi !== "success") {
-    return { action: "hold", reason: mainCi === "failure" ? "main-red" : `main-${mainCi}` };
+  const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
+  const redMain = isMainRed || isRedMain(mainCi);
+
+  // When main is red, auto-merge must not be enabled.
+  // If native auto-merge was already turned on for the PR, disable it safely.
+  const shouldDisableAutoMerge = redMain && Boolean(pr.autoMerge);
+  const shouldEnableAutoMerge = !redMain && autoMerge && !pr.autoMerge;
+
+  if (alreadyLabeled) {
+    if (shouldDisableAutoMerge) {
+      return { action: "hold", disableAutoMerge: true, reason: "main-red" };
+    }
+    if (shouldEnableAutoMerge) {
+      return { action: "label", autoMerge: true, reason: "approved-head-green" };
+    }
+    if (redMain && autoMerge) {
+      return { action: "hold", reason: "main-red" };
+    }
+    return { action: "noop", reason: "already-labeled" };
   }
 
-  const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
-  const alreadyAutoMerged = !autoMerge || Boolean(pr.autoMerge);
-  if (alreadyLabeled && alreadyAutoMerged) return { action: "noop", reason: "already-labeled" };
-  return { action: "label", autoMerge: autoMerge && !alreadyAutoMerged, reason: "approved-head-green" };
+  // The review-approved label is applied as soon as the PR head is approved and green,
+  // triggering CI pipelines. Auto-merge is held if main is red.
+  const decision = {
+    action: "label",
+    autoMerge: shouldEnableAutoMerge,
+    reason: "approved-head-green",
+  };
+  if (redMain) decision.holdMerge = true;
+  if (shouldDisableAutoMerge) decision.disableAutoMerge = true;
+  return decision;
 }
 
 export function boardVerdictSql(sinceHours) {
@@ -285,6 +314,32 @@ export function createGitHubPort(repo, options = {}) {
       if (!sha) return "missing";
       return await this.ciConclusion(sha);
     },
+    async mainCiDetails(baseBranch = DEFAULT_BASE_BRANCH) {
+      const sha = await this.mainHeadSha(baseBranch);
+      if (!sha) return { status: "missing", conclusion: "missing", lastCompleted: null };
+      const current = await this.ciConclusion(sha);
+      if (current === "success" || RED_MAIN_CONCLUSIONS.has(current)) {
+        return { status: "completed", conclusion: current, lastCompleted: current };
+      }
+      let lastCompleted = null;
+      try {
+        const commits = await run([`repos/${repo}/commits?sha=${encodeURIComponent(baseBranch)}&per_page=10`]);
+        if (Array.isArray(commits)) {
+          for (const c of commits) {
+            const commitSha = c.sha;
+            if (!commitSha || commitSha === sha) continue;
+            const pastCi = await this.ciConclusion(commitSha);
+            if (pastCi === "success" || RED_MAIN_CONCLUSIONS.has(pastCi)) {
+              lastCompleted = pastCi;
+              break;
+            }
+          }
+        }
+      } catch {
+        // fallback if commits query fails
+      }
+      return { status: current, conclusion: current, lastCompleted };
+    },
     async addLabel(number) {
       await run(["-X", "POST", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
     },
@@ -324,74 +379,101 @@ export async function runOnce({
     consecutiveFailures: 0,
     backoffUntil: null,
     mainStatus: "unknown",
+    lastCompletedStatus: "unknown",
   };
 
-  // Backoff check: if still in active backoff window, skip processing
-  if (state.backoffUntil && new Date(state.backoffUntil).getTime() > now.getTime()) {
-    log(`Auto-merge controller in backoff until ${state.backoffUntil}. Merge cycle paused.`);
-    return {
-      results: [],
-      failed: 0,
-      paused: true,
-      mainCi: state.mainStatus,
-      consecutiveFailures: state.consecutiveFailures,
-      backoffUntil: state.backoffUntil,
-    };
-  }
-
-  let mainCi = "success";
+  let mainCiRaw = "success";
+  let lastCompletedMain = null;
   if (checkMain && hasApproveCandidate) {
     try {
-      mainCi = await github.mainCiConclusion(baseBranch);
+      if (typeof github.mainCiDetails === "function") {
+        const details = await github.mainCiDetails(baseBranch);
+        mainCiRaw = details.status ?? details.conclusion ?? "unknown";
+        lastCompletedMain = details.lastCompleted ?? null;
+      } else {
+        const res = await github.mainCiConclusion(baseBranch);
+        if (typeof res === "object" && res !== null) {
+          mainCiRaw = res.status ?? res.conclusion ?? "unknown";
+          lastCompletedMain = res.lastCompleted ?? null;
+        } else {
+          mainCiRaw = String(res ?? "missing");
+        }
+      }
     } catch (err) {
-      mainCi = "error";
+      mainCiRaw = "error";
       log(`Failed to inspect main branch CI: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  // MAIN GUARD: main is not green -> hold merge and back off
-  if (mainCi !== "success") {
-    const consecutiveFailures = (state.consecutiveFailures ?? 0) + 1;
+  const isRunning =
+    mainCiRaw === "in_progress" ||
+    mainCiRaw === "queued" ||
+    mainCiRaw === "pending";
+
+  let resolvedConclusion = mainCiRaw;
+  if (isRunning) {
+    // When main CI is running, take the last completed CI result conclusion
+    const prev =
+      lastCompletedMain ||
+      (state.lastCompletedStatus && state.lastCompletedStatus !== "unknown" ? state.lastCompletedStatus : null) ||
+      (state.mainStatus && state.mainStatus !== "unknown" && !["in_progress", "queued", "pending"].includes(state.mainStatus) ? state.mainStatus : null) ||
+      "success";
+    resolvedConclusion = prev;
+    log(`Main branch CI is currently ${mainCiRaw}; using last completed conclusion: ${resolvedConclusion}.`);
+  }
+
+  const isMainRed = isRedMain(resolvedConclusion);
+
+  const isBackoffActive = Boolean(
+    state.backoffUntil && new Date(state.backoffUntil).getTime() > now.getTime()
+  );
+
+  let consecutiveFailures = state.consecutiveFailures ?? 0;
+  let backoffUntil = state.backoffUntil ?? null;
+  let lastCompletedStatus = state.lastCompletedStatus ?? "unknown";
+
+  if (isBackoffActive) {
+    // While in an active backoff window, hold auto-merge and do not increment backoff again
+    lastCompletedStatus = resolvedConclusion;
+    log(`Auto-merge controller in backoff until ${backoffUntil}. Auto-merge paused.`);
+  } else if (mainCiRaw === "failure") {
+    // Pause / backoff grows only on actual failure of main
+    consecutiveFailures += 1;
     const delayMs = calculateBackoff({ consecutiveFailures, baseDelayMs, maxDelayMs, factor });
-    const backoffUntil = new Date(now.getTime() + delayMs).toISOString();
-
-    await stateStore?.save({
-      consecutiveFailures,
-      backoffUntil,
-      mainStatus: mainCi,
-      lastCheckAt: now.toISOString(),
-    });
-
-    log(`Main branch is not green (${mainCi}). Auto-merge paused, backoff until ${backoffUntil}.`);
-
-    for (const [prNumber, verdict] of candidatePrs) {
-      if (verdict.outcome !== "approve") {
-        results.push({ prNumber, action: "skip", reason: `latest-verdict-${verdict.outcome}` });
-      } else {
-        results.push({ prNumber, action: "hold", reason: mainCi === "failure" ? "main-red" : `main-${mainCi}` });
-      }
+    backoffUntil = new Date(now.getTime() + delayMs).toISOString();
+    lastCompletedStatus = "failure";
+    log(`Main CI failed. Consecutive failures: ${consecutiveFailures}, backoff until ${backoffUntil}.`);
+  } else if (isRunning) {
+    // Pause does not grow while CI is in_progress / queued
+    lastCompletedStatus = resolvedConclusion;
+    if (backoffUntil && new Date(backoffUntil).getTime() <= now.getTime()) {
+      backoffUntil = null;
     }
-
-    for (const r of results) log(`PR #${r.prNumber}: ${r.action} (${r.reason})${r.dryRun ? " [dry run]" : ""}`);
-    return {
-      results,
-      failed: 0,
-      paused: true,
-      mainCi,
-      consecutiveFailures,
-      backoffUntil,
-    };
+  } else if (isRedMain(mainCiRaw)) {
+    // cancelled or timed_out: main is red, but pause counter only increments on failure
+    lastCompletedStatus = mainCiRaw;
+    if (backoffUntil && new Date(backoffUntil).getTime() <= now.getTime()) {
+      backoffUntil = null;
+    }
+  } else if (mainCiRaw === "success") {
+    // Main is green: reset failures and backoff
+    consecutiveFailures = 0;
+    backoffUntil = null;
+    lastCompletedStatus = "success";
   }
 
-  // MAIN IS GREEN: resume merge and reset backoff
-  if (state.consecutiveFailures > 0 || state.backoffUntil !== null) {
-    await stateStore?.save({
-      consecutiveFailures: 0,
-      backoffUntil: null,
-      mainStatus: "success",
-      lastCheckAt: now.toISOString(),
-    });
-  }
+  const currentlyBackingOff = Boolean(
+    backoffUntil && new Date(backoffUntil).getTime() > now.getTime()
+  );
+  const holdAutoMerge = isMainRed || currentlyBackingOff;
+
+  await stateStore?.save({
+    consecutiveFailures,
+    backoffUntil,
+    mainStatus: mainCiRaw,
+    lastCompletedStatus,
+    lastCheckAt: now.toISOString(),
+  });
 
   for (const [prNumber, verdict] of candidatePrs) {
     if (verdict.outcome !== "approve") {
@@ -406,7 +488,16 @@ export async function runOnce({
         headCommittedAt = verdict.head ? null : await github.headCommittedAt(pr.headSha);
         ci = await github.ciConclusion(pr.headSha);
       }
-      const decision = decideApproveLabel({ verdict, pr, headCommittedAt, ci, mainCi: "success", autoMerge });
+      const decision = decideApproveLabel({
+        verdict,
+        pr,
+        headCommittedAt,
+        ci,
+        mainCi: resolvedConclusion,
+        isMainRed: holdAutoMerge,
+        autoMerge: autoMerge && !holdAutoMerge,
+      });
+
       if (decision.action === "label" && !dryRun) {
         if (!pr.labels.includes(APPROVED_LABEL)) {
           await github.addLabel(prNumber);
@@ -415,7 +506,14 @@ export async function runOnce({
           await github.enableAutoMerge(prNumber);
         }
       }
-      results.push({ prNumber, ...decision, dryRun: dryRun && decision.action === "label" ? true : undefined });
+      if (decision.disableAutoMerge && !dryRun) {
+        await github.disableAutoMerge(prNumber);
+      }
+      results.push({
+        prNumber,
+        ...decision,
+        dryRun: dryRun && (decision.action === "label" || decision.disableAutoMerge) ? true : undefined,
+      });
     } catch (err) {
       failed += 1;
       results.push({ prNumber, action: "error", reason: err instanceof Error ? err.message.split("\n")[0] : "error" });
@@ -423,7 +521,15 @@ export async function runOnce({
   }
 
   for (const r of results) log(`PR #${r.prNumber}: ${r.action} (${r.reason})${r.dryRun ? " [dry run]" : ""}`);
-  return { results, failed, mainCi, consecutiveFailures: 0, backoffUntil: null };
+  return {
+    results,
+    failed,
+    paused: holdAutoMerge,
+    mainCi: mainCiRaw,
+    resolvedMainCi: resolvedConclusion,
+    consecutiveFailures,
+    backoffUntil,
+  };
 }
 
 function parseArgs(argv) {

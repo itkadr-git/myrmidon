@@ -9,10 +9,12 @@ connects the two: an approval becomes the label without a delay, and a person no
 The script puts the label on a pull request only when all of this is true:
 
 1. The main branch CI is green: check run `CI result` on the head of `main` is `success`.
-   If `main` is red or running (`failure`, `in_progress`, `missing`), auto-merging is halted
-   (`action: "hold"`, `reason: "main-red"`), exponential backoff begins, and subsequent cycles
-   wait for the backoff window. Once `main` turns green, auto-merging automatically resumes and
-   the backoff failure counter resets.
+   If the latest completed `CI result` is red (`failure`, `cancelled`, `timed_out`), auto-merging is halted
+   (`action: "hold"`, `reason: "main-red"`), and exponential backoff increases on `failure`.
+   When main CI is `in_progress` or `queued`, the controller checks the previous completed `CI result` so CI queue
+   does not stall the pipeline. The `review-approved` label continues to be applied to approved PRs with green CI,
+   holding only the auto-merge step. Once `main` turns green, auto-merging automatically resumes and the backoff
+   failure counter resets.
 2. The newest verdict line about the PR, written by a reviewer agent, is an approval. A later
    `RETURN`, `DEFERRED` or an unclear line (an approval and a refusal in one line, or two PR numbers in one
    line) cancels it.
