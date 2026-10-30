@@ -3120,12 +3120,12 @@ async function buildAttentionFeedSnapshot(
       if (executionHoldCards.length > 0) {
         add(createItem({
           companyId,
-          sourceKind: "execution_holds_aggregate",
+          sourceKind: "execution_hold",
           subject: {
-            kind: "system",
+            kind: "company",
             id: `execution-holds-aggregate:${companyId}`,
             companyId,
-            title: `${executionHoldCards.length} задач удержано (replay=blocked)`,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
             identifier: null,
             status: "active",
             href: `/${prefix}/company/settings`,
@@ -3133,7 +3133,7 @@ async function buildAttentionFeedSnapshot(
               heldCount: executionHoldCards.length,
             },
           },
-          whyNow: `${executionHoldCards.length} задач удержано (replay=blocked) без продвижения: инженеры не могут взять их в работу до снятия удержания.`,
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
           ),

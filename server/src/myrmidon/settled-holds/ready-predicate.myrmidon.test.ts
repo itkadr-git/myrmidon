@@ -232,7 +232,7 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
         issueId,
         status: "pending",
         kind: "ask_user_questions",
-        payload: { questions: ["clarify requirements"] },
+        payload: { version: 1, questions: [{ id: "q1", question: "clarify requirements", header: "q1" }] } as any,
       });
 
       const enqueueWakeup = enqueueSpy();
@@ -392,7 +392,7 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
         issueId,
         status: "pending",
         kind: "ask_user_questions",
-        payload: { questions: ["clarify"] },
+        payload: { version: 1, questions: [{ id: "q1", question: "clarify", header: "q1" }] } as any,
       });
 
       expect(await listRoleQueue(db, companyId, "engineer")).toEqual([]);

@@ -98,6 +98,7 @@ export async function clearSettledReplayHoldsForIssue(
   actor: ClearSettledReplayBlockActor,
   note: string,
   postCommitActivityPublications?: ActivityPublication[],
+  runStartedAt?: Date | null,
 ): Promise<string[]> {
   const held = await db
     .select()
@@ -105,6 +106,13 @@ export async function clearSettledReplayHoldsForIssue(
     .where(settledReplayHoldWhere(companyId, issueId));
   const clearedActionIds: string[] = [];
   for (const action of held) {
+    if (runStartedAt) {
+      const holdCreatedAt = new Date(action.createdAt);
+      if (runStartedAt.getTime() < holdCreatedAt.getTime()) {
+        // Hold was created after this run started; run did not witness or cure it
+        continue;
+      }
+    }
     await clearSettledReplayBlock({
       db,
       companyId,
@@ -125,7 +133,7 @@ export async function clearSettledReplayHoldsForIssue(
  */
 export async function clearSettledReplayHoldsOnAuthoritativeRunSuccess(
   db: Db,
-  run: { id: string; companyId: string; agentId: string; status: string },
+  run: { id: string; companyId: string; agentId: string; status: string; startedAt?: Date | string | null },
   issue: { id: string; assigneeAgentId: string | null; assigneeUserId: string | null; status: string } | null,
   postCommitActivityPublications?: ActivityPublication[],
 ): Promise<string[] | null> {
@@ -144,6 +152,7 @@ export async function clearSettledReplayHoldsOnAuthoritativeRunSuccess(
     { actorType: "agent", actorId: run.agentId },
     `run ${run.id} succeeded`,
     postCommitActivityPublications,
+    run.startedAt ? new Date(run.startedAt) : null,
   );
 }
 

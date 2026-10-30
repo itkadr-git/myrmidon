@@ -56,7 +56,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
       evidence: { runId, actionOutcome: "unknown", automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
       nextAction: "Automatic recovery stopped.",
     }).returning();
-    return { companyId, issueId: issue!.id, action: action! };
+    return { companyId, issueId: issue!.id, agentId, action: action! };
   }
 
   it("sets replay to cleared, keeps other evidence, and records who/when/note", async () => {
@@ -199,7 +199,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
     const { issueId: descIssueId, action: descAction } = await seed();
     await db
       .update(issues)
-      .set({ unblockDescriptor: { reason: "waiting on human", owner: "user" } })
+      .set({ unblockDescriptor: { reason: "waiting on human", owner: { userId: randomUUID() } } })
       .where(eq(issues.id, descIssueId));
     await db
       .update(issueRecoveryActions)
@@ -214,7 +214,7 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
       issueId: pendingInterIssueId,
       status: "pending",
       kind: "request_confirmation",
-      payload: { questions: ["confirm?"] },
+      payload: { version: 1, prompt: "confirm?" } as any,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -324,6 +324,58 @@ describeEmbeddedPostgres("clearSettledReplayBlock (L2)", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.id, action.id));
       expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    });
+
+    it("does not clear hold if run started before hold was created (OPE-7707)", async () => {
+      const { companyId, issueId, agentId, action } = await seed();
+      const run = {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date(new Date(action.createdAt).getTime() - 60_000), // 1 min before hold
+      };
+      const issue = {
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        status: "in_progress",
+      };
+
+      const result = await clearSettledReplayHoldsOnAuthoritativeRunSuccess(db, run, issue);
+      expect(result).toEqual([]);
+
+      const [persisted] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("blocked");
+    });
+
+    it("clears hold if run started after hold was created (OPE-7707)", async () => {
+      const { companyId, issueId, agentId, action } = await seed();
+      const run = {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date(new Date(action.createdAt).getTime() + 60_000), // 1 min after hold
+      };
+      const issue = {
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        status: "in_progress",
+      };
+
+      const result = await clearSettledReplayHoldsOnAuthoritativeRunSuccess(db, run, issue);
+      expect(result).toEqual([action.id]);
+
+      const [persisted] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect((persisted!.evidence as any).automaticRecovery.replay).toBe("cleared");
     });
   });
 });
