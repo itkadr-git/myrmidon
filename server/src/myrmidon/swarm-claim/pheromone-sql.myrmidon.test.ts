@@ -528,6 +528,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       companyId,
       issueId,
       body: "Fixed",
+      authorUserId: "board-user",
       createdAt: new Date(),
     });
 

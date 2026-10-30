@@ -243,7 +243,7 @@ export async function getCachedFailedRunsMap(
     try {
       const map = await queryFailedRunsMap(db, companyId, now);
       failedRunsCache.set(companyId, {
-        expiresAt: nowMs + ttlMs,
+        expiresAt: nowMs + Math.min(ttlMs, DEFAULT_FAILED_RUNS_CACHE_TTL_MS),
         map,
       });
       return map;

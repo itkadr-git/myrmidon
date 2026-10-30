@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { estimatedJsonBytes } from "../routes/issues.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -46,11 +47,7 @@ describe("OPE-10012 Performance optimizations", () => {
     });
 
     it("failedRunsValuesSql generates empty subquery for empty map", () => {
-      const emptyMap = new Map<string, number>();
-      const sqlObj = failedRunsValuesSql(emptyMap);
-      const sqlText = (sqlObj as unknown as { queryChunks?: unknown[] }).queryChunks
-        ? sqlObj.queryChunks.map((c) => (typeof c === "string" ? c : (c as { value?: unknown })?.value ?? "")).join(" ")
-        : String(sqlObj);
+      const sqlText = new PgDialect().sqlToQuery(failedRunsValuesSql(new Map())).sql;
 
       expect(sqlText).toContain("where false");
       expect(sqlText).toContain("fr");
@@ -65,14 +62,11 @@ describe("OPE-10012 Performance optimizations", () => {
         [validUuid2, 1],
       ]);
 
-      const sqlObj = failedRunsValuesSql(map);
-      const sqlText = (sqlObj as unknown as { queryChunks?: unknown[] }).queryChunks
-        ? sqlObj.queryChunks.map((c) => (typeof c === "string" ? c : (c as { value?: unknown })?.value ?? "")).join(" ")
-        : String(sqlObj);
+      const query = new PgDialect().sqlToQuery(failedRunsValuesSql(map));
+      const sqlText = query.sql;
 
-      expect(sqlText).toContain(validUuid1);
-      expect(sqlText).toContain(validUuid2);
-      expect(sqlText).not.toContain("not-a-uuid");
+      expect(query.params).toEqual([validUuid1, validUuid2]);
+      expect(sqlText).not.toContain("heartbeat_runs");
       expect(sqlText).toContain("values");
       expect(sqlText).toContain("fr(issue_uuid, failed_runs)");
     });
