@@ -1,189 +1,352 @@
-import assert from "node:assert/strict";
 import test from "node:test";
+import assert from "node:assert/strict";
 import {
-  DEFAULT_CONFIG,
-  buildBasebackupArgs,
-  buildStandbyStatusQuery,
-  calculateLag,
-  evaluateRpo,
-  evaluateTargetStatus,
-  formatLsn,
-  generateComposeStandby,
-  generateStandbyConfig,
-  lsnDiff,
   parseLsn,
+  calculateLag,
   parseReplicationStatus,
+  generateStandbyConfig,
+  generateBasebackupCommand,
   planFailover,
-  planRehearsal,
   planSwitchback,
+  planRehearsal,
+  setupStandby,
+  checkLag,
+  executeFailover,
+  executeSwitchback,
+  executeRehearsal,
   runCli,
+  DEFAULT_CONFIG,
 } from "./standby-ctl.mjs";
 
-test("LSN parsing and formatting", () => {
+test("parseLsn parses valid PostgreSQL LSN strings into BigInt", () => {
+  assert.equal(parseLsn("0/0"), 0n);
+  assert.equal(parseLsn("0/1"), 1n);
+  assert.equal(parseLsn("0/17FCA00"), 0x17fca00n);
+  assert.equal(parseLsn("1/0"), 0x100000000n);
+  assert.equal(parseLsn("1/17FCA00"), 0x100000000n + 0x17fca00n);
+});
+
+test("parseLsn returns null for invalid inputs", () => {
   assert.equal(parseLsn(null), null);
   assert.equal(parseLsn(""), null);
   assert.equal(parseLsn("invalid"), null);
-
-  const parsed = parseLsn("0/1A00000");
-  assert.ok(typeof parsed === "bigint");
-  assert.equal(formatLsn(parsed), "0/1A00000");
-
-  const highLsn = parseLsn("1/10000000");
-  assert.equal(formatLsn(highLsn), "1/10000000");
-
-  const diff = lsnDiff("0/2000000", "0/1000000");
-  assert.equal(diff, 0x1000000);
+  assert.equal(parseLsn("123/XYZ"), null);
 });
 
-test("Replication lag calculation and RPO evaluation", () => {
+test("calculateLag computes byte lag against primary and receive LSN", () => {
+  const result = calculateLag({
+    primaryLsn: "1/2000000",
+    receiveLsn: "1/1000000",
+    replayLsn: "1/0",
+  });
+  assert.equal(result.measuredAgainst, "primary");
+  assert.equal(result.byteLag, 0x2000000n);
+  assert.equal(result.receiveByteLag, 0x1000000n);
+});
+
+test("calculateLag handles boundaries and rpoMaxSeconds=0 correctly", () => {
   const now = new Date("2026-10-30T12:00:00Z");
 
-  // Case 1: Perfectly caught-up replica
-  const lagCaughtUp = calculateLag({
-    currentLsn: "0/3000000",
-    receiveLsn: "0/3000000",
-    replayLsn: "0/3000000",
-    lastReplayTimestamp: "2026-10-30T11:59:55Z",
+  // Exact boundary: lag === rpoMaxSeconds -> OK
+  const exact = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:45:00Z", // 900s ago
+    rpoMaxSeconds: 900,
     now,
   });
-  assert.equal(lagCaughtUp.isCaughtUp, true);
-  assert.equal(lagCaughtUp.byteLag, 0);
-  assert.equal(lagCaughtUp.replayDelaySeconds, 5);
+  assert.equal(exact.timeLagSeconds, 900);
+  assert.equal(exact.rpoOk, true);
+  assert.equal(exact.rpoStatus, "ok");
 
-  const rpoCaughtUp = evaluateRpo(lagCaughtUp.replayDelaySeconds, 900);
-  assert.equal(rpoCaughtUp.ok, true);
-  assert.equal(rpoCaughtUp.status, "ok");
-  assert.equal(rpoCaughtUp.marginSeconds, 895);
-
-  // Case 2: Lag exceeding RPO (1000 seconds delay > 900s)
-  const lagDelayed = calculateLag({
-    currentLsn: "0/5000000",
-    receiveLsn: "0/5000000",
-    replayLsn: "0/4000000",
-    lastReplayTimestamp: "2026-10-30T11:43:20Z", // 1000 seconds ago
+  // Over boundary by 1 second: lag > rpoMaxSeconds -> lag_exceeded
+  const exceeded = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:44:59Z", // 901s ago
+    rpoMaxSeconds: 900,
     now,
   });
-  assert.equal(lagDelayed.isCaughtUp, false);
-  assert.equal(lagDelayed.receiveReplayByteLag, 0x1000000);
-  assert.equal(lagDelayed.replayDelaySeconds, 1000);
+  assert.equal(exceeded.timeLagSeconds, 901);
+  assert.equal(exceeded.rpoOk, false);
+  assert.equal(exceeded.rpoStatus, "lag_exceeded");
 
-  const rpoDelayed = evaluateRpo(lagDelayed.replayDelaySeconds, 900);
-  assert.equal(rpoDelayed.ok, false);
-  assert.equal(rpoDelayed.status, "lag_exceeded");
-  assert.equal(rpoDelayed.marginSeconds, -100);
-
-  // Case 3: Unknown / null lag
-  const rpoUnknown = evaluateRpo(null, 900);
-  assert.equal(rpoUnknown.ok, false);
-  assert.equal(rpoUnknown.status, "unknown");
-});
-
-test("Base backup arguments generation", () => {
-  const args = buildBasebackupArgs(DEFAULT_CONFIG.board, {
-    primaryHost: "primary-db.local",
+  // RPO max = 0 (zero tolerance)
+  const zeroRpoOk = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T12:00:00Z", // 0s
+    rpoMaxSeconds: 0,
+    now,
   });
-  assert.ok(args.includes("-h"));
-  assert.ok(args.includes("primary-db.local"));
-  assert.ok(args.includes("-p"));
-  assert.ok(args.includes("5432"));
-  assert.ok(args.includes("-D"));
-  assert.ok(args.includes(DEFAULT_CONFIG.board.dataDir));
-  assert.ok(args.includes("-Fp"));
-  assert.ok(args.includes("-Xs"));
-  assert.ok(args.includes("-R"));
-  assert.ok(args.includes(`--slot=${DEFAULT_CONFIG.board.slotName}`));
-});
+  assert.equal(zeroRpoOk.timeLagSeconds, 0);
+  assert.equal(zeroRpoOk.rpoOk, true);
 
-test("Standby configuration generation", () => {
-  const configText = generateStandbyConfig(DEFAULT_CONFIG.board, {
-    primaryHost: "primary-db.local",
+  const zeroRpoFailed = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:59:59Z", // 1s
+    rpoMaxSeconds: 0,
+    now,
   });
-  assert.ok(configText.includes("primary_conninfo = 'host=primary-db.local"));
-  assert.ok(configText.includes("primary_slot_name = 'standby_board_slot'"));
-  assert.ok(configText.includes("hot_standby = on"));
-  assert.ok(configText.includes("restore_command = 'test -f"));
+  assert.equal(zeroRpoFailed.timeLagSeconds, 1);
+  assert.equal(zeroRpoFailed.rpoOk, false);
+  assert.equal(zeroRpoFailed.rpoStatus, "lag_exceeded");
 });
 
-test("Compose standby definition generation", () => {
-  const yaml = generateComposeStandby(DEFAULT_CONFIG);
-  assert.ok(yaml.includes("myrmidon-pg-standby:"));
-  assert.ok(yaml.includes("hindsight-pg-standby:"));
-  assert.ok(yaml.includes("STANDBY_BOARD_PORT:-5433"));
-  assert.ok(yaml.includes("STANDBY_HINDSIGHT_PORT:-5434"));
-  assert.ok(yaml.includes("hot_standby=on"));
+test("parseReplicationStatus parses standard and error psql outputs", () => {
+  const normal = parseReplicationStatus("t | 0/17FCA00 | 0/17FCA00 | 2026-10-30 10:00:00+00");
+  assert.equal(normal.inRecovery, true);
+  assert.equal(normal.receiveLsn, "0/17FCA00");
+  assert.equal(normal.replayLsn, "0/17FCA00");
+  assert.equal(normal.role, "standby");
+
+  const notStandby = parseReplicationStatus("f | | | ");
+  assert.equal(notStandby.inRecovery, false);
+  assert.equal(notStandby.role, "primary_or_standalone");
+
+  const connRefused = parseReplicationStatus("psql: error: connection to server on socket failed: Connection refused");
+  assert.equal(connRefused.inRecovery, false);
+  assert.equal(connRefused.role, "unreachable");
+
+  const empty = parseReplicationStatus("");
+  assert.equal(empty.inRecovery, false);
+  assert.equal(empty.role, "unknown");
 });
 
-test("SQL query parsing and target evaluation", () => {
-  const query = buildStandbyStatusQuery();
-  assert.ok(query.includes("pg_is_in_recovery()"));
-
-  // Standby healthy row
-  const rawHealthy = "t | 0/2B00000 | 0/2B00000 | 2026-10-30T12:00:00Z";
-  const statusHealthy = evaluateTargetStatus(DEFAULT_CONFIG.board, rawHealthy, {
-    now: new Date("2026-10-30T12:00:10Z"),
-    rpoMaxSeconds: 900,
-  });
-  assert.equal(statusHealthy.inRecovery, true);
-  assert.equal(statusHealthy.role, "warm_standby");
-  assert.equal(statusHealthy.rpoOk, true);
-  assert.equal(statusHealthy.byteLag, 0);
-  assert.equal(statusHealthy.timeLagSeconds, 10);
-
-  // Standby delayed row
-  const rawDelayed = "t | 0/3B00000 | 0/2B00000 | 2026-10-30T11:40:00Z";
-  const statusDelayed = evaluateTargetStatus(DEFAULT_CONFIG.board, rawDelayed, {
-    now: new Date("2026-10-30T12:00:00Z"),
-    rpoMaxSeconds: 900,
-  });
-  assert.equal(statusDelayed.inRecovery, true);
-  assert.equal(statusDelayed.rpoOk, false);
-  assert.equal(statusDelayed.rpoStatus, "lag_exceeded");
-  assert.equal(statusDelayed.timeLagSeconds, 1200);
-
-  // Not in recovery (promoted or primary)
-  const rawPrimary = "f |  |  | ";
-  const statusPrimary = evaluateTargetStatus(DEFAULT_CONFIG.board, rawPrimary);
-  assert.equal(statusPrimary.inRecovery, false);
-  assert.equal(statusPrimary.role, "primary_or_standalone");
-  assert.equal(statusPrimary.rpoOk, false);
+test("generateStandbyConfig includes required streaming parameters", () => {
+  const cfg = generateStandbyConfig("board");
+  assert.match(cfg, /primary_conninfo = 'host=10\.10\.100\.1/);
+  assert.match(cfg, /primary_slot_name = 'standby_board_slot'/);
+  assert.match(cfg, /hot_standby = 'on'/);
+  assert.match(cfg, /restore_command = /);
 });
 
-test("Failover, switchback, and rehearsal execution planning", () => {
-  const failoverPlan = planFailover(DEFAULT_CONFIG.board, { standbyHost: "myr-vm1.internal" });
-  assert.equal(failoverPlan.target, "board");
-  assert.equal(failoverPlan.promoteSql, "SELECT pg_promote();");
-  assert.ok(failoverPlan.newEndpoint.includes("myr-vm1.internal:5433/paperclip"));
-
-  const switchbackPlan = planSwitchback(DEFAULT_CONFIG.board, { primaryHost: "vm-core.internal" });
-  assert.equal(switchbackPlan.target, "board");
-  assert.ok(switchbackPlan.primaryEndpoint.includes("vm-core.internal:5432/paperclip"));
-  assert.ok(switchbackPlan.standbySignalPath.endsWith("standby.signal"));
-
-  const rehearsalPlan = planRehearsal(DEFAULT_CONFIG.board, { scratchDir: "/tmp/drill-board" });
-  assert.equal(rehearsalPlan.drillDir, "/tmp/drill-board");
-  assert.equal(rehearsalPlan.drillPort, 5533);
-  assert.ok(rehearsalPlan.steps.length > 0);
+test("generateBasebackupCommand generates slot and stream flags", () => {
+  const cmd = generateBasebackupCommand("board");
+  assert.equal(cmd.executable, "pg_basebackup");
+  assert.ok(cmd.args.includes("-R"));
+  assert.ok(cmd.args.includes("-Xs"));
+  assert.ok(cmd.args.includes("--slot=standby_board_slot"));
 });
 
-test("CLI dry-run executions", () => {
-  // Help command
-  assert.equal(runCli(["node", "standby-ctl.mjs", "--help"]), 0);
+test("checkLag measures primary-to-standby lag and handles fail-closed errors", () => {
+  // 1. Success case: primary and standby both queryable
+  const mockCalls = [];
+  const mockRunner = (cmd, args) => {
+    mockCalls.push({ cmd, args });
+    const sql = args[args.indexOf("-c") + 1];
+    if (sql.includes("pg_is_in_recovery")) {
+      return { exitCode: 0, stdout: "t|1/2000000|1/2000000|2026-10-30 11:59:00+00\n", stderr: "" };
+    }
+    if (sql.includes("pg_current_wal_lsn")) {
+      return { exitCode: 0, stdout: "1/2000000\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
 
-  // Setup dry-run with JSON
-  assert.equal(runCli(["node", "standby-ctl.mjs", "setup", "--dry-run", "--json"]), 0);
+  const res = checkLag("board", { now: new Date("2026-10-30T12:00:00Z") }, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.role, "standby");
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.rpoOk, true);
+  assert.equal(res.byteLag, 0n);
+  assert.equal(res.timeLagSeconds, 60);
 
-  // Check lag dry-run with JSON
-  assert.equal(runCli(["node", "standby-ctl.mjs", "check-lag", "--dry-run", "--json"]), 0);
+  // 2. Fail-closed: standby connection failure
+  const failRunner = () => ({ exitCode: 2, stdout: "", stderr: "psql: error: could not connect to server" });
+  const failRes = checkLag("board", {}, { runner: failRunner });
+  assert.equal(failRes.success, false);
+  assert.equal(failRes.rpoOk, false);
+  assert.equal(failRes.role, "unreachable");
+  assert.equal(failRes.rpoStatus, "standby_query_failed");
 
-  // Failover dry-run with JSON
-  assert.equal(runCli(["node", "standby-ctl.mjs", "failover", "--dry-run", "--json"]), 0);
+  // 3. Standby not in recovery
+  const primaryRunner = () => ({ exitCode: 0, stdout: "f|||\n", stderr: "" });
+  const primaryRes = checkLag("board", {}, { runner: primaryRunner });
+  assert.equal(primaryRes.success, true);
+  assert.equal(primaryRes.inRecovery, false);
+  assert.equal(primaryRes.rpoOk, false);
+  assert.equal(primaryRes.role, "primary_or_standalone");
+  assert.equal(primaryRes.rpoStatus, "not_in_standby");
 
-  // Switchback dry-run with JSON
-  assert.equal(runCli(["node", "standby-ctl.mjs", "switchback", "--dry-run", "--json"]), 0);
+  // 4. Primary unreachable -> fail-closed
+  const pUnreachRunner = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1];
+    if (sql.includes("pg_is_in_recovery")) {
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-30 11:59:00+00\n", stderr: "" };
+    }
+    return { exitCode: 1, stdout: "", stderr: "connection timeout to primary" };
+  };
+  const pUnreachRes = checkLag("board", {}, { runner: pUnreachRunner });
+  assert.equal(pUnreachRes.success, false);
+  assert.equal(pUnreachRes.rpoOk, false);
+  assert.equal(pUnreachRes.rpoStatus, "primary_unreachable");
+});
 
-  // Rehearsal dry-run with JSON
-  assert.equal(runCli(["node", "standby-ctl.mjs", "rehearse", "--dry-run", "--json"]), 0);
+test("setupStandby executes directory setup, basebackup, and config writes", () => {
+  const fsWrites = [];
+  const dirs = [];
+  const mockFs = {
+    mkdirSync: (dir) => dirs.push(dir),
+    writeFileSync: (file, content) => fsWrites.push({ file, content }),
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
 
-  // Compose printout
-  assert.equal(runCli(["node", "standby-ctl.mjs", "compose"]), 0);
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.streamingActive, true);
+
+  assert.ok(dirs.includes(DEFAULT_CONFIG.boardDataDir));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_basebackup"));
+  assert.ok(fsWrites.some((f) => f.file.endsWith("standby.signal")));
+  assert.ok(fsWrites.some((f) => f.file.endsWith("postgresql.auto.conf")));
+});
+
+test("executeFailover promotes standby, polls recovery exit, and restarts app", () => {
+  let recoveryPolls = 0;
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_promote")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (sql.includes("pg_is_in_recovery")) {
+        recoveryPolls++;
+        // returns 't' on first poll, 'f' on second
+        return { exitCode: 0, stdout: recoveryPolls > 1 ? "f\n" : "t\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeFailover("board", { restartApp: true, checkHealth: true }, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.promoted, true);
+  assert.equal(res.inRecovery, false);
+  assert.equal(res.appSwitched, true);
+  assert.equal(res.healthOk, true);
+  assert.equal(res.rtoOk, true);
+
+  assert.ok(executedCmds.some((c) => c.cmd === "docker"));
+  assert.ok(executedCmds.some((c) => c.cmd === "curl"));
+});
+
+test("executeSwitchback resynchronizes standby from active primary", () => {
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_is_in_recovery")) {
+        // Primary check returns 'f' (primary is active)
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const res = executeSwitchback("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.resynchronized, true);
+});
+
+test("executeRehearsal conducts isolated drill and measures RTO", () => {
+  const executedCmds = [];
+  let drillCleaned = false;
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => { drillCleaned = true; },
+  };
+
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.promoted, true);
+  assert.equal(res.smokeTestPassed, true);
+  assert.equal(res.rtoOk, true);
+  assert.equal(drillCleaned, true);
+
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_basebackup"));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_ctl" && c.args.includes("start")));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_ctl" && c.args.includes("stop")));
+});
+
+test("runCli commands output structured JSON and return correct exit codes", () => {
+  let failoverPromoted = false;
+  const mockRunner = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (sql.includes("pg_promote")) {
+      failoverPromoted = true;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (sql.includes("pg_is_in_recovery")) {
+      if (failoverPromoted) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-30 11:59:00+00\n", stderr: "" };
+    }
+    if (sql.includes("pg_current_wal_lsn")) {
+      return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  // check-lag within RPO -> exit 0
+  const codeCheck = runCli(["check-lag", "board", "--offline"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeCheck, 0);
+
+  // failover dry-run -> exit 0
+  const codeFailoverDry = runCli(["failover", "board", "--dry-run"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeFailoverDry, 0);
+
+  // failover real execution -> exit 0
+  const codeFailover = runCli(["failover", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeFailover, 0);
+
+  // rehearse real execution -> exit 0
+  const codeRehearse = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeRehearse, 0);
 });
