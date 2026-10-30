@@ -10,7 +10,7 @@ import type {
   IssueRecoveryAction,
   IssueRetryNowOutcome,
   IssueScheduledRetry,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 import { ToastProvider } from "../context/ToastContext";

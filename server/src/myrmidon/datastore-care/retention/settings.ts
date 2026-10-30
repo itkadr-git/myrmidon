@@ -19,8 +19,8 @@ import {
   type DatastoreCareRetentionLastRun,
   type DatastoreCareRetentionPatch,
   type PatchInstanceGeneralSettings,
-} from "@paperclipai/shared";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+} from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import type { instanceSettingsService } from "../../../services/instance-settings.js";
 
 export type DatastoreCareSettingsService = Pick<

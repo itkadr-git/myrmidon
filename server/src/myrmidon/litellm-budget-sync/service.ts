@@ -29,12 +29,12 @@
 //  - Nothing here stores a gateway id: keys are found by alias, tags by the
 //    stable name, so a gateway rebuild is self-healing on the next sweep.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   budgetProjectionTag,
   type BudgetProjectionLimit,
   type BudgetProjectionStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { LitellmBudgetGatewayPort } from "./gateway.js";
 
 /** The effective limit of one (level, scopeId), from the stored rows. */

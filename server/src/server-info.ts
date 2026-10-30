@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@paperclipai/shared";
+import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@myrmidon/shared";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
 export type { ServerGitInfo, ServerInfoSnapshot };

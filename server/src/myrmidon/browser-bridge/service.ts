@@ -41,7 +41,7 @@ import {
   type BrowserBridgeSettingsPatch,
   type BrowserBridgeSignDecision,
   type PairingExchangeRequest,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   actionEntry,
   allowlistUpdatedEntry,
@@ -569,7 +569,10 @@ export function browserBridgeService(
           deviceId,
           companyId,
           method,
-          params: actionParams,
+          // A signing step is confirmed or not by the operator's panel policy,
+          // never by the bot: the extension learns the decision from the
+          // `confirmation` field, so the policy value replaces whatever the bot sent.
+          params: isSign ? { ...actionParams, confirmation: requiresConfirmation ? "human" : "none" } : actionParams,
           timeoutMs,
           requiresConfirmation,
           ...(requestId ? { idempotencyKey: `${deviceId}:${requestId}` } : {}),

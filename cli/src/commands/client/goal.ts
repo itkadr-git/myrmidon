@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import type { Goal } from "@paperclipai/shared";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import type { Goal } from "@myrmidon/shared";
+import { createGoalSchema, updateGoalSchema } from "@myrmidon/shared";
 import {
   addCommonClientOptions,
   apiPath,

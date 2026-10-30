@@ -1,0 +1,11 @@
+# myrmidon(OPE-8950): files of area issue-threads-runs-2
+components/IssueSiblingNavigation.tsx
+components/IssueThreadInteractionCard.tsx
+components/IssuesList.tsx
+components/KanbanBoard.tsx
+components/LegacyIssuesList.tsx
+components/NewIssueDialog.tsx
+components/issue/ExternalSessionsPanel.tsx
+components/transcript/RunTranscriptView.tsx
+pages/IssueDetail.tsx
+pages/MyIssues.tsx

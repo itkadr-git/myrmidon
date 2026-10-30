@@ -13,7 +13,7 @@ import {
   patchAgentMemorySettingsSchema,
   type AgentMemorySettings,
   type PatchAgentMemorySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { readMemoryUiSettings, type MemoryUrlSource } from "./settings.js";

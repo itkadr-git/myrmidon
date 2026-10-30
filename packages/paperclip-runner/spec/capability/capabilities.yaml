@@ -2324,9 +2324,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-access:1578",
+      "id": "skill:skills/paperclip/references/api-reference.md:agent-secret-access:1592",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1578",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1592",
       "title": "Agent secret access",
       "expectedSemantics": "Skill guidance headed “Agent secret access”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2335,13 +2335,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1578"
+        "skill:skills/paperclip/references/api-reference.md:1592"
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:common-mistakes:1618",
+      "id": "skill:skills/paperclip/references/api-reference.md:common-mistakes:1632",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1618",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:1632",
       "title": "Common Mistakes",
       "expectedSemantics": "Skill guidance headed “Common Mistakes”.",
       "primaryDisposition": "optional_agent_tool",
@@ -2350,7 +2350,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1618"
+        "skill:skills/paperclip/references/api-reference.md:1632"
       ]
     }
   ]

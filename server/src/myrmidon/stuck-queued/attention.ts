@@ -7,7 +7,7 @@
 // stall threshold is a bug worth a person's attention. The card disappears
 // as soon as the run is claimed or gets a reason.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 
 export interface QueueStallSignal {
   runId: string;

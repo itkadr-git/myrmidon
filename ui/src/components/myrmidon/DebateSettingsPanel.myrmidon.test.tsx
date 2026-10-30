@@ -8,7 +8,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DebateSettings } from "@paperclipai/shared";
+import type { DebateSettings } from "@myrmidon/shared";
 import { DebateSettingsPanelView } from "./DebateSettingsPanel";
 import type { DebateSettingsView } from "./debateApi";
 

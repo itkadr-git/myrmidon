@@ -1,14 +1,16 @@
 import { useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@myrmidon/shared";
 import { projectsApi } from "@/api/projects";
 import { castesApi, castesQueryKey } from "@/components/myrmidon/castes/castesApi";
 import { queryKeys } from "@/lib/queryKeys";
+import { useTranslation } from "@/i18n";
 
 // Optional until the backend defaultCasteKey contract lands in shared types.
 type ProjectWithDefaultCaste = Project & { defaultCasteKey?: string | null };
 
 export function ProjectDefaultCaste({ project, editable }: { project: ProjectWithDefaultCaste; editable: boolean }) {
+  const { t } = useTranslation();
   const id = useId();
   const client = useQueryClient();
   const directory = useQuery({
@@ -35,7 +37,7 @@ export function ProjectDefaultCaste({ project, editable }: { project: ProjectWit
   }
   return (
     <div className="space-y-2 py-2">
-      <label htmlFor={id} className="text-sm text-muted-foreground">Default caste</label>
+      <label htmlFor={id} className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-1.project-default-caste.label")}</label>
       <select
         id={id}
         value={value ?? ""}
@@ -45,14 +47,14 @@ export function ProjectDefaultCaste({ project, editable }: { project: ProjectWit
         className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
         onChange={(event) => { void save(event.target.value); }}
       >
-        <option value="">Company default</option>
-        {value && !castes.some((caste) => caste.key === value) && <option value={value} disabled>{value} (unavailable)</option>}
+        <option value="">{t("area.projects-goals-workspaces-1.project-default-caste.companyDefault")}</option>
+        {value && !castes.some((caste) => caste.key === value) && <option value={value} disabled>{t("area.projects-goals-workspaces-1.project-default-caste.unavailable", { value })}</option>}
         {castes.map((caste) => <option key={caste.key} value={caste.key}>{caste.nameRu || caste.nameEn || caste.key}</option>)}
       </select>
       <p id={`${id}-status`} role={directory.isError || state === "error" ? "alert" : "status"} className="text-xs text-muted-foreground">
-        {directory.isPending ? "Loading castes..." : directory.isError ? "Could not load castes." : state === "saving" ? "Saving..." : state === "saved" ? "Default caste saved." : state === "error" ? "Could not save default caste. Select again to retry." : "Used for new tasks without an explicit caste."}
+        {directory.isPending ? t("area.projects-goals-workspaces-1.project-default-caste.loading") : directory.isError ? t("area.projects-goals-workspaces-1.project-default-caste.loadFailed") : state === "saving" ? t("area.projects-goals-workspaces-1.project-default-caste.saving") : state === "saved" ? t("area.projects-goals-workspaces-1.project-default-caste.saved") : state === "error" ? t("area.projects-goals-workspaces-1.project-default-caste.saveFailed") : t("area.projects-goals-workspaces-1.project-default-caste.hint")}
       </p>
-      {directory.isError && <button type="button" className="text-sm underline" onClick={() => { void directory.refetch(); }}>Retry loading castes</button>}
+      {directory.isError && <button type="button" className="text-sm underline" onClick={() => { void directory.refetch(); }}>{t("area.projects-goals-workspaces-1.project-default-caste.retry")}</button>}
     </div>
   );
 }

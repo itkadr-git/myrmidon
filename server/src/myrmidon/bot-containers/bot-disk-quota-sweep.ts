@@ -22,7 +22,7 @@
 // admission check (bot-quota.ts); this sweep is what makes the board see it.
 
 import { and, asc, eq, gt, inArray, or } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import {
   BOT_DISK_QUOTA_APPROACHING_RATIO,
   WS_QUOTA_MAX_BYTES,
@@ -32,7 +32,7 @@ import {
   type BotDiskQuotaSettings,
   type BotDiskQuotaSignal,
   type WsDiskApiResponse,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { botKeyForAgent } from "./agent-config.js";
 import {

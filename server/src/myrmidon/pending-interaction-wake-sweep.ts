@@ -5,7 +5,7 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 
 /**

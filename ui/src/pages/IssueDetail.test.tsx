@@ -14,8 +14,8 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
-} from "@paperclipai/shared";
-import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@myrmidon/shared";
 import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,

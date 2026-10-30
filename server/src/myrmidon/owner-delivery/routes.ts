@@ -21,19 +21,20 @@
 
 import { and, eq } from "drizzle-orm";
 import { Router, type Request } from "express";
-import { companyMemberships, type Db } from "@paperclipai/db";
+import { companyMemberships, type Db } from "@myrmidon/db";
 import {
   ownerDeliverySettingsSchema,
   ownerMessageRequestSchema,
   ownerReplyResolutionSchema,
   type OwnerMessageRequest,
   type OwnerReplyResolution,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { forbidden } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
+import { ownerDeliveryJournalRoutes } from "./publications-journal.js"; // myrmidon(1.6.5-OWNER-DM-FILTER part C)
 import { authorizeOwnerReplyResolution, sendOwnerMessage } from "./owner-message.js";
 import {
   readOwnerDeliverySettings,
@@ -56,6 +57,9 @@ function requireAgentActor(req: Request) {
 export function ownerDeliveryRoutes(db: Db) {
   const router = Router();
   const settings = instanceSettingsService(db);
+
+  // myrmidon(1.6.5-OWNER-DM-FILTER part C): GET /myrmidon/owner-delivery/publications
+  router.use(ownerDeliveryJournalRoutes(db));
 
   router.get("/myrmidon/owner-delivery", async (_req, res) => {
     assertBoardOrgAccess(_req);

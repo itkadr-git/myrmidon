@@ -6,7 +6,7 @@ import type {
   InboxDismissal,
   Issue,
   JoinRequest,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   applyIssueFilters,
   defaultIssueFilterState,

@@ -13,9 +13,9 @@ export default defineConfig({
   plugins: [react(), liveConsoleBrowserServerPlugin()],
   resolve: {
     alias: [
-      { find: "@paperclipai/paperclip-runner/browser", replacement: resolve(packageRoot, "src/browser/index.ts") },
-      { find: "@paperclipai/paperclip-runner/react", replacement: resolve(packageRoot, "src/react/index.ts") },
-      { find: "@paperclipai/paperclip-runner/styles.css", replacement: resolve(packageRoot, "styles.css") },
+      { find: "@myrmidon/paperclip-runner/browser", replacement: resolve(packageRoot, "src/browser/index.ts") },
+      { find: "@myrmidon/paperclip-runner/react", replacement: resolve(packageRoot, "src/react/index.ts") },
+      { find: "@myrmidon/paperclip-runner/styles.css", replacement: resolve(packageRoot, "styles.css") },
     ],
   },
   server: { host: "127.0.0.1" },

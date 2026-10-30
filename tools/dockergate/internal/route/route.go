@@ -59,6 +59,7 @@ const A15 = "A15"
 const (
 	A16 = "A16"
 	A17 = "A17"
+	A18 = "A18"
 )
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
@@ -392,6 +393,11 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A11
+	case "/update":
+		if method != "POST" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A18
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {
 			// A5: the path parameter is one of three literals, then the fixed flag.

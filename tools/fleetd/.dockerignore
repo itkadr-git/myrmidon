@@ -1,0 +1,2 @@
+# Tests must never make the image build context depend on fixture output.
+**/bot-example-one

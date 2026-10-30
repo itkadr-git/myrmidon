@@ -171,7 +171,17 @@ function registerRouteMocks() {
     dbAutonomyGate: () => mockAutonomyGate,
   }));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async () => ({ enabled: false })),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: vi.fn(() => ({
+      listReviewerAgents: vi.fn(async () => []),
+      loadByAgent: vi.fn(async () => new Map()),
+    })),
+  }));
+
+  vi.doMock("@myrmidon/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -467,7 +477,7 @@ function boardActor() {
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@myrmidon/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -481,6 +491,8 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
+    vi.doUnmock("../myrmidon/review-routing/settings.js");
+    vi.doUnmock("../myrmidon/review-routing/store.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();

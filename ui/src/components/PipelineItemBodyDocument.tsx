@@ -5,7 +5,7 @@ import {
   type Agent,
   type Issue,
   type PipelineCaseDocumentPayload,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { FilePenLine, FileText, Loader2 } from "lucide-react";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -21,6 +21,7 @@ import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { Button } from "@/components/ui/button";
+import { i18n, useTranslation } from "@/i18n";
 
 /** Case-level body document key (PUT /cases/:id/documents/body). */
 const BODY_DOCUMENT_KEY = "body";
@@ -55,12 +56,12 @@ function getPipelineRevisionActor(
     const profile = maps.userProfileMap?.get(revision.createdByUserId);
     return {
       kind: "user",
-      name: profile?.label ?? (revision.createdByUserId === "local-board" ? "Board" : revision.createdByUserId.slice(0, 8)),
+      name: profile?.label ?? (revision.createdByUserId === "local-board" ? i18n.t("area.pipelines-cases.pipeline-item-body-document.actorBoard") : revision.createdByUserId.slice(0, 8)),
       imageUrl: profile?.image ?? null,
     };
   }
 
-  return { kind: "system", name: "System" };
+  return { kind: "system", name: i18n.t("area.pipelines-cases.pipeline-item-body-document.actorSystem") };
 }
 
 function isNotFound(error: unknown) {
@@ -101,6 +102,7 @@ export function PipelineItemBodyDocument({
   onStartConversation,
   onAfterChange,
 }: PipelineItemBodyDocumentProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -200,9 +202,9 @@ export function PipelineItemBodyDocument({
     onSuccess: async () => {
       setSelectedRevisionId(null);
       await invalidateAll();
-      pushToast({ title: "Revision restored", tone: "success" });
+      pushToast({ title: t("area.pipelines-cases.pipeline-item-body-document.restored"), tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not restore the revision", tone: "error" }),
+    onError: () => pushToast({ title: t("area.pipelines-cases.pipeline-item-body-document.restoreFailed"), tone: "error" }),
   });
 
   const beginEdit = useCallback(() => {
@@ -228,15 +230,15 @@ export function PipelineItemBodyDocument({
       if (error instanceof ApiError && error.status === 409) {
         await caseDocumentQuery.refetch();
         pushToast({
-          title: "Body changed elsewhere",
-          body: "This item body was updated by someone else. Reloaded the latest — re-apply your edit.",
+          title: t("area.pipelines-cases.pipeline-item-body-document.conflictTitle"),
+          body: t("area.pipelines-cases.pipeline-item-body-document.conflictBody"),
           tone: "error",
         });
         return;
       }
-      pushToast({ title: "Could not save the body", tone: "error" });
+      pushToast({ title: t("area.pipelines-cases.pipeline-item-body-document.saveFailed"), tone: "error" });
     }
-  }, [caseDocumentQuery, doc?.latestRevisionId, draftBody, pushToast, saveMutation]);
+  }, [caseDocumentQuery, doc?.latestRevisionId, draftBody, pushToast, saveMutation, t]);
 
   // Selection → comment when the body is not yet anchored to a conversation. Snapshot the
   // anchor, ensure a conversation exists, mirror the body onto it, then hand the anchor to
@@ -264,10 +266,10 @@ export function PipelineItemBodyDocument({
         setPanelOpen(true);
       } catch {
         setPendingStartAnchor(null);
-        pushToast({ title: "Could not start the conversation", tone: "error" });
+        pushToast({ title: t("area.pipelines-cases.pipeline-item-body-document.startFailed"), tone: "error" });
       }
     },
-    [conversationIssueId, doc?.latestRevisionId, latestBody, onStartConversation, pushToast, saveMutation],
+    [conversationIssueId, doc?.latestRevisionId, latestBody, onStartConversation, pushToast, saveMutation, t],
   );
 
   const bodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-sm leading-7";
@@ -294,7 +296,7 @@ export function PipelineItemBodyDocument({
           <MarkdownEditor
             value={draftBody}
             onChange={setDraftBody}
-            placeholder="Write the item body in Markdown…"
+            placeholder={t("area.pipelines-cases.pipeline-item-body-document.placeholder")}
             bordered={false}
             className="min-h-(--sz-220px) bg-transparent"
             contentClassName={bodyContentClassName}
@@ -305,15 +307,15 @@ export function PipelineItemBodyDocument({
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
           <span className="text-(length:--text-micro) text-muted-foreground">
-            Saving creates rev {(doc?.latestRevisionNumber ?? 0) + 1} · ⌘↵ to save · Esc to cancel
+            {t("area.pipelines-cases.pipeline-item-body-document.editHint", { number: (doc?.latestRevisionNumber ?? 0) + 1 })}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={cancelEdit} disabled={saveMutation.isPending}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button size="sm" onClick={() => void handleSave()} disabled={saveMutation.isPending}>
               {saveMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-              {saveMutation.isPending ? "Saving…" : "Save"}
+              {saveMutation.isPending ? t("area.pipelines-cases.pipeline-item-body-document.saving") : t("common.save")}
             </Button>
           </div>
         </div>
@@ -326,23 +328,22 @@ export function PipelineItemBodyDocument({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                Viewing revision {selectedHistoricalRevision.revisionNumber}
+                {t("area.pipelines-cases.pipeline-item-body-document.viewingRevision", { number: selectedHistoricalRevision.revisionNumber })}
               </p>
               <p className="text-xs text-muted-foreground">
-                Historical preview. New comments are disabled while previewing a historical revision. Restoring it
-                creates a new latest revision and keeps history append-only.
+                {t("area.pipelines-cases.pipeline-item-body-document.historicalNote")}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => setSelectedRevisionId(null)}>
-                Return to latest
+                {t("area.pipelines-cases.pipeline-item-body-document.returnToLatest")}
               </Button>
               <Button
                 size="sm"
                 onClick={() => restoreMutation.mutate(selectedHistoricalRevision.id)}
                 disabled={restoreMutation.isPending}
               >
-                {restoreMutation.isPending ? "Restoring…" : "Restore this revision"}
+                {restoreMutation.isPending ? t("area.pipelines-cases.pipeline-item-body-document.restoring") : t("area.pipelines-cases.pipeline-item-body-document.restoreRevision")}
               </Button>
             </div>
           </div>
@@ -356,7 +357,7 @@ export function PipelineItemBodyDocument({
   } else if (!hasDocument) {
     // Truly empty (A).
     bodyContent = (
-      <EmptyState icon={FileText} message="No body yet. Capture the item's details here." action="Add the item body" onAction={beginEdit} />
+      <EmptyState icon={FileText} message={t("area.pipelines-cases.pipeline-item-body-document.emptyMessage")} action={t("area.pipelines-cases.pipeline-item-body-document.emptyAction")} onAction={beginEdit} />
     );
   } else if (annotationsLinked && bodyIssueDocument) {
     bodyContent = (
@@ -406,14 +407,14 @@ export function PipelineItemBodyDocument({
 
   return (
     <section
-      aria-label="Item body"
+      aria-label={t("area.pipelines-cases.pipeline-item-body-document.ariaLabel")}
       id="pipeline-item-body-document"
       data-testid="pipeline-item-body-document"
       className="rounded-lg border border-border p-3"
     >
       <DocumentFrameHeader
         documentKey={BODY_DOCUMENT_KEY}
-        documentLabel="Item body document"
+        documentLabel={t("area.pipelines-cases.pipeline-item-body-document.documentLabel")}
         folded={folded}
         onToggleFolded={() => setFolded((value) => !value)}
         revisionMenu={hasDocument ? {
@@ -443,11 +444,11 @@ export function PipelineItemBodyDocument({
           />
         ) : null}
         actionsSlot={editing ? (
-          <span className="text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-300">● Editing · unsaved</span>
+          <span className="text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-300">{t("area.pipelines-cases.pipeline-item-body-document.editingUnsaved")}</span>
         ) : (
           <Button variant="ghost" size="sm" className="h-auto gap-1.5 px-2 py-1 text-xs" onClick={beginEdit}>
             <FilePenLine className="h-3.5 w-3.5" />
-            Edit
+            {t("area.pipelines-cases.pipeline-item-body-document.edit")}
           </Button>
         )}
       />

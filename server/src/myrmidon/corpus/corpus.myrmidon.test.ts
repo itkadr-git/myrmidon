@@ -21,7 +21,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   CORPUS_SETTINGS_KEYS,
   CORPUS_SETTINGS_PATH,
@@ -29,7 +29,7 @@ import {
   DEFAULT_CORPUS_SETTINGS,
   mergeCorpusSettings,
   resolveCorpusSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type {
   CorpusDatasetRecord,
   CorpusDocumentRecord,
@@ -805,6 +805,40 @@ describe("corpus API: upload, parse and search", () => {
     expect(h.audit.map((row) => row.action)).toEqual([CORPUS_DOCUMENT_UPLOADED_ACTION]);
     expect(h.audit[0].details).toMatchObject({ datasetId: DATASET_ID, filename: "notes.txt", byteSize: 12});
     expect((await request(app).get(`${companyPath()}/datasets/${DATASET_ID}/documents`)).body.documents).toHaveLength(1);
+  });
+
+  it("runs queued parses concurrently up to the configured cap", async () => {
+    const h = enabled({ MYRMIDON_CORPUS_PARSE_CONCURRENCY: "2" });
+    h.seedDataset();
+    const app = h.app();
+    const uploads = await Promise.all([
+      upload(app, DATASET_ID, "first page", "first.txt"),
+      upload(app, DATASET_ID, "second page", "second.txt"),
+      upload(app, DATASET_ID, "third page", "third.txt"),
+    ]);
+    expect(uploads.map((response) => response.status)).toEqual([202, 202, 202]);
+
+    let activeParses = 0;
+    let peakParses = 0;
+    let releaseParses: (() => void) | undefined;
+    const parseGate = new Promise<void>((resolve) => { releaseParses = resolve; });
+    h.ports.parser.parse = async () => {
+      activeParses += 1;
+      peakParses = Math.max(peakParses, activeParses);
+      await parseGate;
+      activeParses -= 1;
+      return { text: "parallel corpus", chunks: [{ index: 0, text: "parallel corpus" }] };
+    };
+
+    const sweepPromise = h.worker.sweep();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(peakParses).toBe(2);
+    releaseParses!();
+    const sweep = await sweepPromise;
+
+    expect(sweep).toMatchObject({ enabled: true, available: true, claimed: 2, parsed: 2, requeued: 0, failed: 0 });
+    expect(activeParses).toBe(0);
+    expect([...h.state.documents.values()].filter((document) => document.status === "ready")).toHaveLength(2);
   });
 
   it("parses the uploaded document to ready on the next sweep, and search finds it", async () => {

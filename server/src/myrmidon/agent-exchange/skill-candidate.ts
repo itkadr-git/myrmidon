@@ -29,7 +29,7 @@ import {
   buildAgentExchangeSkillCandidateMarkdown,
   type AgentExchangeFeedParticipant,
   type AgentExchangeSkillCandidateResult,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   AgentExchangeFeedError,
   type AgentExchangeFeedIssueRef,

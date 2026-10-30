@@ -7,7 +7,7 @@
 // pre-signed), and that search can only return what it walked inside the root.
 
 import { describe, expect, it } from "vitest";
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import { CloudConnectorError } from "../types.js";
 import { YandexDiskProvider } from "./yandex-disk.js";
 

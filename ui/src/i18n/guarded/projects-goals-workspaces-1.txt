@@ -1,0 +1,13 @@
+# myrmidon(OPE-8950): area projects-goals-workspaces-1
+components/ExecutionWorkspaceCloseDialog.tsx
+components/GoalProperties.tsx
+components/LegacyProjectRepository.tsx
+components/NewGoalDialog.tsx
+components/NewProjectDialog.tsx
+components/ProjectDefaultCaste.tsx
+components/ProjectProperties.tsx
+components/ProjectRepositories.tsx
+components/ProjectRepositoryInput.tsx
+components/ProjectWorkspaceSummaryCard.tsx
+components/ProjectWorkspacesContent.tsx
+components/RepositoryEditor.tsx

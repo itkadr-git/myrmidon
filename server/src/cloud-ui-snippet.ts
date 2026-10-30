@@ -1,4 +1,4 @@
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./services/cloud-instance.js";
 
 /** Trusted operator HTML only. This content is public and runs in the app origin. */

@@ -548,12 +548,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
-            pnpm --filter @paperclipai/paperclip-runner build:typescript
+            pnpm --filter @myrmidon/paperclip-runner build:typescript
           else
-            pnpm --filter @paperclipai/paperclip-eval-kernel build
+            pnpm --filter @myrmidon/paperclip-eval-kernel build
           fi
           if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
-            pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+            pnpm --filter @myrmidon/paperclip-runner build:runner-binaries
           fi
 
       - name: Package immutable campaign outputs
@@ -841,14 +841,14 @@ jobs:
           test ! -L "$daytona_root"
           test ! -L "$sdk_root"
           test -f "$daytona_root/pnpm-lock.yaml"
-          test "$(jq -r .name "$daytona_root/package.json")" = "@paperclipai/plugin-daytona"
-          test "$(jq -r .name "$sdk_root/package.json")" = "@paperclipai/plugin-sdk"
+          test "$(jq -r .name "$daytona_root/package.json")" = "@myrmidon/plugin-daytona"
+          test "$(jq -r .name "$sdk_root/package.json")" = "@myrmidon/plugin-sdk"
           (
             cd "$daytona_root"
             pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
           )
           node scripts/link-plugin-dev-sdk.mjs
-          test "$(realpath "$daytona_root/node_modules/@paperclipai/plugin-sdk")" = "$(realpath "$sdk_root")"
+          test "$(realpath "$daytona_root/node_modules/@myrmidon/plugin-sdk")" = "$(realpath "$sdk_root")"
           pnpm --dir "$daytona_root" build
           test -f "$daytona_root/dist/manifest.js"
           test -f "$daytona_root/dist/worker.js"

@@ -21,12 +21,12 @@ import {
   createDb,
   issues,
   issueThreadInteractions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { ctoChatPlanSchema, type CtoChatPlan } from "@paperclipai/shared";
+import { ctoChatPlanSchema, type CtoChatPlan } from "@myrmidon/shared";
 import {
   createCtoChatPlanApproval,
   ctoChatApprovalIdempotencyKey,

@@ -16,6 +16,8 @@ import {
   knowledgeApproverLabelKey,
   knowledgeDiffChangeCount,
   knowledgeHref,
+  knowledgeBodyToMarkdown,
+  resolveKnowledgeMarkdownHref,
   knowledgeLinkLabel,
   knowledgeSourceLink,
   knowledgeStatusTone,
@@ -88,6 +90,28 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) knowledge tree", () => {
     expect(flattenKnowledgeTree(tree).length).toBe(2000);
     expect(elapsed).toBeLessThan(KNOWLEDGE_TREE_BUDGET_MS);
   });
+
+  it("disambiguates identical titles with folder/path and groups by folder (OPE-9762)", () => {
+    const tree = buildKnowledgeTree([
+      item({ slug: "product/overview", spaceKey: "product", title: "Overview" }),
+      item({ slug: "decisions/overview", spaceKey: "decisions", title: "Overview" }),
+      item({ slug: "rules/guidelines", spaceKey: "rules", title: "Guidelines" }),
+      item({ slug: "product/features", spaceKey: "product", title: "Features" }),
+    ]);
+
+    // Check duplicate titles are disambiguated so there are no indistinguishable duplicates
+    const productOverview = tree.find((n) => n.item.slug === "product/overview");
+    const decisionsOverview = tree.find((n) => n.item.slug === "decisions/overview");
+    const uniqueGuidelines = tree.find((n) => n.item.slug === "rules/guidelines");
+
+    expect(productOverview?.displayLabel).toBe("Overview (product)");
+    expect(decisionsOverview?.displayLabel).toBe("Overview (decisions)");
+    expect(uniqueGuidelines?.displayLabel).toBe("Guidelines");
+
+    // Check that items are grouped by folder: decisions, product, rules
+    const folderOrder = tree.map((n) => n.folder);
+    expect(folderOrder).toEqual(["decisions", "product", "product", "rules"]);
+  });
 });
 
 describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {
@@ -120,6 +144,10 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) [[…]] links", () => {
     });
     expect(knowledgeHref({ spaceKey: "wiki", slug: "a b", anchor: null })).toBe(
       "/knowledge/wiki/a%20b",
+    );
+    // OPE-9222: the current interface mounts the same screen at /wiki.
+    expect(knowledgeHref({ spaceKey: "ops", slug: "a b", anchor: "x" }, "/wiki")).toBe(
+      "/wiki/ops/a%20b#x",
     );
   });
 });
@@ -232,5 +260,32 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-4) write gate (A / O)", () => {
     expect(knowledgeStatusTone("approved")).toBe("ok");
     expect(knowledgeStatusTone("draft")).toBe("warning");
     expect(knowledgeStatusTone("archived")).toBe("muted");
+  });
+});
+describe("OPE-5957 markdown body", () => {
+  it("rewrites [[wiki]] links to markdown links on the screen's routes and keeps code intact", () => {
+    const md = knowledgeBodyToMarkdown(
+      parseKnowledgeBody("# Backups\nSee [[servers/vm-core|vm-core]] and `[[not]]`.\n"),
+      "infra",
+      "/wiki",
+    );
+    expect(md).toBe("# Backups\nSee [vm-core](/wiki/servers/vm-core) and `[[not]]`.\n");
+  });
+
+  it("resolves relative .md links against the folder of the page", () => {
+    expect(resolveKnowledgeMarkdownHref("../servers/vm-core.md", "infra/backups")).toEqual({
+      spaceKey: "infra/servers",
+      slug: "vm-core",
+      anchor: null,
+    });
+    expect(resolveKnowledgeMarkdownHref("other.md#top", "ops")).toEqual({
+      spaceKey: "ops",
+      slug: "other",
+      anchor: "top",
+    });
+    expect(resolveKnowledgeMarkdownHref("https://example.com/a.md", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("#x", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("../../../x.md", "ops")).toBeNull();
+    expect(resolveKnowledgeMarkdownHref("file.pdf", "ops")).toBeNull();
   });
 });

@@ -59,13 +59,15 @@ class RecordingSystemd:
 
 
 class FakeCdpSocket:
-    def __init__(self):
+    def __init__(self, cookies=None):
         self.calls = []
         self.closed = False
+        self.cookies = cookies or []
 
     def call(self, method, params=None):
         self.calls.append((method, params or {}))
-        return {"id": len(self.calls), "result": {}}
+        result = {"cookies": self.cookies} if method == "Network.getAllCookies" else {}
+        return {"id": len(self.calls), "result": result}
 
     def close(self):
         self.closed = True
@@ -173,13 +175,27 @@ class ContractTests(unittest.TestCase):
         methods = [call[0] for call in self.cdp.calls]
         self.assertEqual(methods, [
             "Network.enable",
-            "Network.clearBrowserCookies",
+            "Network.getAllCookies",
             "Storage.clearDataForOrigin",
             "Storage.clearDataForOrigin",
         ])
         origins = {call[1]["origin"] for call in self.cdp.calls if call[0] == "Storage.clearDataForOrigin"}
         self.assertEqual(origins, {"https://example.com", "http://example.com"})
         self.assertTrue(self.cdp.closed)
+
+    def test_clear_site_data_deletes_only_cookies_of_the_domain(self):
+        self.cdp.cookies = [
+            {"name": "sid", "domain": ".example.com", "path": "/"},
+            {"name": "a", "domain": "www.example.com", "path": "/x"},
+            {"name": "other", "domain": "other.com", "path": "/"},
+            {"name": "trap", "domain": "notexample.com", "path": "/"},
+        ]
+        self.dispatch("POST", "/browsers/browser-a/open")
+        status, _ = self.dispatch("POST", "/browsers/browser-a/clear-site-data?domain=example.com")
+        self.assertEqual(status, 200)
+        self.assertNotIn("Network.clearBrowserCookies", [c[0] for c in self.cdp.calls])
+        deleted = [(c[1]["name"], c[1]["domain"], c[1]["path"]) for c in self.cdp.calls if c[0] == "Network.deleteCookies"]
+        self.assertEqual(deleted, [("sid", ".example.com", "/"), ("a", "www.example.com", "/x")])
 
     def test_clear_site_data_validates_the_domain(self):
         for bad in ["", "https://example.com", "example.com/path", "*.example.com", "localhost"]:

@@ -1,11 +1,11 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
@@ -219,7 +219,21 @@ export function instanceSettingsRoutes(
         () => svc.getGeneral(),
         (field) => hidden.has(`instance.general.${field}`),
       );
+      const patch = req.body as Record<string, unknown>;
+      const taskDrainPatch = Object.prototype.hasOwnProperty.call(patch, "taskDrain")
+        ? patch.taskDrain as { draining: boolean; startedAt: string | null; expiresAt: string | null }
+        : undefined;
       const updated = await svc.updateGeneral(req.body);
+      if (taskDrainPatch) {
+        if (taskDrainPatch.draining && taskDrainPatch.startedAt) {
+          heartbeat.applyTaskDrain({
+            startedAt: new Date(taskDrainPatch.startedAt),
+            expiresAt: taskDrainPatch.expiresAt ? new Date(taskDrainPatch.expiresAt) : null,
+          });
+        } else {
+          heartbeat.applyTaskDrain(null);
+        }
+      }
       const changedKeys = Object.keys(req.body).sort();
       // Failure is non-fatal because periodic settings readers are the fallback.
       if (options.processBus) {
@@ -349,6 +363,18 @@ export function instanceSettingsRoutes(
             ),
           ),
         );
+        await svc.updateGeneral({
+          taskDrain: {
+            draining: true,
+            startedAt: computed.startedAt instanceof Date ? computed.startedAt.toISOString() : computed.startedAt,
+            expiresAt: computed.expiresAt instanceof Date ? computed.expiresAt.toISOString() : computed.expiresAt,
+          },
+        });
+        if (options.processBus) {
+          void options.processBus.publish("settings_changed", { changedKeys: ["taskDrain"] }).catch((err: unknown) => {
+            logger.warn({ err }, "task drain committed but process notification failed");
+          });
+        }
         heartbeat.applyTaskDrain(computed);
         // The audit record already committed, so a failure to publish it
         // here is not a reason to undo the drain: reverting the in-memory
@@ -401,6 +427,12 @@ export function instanceSettingsRoutes(
           ),
         ),
       );
+      await svc.updateGeneral({ taskDrain: { draining: false, startedAt: null, expiresAt: null } });
+      if (options.processBus) {
+        void options.processBus.publish("settings_changed", { changedKeys: ["taskDrain"] }).catch((err: unknown) => {
+          logger.warn({ err }, "task drain stop committed but process notification failed");
+        });
+      }
       heartbeat.stopTaskDrain();
       // See the POST handler above for why a publish failure here is
       // swallowed instead of failing the route: the audit record already

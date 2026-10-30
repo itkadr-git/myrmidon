@@ -87,7 +87,9 @@ func checkHeaders(r *http.Request) *deny.Error {
 	return nil
 }
 
-func hasBody(id string) bool { return id == route.A4 || id == route.A5 || id == route.A15 }
+func hasBody(id string) bool {
+	return id == route.A4 || id == route.A5 || id == route.A15 || id == route.A18
+}
 
 func (rs *reqState) handle() *deny.Error {
 	g, r := rs.g, rs.r
@@ -172,6 +174,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a17(ctx, st, rt, bs)
 	case route.A11:
 		return rs.a11(ctx, st, rt, bs)
+	case route.A18:
+		return rs.a18(ctx, st, rt, bs, bot)
 	case route.A12:
 		return rs.a12(ctx, st, rt, bs)
 	case route.A15:

@@ -12,7 +12,14 @@ import type { RegulationPageRecord } from "./types.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }],
+};
 const outsider = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: ["other-company"] };
 const agentActor = { type: "agent", source: "agent_key", agentId: "agent-a", companyId: COMPANY_ID, keyId: "key-a" };
 
@@ -156,10 +163,96 @@ describe("myrmidon(1.6-WIKI) regulation routes: lifecycle", () => {
   });
 });
 
+// myrmidon(1.6.6 K-3): the approver grade gate on the legacy wiki routes. The
+// grade comes from the actor's membership, never from the request; a rule that
+// governs a sensitive caste (smm here) is the owner's.
+describe("myrmidon(1.6.6 K-3) wiki regulation routes: approver grade", () => {
+  const owner = { ...member, userId: "user-owner", isInstanceAdmin: true };
+  const operator = { ...member, userId: "user-op", memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "member" }] };
+
+  function appSharing(store: RegulationStore, actor: unknown) {
+    const server = express();
+    server.use(express.json());
+    server.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = actor;
+      next();
+    });
+    server.use(
+      "/api",
+      wikiRegulationRoutes({
+        service: createWikiRegulationService(store, { newId: () => "page-1", now: () => new Date("2026-01-01T00:00:00.000Z") }),
+        casteSensitivity: async () => ({ sensitive: new Set(["smm"]) }),
+      }),
+    );
+    server.use(errorHandler);
+    return server;
+  }
+
+  const smmRule = { title: "SMM publications", roles: ["smm"], content: "v1" };
+
+  it("refuses an operator approving a rule of a sensitive caste, lets the owner", async () => {
+    const store = memoryStore();
+    await request(appSharing(store, operator)).put(`${base}/smm/publications`).send(smmRule).expect(200);
+    const refused = await request(appSharing(store, operator)).post(`${base}/smm/publications/approve`).send({ approverKind: "owner" }).expect(403);
+    expect(JSON.stringify(refused.body)).toContain("owner");
+    expect((await request(appSharing(store, operator)).get(`${base}/smm/publications`).expect(200)).body.status).toBe("draft");
+    await request(appSharing(store, owner)).post(`${base}/smm/publications/approve`).expect(200);
+  });
+
+  it("refuses a viewer approving, rolling back or re-roling: a viewer has no grade", async () => {
+    const viewer = { ...member, userId: "user-viewer", memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "viewer" }] };
+    const store = memoryStore();
+    await request(appSharing(store, owner)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["engineer"], content: "v1" }).expect(200);
+    await request(appSharing(store, viewer)).post(`${base}/deploy/oncall/approve`).expect(403);
+    await request(appSharing(store, owner)).post(`${base}/deploy/oncall/approve`).expect(200);
+    await request(appSharing(store, viewer)).post(`${base}/deploy/oncall/rollback`).send({ revisionNumber: 1 }).expect(403);
+    await request(appSharing(store, viewer)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["ops"], content: "v1" }).expect(403);
+  });
+
+  it("lets an operator approve a rule of an ordinary caste", async () => {
+    const store = memoryStore();
+    await request(appSharing(store, operator)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["engineer"], content: "v1" }).expect(200);
+    await request(appSharing(store, operator)).post(`${base}/deploy/oncall/approve`).expect(200);
+  });
+
+  it("refuses an operator rolling back a rule of a sensitive caste", async () => {
+    const store = memoryStore();
+    await request(appSharing(store, owner)).put(`${base}/smm/publications`).send(smmRule).expect(200);
+    await request(appSharing(store, owner)).post(`${base}/smm/publications/approve`).expect(200);
+    await request(appSharing(store, owner)).put(`${base}/smm/publications`).send({ ...smmRule, content: "v2" }).expect(200);
+    await request(appSharing(store, owner)).post(`${base}/smm/publications/approve`).expect(200);
+    await request(appSharing(store, operator)).post(`${base}/smm/publications/rollback`).send({ revisionNumber: 1 }).expect(403);
+    await request(appSharing(store, owner)).post(`${base}/smm/publications/rollback`).send({ revisionNumber: 1 }).expect(200);
+  });
+
+  it("does not let an operator re-role a delivered rule into or out of a sensitive caste", async () => {
+    const store = memoryStore();
+    // delivered owner rule: moving it out of smm lowers the grade it needs
+    await request(appSharing(store, owner)).put(`${base}/smm/publications`).send(smmRule).expect(200);
+    await request(appSharing(store, owner)).post(`${base}/smm/publications/approve`).expect(200);
+    await request(appSharing(store, operator)).put(`${base}/smm/publications`).send({ ...smmRule, roles: ["engineer"] }).expect(403);
+    // delivered operator rule: moving it into smm hands the operator an owner rule
+    await request(appSharing(store, operator)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["engineer"], content: "v1" }).expect(200);
+    await request(appSharing(store, operator)).post(`${base}/deploy/oncall/approve`).expect(200);
+    await request(appSharing(store, operator)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["smm"], content: "v1" }).expect(403);
+    // the roles stayed as they were
+    expect((await request(appSharing(store, operator)).get(`${base}/deploy/oncall`).expect(200)).body.roles).toEqual(["engineer"]);
+    // an operator may still edit text and keep roles, and the owner may re-role
+    await request(appSharing(store, operator)).put(`${base}/deploy/oncall`).send({ title: "t", roles: ["engineer"], content: "v2" }).expect(200);
+    await request(appSharing(store, owner)).put(`${base}/smm/publications`).send({ ...smmRule, roles: ["engineer"] }).expect(200);
+  });
+
+  it("lets an operator change roles of a rule that was never delivered", async () => {
+    const store = memoryStore();
+    await request(appSharing(store, operator)).put(`${base}/deploy/draft`).send({ title: "t", roles: ["engineer"], content: "v1" }).expect(200);
+    await request(appSharing(store, operator)).put(`${base}/deploy/draft`).send({ title: "t", roles: ["smm"], content: "v1" }).expect(200);
+  });
+});
+
 describe("myrmidon(1.6-WIKI) regulation routes: no database imports", () => {
   it("keeps the module free of the db package", async () => {
     const fs = await import("node:fs/promises");
     const source = await fs.readFile(new URL("./routes.ts", import.meta.url), "utf8");
-    expect(source).not.toContain("@paperclipai/db");
+    expect(source).not.toContain("@myrmidon/db");
   });
 });

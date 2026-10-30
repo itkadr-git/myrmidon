@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageName": "@paperclipai/skills-catalog",
+  "packageName": "@myrmidon/skills-catalog",
   "packageVersion": "0.3.1",
   "generatedAt": "2026-10-02T16:17:16.570Z",
   "skills": [

@@ -2,22 +2,22 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionContext, AdapterInvocationMeta } from "@myrmidon/adapter-utils";
+import { runChildProcess } from "@myrmidon/adapter-utils/server-utils";
 
 // Wrap the shared staging seam in a call-recording spy that still delegates to
 // the real implementation (a runner-backed sandbox test exercises it end to
 // end against the local sandbox stand-in). This lets a test assert the exact
 // `assets` the Claude remote managed-home seam sends it without changing any
 // real behavior for the other tests.
-vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
-  const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
+vi.mock("@myrmidon/adapter-utils/execution-target", async (importActual) => {
+  const actual = await importActual<typeof import("@myrmidon/adapter-utils/execution-target")>();
   return {
     ...actual,
     prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
   };
 });
-import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
+import { prepareAdapterExecutionTargetRuntime } from "@myrmidon/adapter-utils/execution-target";
 import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,

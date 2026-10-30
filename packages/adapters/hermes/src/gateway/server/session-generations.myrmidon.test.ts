@@ -9,7 +9,7 @@
 // the exact key the vendor builds.
 
 import { describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import { execute, readSessionGeneration, resolveSessionKey } from "./execute.js";
 
 const ISSUE_KEY = "paperclip:company:company-a:agent:agent-a:issue:issue-a";

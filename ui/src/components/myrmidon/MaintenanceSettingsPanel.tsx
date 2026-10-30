@@ -6,6 +6,7 @@ import { Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import {
   maintenanceApi,
   maintenanceQueryKey,
@@ -18,15 +19,24 @@ import {
 
 const SELECT_CLASS = "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
-const SCOPE_LABELS: Record<MaintenanceScopeType, string> = {
-  instance: "Instance",
-  company: "Company",
-  department: "Department (manager and reports)",
-  agent: "Agent",
-};
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.maintenance-settings-panel.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+const SCOPE_TYPES: MaintenanceScopeType[] = ["instance", "company", "department", "agent"];
+
+// Lazy: the language must be read at render time, not frozen at import.
+function scopeLabel(type: MaintenanceScopeType): string {
+  const keys: Record<MaintenanceScopeType, string> = {
+    instance: "area.settings-bots-host-2.maintenance-settings-panel.scopeInstance",
+    company: "area.settings-bots-host-2.maintenance-settings-panel.scopeCompany",
+    department: "area.settings-bots-host-2.maintenance-settings-panel.scopeDepartment",
+    agent: "area.settings-bots-host-2.maintenance-settings-panel.scopeAgent",
+  };
+  return i18n.t(keys[type]);
+}
 
 export function scopeTitle(scope: MaintenanceScope): string {
-  return scope.type === "instance" ? "Instance" : `${SCOPE_LABELS[scope.type]} ${scope.id ?? ""}`.trim();
+  return scope.type === "instance" ? scopeLabel("instance") : `${scopeLabel(scope.type)} ${scope.id ?? ""}`.trim();
 }
 
 export function MaintenanceSettingsPanelView({
@@ -42,6 +52,7 @@ export function MaintenanceSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation() as { t: Translate };
   const [scopeType, setScopeType] = useState<MaintenanceScopeType>("instance");
   const [scopeId, setScopeId] = useState("");
   const [reason, setReason] = useState("");
@@ -59,12 +70,10 @@ export function MaintenanceSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Wrench className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Maintenance</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-bots-host-2.maintenance-settings-panel.title")}</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          While a window is open, new agent runs in its scope do not start, wakes queue up, routines and watchdogs pause.
-          Running runs finish; after the drain timeout they keep running or are interrupted and retried after the window
-          ends.
+          {t("area.settings-bots-host-2.maintenance-settings-panel.description")}
         </p>
       </div>
 
@@ -79,11 +88,16 @@ export function MaintenanceSettingsPanelView({
               <div className="min-w-0">
                 <div className="font-medium">
                   {scopeTitle(window.scope)} — {window.state}
-                  {window.drainTimedOut ? " (drain timed out)" : ""}
+                  {window.drainTimedOut ? t("area.settings-bots-host-2.maintenance-settings-panel.drainTimedOut") : ""}
                 </div>
                 <div className="text-muted-foreground">
-                  {window.reason} · running {window.runningRuns} · queued runs {window.queuedRuns} · queued wakes{" "}
-                  {window.queuedWakeups} · interrupted {window.interruptedRuns}
+                  {t("area.settings-bots-host-2.maintenance-settings-panel.windowStats", {
+                    reason: window.reason,
+                    running: window.runningRuns,
+                    queuedRuns: window.queuedRuns,
+                    queuedWakes: window.queuedWakeups,
+                    interrupted: window.interruptedRuns,
+                  })}
                 </div>
               </div>
               {confirmExit === window.id ? (
@@ -97,22 +111,22 @@ export function MaintenanceSettingsPanelView({
                       onExit(window.scope);
                     }}
                   >
-                    Confirm end
+                    {t("area.settings-bots-host-2.maintenance-settings-panel.confirmEnd")}
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setConfirmExit(null)}>
-                    Cancel
+                    {t("common.cancel")}
                   </Button>
                 </div>
               ) : (
                 <Button size="sm" variant="outline" disabled={pending || window.state === "leaving"} onClick={() => setConfirmExit(window.id)}>
-                  End maintenance
+                  {t("area.settings-bots-host-2.maintenance-settings-panel.endMaintenance")}
                 </Button>
               )}
             </li>
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-muted-foreground">No maintenance window is open.</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-bots-host-2.maintenance-settings-panel.noWindows")}</p>
       )}
 
       <form
@@ -129,32 +143,32 @@ export function MaintenanceSettingsPanelView({
         }}
       >
         <div className="space-y-1">
-          <Label htmlFor="myrmidon-maintenance-scope">Scope</Label>
+          <Label htmlFor="myrmidon-maintenance-scope">{t("area.settings-bots-host-2.maintenance-settings-panel.scopeLabel")}</Label>
           <select
             id="myrmidon-maintenance-scope"
             className={SELECT_CLASS}
             value={scopeType}
             onChange={(event) => setScopeType(event.target.value as MaintenanceScopeType)}
           >
-            {Object.entries(SCOPE_LABELS).map(([value, label]) => (
+            {SCOPE_TYPES.map((value) => (
               <option key={value} value={value}>
-                {label}
+                {scopeLabel(value)}
               </option>
             ))}
           </select>
         </div>
         {needsId ? (
           <div className="space-y-1">
-            <Label htmlFor="myrmidon-maintenance-scope-id">{scopeType === "company" ? "Company id" : "Agent id"}</Label>
+            <Label htmlFor="myrmidon-maintenance-scope-id">{scopeType === "company" ? t("area.settings-bots-host-2.maintenance-settings-panel.companyId") : t("area.settings-bots-host-2.maintenance-settings-panel.agentId")}</Label>
             <Input id="myrmidon-maintenance-scope-id" value={scopeId} onChange={(event) => setScopeId(event.target.value)} />
           </div>
         ) : null}
         <div className="space-y-1 md:col-span-2">
-          <Label htmlFor="myrmidon-maintenance-reason">Reason</Label>
+          <Label htmlFor="myrmidon-maintenance-reason">{t("area.settings-bots-host-2.maintenance-settings-panel.reason")}</Label>
           <Input id="myrmidon-maintenance-reason" value={reason} onChange={(event) => setReason(event.target.value)} />
         </div>
         <div className="space-y-1">
-          <Label htmlFor="myrmidon-maintenance-timeout">Drain timeout, seconds</Label>
+          <Label htmlFor="myrmidon-maintenance-timeout">{t("area.settings-bots-host-2.maintenance-settings-panel.drainTimeout")}</Label>
           <Input
             id="myrmidon-maintenance-timeout"
             inputMode="numeric"
@@ -163,20 +177,20 @@ export function MaintenanceSettingsPanelView({
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor="myrmidon-maintenance-on-timeout">After the timeout</Label>
+          <Label htmlFor="myrmidon-maintenance-on-timeout">{t("area.settings-bots-host-2.maintenance-settings-panel.afterTimeout")}</Label>
           <select
             id="myrmidon-maintenance-on-timeout"
             className={SELECT_CLASS}
             value={onTimeout}
             onChange={(event) => setOnTimeout(event.target.value as MaintenanceOnTimeout)}
           >
-            <option value="wait">Keep waiting for running runs</option>
-            <option value="interrupt_and_retry">Interrupt running runs and retry them after maintenance</option>
+            <option value="wait">{t("area.settings-bots-host-2.maintenance-settings-panel.onTimeoutWait")}</option>
+            <option value="interrupt_and_retry">{t("area.settings-bots-host-2.maintenance-settings-panel.onTimeoutInterrupt")}</option>
           </select>
         </div>
         <div className="md:col-span-2">
           <Button type="submit" size="sm" disabled={!canEnter}>
-            Enter maintenance
+            {t("area.settings-bots-host-2.maintenance-settings-panel.enter")}
           </Button>
         </div>
       </form>
@@ -196,7 +210,7 @@ export function MaintenanceSettingsPanel() {
   const onSettled = async () => {
     await queryClient.invalidateQueries({ queryKey: maintenanceQueryKey });
   };
-  const onError = (err: unknown) => setError(err instanceof Error ? err.message : "Maintenance request failed.");
+  const onError = (err: unknown) => setError(err instanceof Error ? err.message : i18n.t("area.settings-bots-host-2.maintenance-settings-panel.requestFailed"));
   const enter = useMutation({ mutationFn: maintenanceApi.enter, onMutate: () => setError(null), onError, onSettled });
   const exit = useMutation({ mutationFn: maintenanceApi.exit, onMutate: () => setError(null), onError, onSettled });
   return (

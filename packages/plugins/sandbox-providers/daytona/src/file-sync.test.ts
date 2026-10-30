@@ -19,7 +19,7 @@ vi.mock("@daytonaio/sdk", () => ({
 
 import { performSyncIn } from "./file-sync.js";
 import { __setDaytonaPluginContextForTest } from "./plugin.js";
-import type { PluginContext, PluginSyncOperation } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginSyncOperation } from "@myrmidon/plugin-sdk";
 
 // One recorded in-sandbox command, so a test can assert the exact cleanup command.
 interface RecordedCommand {

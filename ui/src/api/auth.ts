@@ -4,7 +4,7 @@ import {
   type AuthSession,
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
@@ -150,6 +150,21 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
   return parse(payload);
 }
 
+export interface AuthAccountInfo {
+  providerId: string;
+  issuer?: string | null;
+}
+
+// Both spellings of the email/password account: legacy rows use `credential`,
+// Better Auth 1.7 issuers use `local:credential` (migration 0230).
+export function isCredentialAccount(account: AuthAccountInfo): boolean {
+  return (
+    account.providerId === "credential" ||
+    account.providerId === "local:credential" ||
+    account.issuer === "local:credential"
+  );
+}
+
 export const authApi = {
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
@@ -193,6 +208,38 @@ export const authApi = {
 
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
+
+  listAccounts: async (): Promise<AuthAccountInfo[]> => {
+    const res = await fetch("/api/auth/list-accounts", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      throw extractAuthError(payload as AuthErrorBody, res.status);
+    }
+    const list = Array.isArray(payload)
+      ? payload
+      : Array.isArray((payload as { data?: unknown } | null)?.data)
+        ? ((payload as { data: unknown[] }).data)
+        : [];
+    return list.flatMap((item) => {
+      const row = item as { providerId?: unknown; provider?: unknown; issuer?: unknown } | null;
+      const providerId = typeof row?.providerId === "string" ? row.providerId : typeof row?.provider === "string" ? row.provider : null;
+      if (!providerId) return [];
+      return [{ providerId, issuer: typeof row?.issuer === "string" ? row.issuer : null }];
+    });
+  },
+
+  changePassword: async (input: {
+    currentPassword: string;
+    newPassword: string;
+    revokeOtherSessions?: boolean;
+  }) => {
+    await authPost("/change-password", input);
+  },
 
   signOut: async (): Promise<SignOutResult | null> => {
     const payload = await authPost("/sign-out", {});

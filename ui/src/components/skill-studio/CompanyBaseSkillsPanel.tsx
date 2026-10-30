@@ -8,8 +8,9 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
-import type { CompanyBaseSkillEntry, CompanyBaseSkillOverview } from "@paperclipai/shared";
+import type { CompanyBaseSkillEntry, CompanyBaseSkillOverview } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { baseSkillsApi } from "@/api/baseSkills";
 import { companySkillsApi } from "@/api/companySkills";
 import { queryKeys } from "@/lib/queryKeys";
@@ -49,6 +50,7 @@ function BaseSkillRow({
   onRemove: (key: string) => void;
   removePending: boolean;
 }) {
+  const { t } = useTranslation();
   const gaps = gapsByKey(overview).get(entry.key) ?? [];
   const unsupported = gaps.filter((gap) => gap.reason === "adapter_unsupported");
   const missing = gaps.filter((gap) => gap.reason === "not_assigned");
@@ -73,37 +75,38 @@ function BaseSkillRow({
               {entry.name ?? entry.key}
             </span>
           )}
-          <Badge variant="outline">base</Badge>
+          <Badge variant="outline">{t("area.skills.company-base-skills-panel.baseBadge")}</Badge>
           {entry.missing ? (
             <Badge variant="destructive">
-              <AlertTriangle aria-hidden="true" /> not in the library
+              <AlertTriangle aria-hidden="true" /> {t("area.skills.company-base-skills-panel.notInLibrary")}
             </Badge>
           ) : null}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
           {entry.skillId ? `${entry.key} · ` : null}
-          {entry.assignedAgentCount} of {entry.agentCount} agents
+          {t("area.skills.company-base-skills-panel.assignedOf", { assigned: entry.assignedAgentCount, total: entry.agentCount })}
         </p>
         {entry.missing ? (
           <p className="mt-1 text-xs text-destructive">
-            The library has no skill with this key, so no agent can receive it. Remove it from the
-            base list or install the skill again.
+            {t("area.skills.company-base-skills-panel.missingKeyNote")}
           </p>
         ) : null}
         {missing.length > 0 || unsupported.length > 0 ? (
           <div data-testid="base-skill-gaps" className="mt-1 text-xs text-muted-foreground">
             {missing.length > 0 ? (
               <p>
-                Missing on {missing.length === 1 ? "1 agent" : `${missing.length} agents`}:{" "}
-                {missing.map((gap) => gap.agentName).join(", ")}
-                {" — press Apply to all agents."}
+                {t("area.skills.company-base-skills-panel.missingOn", {
+                  count: missing.length,
+                  names: missing.map((gap) => gap.agentName).join(", "),
+                })}
               </p>
             ) : null}
             {unsupported.length > 0 ? (
               <p>
-                {unsupported.length === 1 ? "1 agent" : `${unsupported.length} agents`} cannot receive
-                skills at all (adapter without skill sync):{" "}
-                {unsupported.map((gap) => gap.agentName).join(", ")}
+                {t("area.skills.company-base-skills-panel.cannotReceive", {
+                  count: unsupported.length,
+                  names: unsupported.map((gap) => gap.agentName).join(", "),
+                })}
               </p>
             ) : null}
           </div>
@@ -113,7 +116,7 @@ function BaseSkillRow({
         type="button"
         variant="ghost"
         size="sm"
-        aria-label={`Remove ${entry.key} from the company base skills`}
+        aria-label={t("area.skills.company-base-skills-panel.removeAria", { key: entry.key })}
         disabled={removePending}
         onClick={() => onRemove(entry.key)}
       >
@@ -134,6 +137,7 @@ function AddBaseSkillsDialog({
   onOpenChange: (open: boolean) => void;
   existingKeys: string[];
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useOptionalToastActions();
   const [search, setSearch] = useState("");
@@ -167,10 +171,12 @@ function AddBaseSkillsDialog({
       );
       toast?.pushToast({
         tone: "success",
-        title: "Base skills updated",
-        body:
-          `${keys.join(", ")} declared base. ` +
-          `${response.apply.changed} agent(s) updated, ${response.apply.unchanged} already had them.`,
+        title: t("area.skills.company-base-skills-panel.addedToastTitle"),
+        body: t("area.skills.company-base-skills-panel.addedToastBody", {
+          keys: keys.join(", "),
+          changed: response.apply.changed,
+          unchanged: response.apply.unchanged,
+        }),
       });
       setSelected([]);
       setSearch("");
@@ -182,23 +188,22 @@ function AddBaseSkillsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Add company base skills</DialogTitle>
+          <DialogTitle>{t("area.skills.company-base-skills-panel.addDialogTitle")}</DialogTitle>
           <DialogDescription>
-            Every agent of the company gets a base skill automatically: a new agent at creation, an
-            existing one right away, and again whenever the list is applied.
+            {t("area.skills.company-base-skills-panel.addDialogDescription")}
           </DialogDescription>
         </DialogHeader>
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search the skill library"
+          placeholder={t("area.skills.company-base-skills-panel.searchLibrary")}
         />
         <div className="max-h-72 overflow-y-auto">
           {skillsQuery.isLoading ? (
-            <p className="px-1 py-2 text-sm text-muted-foreground">Loading the skill library…</p>
+            <p className="px-1 py-2 text-sm text-muted-foreground">{t("area.skills.company-base-skills-panel.loadingLibrary")}</p>
           ) : candidates.length === 0 ? (
             <p className="px-1 py-2 text-sm text-muted-foreground">
-              Every skill of the library is already a base skill.
+              {t("area.skills.company-base-skills-panel.allAreBase")}
             </p>
           ) : (
             <ul className="flex flex-col">
@@ -232,12 +237,12 @@ function AddBaseSkillsDialog({
         </div>
         {addSkills.error ? (
           <p className="text-sm text-destructive">
-            {addSkills.error instanceof Error ? addSkills.error.message : "Could not save the list."}
+            {addSkills.error instanceof Error ? addSkills.error.message : t("area.skills.company-base-skills-panel.saveListFailed")}
           </p>
         ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             type="button"
@@ -245,7 +250,7 @@ function AddBaseSkillsDialog({
             onClick={() => addSkills.mutate(selected)}
           >
             {addSkills.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
-            Declare base
+            {t("area.skills.company-base-skills-panel.declareBase")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -258,6 +263,7 @@ function AddBaseSkillsDialog({
  * surrounding page only decides where it sits.
  */
 export function CompanyBaseSkillsPanel({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useOptionalToastActions();
   const [addOpen, setAddOpen] = useState(false);
@@ -274,10 +280,11 @@ export function CompanyBaseSkillsPanel({ companyId }: { companyId: string }) {
       const { changed, unchanged, failed } = response.apply;
       toast?.pushToast({
         tone: failed.length > 0 ? "warn" : "success",
-        title: "Base skills applied",
+        title: t("area.skills.company-base-skills-panel.applyToastTitle"),
         body:
-          `${changed} agent(s) updated, ${unchanged} already had every base skill` +
-          (failed.length > 0 ? `, ${failed.length} could not be updated.` : "."),
+          failed.length > 0
+            ? t("area.skills.company-base-skills-panel.applyToastBodyFailed", { changed, unchanged, failed: failed.length })
+            : t("area.skills.company-base-skills-panel.applyToastBody", { changed, unchanged }),
       });
     },
   });
@@ -288,8 +295,8 @@ export function CompanyBaseSkillsPanel({ companyId }: { companyId: string }) {
       queryClient.setQueryData(queryKeys.companySkills.baseSkills(companyId), response.overview);
       toast?.pushToast({
         tone: "success",
-        title: "Removed from the base skills",
-        body: `${response.removed} is no longer assigned automatically. Agents that already have it keep it.`,
+        title: t("area.skills.company-base-skills-panel.removeToastTitle"),
+        body: t("area.skills.company-base-skills-panel.removeToastBody", { key: response.removed }),
       });
     },
   });
@@ -307,10 +314,9 @@ export function CompanyBaseSkillsPanel({ companyId }: { companyId: string }) {
         <div className="flex items-start gap-2">
           <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div>
-            <h2 className="text-sm font-semibold text-foreground">Base skills</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t("area.skills.company-base-skills-panel.heading")}</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Skills every agent of this company has automatically — including new agents and agents
-              created from a template.
+              {t("area.skills.company-base-skills-panel.headingDescription")}
             </p>
           </div>
         </div>
@@ -328,27 +334,27 @@ export function CompanyBaseSkillsPanel({ companyId }: { companyId: string }) {
             ) : (
               <RefreshCw aria-hidden="true" />
             )}
-            Apply to all agents
-            {gapCount > 0 ? ` (${gapCount})` : ""}
+            {gapCount > 0
+              ? t("area.skills.company-base-skills-panel.applyAllWithGaps", { count: gapCount })
+              : t("area.skills.company-base-skills-panel.applyAll")}
           </Button>
           <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
-            <Plus aria-hidden="true" /> Add skills
+            <Plus aria-hidden="true" /> {t("area.skills.company-base-skills-panel.addSkills")}
           </Button>
         </div>
       </div>
 
       {overviewQuery.isLoading ? (
-        <p className="mt-3 text-sm text-muted-foreground">Loading base skills…</p>
+        <p className="mt-3 text-sm text-muted-foreground">{t("area.skills.company-base-skills-panel.loadingBase")}</p>
       ) : overviewQuery.error ? (
         <p className="mt-3 text-sm text-destructive">
           {overviewQuery.error instanceof Error
             ? overviewQuery.error.message
-            : "Could not load the base skills."}
+            : t("area.skills.company-base-skills-panel.loadBaseFailed")}
         </p>
       ) : entries.length === 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">
-          No base skills yet. Add a skill here and every agent of the company receives it from then
-          on — including the agents created later.
+          {t("area.skills.company-base-skills-panel.emptyBase")}
         </p>
       ) : (
         <ul className="mt-3 flex flex-col">

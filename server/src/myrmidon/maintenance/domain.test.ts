@@ -118,16 +118,22 @@ describe("maintenance tick decisions", () => {
       expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-2"] });
     });
 
-    it("reports the drain complete when only its own interrupted runs are left", () => {
+    it("waits for every interrupted run to leave running before promoting retries", () => {
       const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
-      // Both runs are still "running" (teardown pending) — nothing left to interrupt.
-      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
     });
 
-    it("a partial teardown (one run left running, already interrupted) still waits", () => {
-      const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
-      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
-      expect(decideTick(interrupted, ["run-2"], now)).toEqual({ kind: "none" }); // before the deadline
+    it("promotes retries only after every run has left running", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      expect(decideTick(interrupted, ["run-1"], now)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-1"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
+    });
+
+    it("marks on when no runs ever required interruption", () => {
+      expect(decideTick(w, [], later)).toEqual({ kind: "mark_on" });
     });
 
     it("before the deadline the window keeps draining without new decisions", () => {
@@ -137,22 +143,29 @@ describe("maintenance tick decisions", () => {
   });
 
   describe("stuck open window backstop", () => {
-    it("only treats an entering window past deadline + grace as stuck", () => {
+    // The backstop is for agent-scoped profile maintenance only.
+    const entering = window({ type: "agent", id: "agent-a" });
+    it("an entering window past deadline + grace is stuck", () => {
       const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
       expect(isStuckOpenWindow(entering, past)).toBe(true);
-      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(false);
-      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, past)).toBe(false);
     });
 
-    it("within the grace the entering window is not stuck", () => {
+    it("an `on` window is never closed by the clock backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(false);
+    });
+
+    it("within the grace the window is not stuck; leaving is the tick's own path", () => {
       expect(isStuckOpenWindow(entering, now)).toBe(false);
       expect(isStuckOpenWindow(entering, new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS))).toBe(true);
+      // A leaving window is finished by the tick's finishLeaving, not retired here.
+      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
     });
 
-    it("the grace is configurable", () => {
-      const at = new Date(now.getTime() + 60_000 + 5_000);
-      expect(isStuckOpenWindow(entering, at, 1_000)).toBe(true);
-      expect(isStuckOpenWindow(entering, at, 60_000)).toBe(false);
+    it("does not retire deployment-wide windows with the agent backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow(window({ type: "instance" }, null), past)).toBe(false);
+      expect(isStuckOpenWindow(window({ type: "company", id: "company-a" }), past)).toBe(false);
     });
   });
 

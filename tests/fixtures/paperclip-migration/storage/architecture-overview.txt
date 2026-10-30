@@ -1,0 +1,4 @@
+Synthetic Architecture Overview
+Source: Paperclip Multi-Release Registry
+Target: Myrmidon 1.6.6
+Verified: non-empty entities and re-encrypted secrets.

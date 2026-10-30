@@ -19,14 +19,14 @@
 
 import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   corpusSearchBodySchema,
   createCorpusDatasetSchema,
   patchCorpusSettingsSchema,
   updateCorpusDatasetSchema,
   type CorpusSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import {
   assertBoardOrgAccess,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { Link } from "@/lib/router";
+import { i18n, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -52,6 +53,7 @@ export function ServicesPanel({
   appName: string;
 }) {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const { pushToast } = useToast();
   const [confirmDisconnect, setConfirmDisconnect] = useState<ComposioServiceRow | null>(null);
   const [busySlug, setBusySlug] = useState<string | null>(null);
@@ -88,23 +90,23 @@ export function ServicesPanel({
       // boundary before the browser acts on it (same rule as PAP-17099).
       const target = resolveAuthorizationTarget(link.redirect_url);
       if (!target.ok) {
-        pushToast({ title: `Couldn't connect ${row.name}`, body: target.message, tone: "error" });
+        pushToast({ title: t("area.apps-detail.services-panel.couldntConnect", { name: row.name }), body: target.message, tone: "error" });
         return;
       }
       // A new tab, not a top-level navigation: the user keeps this page — and its
       // poll — alive while authorizing, which is what makes the row flip in place.
       window.open(target.url, "_blank", "noopener,noreferrer");
       pushToast({
-        title: `Finish connecting ${row.name} in Composio`,
-        body: "We opened Composio in a new tab. This list updates as soon as it reports back.",
+        title: t("area.apps-detail.services-panel.finishConnectingTitle", { name: row.name }),
+        body: t("area.apps-detail.services-panel.finishConnectingBody"),
         tone: "info",
       });
       void servicesQuery.refetch();
     },
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't connect ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("area.apps-detail.services-panel.couldntConnect", { name: row.name }),
+        body: error instanceof Error ? error.message : t("area.apps-detail.services-panel.tryAgainLater"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -117,8 +119,8 @@ export function ServicesPanel({
     onSuccess: () => invalidateConnectionLists(),
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't check ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("area.apps-detail.services-panel.couldntCheck", { name: row.name }),
+        body: error instanceof Error ? error.message : t("area.apps-detail.services-panel.tryAgainLater"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -132,15 +134,15 @@ export function ServicesPanel({
       setConfirmDisconnect(null);
       invalidateConnectionLists();
       pushToast({
-        title: `${row.name} disconnected`,
-        body: `Agents can no longer use ${row.name}, and its credentials are deleted from Composio.`,
+        title: t("area.apps-detail.services-panel.disconnectedTitle", { name: row.name }),
+        body: t("area.apps-detail.services-panel.disconnectedBody", { name: row.name }),
         tone: "success",
       });
     },
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't disconnect ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("area.apps-detail.services-panel.couldntDisconnect", { name: row.name }),
+        body: error instanceof Error ? error.message : t("area.apps-detail.services-panel.tryAgainLater"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -150,7 +152,7 @@ export function ServicesPanel({
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading services from Composio, this may take a moment.
+        {t("area.apps-detail.services-panel.loading")}
       </div>
     );
   }
@@ -191,17 +193,17 @@ export function ServicesPanel({
 }
 
 function ServicesIntro({ appName, connectedCount }: { appName: string; connectedCount: number }) {
+  const { t } = useTranslation();
   return (
     <div className="max-w-2xl space-y-1">
-      <h2 className="text-lg font-semibold">Services</h2>
+      <h2 className="text-lg font-semibold">{t("area.apps-detail.services-panel.introTitle")}</h2>
       <p className="text-sm leading-6 text-muted-foreground">
-        {appName} brokers these services. Connect one and it becomes its own app in Myrmidon, which
-        you then give to agents on its Permissions tab.
+        {t("area.apps-detail.services-panel.introBody", { appName })}
         {connectedCount > 0 && (
           <>
             {" "}
             <span className="font-medium text-foreground">
-              {connectedCount} {connectedCount === 1 ? "service is" : "services are"} connected.
+              {t("area.apps-detail.services-panel.connectedCount", { count: connectedCount })}
             </span>
           </>
         )}
@@ -211,24 +213,25 @@ function ServicesIntro({ appName, connectedCount }: { appName: string; connected
 }
 
 function ServicesEmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="rounded-xl border border-border bg-card p-6">
-      <p className="text-sm font-medium">No services available yet</p>
+      <p className="text-sm font-medium">{t("area.apps-detail.services-panel.emptyTitle")}</p>
       <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-        This Composio project has no toolkits Myrmidon can offer. Add a toolkit and an auth
-        configuration in Composio, then check back.
+        {t("area.apps-detail.services-panel.emptyBody")}
       </p>
     </div>
   );
 }
 
 function ServicesLoadError({ message, onRetry }: { message: string | null; onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3 py-8">
       <p className="text-sm text-destructive">
-        {message ?? "Couldn’t load services from Composio."}
+        {message ?? t("area.apps-detail.services-panel.loadFailed")}
       </p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("area.apps-detail.services-panel.tryAgain")}</Button>
     </div>
   );
 }
@@ -279,6 +282,7 @@ export function ServiceRow({
   onRecheck: (row: ComposioServiceRow) => void;
   onDisconnect: (row: ComposioServiceRow) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
       <AppLogo name={row.name} logoUrl={row.logoUrl} size={32} />
@@ -292,7 +296,7 @@ export function ServiceRow({
       <div className="flex shrink-0 items-center gap-2">
         {row.state === "connected" && row.childConnectionId && (
           <Button asChild size="sm" variant="ghost">
-            <Link to={appTabHref(row.childConnectionId, "permissions")}>Manage</Link>
+            <Link to={appTabHref(row.childConnectionId, "permissions")}>{t("area.apps-detail.services-panel.manage")}</Link>
           </Button>
         )}
         {row.state === "pending" && (
@@ -301,7 +305,7 @@ export function ServiceRow({
             variant="ghost"
             disabled={busy}
             onClick={() => onRecheck(row)}
-            aria-label={`Check ${row.name} again`}
+            aria-label={t("area.apps-detail.services-panel.checkAgain", { name: row.name })}
           >
             {busy
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -312,7 +316,7 @@ export function ServiceRow({
           <Button size="sm" disabled={busy} onClick={() => onConnect(row)}>
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : (
               <>
-                Connect
+                {t("area.apps-detail.services-panel.connect")}
                 <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
               </>
             )}
@@ -320,15 +324,15 @@ export function ServiceRow({
         ) : row.state === "attention" ? (
           <>
             <Button size="sm" disabled={busy} onClick={() => onConnect(row)}>
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Reconnect"}
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("area.apps-detail.services-panel.reconnect")}
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-              Disconnect
+              {t("area.apps-detail.services-panel.disconnect")}
             </Button>
           </>
         ) : row.state === "connected" ? (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-            Disconnect
+            {t("area.apps-detail.services-panel.disconnect")}
           </Button>
         ) : null}
       </div>
@@ -343,32 +347,32 @@ export function ServiceRow({
  */
 function serviceDetailLine(row: ComposioServiceRow): string {
   const toolCount = row.toolCount !== null
-    ? `${row.toolCount} ${row.toolCount === 1 ? "action" : "actions"}`
+    ? i18n.t("area.apps-detail.services-panel.actionCount", { count: row.toolCount })
     : null;
   if (row.state === "pending") {
-    return "Waiting for Composio to confirm the connection.";
+    return i18n.t("area.apps-detail.services-panel.detailPending");
   }
   if (row.state === "attention") {
     return row.connectedAccountStatus
-      ? `Composio reports this connection as ${row.connectedAccountStatus.toLowerCase()}. Reconnect to fix it.`
-      : "This connection is no longer usable. Reconnect to fix it.";
+      ? i18n.t("area.apps-detail.services-panel.detailAttentionStatus", { status: row.connectedAccountStatus.toLowerCase() })
+      : i18n.t("area.apps-detail.services-panel.detailAttention");
   }
   if (row.state === "connected") {
-    return [toolCount, "available to agents you install it for"].filter(Boolean).join(" · ");
+    return [toolCount, i18n.t("area.apps-detail.services-panel.detailConnected")].filter(Boolean).join(" · ");
   }
   return [
     row.description,
     toolCount,
-    row.noAuth ? "No sign-in needed" : null,
-  ].filter(Boolean).join(" · ") || "Not connected";
+    row.noAuth ? i18n.t("area.apps-detail.services-panel.detailNoAuth") : null,
+  ].filter(Boolean).join(" · ") || i18n.t("area.apps-detail.services-panel.stateNotConnected");
 }
 
-const STATE_LABEL: Record<ComposioServiceState, string> = {
-  not_connected: "Not connected",
-  pending: "Pending",
-  connected: "Connected",
-  attention: "Needs attention",
-};
+const stateLabel = (): Record<ComposioServiceState, string> => ({
+  not_connected: i18n.t("area.apps-detail.services-panel.stateNotConnected"),
+  pending: i18n.t("area.apps-detail.services-panel.statePending"),
+  connected: i18n.t("area.apps-detail.services-panel.stateConnected"),
+  attention: i18n.t("area.apps-detail.services-panel.stateAttention"),
+});
 
 /**
  * Row state, in the same visual language as the connection status badge in the
@@ -391,7 +395,7 @@ function ServiceStateBadge({ state }: { state: ComposioServiceState }) {
       {state === "connected" && <Check className="h-3 w-3" />}
       {state === "pending" && <Loader2 className="h-3 w-3 animate-spin" />}
       {state === "attention" && <AlertTriangle className="h-3 w-3" />}
-      {STATE_LABEL[state]}
+      {stateLabel()[state]}
     </span>
   );
 }
@@ -407,18 +411,18 @@ function DisconnectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Disconnect {row.name}?</AlertDialogTitle>
+          <AlertDialogTitle>{t("area.apps-detail.services-panel.dialogTitle", { name: row.name })}</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes {row.name} from Myrmidon and deletes its credentials in Composio. Agents
-            using its actions lose them immediately. Connecting it again needs a new sign-in.
+            {t("area.apps-detail.services-panel.dialogBody", { name: row.name })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending} autoFocus>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending} autoFocus>{t("common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
             onClick={(event) => {
@@ -426,7 +430,7 @@ function DisconnectDialog({
               onConfirm();
             }}
           >
-            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : `Disconnect ${row.name}`}
+            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("area.apps-detail.services-panel.dialogConfirm", { name: row.name })}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

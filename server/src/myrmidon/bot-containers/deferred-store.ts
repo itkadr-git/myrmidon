@@ -17,7 +17,7 @@
 // removes the record on success.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 
 export const BOT_ROLLOUT_DEFERRED_GENERAL_KEY = "myrmidonBotRolloutDeferred";
 const SINGLETON_KEY = "default";

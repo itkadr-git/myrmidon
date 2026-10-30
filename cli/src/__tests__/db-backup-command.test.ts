@@ -19,7 +19,7 @@ vi.mock("@clack/prompts", () => ({
 // myrmidon(SHARED-PG-BACKUP): the backup command must dump the instance's
 // own database through the configured connection — never a hardcoded
 // container — and must surface the engine's client-version warnings.
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@myrmidon/db", () => ({
   formatDatabaseBackupResult: vi.fn((result: { backupFile: string }) => result.backupFile),
   runDatabaseBackup: vi.fn(async () => ({
     backupFile: "/backups/paperclip-2026-10-07.sql.gz",
@@ -29,7 +29,7 @@ vi.mock("@paperclipai/db", () => ({
   })),
 }));
 
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@myrmidon/db";
 import { dbBackupCommand } from "../commands/db-backup.js";
 
 const CONNECTION_STRING = "postgres://board_role:board-pass@pg-shared.example:5432/board_db";

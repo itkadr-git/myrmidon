@@ -6,10 +6,10 @@
 // app.ts mounts `myrmidonPromptBudgetRoutes` from here; the startup in
 // index.ts ticks the sweeper on the heartbeat scheduler (the same place the
 // wip-limit sweep lives). The shared contract (settings shape, level resolver,
-// status rows) lives in `@paperclipai/shared` so the UI and the sibling parts
+// status rows) lives in `@myrmidon/shared` so the UI and the sibling parts
 // of this release read the same decisions this module enforces.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { promptBudgetRoutes } from "./routes.js";
 import { createPromptBudgetSweeper, type PromptBudgetSweeper } from "./sweep.js";

@@ -17,8 +17,8 @@
 import { randomUUID } from "node:crypto";
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companyMemberships } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companyMemberships } from "@myrmidon/db";
 
 import { safeChatTaskUrl } from "../../../services/chat-task-url.js";
 import { readCtoChatSettings } from "../../cto-chat/settings.js";

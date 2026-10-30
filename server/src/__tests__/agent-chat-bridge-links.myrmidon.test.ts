@@ -14,8 +14,8 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { ChatProvider } from "@myrmidon/shared";
 import { resolveBoardPublicBaseUrl } from "../myrmidon/agent-chat-bridge/links.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "../services/heartbeat-run-summary.js";
 import { issueService } from "../services/issues.js";

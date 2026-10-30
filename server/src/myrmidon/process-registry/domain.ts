@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Roles of the split layout (design §2.1): `all` is today's single process
  * (`mode=single`), `worker` runs the backend work, `api` only serves HTTP. */

@@ -7,12 +7,12 @@
 // (myrmidon-product.ts) so non-server packages can share it; this module
 // re-exports it and keeps the server-side helpers.
 //
-// This does not rename package names (@paperclipai/*), environment variables
+// This does not rename package names (@myrmidon/*), environment variables
 // (PAPERCLIP_*), the paperclipai CLI, API paths, HTTP headers, log messages,
 // or database identifiers — those stay untouched for vendor compatibility
 // (see NOTICE and docs/myrmidon/CONVENTIONS.md §8).
 
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 
 export { PRODUCT_NAME };
 

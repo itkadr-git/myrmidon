@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Installs each plugin from plugins.json into its own clean directory the way
 // the host does (npm install --ignore-scripts), then replaces every copy of
-// @paperclipai/plugin-sdk and @paperclipai/shared with the packages built from
+// @myrmidon/plugin-sdk and @myrmidon/shared with the packages built from
 // this repository (pnpm pack, i.e. exactly what would be published).
 //
 // Usage: node scripts/myrmidon/plugin-compat/install.mjs --work <dir> [--only <name>]
@@ -15,8 +15,8 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
 const REPO_PACKAGES = {
-  "@paperclipai/shared": path.join(REPO_ROOT, "packages/shared"),
-  "@paperclipai/plugin-sdk": path.join(REPO_ROOT, "packages/plugins/sdk"),
+  "@myrmidon/shared": path.join(REPO_ROOT, "packages/shared"),
+  "@myrmidon/plugin-sdk": path.join(REPO_ROOT, "packages/plugins/sdk"),
 };
 
 export function pluginSlug(name) {

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import type { AdapterConfigFieldsProps } from "./types";
 import { Field, help } from "../components/agent-config-primitives";
@@ -64,6 +65,7 @@ export function RuntimeServicesJsonField({
     return null;
   }
 
+  const { t } = useTranslation();
   const existing = formatJsonObject(config.workspaceRuntime);
   const [draft, setDraft] = useState(existing);
 
@@ -74,7 +76,7 @@ export function RuntimeServicesJsonField({
   const value = isCreate ? values?.runtimeServicesJson ?? "" : draft;
 
   return (
-    <Field label="Runtime services JSON" hint={help.runtimeServicesJson}>
+    <Field label={t("area.adapters-plugins-2.runtime-json-fields.runtimeServicesLabel")} hint={help.runtimeServicesJson}>
       <textarea
         className={`${inputClass} min-h-[148px]`}
         value={value}
@@ -96,6 +98,7 @@ export function PayloadTemplateJsonField({
   config,
   mark,
 }: JsonFieldProps) {
+  const { t } = useTranslation();
   const existing = formatJsonObject(config.payloadTemplate);
   const [draft, setDraft] = useState(existing);
 
@@ -106,7 +109,7 @@ export function PayloadTemplateJsonField({
   const value = isCreate ? values?.payloadTemplateJson ?? "" : draft;
 
   return (
-    <Field label="Payload template JSON" hint={help.payloadTemplateJson}>
+    <Field label={t("area.adapters-plugins-2.runtime-json-fields.payloadTemplateLabel")} hint={help.payloadTemplateJson}>
       <textarea
         className={`${inputClass} min-h-[132px]`}
         value={value}

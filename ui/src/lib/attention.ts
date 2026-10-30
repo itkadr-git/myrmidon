@@ -9,7 +9,7 @@ import type {
   AttentionSeverity,
   AttentionSourceKind,
   AttentionWorkspaceRef,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type AttentionListOptions = AttentionFeedQuery;
 

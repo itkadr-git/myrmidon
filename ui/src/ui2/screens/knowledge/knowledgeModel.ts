@@ -34,6 +34,8 @@ export interface KnowledgeSourceRef {
   /** Issue identifier, `owner/repo#123`, or an absolute URL. */
   ref: string;
   label?: string | null;
+  /** `page` refs only: the space of the linking page. */
+  space?: string | null;
 }
 
 /** One row of the per-item revision history. */
@@ -75,9 +77,37 @@ export interface KnowledgeTreeNode {
   /** 0 for a space root; the tree column indents by this. */
   depth: number;
   children: KnowledgeTreeNode[];
+  /** Display label disambiguating identical titles with path/folder (OPE-9762). */
+  displayLabel?: string;
+  /** Folder path derived from spaceKey or slug. */
+  folder?: string;
 }
 
 const treeKey = (spaceKey: string, slug: string): string => `${spaceKey}/${slug}`;
+
+export function itemFolder(item: KnowledgeItemSummary): string {
+  if (item.spaceKey && item.spaceKey !== "wiki" && item.spaceKey !== "") {
+    return item.spaceKey;
+  }
+  const lastSlash = item.slug.lastIndexOf("/");
+  if (lastSlash !== -1) {
+    return item.slug.slice(0, lastSlash);
+  }
+  return item.spaceKey || "";
+}
+
+export function findDuplicateTitles(items: readonly KnowledgeItemSummary[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = item.title.trim().toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const duplicates = new Set<string>();
+  for (const [key, count] of counts) {
+    if (count > 1) duplicates.add(key);
+  }
+  return duplicates;
+}
 
 /**
  * Build the nested tree from the flat item list.
@@ -86,13 +116,27 @@ const treeKey = (spaceKey: string, slug: string): string => `${spaceKey}/${slug}
  * (O(n log n) total). A parent chain that loops back on itself is treated as
  * a root instead of hanging the walk: the loop guard runs at most `items.length`
  * steps per item and the recursion carries a visited set.
+ *
+ * Folders group items together, and identical titles are disambiguated with
+ * their path/folder so there are no indistinguishable duplicates (OPE-9762).
  */
 export function buildKnowledgeTree(
   items: readonly KnowledgeItemSummary[],
 ): KnowledgeTreeNode[] {
+  const duplicateTitles = findDuplicateTitles(items);
   const nodes = new Map<string, KnowledgeTreeNode>();
   for (const item of items) {
-    nodes.set(treeKey(item.spaceKey, item.slug), { item, depth: 0, children: [] });
+    const folder = itemFolder(item);
+    const isDuplicate = duplicateTitles.has(item.title.trim().toLowerCase());
+    const disambiguation = folder || item.slug;
+    const displayLabel = isDuplicate ? `${item.title} (${disambiguation})` : item.title;
+    nodes.set(treeKey(item.spaceKey, item.slug), {
+      item,
+      depth: 0,
+      children: [],
+      displayLabel,
+      folder,
+    });
   }
 
   const roots: KnowledgeTreeNode[] = [];
@@ -109,7 +153,14 @@ export function buildKnowledgeTree(
   }
 
   const order = (list: KnowledgeTreeNode[], depth: number): void => {
-    list.sort((left, right) => left.item.title.localeCompare(right.item.title, "ru"));
+    list.sort((left, right) => {
+      const folderLeft = left.folder ?? "";
+      const folderRight = right.folder ?? "";
+      if (folderLeft !== folderRight) {
+        return folderLeft.localeCompare(folderRight, "ru");
+      }
+      return left.item.title.localeCompare(right.item.title, "ru");
+    });
     for (const node of list) {
       node.depth = depth;
       order(node.children, depth + 1);
@@ -290,8 +341,8 @@ export function resolveKnowledgeLinkTarget(
 }
 
 /** Company-relative href of a knowledge page — the shell's Link adds the prefix. */
-export function knowledgeHref(target: KnowledgeLinkTarget): string {
-  const base = `/knowledge/${encodeURIComponent(target.spaceKey)}/${encodeURIComponent(target.slug)}`;
+export function knowledgeHref(target: KnowledgeLinkTarget, basePath = "/knowledge"): string {
+  const base = `${basePath}/${encodeURIComponent(target.spaceKey)}/${encodeURIComponent(target.slug)}`;
   return target.anchor ? `${base}#${target.anchor}` : base;
 }
 
@@ -299,8 +350,9 @@ export function knowledgeHref(target: KnowledgeLinkTarget): string {
 export function knowledgeLinkHref(
   segment: Extract<KnowledgeBodySegment, { type: "link" }>,
   currentSpaceKey: string,
+  basePath = "/knowledge",
 ): string {
-  return knowledgeHref(resolveKnowledgeLinkTarget(segment.target, currentSpaceKey, segment.anchor));
+  return knowledgeHref(resolveKnowledgeLinkTarget(segment.target, currentSpaceKey, segment.anchor), basePath);
 }
 
 export type KnowledgeSourceLink =
@@ -561,4 +613,60 @@ export function knowledgeLinkLabel(
   const slash = segment.target.lastIndexOf("/");
   const slug = slash === -1 ? segment.target : segment.target.slice(slash + 1);
   return segment.anchor ? `${slug}#${segment.anchor}` : slug;
+}
+/**
+ * Turn the parsed body back into Markdown, with every `[[…]]` link rewritten
+ * to an ordinary Markdown link to the screen's own route, so one Markdown
+ * renderer can draw the whole page (OPE-5957: the body used to be shown raw).
+ */
+export function knowledgeBodyToMarkdown(
+  segments: KnowledgeBodySegment[],
+  spaceKey: string,
+  basePath = "/knowledge",
+): string {
+  return segments
+    .map((segment) => {
+      if (segment.type !== "link") return segment.text;
+      const label = knowledgeLinkLabel(segment).replace(/([[\]\\])/g, "\\$1");
+      const href = knowledgeLinkHref(segment, spaceKey, basePath).replace(/\)/g, "%29");
+      return `[${label}](${href})`;
+    })
+    .join("");
+}
+
+/**
+ * A relative link written in Markdown inside a page (`../servers/vm-core.md`)
+ * resolved against the folder of that page. `null` when it is not a link to
+ * another page (absolute URL, mailto, bare anchor, a non-markdown file).
+ */
+export function resolveKnowledgeMarkdownHref(href: string, currentSpaceKey: string): KnowledgeLinkTarget | null {
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return null;
+  }
+  const hash = trimmed.indexOf("#");
+  const pathPart = hash === -1 ? trimmed : trimmed.slice(0, hash);
+  const anchor = hash === -1 ? null : trimmed.slice(hash + 1) || null;
+  if (!/\.(md|markdown)$/i.test(pathPart)) return null;
+  const stack = currentSpaceKey.split("/").filter(Boolean);
+  for (const part of pathPart.replace(/\.(md|markdown)$/i, "").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (stack.length === 0) return null;
+      stack.pop();
+    } else {
+      stack.push(decodeURIComponentSafe(part));
+    }
+  }
+  if (stack.length === 0) return null;
+  const slug = stack.pop()!;
+  return { spaceKey: stack.join("/") || currentSpaceKey, slug, anchor };
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

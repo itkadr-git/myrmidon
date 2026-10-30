@@ -16,12 +16,12 @@
 //   members read; this is what the agent card shows.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   FALLBACK_SIGNAL_SETTINGS_KEY,
   patchFallbackSignalSettingsSchema,
   type FallbackSignalSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { logger } from "../../middleware/logger.js";
 import {

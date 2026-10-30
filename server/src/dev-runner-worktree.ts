@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import os from "node:os";
 import path from "node:path";
 import { hasVerifiedWorktreeSeedManifest } from "./worktree-seed-manifest.js";

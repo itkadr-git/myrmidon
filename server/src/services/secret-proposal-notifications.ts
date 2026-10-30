@@ -17,6 +17,8 @@ export async function notifySecretProposalResolution(input: {
   status: "approved" | "rejected";
   userId: string;
   reason?: string | null;
+  /** Extra line rendered under the status, e.g. what a rotation approval did. */
+  resolutionNote?: string | null;
   issues: Pick<ReturnType<typeof issueService>, "getById" | "addComment">;
   heartbeat: IssueAssignmentWakeupDeps;
 }) {
@@ -31,10 +33,11 @@ export async function notifySecretProposalResolution(input: {
       ? `\n- New config path: \`${input.proposal.configPath ?? "unknown"}\`\n- Verify: \`GET /api/agents/me/secrets\``
       : "";
     const reason = input.reason ? `\n\nReason: ${input.reason}` : "";
+    const note = input.resolutionNote ? `\n- ${input.resolutionNote}` : "";
     try {
       await input.issues.addComment(
         issue.id,
-        `Secret proposal resolution\n\n- Proposal: ${subject}\n- Status: **${input.status}**${configPath}${reason}`,
+        `Secret proposal resolution\n\n- Proposal: ${subject}\n- Status: **${input.status}**${configPath}${note}${reason}`,
         { userId: input.userId },
       );
     } catch (err) {

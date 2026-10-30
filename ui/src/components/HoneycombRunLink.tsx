@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { buildHoneycombRunUrl } from "@/lib/honeycomb-run-link";
 
 export function HoneycombRunLink({
@@ -10,6 +11,7 @@ export function HoneycombRunLink({
   runId: string;
   enabled: boolean;
 }) {
+  const { t } = useTranslation();
   const [href, setHref] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,10 +44,10 @@ export function HoneycombRunLink({
         href={href}
         target="_blank"
         rel="noreferrer"
-        title="Open this run's task.run trace query in Honeycomb"
+        title={t("area.agents-2.honeycomb-run-link.title")}
       >
         <ExternalLink />
-        View in Honeycomb
+        {t("area.agents-2.honeycomb-run-link.view")}
       </a>
     </Button>
   );

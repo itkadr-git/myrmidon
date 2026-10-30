@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { Agent } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
+import type { Agent } from "@myrmidon/shared";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -16,11 +17,12 @@ export interface AgentChatPickerProps {
 }
 
 export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPickerProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
-          <DialogTitle>Chat with an agent</DialogTitle>
+          <DialogTitle>{t("area.agents-1.agent-chat-picker.title")}</DialogTitle>
         </div>
         {/* The dialog unmounts its content on close, so each search starts empty. */}
         <AgentChatPickerResults {...props} onSelect={(agent) => {
@@ -33,31 +35,32 @@ export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPicke
 }
 
 function AgentChatPickerResults({ agents, onSelect, loading, error, onRetry }: Omit<AgentChatPickerProps, "open" | "onOpenChange">) {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   return (
     <Command>
       <CommandInput
-        aria-label="Search agents by name or role"
-        placeholder="Search by name or role…"
+        aria-label={t("area.agents-1.agent-chat-picker.searchAria")}
+        placeholder={t("area.agents-1.agent-chat-picker.searchPlaceholder")}
         value={search}
         onValueChange={setSearch}
       />
       {error ? (
         <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm">
-          <p>Couldn’t load agents. Try again.</p>
-          {onRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
+          <p>{t("area.agents-1.agent-chat-picker.loadError")}</p>
+          {onRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("common.retry")}</Button>}
         </div>
       ) : loading ? (
-        <p role="status" className="p-4 text-sm text-muted-foreground">Loading agents…</p>
+        <p role="status" className="p-4 text-sm text-muted-foreground">{t("area.agents-1.agent-chat-picker.loading")}</p>
       ) : (
         <CommandList>
           <CommandEmpty>
             <div className="flex flex-col items-center gap-2 px-4">
-              <span>{agents.length ? `No agents match “${search}”` : "No agents yet."}</span>
+              <span>{agents.length ? t("area.agents-1.agent-chat-picker.noMatch", { search }) : t("area.agents-1.agent-chat-picker.noAgents")}</span>
               {agents.length ? <>
-                <span className="text-xs text-muted-foreground">Try another name or role.</span>
-                <Button variant="ghost" size="sm" onClick={() => setSearch("")}>Clear search</Button>
-              </> : <span className="text-xs text-muted-foreground">Create an agent from the Agents page to start chatting.</span>}
+                <span className="text-xs text-muted-foreground">{t("area.agents-1.agent-chat-picker.tryAnother")}</span>
+                <Button variant="ghost" size="sm" onClick={() => setSearch("")}>{t("area.agents-1.agent-chat-picker.clearSearch")}</Button>
+              </> : <span className="text-xs text-muted-foreground">{t("area.agents-1.agent-chat-picker.createHint")}</span>}
             </div>
           </CommandEmpty>
           <CommandGroup>
@@ -74,9 +77,9 @@ function AgentChatPickerResults({ agents, onSelect, loading, error, onRetry }: O
                   <span className="truncate font-medium">{agent.name}</span>
                   <span className="truncate text-xs text-muted-foreground">{agent.title ?? agent.role}</span>
                 </span>
-                {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">Paused</span>}
-                {agent.status === "terminated" && <span className="text-xs text-muted-foreground">Terminated</span>}
-                {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">Awaiting approval</span>}
+                {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">{t("status.paused")}</span>}
+                {agent.status === "terminated" && <span className="text-xs text-muted-foreground">{t("area.agents-1.agent-chat-picker.terminated")}</span>}
+                {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">{t("area.agents-1.agent-chat-picker.awaitingApproval")}</span>}
               </CommandItem>
             ))}
           </CommandGroup>

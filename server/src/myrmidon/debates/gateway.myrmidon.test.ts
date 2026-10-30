@@ -12,7 +12,7 @@ import {
   estimateTokens,
   readDebateGatewaySettings,
 } from "./gateway.js";
-import { defaultDebateSettings, type DebateCallContext } from "@paperclipai/shared";
+import { defaultDebateSettings, type DebateCallContext } from "@myrmidon/shared";
 
 const role = defaultDebateSettings().generator!;
 const ctx: DebateCallContext = { role: "generator", round: 0, independent: true };
