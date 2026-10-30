@@ -431,6 +431,7 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  ISSUE_REWAKE_FREEZE_THRESHOLD,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
@@ -29362,6 +29363,7 @@ export function heartbeatService(
               conversationState: issues.conversationState,
               status: issues.status,
               statusVersion: issues.statusVersion,
+              executionState: issues.executionState,
               projectId: issues.projectId,
               casteKey: issues.casteKey,
               harnessKind: issues.harnessKind,
@@ -30459,7 +30461,13 @@ export function heartbeatService(
           // so external pollers/reconcilers can't storm full-price sessions.
           // Server-side recovery retries insert runs directly and never reach
           // this gate.
+          const rewakeState = (issue.executionState?.issueRewakeFreeze ?? null) as
+            | { agentId: string; frozenAt: string }
+            | null;
+          const explicitRewake = opts.requestedByActorType === "user" ||
+            Boolean(explicitResumeSession && opts.requestedByActorType !== "agent");
           if (
+            (rewakeState?.agentId === agentId && !explicitRewake) ||
             isThrottleCandidateIssueRewake({
               reason,
               wakeCommentId: wakeCommentId ?? null,
@@ -30482,7 +30490,7 @@ export function heartbeatService(
                   eq(heartbeatRuns.companyId, agent.companyId),
                   eq(heartbeatRuns.agentId, agentId),
                   sql`${heartbeatRuns.finishedAt} is not null`,
-                  gte(
+                  rewakeState?.agentId === agentId ? undefined : gte(
                     heartbeatRuns.finishedAt,
                     new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS),
                   ),
@@ -30522,7 +30530,10 @@ export function heartbeatService(
                         eq(activityLog.companyId, agent.companyId),
                         eq(activityLog.entityType, "issue"),
                         eq(activityLog.entityId, issue.id),
-                        gt(activityLog.createdAt, lastRunFinishedAt),
+                        gt(activityLog.createdAt, rewakeState?.agentId === agentId
+                          ? new Date(rewakeState.frozenAt) : lastRunFinishedAt),
+                        rewakeState?.agentId === agentId ? ne(activityLog.actorType, "agent") : undefined,
+                        rewakeState?.agentId === agentId ? ne(activityLog.actorType, "system") : undefined,
                         inArray(
                           activityLog.action,
                           ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
@@ -30535,8 +30546,13 @@ export function heartbeatService(
                     .limit(1)
                 : [];
 
+              const configuredFreezeThreshold = Number(process.env.ISSUE_REWAKE_FREEZE_THRESHOLD);
+              const freezeThreshold = Number.isInteger(configuredFreezeThreshold) &&
+                configuredFreezeThreshold >= 2 && configuredFreezeThreshold <= ISSUE_REWAKE_RUN_SAMPLE_LIMIT
+                ? configuredFreezeThreshold : ISSUE_REWAKE_FREEZE_THRESHOLD;
               const throttleDecision = evaluateIssueRewakeThrottle({
                 now: throttleNow,
+                freezeThreshold,
                 recentTerminalRuns,
                 runIdsWithIssueProgress: new Set(
                   progressRows
@@ -30550,8 +30566,28 @@ export function heartbeatService(
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
-              if (throttleDecision.blocked) {
-                await tx.insert(agentWakeupRequests).values({
+              if (throttleDecision.blocked && !explicitRewake &&
+                !(rewakeState?.agentId === agentId && newInputRows.length > 0)) {
+                if (throttleDecision.frozen && rewakeState?.agentId !== agentId) {
+                  await tx.update(issues).set({
+                    executionState: {
+                      ...(issue.executionState ?? {}),
+                      issueRewakeFreeze: {
+                        agentId,
+                        frozenAt: throttleDecision.frozenAt.toISOString(),
+                        noProgressStreak: throttleDecision.noProgressStreak,
+                      },
+                    },
+                  }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+                  await tx.insert(issueComments).values({
+                    companyId: issue.companyId,
+                    issueId: issue.id,
+                    authorType: "system",
+                    body: `Agent ${agentId} completed ${throttleDecision.noProgressStreak} runs without progress. Last result: no issue-visible change. Project lead or assigner: what is needed to continue?`,
+                  });
+                }
+                if (!throttleDecision.frozen) {
+                  await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
                   companyId: agent.companyId,
                   agentId,
@@ -30578,8 +30614,20 @@ export function heartbeatService(
                   idempotencyKey: opts.idempotencyKey ?? null,
                   finishedAt: throttleNow,
                 });
+                  return { kind: "skipped" as const };
+                }
                 return { kind: "skipped" as const };
               }
+              if (rewakeState?.agentId === agentId && (newInputRows.length > 0 || explicitRewake)) {
+                await tx.update(issues).set({
+                  executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
+                }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+              }
+            }
+            if (rewakeState?.agentId === agentId && explicitRewake && recentTerminalRuns.length === 0) {
+              await tx.update(issues).set({
+                executionState: { ...(issue.executionState ?? {}), issueRewakeFreeze: null },
+              }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             }
           }
 
