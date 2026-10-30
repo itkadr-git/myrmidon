@@ -166,7 +166,12 @@ export function createForagingKnowledgePort(deps: ForagingKnowledgePortDeps): Fo
           sourceUri: input.url,
           contentType: "text/markdown",
           markdown: buildQuarantineMarkdown(input, input.diff.added),
-          metadata: { role: input.role, skillKey: input.skillKey, sourceId: input.sourceId },
+          metadata: {
+            role: input.role,
+            skillKey: input.skillKey,
+            sourceId: input.sourceId,
+            provenance: input.provenance ?? null,
+          },
         });
 
         // 2. The proposal: OUR retelling, url cited, trust=external, pending.
