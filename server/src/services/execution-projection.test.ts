@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { projectExecution } from "./execution-projection.js";
+import {
+  projectExecution,
+  getExecutionLiveSignalWindowSec,
+  DEFAULT_EXECUTION_LIVE_SIGNAL_WINDOW_SEC,
+} from "./execution-projection.js";
 
 type Run = Parameters<typeof projectExecution>[0];
 type Coordinator = NonNullable<Parameters<typeof projectExecution>[1]>;
@@ -221,5 +225,141 @@ describe("execution truth projection", () => {
         }),
       ).phase,
     ).toBe("recovery_needed");
+  });
+
+  it("confirms gateway execution by fresh run events or updates, falling back to reconnecting when quiet", () => {
+    // 1. Gateway-прогон с событием 30 с назад → working
+    const runWithFreshEvent = run({
+      status: "running",
+      runtimeMode: "legacy",
+      processPid: null,
+      startedAt: new Date(now.getTime() - 600_000),
+      lastUsefulActionAt: null,
+      lastOutputAt: null,
+      updatedAt: new Date(now.getTime() - 600_000),
+      lastEventAt: new Date(now.getTime() - 30_000),
+    });
+    expect(
+      projectExecution(runWithFreshEvent, undefined, [], undefined, now),
+    ).toMatchObject({
+      phase: "working",
+      label: "Working",
+      permittedActions: ["inspect_run"],
+    });
+
+    // 2. Gateway-прогон без событий 10 мин → reconnecting
+    const runWithOldEvent = run({
+      status: "running",
+      runtimeMode: "legacy",
+      processPid: null,
+      startedAt: new Date(now.getTime() - 600_000),
+      lastUsefulActionAt: null,
+      lastOutputAt: null,
+      updatedAt: new Date(now.getTime() - 600_000),
+      lastEventAt: new Date(now.getTime() - 600_000),
+    });
+    expect(
+      projectExecution(runWithOldEvent, undefined, [], undefined, now),
+    ).toMatchObject({
+      phase: "reconnecting",
+      label: "Confirming execution",
+      permittedActions: ["inspect_run"],
+    });
+
+    // Gateway-прогон без событий вообще (null) и без недавнего обновления → reconnecting
+    const runWithoutEvents = run({
+      status: "running",
+      runtimeMode: "legacy",
+      processPid: null,
+      startedAt: new Date(now.getTime() - 600_000),
+      lastUsefulActionAt: null,
+      lastOutputAt: null,
+      updatedAt: new Date(now.getTime() - 600_000),
+      lastEventAt: null,
+    });
+    expect(
+      projectExecution(runWithoutEvents, undefined, [], undefined, now),
+    ).toMatchObject({
+      phase: "reconnecting",
+      label: "Confirming execution",
+    });
+
+    // Gateway-прогон со свежим updatedAt (30 с назад) → working
+    const runWithFreshUpdate = run({
+      status: "running",
+      runtimeMode: "legacy",
+      processPid: null,
+      startedAt: new Date(now.getTime() - 600_000),
+      lastUsefulActionAt: null,
+      lastOutputAt: null,
+      updatedAt: new Date(now.getTime() - 30_000),
+      lastEventAt: null,
+    });
+    expect(
+      projectExecution(runWithFreshUpdate, undefined, [], undefined, now),
+    ).toMatchObject({
+      phase: "working",
+      label: "Working",
+    });
+
+    // Порог настраиваемый (custom liveSignalWindowSec)
+    expect(
+      projectExecution(
+        runWithFreshEvent,
+        undefined,
+        [],
+        undefined,
+        now,
+        { liveSignalWindowSec: 20 },
+      ).phase,
+    ).toBe("reconnecting");
+
+    expect(
+      projectExecution(
+        runWithOldEvent,
+        undefined,
+        [],
+        undefined,
+        now,
+        { liveSignalWindowSec: 700 },
+      ).phase,
+    ).toBe("working");
+  });
+
+  it("reads configurable live signal window from environment", () => {
+    const prev = process.env.MYRMIDON_EXECUTION_LIVE_SIGNAL_WINDOW_SEC;
+    try {
+      delete process.env.MYRMIDON_EXECUTION_LIVE_SIGNAL_WINDOW_SEC;
+      delete process.env.PAPERCLIP_EXECUTION_LIVE_SIGNAL_WINDOW_SEC;
+      expect(getExecutionLiveSignalWindowSec()).toBe(DEFAULT_EXECUTION_LIVE_SIGNAL_WINDOW_SEC);
+
+      process.env.MYRMIDON_EXECUTION_LIVE_SIGNAL_WINDOW_SEC = "300";
+      expect(getExecutionLiveSignalWindowSec()).toBe(300);
+    } finally {
+      if (prev !== undefined) {
+        process.env.MYRMIDON_EXECUTION_LIVE_SIGNAL_WINDOW_SEC = prev;
+      } else {
+        delete process.env.MYRMIDON_EXECUTION_LIVE_SIGNAL_WINDOW_SEC;
+      }
+    }
+  });
+
+  it("projects a gateway reviewer run as working, allowing review stage verdict recording without reconnecting block", () => {
+    const reviewerRun = run({
+      id: "run-reviewer-1",
+      status: "running",
+      runtimeMode: "legacy",
+      processPid: null,
+      startedAt: new Date(now.getTime() - 40_000),
+      lastUsefulActionAt: null,
+      lastOutputAt: null,
+      updatedAt: new Date(now.getTime() - 40_000),
+      lastEventAt: new Date(now.getTime() - 10_000),
+    });
+    const projection = projectExecution(reviewerRun, undefined, [], undefined, now);
+    expect(projection.phase).toBe("working");
+    expect(projection.label).toBe("Working");
+    expect(projection.permittedActions).toEqual(["inspect_run"]);
+    expect(projection.phase).not.toBe("reconnecting");
   });
 });
