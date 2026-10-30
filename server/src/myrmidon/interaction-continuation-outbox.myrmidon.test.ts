@@ -8,6 +8,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  companySecretProposals,
   createDb,
   issueThreadInteractions,
   issues,
@@ -24,6 +25,8 @@ import {
   readOutboxSweepAgeMs,
   recordInteractionContinuationOutbox,
 } from "./interaction-continuation-outbox.js";
+import { createSecretProposalsService } from "../services/secret-proposals.js";
+import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -155,6 +158,251 @@ describe("interactionContinuationOutboxMutationOptions", () => {
         interaction,
       }).afterResolveInTransaction,
     ).toBeUndefined();
+  });
+});
+
+describe("governed secret-proposal accept transactional outbox (OPE-3061 / OPE-3078)", () => {
+  const company = { id: "company-sp" };
+  const agent = { id: "agent-sp" };
+  const issue = { id: "issue-sp", companyId: "company-sp", assigneeAgentId: "agent-sp", status: "in_progress" };
+  const proposal = {
+    id: "prop-sp",
+    companyId: "company-sp",
+    interactionId: "interaction-sp",
+    originIssueId: "issue-sp",
+  };
+
+  it("writes outbox intent atomically in the same transaction for wake_assignee on approved", async () => {
+    const inserted: Array<Record<string, unknown>> = [];
+    const updated: Array<Record<string, unknown>> = [];
+    const interactionRow = {
+      id: "interaction-sp",
+      companyId: "company-sp",
+      issueId: "issue-sp",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { secretProposal: { proposalId: "prop-sp" } },
+      result: null,
+      sourceCommentId: "comment-1",
+      sourceRunId: "run-1",
+      resolvedByUserId: null,
+      resolvedAt: null,
+    };
+    const tx = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            for: () => ({
+              then: async (fn: (rows: unknown[]) => unknown) => fn([interactionRow]),
+            }),
+            then: async (fn: (rows: unknown[]) => unknown) => fn([issue]),
+          }),
+        }),
+      }),
+      update: () => ({
+        set: (vals: Record<string, unknown>) => {
+          updated.push(vals);
+          return {
+            where: async () => undefined,
+          };
+        },
+      }),
+      insert: () => ({
+        values: (vals: Record<string, unknown>) => {
+          inserted.push(vals);
+          return {
+            onConflictDoNothing: async () => undefined,
+          };
+        },
+      }),
+    };
+
+    const svc = createSecretProposalsService(tx as never);
+    await svc.markProposalInteractionResolution(tx as never, proposal as never, "approved", {
+      resolvedByUserId: "user-1",
+    });
+
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.status).toBe("accepted");
+
+    expect(inserted).toHaveLength(1);
+    const row = inserted[0] as {
+      companyId: string;
+      agentId: string;
+      status: string;
+      reason: string;
+      idempotencyKey: string;
+      payload: { interactionContinuationOutbox: { wakeIdempotencyKey: string } };
+    };
+    expect(row.companyId).toBe("company-sp");
+    expect(row.agentId).toBe("agent-sp");
+    expect(row.status).toBe("queued");
+    expect(row.reason).toBe("secret_proposal_resolved");
+    expect(row.idempotencyKey).toBe(interactionContinuationOutboxKey("interaction-sp", "accepted"));
+    expect(row.payload.interactionContinuationOutbox.wakeIdempotencyKey).toBe("interaction:interaction-sp:accepted");
+  });
+
+  it("does not write outbox intent when continuation policy is none or wake_assignee_on_accept on rejected (policy вне области)", async () => {
+    for (const testCase of [
+      { policy: "none", outcome: "approved" as const, expectedStatus: "accepted" },
+      { policy: "wake_assignee_on_accept", outcome: "rejected" as const, expectedStatus: "rejected" },
+    ]) {
+      const inserted: Array<Record<string, unknown>> = [];
+      const updated: Array<Record<string, unknown>> = [];
+      const interactionRow = {
+        id: "interaction-sp",
+        companyId: "company-sp",
+        issueId: "issue-sp",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: testCase.policy,
+        payload: { secretProposal: { proposalId: "prop-sp" } },
+        result: null,
+        sourceCommentId: null,
+        sourceRunId: null,
+        resolvedByUserId: null,
+        resolvedAt: null,
+      };
+      const tx = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              for: () => ({
+                then: async (fn: (rows: unknown[]) => unknown) => fn([interactionRow]),
+              }),
+              then: async (fn: (rows: unknown[]) => unknown) => fn([issue]),
+            }),
+          }),
+        }),
+        update: () => ({
+          set: (vals: Record<string, unknown>) => {
+            updated.push(vals);
+            return {
+              where: async () => undefined,
+            };
+          },
+        }),
+        insert: () => ({
+          values: (vals: Record<string, unknown>) => {
+            inserted.push(vals);
+            return {
+              onConflictDoNothing: async () => undefined,
+            };
+          },
+        }),
+      };
+
+      const svc = createSecretProposalsService(tx as never);
+      await svc.markProposalInteractionResolution(tx as never, proposal as never, testCase.outcome, {
+        resolvedByUserId: "user-1",
+      });
+
+      expect(updated).toHaveLength(1);
+      expect(updated[0]?.status).toBe(testCase.expectedStatus);
+      expect(inserted).toHaveLength(0);
+    }
+  });
+
+  it("notifySecretProposalResolution: deterministic idempotency and tryDeliver delivery", async () => {
+    const wakeupCalls: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
+    const heartbeat = {
+      wakeup: vi.fn(async (agentId: string, opts: Record<string, unknown>) => {
+        wakeupCalls.push({ agentId, opts });
+        return { id: "run-direct" };
+      }),
+    };
+    const issues = {
+      getById: vi.fn(async () => issue),
+      addComment: vi.fn(async () => ({ id: "comment-1" })),
+    };
+
+    await notifySecretProposalResolution({
+      proposal: {
+        id: "prop-sp",
+        originIssueId: "issue-sp",
+        kind: "secret",
+        proposedName: "MY_SECRET",
+        configPath: null,
+        interactionId: "interaction-sp",
+        continuationPolicy: "wake_assignee",
+      },
+      status: "approved",
+      userId: "user-1",
+      issues: issues as never,
+      heartbeat: heartbeat as never,
+    });
+
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeupCalls[0]?.opts.idempotencyKey).toBe("interaction:interaction-sp:accepted");
+    expect(wakeupCalls[0]?.opts.reason).toBe("secret_proposal_resolved");
+
+    // Second call with same parameters uses identical idempotencyKey (повторный вызов)
+    await notifySecretProposalResolution({
+      proposal: {
+        id: "prop-sp",
+        originIssueId: "issue-sp",
+        kind: "secret",
+        proposedName: "MY_SECRET",
+        configPath: null,
+        interactionId: "interaction-sp",
+        continuationPolicy: "wake_assignee",
+      },
+      status: "approved",
+      userId: "user-1",
+      issues: issues as never,
+      heartbeat: heartbeat as never,
+    });
+
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(2);
+    expect(wakeupCalls[1]?.opts.idempotencyKey).toBe("interaction:interaction-sp:accepted");
+  });
+
+  it("notifySecretProposalResolution: skips wake when policy is outside scope (policy вне области)", async () => {
+    const heartbeat = {
+      wakeup: vi.fn(async () => null),
+    };
+    const issues = {
+      getById: vi.fn(async () => issue),
+      addComment: vi.fn(async () => ({ id: "comment-1" })),
+    };
+
+    // Case 1: none policy
+    await notifySecretProposalResolution({
+      proposal: {
+        id: "prop-sp",
+        originIssueId: "issue-sp",
+        kind: "secret",
+        proposedName: "MY_SECRET",
+        configPath: null,
+        interactionId: "interaction-sp",
+        continuationPolicy: "none",
+      },
+      status: "approved",
+      userId: "user-1",
+      issues: issues as never,
+      heartbeat: heartbeat as never,
+    });
+
+    // Case 2: wake_assignee_on_accept on rejected
+    await notifySecretProposalResolution({
+      proposal: {
+        id: "prop-sp",
+        originIssueId: "issue-sp",
+        kind: "secret",
+        proposedName: "MY_SECRET",
+        configPath: null,
+        interactionId: "interaction-sp",
+        continuationPolicy: "wake_assignee_on_accept",
+      },
+      status: "rejected",
+      userId: "user-1",
+      issues: issues as never,
+      heartbeat: heartbeat as never,
+    });
+
+    expect(heartbeat.wakeup).not.toHaveBeenCalled();
+    expect(issues.addComment).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -746,6 +994,98 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
     const intent = await readIntent(seeded);
     expect(intent?.status).toBe("queued");
     expect(intent?.claimedAt).toBeNull();
+  });
+
+  it("governed secret-proposal accept: writes intent atomically and rolls back on failure", async () => {
+    const seeded = await seed();
+    const svc = createSecretProposalsService(db);
+    const proposal = {
+      id: "prop-tx-test",
+      companyId: seeded.company.id,
+      interactionId: seeded.interaction.id,
+      originIssueId: seeded.issue.id,
+    };
+    await db.update(issueThreadInteractions).set({
+      payload: { secretProposal: { proposalId: "prop-tx-test" } },
+    }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+
+    // Rollback test:
+    await expect(
+      db.transaction(async (tx) => {
+        await svc.markProposalInteractionResolution(tx as never, proposal as never, "approved");
+        throw new Error("atomic abort test");
+      }),
+    ).rejects.toThrow("atomic abort test");
+
+    expect(await readIntent(seeded)).toBeUndefined();
+
+    // Commit test:
+    await db.transaction(async (tx) => {
+      await svc.markProposalInteractionResolution(tx as never, proposal as never, "approved");
+    });
+
+    const intent = await readIntent(seeded);
+    expect(intent?.status).toBe("queued");
+    expect(intent?.reason).toBe("secret_proposal_resolved");
+  });
+
+  it("governed secret-proposal accept: enqueue failure + sweep delivery with canonical idempotency", async () => {
+    const seeded = await seed();
+    const svc = createSecretProposalsService(db);
+    const proposal = {
+      id: "prop-sweep-test",
+      companyId: seeded.company.id,
+      interactionId: seeded.interaction.id,
+      originIssueId: seeded.issue.id,
+    };
+    await db.update(issueThreadInteractions).set({
+      payload: { secretProposal: { proposalId: "prop-sweep-test" } },
+    }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+
+    // 1. Transaction records intent
+    await db.transaction(async (tx) => {
+      await svc.markProposalInteractionResolution(tx as never, proposal as never, "approved");
+    });
+
+    // 2. Direct enqueue fails (heartbeat throws)
+    const failingHeartbeat = {
+      wakeup: vi.fn(async () => {
+        throw new Error("redis admission failure");
+      }),
+    };
+    await interactionContinuationOutboxService(db, failingHeartbeat).tryDeliver(
+      seeded.interaction.id,
+      "accepted",
+    );
+    expect(failingHeartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    // Intent is still queued for sweep
+    const queuedIntent = await readIntent(seeded);
+    expect(queuedIntent?.status).toBe("queued");
+
+    // 3. Sweep delivers the intent
+    const emulatedRunId = "22222222-3333-4444-8555-666666666666";
+    const heartbeat = healthyHeartbeat(seeded, emulatedRunId);
+    const outbox = interactionContinuationOutboxService(db, heartbeat);
+    const sweepResult = await outbox.sweepPending({ sweepAgeMs: 0 });
+
+    expect(sweepResult.scanned).toBe(1);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+    expect(heartbeat.wakeup.mock.calls[0]?.[1]).toMatchObject({
+      reason: "secret_proposal_resolved",
+      idempotencyKey: `interaction:${seeded.interaction.id}:accepted`,
+      allowRunCoalescing: true,
+    });
+
+    // 4. Intent is retired as coalesced/delivered
+    const delivered = await readIntent(seeded);
+    expect(delivered?.status).toBe("coalesced");
+    expect(delivered?.runId).toBe(emulatedRunId);
+
+    // 5. Repeat sweep is idempotent with 0 wakeups (повторный вызов)
+    const secondSweep = await outbox.sweepPending({ sweepAgeMs: 0 });
+    expect(secondSweep.scanned).toBe(0);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
   });
 
   // A second intent for the same seeded card is impossible (the idempotency
