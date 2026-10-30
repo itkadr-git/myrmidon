@@ -176,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, repackMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -190,6 +190,7 @@ async function main() {
     tryImport("repair.js"),
     tryImport("git-migration.js"),
     tryImport("hygiene.js"),
+    tryImport("repack.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -380,9 +381,21 @@ async function main() {
     });
   };
 
+  // Repack git-base bare repos (1.6.6 OPE-10039): daily or when pack count > 20.
+  // Runs git repack -A -d followed by git prune --expire=2.weeks, skips locked repos.
+  const repack = async ({ startedAt }) => {
+    if (!repackMod || typeof repackMod.repackAllBases !== "function") return;
+    await repackMod.repackAllBases(BASE_DIR, {
+      now: startedAt ? startedAt.getTime() : Date.now(),
+      gitBin: GIT_BIN,
+      log,
+    });
+  };
+
   const loop = loopMod.createLoop({
     retention,
     hygiene,
+    repack,
     desired,
     rules,
     gather,
