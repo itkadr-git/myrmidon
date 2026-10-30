@@ -16,6 +16,7 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   externalObjects,
@@ -29,9 +30,11 @@ import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
 } from "@myrmidon/shared";
+import { REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
 
@@ -39,6 +42,8 @@ export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
   identifier: string | null;
   title: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface ReviewerAgentRow {
@@ -60,6 +65,13 @@ export interface ReviewRoutingStore {
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
   routingHistory(companyId: string, issueIds: readonly string[]): Promise<Map<string, RoutingHistory>>;
+  reviewWakeState(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }): Promise<{
+    activeRun: boolean;
+    pendingWake: boolean;
+    lastWakeAt: Date | null;
+    attempts: number;
+  }>;
+  recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
   /**
    * Re-reads the issue under a lock, applies `build(fresh)` when `guard(fresh)`
    * holds, and returns the updated row; null when the guard failed, the row is
@@ -194,6 +206,8 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         companyId: row.companyId,
         identifier: row.identifier,
         title: row.title,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
       }));
     },
 
@@ -250,6 +264,62 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         history.set(row.entityId, entry);
       }
       return history;
+    },
+
+    async reviewWakeState({ companyId, issueId, reviewerAgentId, stageId }) {
+      const [activeRun] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, reviewerAgentId),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ))
+        .limit(1);
+      const [pendingWake] = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, reviewerAgentId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+          sql`(${agentWakeupRequests.payload} ->> 'issueId' = ${issueId} or ${agentWakeupRequests.payload} ->> 'taskId' = ${issueId})`,
+        ))
+        .limit(1);
+      const [lastWake] = await db
+        .select({ requestedAt: activityLog.createdAt, attempt: sql<number>`coalesce((${activityLog.details} ->> 'attempt')::int, 0)` })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, REVIEW_ROUTING_WAKE_ACTION),
+          sql`${activityLog.details} ->> 'reviewerAgentId' = ${reviewerAgentId}`,
+          sql`${activityLog.details} ->> 'stageId' = ${stageId}`,
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      return {
+        activeRun: Boolean(activeRun),
+        pendingWake: Boolean(pendingWake),
+        lastWakeAt: lastWake?.requestedAt ?? null,
+        attempts: lastWake?.attempt ?? 0,
+      };
+    },
+
+    async recordReviewWake({ companyId, issueId, reviewerAgentId, stageId, at, attempt }) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "review_routing_sweep",
+        action: REVIEW_ROUTING_WAKE_ACTION,
+        entityType: "issue",
+        entityId: issueId,
+        agentId: reviewerAgentId,
+        details: { reviewerAgentId, stageId, attempt },
+        createdAt: at,
+      });
     },
 
     async applyPatch(input) {

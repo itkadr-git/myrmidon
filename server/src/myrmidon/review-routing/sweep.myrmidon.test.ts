@@ -9,6 +9,7 @@ import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
@@ -36,6 +37,8 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    createdAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
+    updatedAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -51,6 +54,8 @@ interface Fixture {
   reviewers: Array<{ id: string; role: string }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
+  activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number }>;
 }
 
 function makeStore(fx: Fixture) {
@@ -60,6 +65,15 @@ function makeStore(fx: Fixture) {
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
     loadByAgent: async () => new Map(fx.load),
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
+    reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
+      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+    },
+    recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
+      const existing = fx.wakeStates?.get(issueId);
+      if (existing?.lastWakeAt && at.getTime() - existing.lastWakeAt.getTime() < 10 * 60_000) return;
+      const state = existing ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      fx.wakeStates?.set(issueId, { ...state, lastWakeAt: at, attempts: attempt });
+    },
     applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
       const current = fx.rows.get(issueId);
       if (!current || !guard(current)) return null;
@@ -93,14 +107,16 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     ],
     load: new Map(),
     history: new Map(),
+    activities: [],
+    wakeStates: new Map(),
     ...fx,
   };
   let current = normalizeReviewRoutingSettings(settings);
   const activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }> = [];
   const comments: Array<{ issueId: string; body: string }> = [];
-  const wakes: Array<{ agentId: string; issueId: string; executionStage: Record<string, unknown> }> = [];
-  const wakeReviewer = vi.fn(async (agentId: string, wake: { issueId: string; executionStage: Record<string, unknown> }) => {
-    wakes.push({ agentId, issueId: wake.issueId, executionStage: wake.executionStage });
+  const wakes: Array<{ agentId: string; issueId: string; executionStage: Record<string, unknown>; retryAttempt?: number }> = [];
+  const wakeReviewer = vi.fn(async (agentId: string, wake: { issueId: string; executionStage: Record<string, unknown>; retryAttempt?: number }) => {
+    wakes.push({ agentId, issueId: wake.issueId, executionStage: wake.executionStage, retryAttempt: wake.retryAttempt });
   });
   const sweep = createReviewRoutingSweep({
     store: makeStore(fixture),
@@ -111,12 +127,23 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     wakeReviewer,
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
-      // The real log is what the store reads the anchor from.
+      const existingWake = fixture.wakeStates?.get(entry.issueId);
+      if (entry.action === REVIEW_ROUTING_WAKE_ACTION && existingWake) {
+        fixture.wakeStates?.set(entry.issueId, {
+          ...existingWake,
+          lastWakeAt: NOW,
+          attempts: Number(entry.details.attempt ?? entry.details.retryAttempt ?? existingWake.attempts),
+        });
+      }
       const previous = fixture.history.get(entry.issueId);
       fixture.history.set(entry.issueId, {
         lastAt: NOW,
         reviewerAgentIds: [...(previous?.reviewerAgentIds ?? []), String(entry.details.reviewerAgentId)],
       });
+    },
+    recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
+      const state = fixture.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      fixture.wakeStates?.set(issueId, { ...state, lastWakeAt: at, attempts: attempt });
     },
     log: { info: vi.fn(), warn: vi.fn() },
   });
@@ -134,6 +161,77 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 }
 
 beforeEach(() => resetReviewRoutingSignals());
+
+describe("review wake liveness", () => {
+  function pending(id: string, reviewerId: string) {
+    const state = {
+      status: "pending",
+      currentStageId: `stage-${id}`,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      lastDecisionOutcome: null,
+      humanReviewPending: false,
+    };
+    const policy = { mode: "normal", stages: [{ id: `stage-${id}`, type: "review", participants: [{ type: "agent", agentId: reviewerId }] }] };
+    return row(id, { assigneeAgentId: reviewerId, executionState: state, executionPolicy: policy });
+  }
+
+  it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+      ["2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("3", pending("3", REV_B));
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+    expect(t.activities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: REVIEW_ROUTING_WAKE_ACTION, issueId: "1" }),
+    ]));
+  });
+
+  it("records a wake after requesting it so the next pass uses cooldown", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    const first = await t.sweep.sweep(NOW, { force: true });
+    expect(first.woken).toBe(1);
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+    expect(second.woken).toBe(0);
+    expect(t.wakes).toHaveLength(1);
+  });
+
+  it("does not wake when a run is active or the load limit is reached", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.load.set(REV_B, 2);
+    t.fixture.wakeStates!.set("1", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_B));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("does not wake a review before 30 minutes or inside retry backoff", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 20 * 60_000), attempts: 1 }],
+      ["2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_B));
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 20 * 60_000), attempts: 1 });
+    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+});
 
 describe("assignment", () => {
   it("assigns the least loaded reviewer, comments, logs and wakes it", async () => {

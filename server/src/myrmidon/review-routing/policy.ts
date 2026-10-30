@@ -73,6 +73,7 @@ export function readPendingAgentReview(issue: RoutingIssue): PendingAgentReview 
   if (issue.status !== "in_review") return null;
   const state = asRecord(issue.executionState);
   if (!state || state.status !== "pending" || state.currentStageType !== "review") return null;
+  if (state.humanReviewPending === true || state.reviewMode === "human" || state.reviewMode === "manual") return null;
   const participant = asRecord(state.currentParticipant);
   if (!participant || participant.type !== "agent" || typeof participant.agentId !== "string") return null;
   if (typeof state.currentStageId !== "string") return null;

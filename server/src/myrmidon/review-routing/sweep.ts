@@ -41,6 +41,7 @@ import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
@@ -73,6 +74,8 @@ import {
 } from "./pr-policy.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
+import { REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
@@ -80,8 +83,6 @@ export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
 export const REVIEW_ROUTING_PAGE_SIZE = 200;
 /** PR candidates inspected per company per pass. */
 export const REVIEW_ROUTING_PR_PAGE_SIZE = 100;
-/** Assignments and reassignments per company per pass. */
-export const REVIEW_ROUTING_MAX_MOVES_PER_PASS = 20;
 /** How long the card of a completed reassignment stays on the desk. */
 export const REVIEW_ROUTING_REASSIGN_SIGNAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const REVIEW_ROUTING_ACTOR_ID = "review_routing_sweep";
@@ -93,6 +94,8 @@ export interface ReviewRoutingSweepResult {
   reassigned: number;
   /** Tasks signalled (no reviewer, or overdue) in this pass. */
   signaled: number;
+  /** Targeted wakeups issued for stale reviewer stages. */
+  woken: number;
   failed: number;
   // --- PR lane (1.6.5, additive) ---------------------------------------------
   /** Open PR candidates this pass looked at. */
@@ -117,7 +120,7 @@ export interface ReviewRoutingSweepDeps {
   ) => Promise<unknown>;
   wakeReviewer: (
     agentId: string,
-    wake: { issueId: string; reason: string; mutation: string; executionStage: Record<string, unknown> },
+    wake: { issueId: string; reason: string; mutation: string; executionStage: Record<string, unknown>; retryAttempt?: number },
   ) => Promise<unknown>;
   logActivity: (input: {
     companyId: string;
@@ -178,6 +181,71 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       .filter((entry): entry is { row: InReviewIssueRow; review: NonNullable<typeof entry.review> } => entry.review !== null);
     if (needing.length === 0 && pending.length === 0) {
       return liveReassignmentSignals(companyId, rowById, now);
+    }
+
+    const liveSignals = liveReassignmentSignals(companyId, rowById, now);
+    const liveSignalIssues = new Set(liveSignals.map((signal) => signal.issueId));
+    const liveByReviewer = new Map<string, number>();
+    for (const [agentId, load] of await deps.store.loadByAgent(companyId)) {
+      liveByReviewer.set(agentId, load);
+    }
+    for (const { row, review } of pending) {
+      if (liveSignalIssues.has(row.id)) {
+        liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
+      }
+    }
+
+    const activeStages = pending.filter(({ row, review }) => {
+      const state = typeof row.executionState === "object" && row.executionState !== null
+        ? (row.executionState as Record<string, unknown>)
+        : {};
+      const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
+        ? (state.currentParticipant as Record<string, unknown>)
+        : {};
+      return participant.type === "agent" && participant.agentId === review.reviewerAgentId;
+    });
+    const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    const reviewersWoken = new Set<string>();
+    for (const { row, review } of orderedPending) {
+      if (reviewersWoken.has(review.reviewerAgentId)) continue;
+      try {
+        const wakeState = await deps.store.reviewWakeState({
+          companyId,
+          issueId: row.id,
+          reviewerAgentId: review.reviewerAgentId,
+          stageId: review.stageId,
+        });
+        if (wakeState.activeRun || wakeState.pendingWake) continue;
+        if ((liveByReviewer.get(review.reviewerAgentId) ?? 0) >= settings.maxLoadPerReviewer) continue;
+        const idleMs = now.getTime() - row.createdAt.getTime();
+        if (idleMs < REVIEW_WAKE_STALE_AFTER_MS) continue;
+        const attempt = wakeState.attempts + 1;
+        const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempt - 1));
+        if (wakeState.lastWakeAt && now.getTime() - wakeState.lastWakeAt.getTime() < backoffMs) continue;
+        const wakeContext = buildReviewRoutingWakeContext(row.executionState ?? {});
+        const currentStage = review.stageId;
+        await deps.wakeReviewer(review.reviewerAgentId, {
+          issueId: row.id,
+          reason: "execution_review_requested",
+          mutation: "myrmidon_review_wakeup_retry",
+          executionStage: wakeContext,
+          retryAttempt: attempt,
+        });
+        await deps.store.recordReviewWake({
+          companyId,
+          issueId: row.id,
+          reviewerAgentId: review.reviewerAgentId,
+          stageId: currentStage,
+          at: now,
+          attempt,
+        });
+        reviewersWoken.add(review.reviewerAgentId);
+        liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
+        result.woken += 1;
+      } catch (err) {
+        result.failed += 1;
+        log.warn({ err, issueId: row.id, reviewerId: review.reviewerAgentId }, "review routing failed to wake a stale reviewer");
+      }
     }
 
     const history = await deps.store.routingHistory(
@@ -661,6 +729,25 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         mutation,
         executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
       });
+      await deps.store.recordReviewWake({
+        companyId: row.companyId,
+        issueId: row.id,
+        reviewerAgentId: reviewerId,
+        stageId: typeof state?.currentStageId === "string" ? state.currentStageId : "review",
+        at: new Date(),
+        attempt: 1,
+      });
+      await deps.logActivity({
+        companyId: row.companyId,
+        action: REVIEW_ROUTING_WAKE_ACTION,
+        issueId: row.id,
+        details: {
+          reviewerAgentId: reviewerId,
+          stageId: typeof state?.currentStageId === "string" ? state.currentStageId : null,
+          mutation,
+          attempt: 1,
+        },
+      });
     } catch (err) {
       log.warn({ err, issueId: row.id, reviewerId }, "review routing wake failed after the assignment was committed");
     }
@@ -680,6 +767,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         assigned: 0,
         reassigned: 0,
         signaled: 0,
+        woken: 0,
         failed: 0,
         prScanned: 0,
         prTasksCreated: 0,
