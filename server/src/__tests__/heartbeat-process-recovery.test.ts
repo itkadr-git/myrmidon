@@ -15676,6 +15676,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, reviewerAgentId));
     expect(wakeups.length).toBeGreaterThan(0);
-    expect(wakeups.some((w) => w.reason === "review_requested" || (w.payload as any)?.ci === "green")).toBe(true);
+    expect(wakeups.some((w) => w.reason === "execution_review_requested" || (w.payload as any)?.ci === "green")).toBe(true);
   });
 });

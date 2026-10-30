@@ -1028,9 +1028,17 @@ function getReviewerParticipantAgentId(issue: {
 async function pickReviewerForIssue(
   db: Db,
   issue: { companyId: string },
-  prProduct: { metadata?: unknown; url?: string | null; externalId?: string | null; type: string },
+  prProduct: typeof issueWorkProducts.$inferSelect,
 ): Promise<string | null> {
-  const prInfo = selectRunPullRequest([prProduct]);
+  const prInfo = selectRunPullRequest([
+    {
+      type: prProduct.type,
+      provider: prProduct.provider ?? "github",
+      url: prProduct.url,
+      status: prProduct.status,
+      metadata: prProduct.metadata,
+    } as any,
+  ]);
   const prNumber = prInfo?.number;
 
   const reviewerAgents = await db
@@ -1046,18 +1054,21 @@ async function pickReviewerForIssue(
   if (reviewerAgents.length > 0) {
     if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
       const idx = Math.abs(prNumber) % reviewerAgents.length;
-      return reviewerAgents[idx]!.id;
+      const target = reviewerAgents[idx];
+      if (target) return target.id;
     }
-    return reviewerAgents[0]!.id;
+    return reviewerAgents[0]?.id ?? null;
   }
 
   if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length]!;
-    const [existing] = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
-    if (existing) return existing.id;
+    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length];
+    if (targetId) {
+      const [existing] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
+      if (existing) return existing.id;
+    }
   }
 
   return null;
@@ -1092,8 +1103,16 @@ async function resolvePrCiState(
   }
 
   if (resolver) {
-    const prInfo = selectRunPullRequest([prProduct]);
-    if (prInfo) {
+    const prInfo = selectRunPullRequest([
+      {
+        type: prProduct.type,
+        provider: prProduct.provider ?? "github",
+        url: prProduct.url,
+        status: prProduct.status,
+        metadata: prProduct.metadata,
+      } as any,
+    ]);
+    if (prInfo && typeof prInfo.number === "number") {
       try {
         const head = await resolver.resolve({
           companyId,
@@ -4611,14 +4630,14 @@ export function recoveryService(
           }
         }
         const updated = await issuesSvc.update(input.issue.id, {
-          status: "in_review",
+          status: "in_review" as const,
           ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
-        });
+        } as any);
         if (prCi.ci === "green" && reviewerAgentId) {
           await deps.enqueueWakeup(reviewerAgentId, {
             source: "automation",
             triggerDetail: "system",
-            reason: "review_requested",
+            reason: "execution_review_requested",
             payload: {
               issueId: input.issue.id,
               headSha: prCi.headSha,
@@ -4628,7 +4647,7 @@ export function recoveryService(
             contextSnapshot: {
               issueId: input.issue.id,
               taskId: input.issue.id,
-              wakeReason: "review_requested",
+              wakeReason: "execution_review_requested",
             },
           }).catch(() => null);
         }
@@ -6349,14 +6368,14 @@ export function recoveryService(
                       },
                     ],
                   },
-                }).catch(() => null);
+                } as any).catch(() => null);
               }
             }
             if (reviewerAgentId) {
               await deps.enqueueWakeup(reviewerAgentId, {
                 source: "automation",
                 triggerDetail: "system",
-                reason: "review_requested",
+                reason: "execution_review_requested",
                 payload: {
                   issueId: issue.id,
                   headSha: prCi.headSha,
@@ -6366,7 +6385,7 @@ export function recoveryService(
                 contextSnapshot: {
                   issueId: issue.id,
                   taskId: issue.id,
-                  wakeReason: "review_requested",
+                  wakeReason: "execution_review_requested",
                 },
               }).catch(() => null);
             }
