@@ -16,7 +16,7 @@
 // than re-derived, so "ready" means one thing on both paths.
 
 import { blockerOpenSql } from "../blocker-resolved.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import {
   swarmRoleFromLabels,
@@ -30,6 +30,7 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  getCachedFailedRunsDerivedSql,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -151,6 +152,7 @@ export function roleQueueRows(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  derivedSql?: SQL,
 ) {
   return db
     .select({
@@ -168,7 +170,7 @@ export function roleQueueRows(
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
     // One bounded pass over the recent evaporating runs, joined once — not a
     // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    .leftJoin(derivedSql ?? failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -237,7 +239,8 @@ export async function listRoleQueue(
   agentId?: string,
   order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role, agentId, order);
+  const derivedSql = await getCachedFailedRunsDerivedSql(db, companyId, order?.now);
+  const rows = await roleQueueRows(db, companyId, role, agentId, order, derivedSql);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
@@ -296,6 +299,7 @@ export async function listUnassignedQueue(
   companyId: string,
   order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
+  const derivedTableSql = await getCachedFailedRunsDerivedSql(db, companyId, order?.now);
   const rows = await db
     .select({
       issueId: issues.id,
@@ -308,7 +312,7 @@ export async function listUnassignedQueue(
     .from(issues)
     // One bounded pass over the recent evaporating runs, joined once — not a
     // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    .leftJoin(derivedTableSql, failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),

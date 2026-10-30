@@ -20,7 +20,7 @@
 // Neutral data only: company-a, agent-a, agent-b.
 
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentCastes,
@@ -45,11 +45,17 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { isIssueCoolingDown, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import {
+  invalidateLastRunRowsCache,
   listIdleRolePairs,
   matchAgent,
   matchCompany,
   type SwarmMatcherDeps,
 } from "../myrmidon/swarm-claim/matcher.js";
+import {
+  invalidateFailedRunsCache,
+  computeFailedRunsMap,
+} from "../myrmidon/swarm-claim/effective-pheromone.js";
+import * as effectivePheromoneModule from "../myrmidon/swarm-claim/effective-pheromone.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -476,5 +482,44 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     const top = pairs.find((pair) => pair.role === "engineer")?.queue[0]?.issueId;
     const result = await matchCompany(matcherDeps({ settings }), companyId);
     expect(result.pairs.map((pair) => pair.issueId)).toEqual([top]);
+  });
+
+  it("N matcher passes within 60s compute failed runs only once", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const agentId = randomUUID();
+    await seedAgent(companyId, agentId, "engineer");
+    const taskId = await seedTask(companyId, { identifier: "T-CACHE", priority: "medium", pheromoneStrength: 20 });
+    await seedFinishedRun(companyId, agentId, taskId, { status: "failed", finishedAt: new Date(NOW.getTime() - HOUR) });
+
+    invalidateFailedRunsCache(companyId);
+    invalidateLastRunRowsCache(companyId);
+
+    const spy = vi.spyOn(effectivePheromoneModule, "computeFailedRunsMap");
+    try {
+      // 5 calls within 60s
+      for (let i = 0; i < 5; i++) {
+        await listIdleRolePairs(db, companyId, {
+          order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+        });
+      }
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Beyond 60s TTL
+      const later = new Date(NOW.getTime() + 61_000);
+      await listIdleRolePairs(db, companyId, {
+        order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: later },
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      // Invalidation on failure
+      invalidateFailedRunsCache(companyId);
+      await listIdleRolePairs(db, companyId, {
+        order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: later },
+      });
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

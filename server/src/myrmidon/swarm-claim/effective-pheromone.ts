@@ -81,7 +81,7 @@ export const FAILED_RUNS_ALIAS = "fr";
  * Not covered: a blocker closed by the system (no person/agent row) — the
  * penalty then stays until the next edit or comment.
  */
-export function failedRunsDerivedSql(companyId: string, now: Date = new Date()): SQL {
+export function failedRunsCalculationQuery(companyId: string, now: Date = new Date()): SQL {
   const bookkeeping = sql.join(
     NON_CHANGE_ISSUE_ACTIONS.map((action) => sql`${action}`),
     sql`, `,
@@ -91,7 +91,7 @@ export function failedRunsDerivedSql(companyId: string, now: Date = new Date()):
     sql`, `,
   );
   const windowStart = new Date(now.getTime() - PHEROMONE_FAILURE_WINDOW_DAYS * 86_400_000).toISOString();
-  return sql`(
+  return sql`
     select hr.issue_uuid, count(*)::int as failed_runs
     from (
       select
@@ -129,7 +129,139 @@ export function failedRunsDerivedSql(companyId: string, now: Date = new Date()):
           and al.action not in (${bookkeeping})
       )
     group by hr.issue_uuid
-  ) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+  `;
+}
+
+export function failedRunsQueryTableSql(companyId: string, now: Date = new Date()): SQL {
+  return sql`(${failedRunsCalculationQuery(companyId, now)}) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+}
+
+export function failedRunsValuesTableSql(map: ReadonlyMap<string, number>): SQL {
+  if (map.size === 0) {
+    return sql`(select null::uuid as issue_uuid, 0::int as failed_runs where false) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+  }
+  const rows: SQL[] = [];
+  for (const [issueId, count] of map.entries()) {
+    if (!/^[0-9a-fA-F-]{36}$/.test(issueId)) continue;
+    const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    rows.push(sql`(${issueId}::uuid, ${n}::int)`);
+  }
+  if (rows.length === 0) {
+    return sql`(select null::uuid as issue_uuid, 0::int as failed_runs where false) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+  }
+  return sql`(values ${sql.join(rows, sql`, `)}) ${sql.raw(FAILED_RUNS_ALIAS)}(issue_uuid, failed_runs)`;
+}
+
+export const FAILED_RUNS_CACHE_TTL_MS = 60_000;
+
+interface FailedRunsCacheEntry {
+  map: Map<string, number>;
+  expiresAt: number;
+  inFlight?: Promise<Map<string, number>>;
+}
+
+const failedRunsCache = new Map<string, FailedRunsCacheEntry>();
+
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
+interface FailedRunsRow {
+  issue_uuid?: string;
+  issueUuid?: string;
+  failed_runs?: number | string;
+  failedRuns?: number | string;
+}
+
+export async function computeFailedRunsMap(
+  db: { execute: (query: SQL) => Promise<unknown> },
+  companyId: string,
+  now: Date = new Date(),
+): Promise<Map<string, number>> {
+  const query = failedRunsCalculationQuery(companyId, now);
+  const result = await db.execute(query);
+  const rows = rowsOf<FailedRunsRow>(result);
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const issueId = row.issue_uuid ?? row.issueUuid;
+    const rawCount = row.failed_runs ?? row.failedRuns;
+    const count = typeof rawCount === "number" ? rawCount : parseInt(String(rawCount ?? 0), 10);
+    if (issueId && count > 0 && /^[0-9a-fA-F-]{36}$/.test(issueId)) {
+      map.set(issueId, count);
+    }
+  }
+  return map;
+}
+
+export async function getCachedFailedRunsMap(
+  db: { execute: (query: SQL) => Promise<unknown> },
+  companyId: string,
+  now: Date = new Date(),
+): Promise<ReadonlyMap<string, number>> {
+  const nowMs = now.getTime();
+  const entry = failedRunsCache.get(companyId);
+  if (entry && entry.expiresAt > nowMs && !entry.inFlight) {
+    return entry.map;
+  }
+  if (entry?.inFlight) {
+    return entry.inFlight;
+  }
+  const promise = (async () => {
+    try {
+      const map = await computeFailedRunsMap(db, companyId, now);
+      failedRunsCache.set(companyId, {
+        map,
+        expiresAt: now.getTime() + FAILED_RUNS_CACHE_TTL_MS,
+      });
+      return map;
+    } finally {
+      const current = failedRunsCache.get(companyId);
+      if (current?.inFlight === promise) {
+        delete current.inFlight;
+      }
+    }
+  })();
+  if (entry) {
+    entry.inFlight = promise;
+  } else {
+    failedRunsCache.set(companyId, {
+      map: new Map(),
+      expiresAt: 0,
+      inFlight: promise,
+    });
+  }
+  return promise;
+}
+
+export async function getCachedFailedRunsDerivedSql(
+  db: { execute: (query: SQL) => Promise<unknown> },
+  companyId: string,
+  now: Date = new Date(),
+): Promise<SQL> {
+  const map = await getCachedFailedRunsMap(db, companyId, now);
+  return failedRunsValuesTableSql(map);
+}
+
+export function invalidateFailedRunsCache(companyId?: string): void {
+  if (companyId) {
+    failedRunsCache.delete(companyId);
+  } else {
+    failedRunsCache.clear();
+  }
+}
+
+export function failedRunsDerivedSql(
+  companyId: string,
+  now: Date = new Date(),
+  cachedMap?: ReadonlyMap<string, number> | null,
+): SQL {
+  const map = cachedMap ?? failedRunsCache.get(companyId)?.map;
+  if (map !== undefined) {
+    return failedRunsValuesTableSql(map);
+  }
+  return failedRunsQueryTableSql(companyId, now);
 }
 
 /** The ON clause of the join, over the drizzle `issues` table. */

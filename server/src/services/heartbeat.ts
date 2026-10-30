@@ -760,6 +760,8 @@ import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
+  invalidateFailedRunsCache,
+  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
@@ -12823,6 +12825,15 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
+    invalidateLastRunRowsCache(updated.companyId);
+    if (
+      updated.status === "failed" ||
+      updated.status === "blocked" ||
+      updated.status === "needs_followup" ||
+      updated.status === "timed_out"
+    ) {
+      invalidateFailedRunsCache(updated.companyId);
+    }
     void emitAgentTaskRun(db, updated);
     void reportRunFailure(db, updated);
   }
