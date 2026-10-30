@@ -96,6 +96,9 @@ jobs:
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
+          # (same rule as rel/* PRs: only while the selection fits MAX_FAST_FILES_PER_PACKAGE; full-ci label keeps full).
+          PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -110,7 +113,10 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            case "$BASE_REF" in
+              rel/*) args+=(--release-fast) ;;
+              *) if [ "$EVENT" = "pull_request" ] && [ "$PR_FAST" = "true" ]; then args+=(--release-fast); fi ;;
+            esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
