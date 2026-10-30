@@ -7,6 +7,7 @@
 import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useLocation } from "@/lib/router";
+import { toCompanyRelativePath } from "@/lib/company-routes";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
@@ -65,20 +66,31 @@ function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; 
   );
 }
 
+export function isUi2RailItemActive(itemTo: string, pathname: string): boolean {
+  const relativePath = toCompanyRelativePath(pathname.split("?")[0] || "/").replace(/\/$/, "") || "/";
+  const normalizedItemTo = itemTo.replace(/\/$/, "") || "/";
+  if (normalizedItemTo === "/company/settings") {
+    return (
+      relativePath === "/company/settings" ||
+      (relativePath.startsWith("/company/settings/") && !relativePath.startsWith("/company/settings/autonomy/regulations"))
+    );
+  }
+  if (normalizedItemTo === "/dashboard") {
+    return relativePath === "/dashboard";
+  }
+  return relativePath === normalizedItemTo || relativePath.startsWith(`${normalizedItemTo}/`);
+}
+
 function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCount: number | null }) {
   const location = useLocation();
-  const segment = item.to.replace(/^\//, "").split("/")[0];
-  const active = location.pathname
-    .split("/")
-    .filter(Boolean)
-    .slice(1)
-    .some((p) => p === segment);
+  const active = isUi2RailItemActive(item.to, location.pathname);
   const badge = item.badge === "attention" ? (attentionCount ?? undefined) : undefined;
   return (
     <Link
       to={item.to}
       className="myr-ui2__rail-link"
       style={{ display: "block", textDecoration: "none" }}
+      aria-current={active ? "page" : undefined}
     >
       <RailItem item={item} active={active} badge={badge} />
     </Link>
