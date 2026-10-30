@@ -10132,6 +10132,8 @@ export function issueService(db: Db) {
             trustExplicitResponsibleUserId === true
           ) {
             effectiveResponsibleUserId = issueData.responsibleUserId;
+          } else if (issueData.parentId && responsibleUserId) {
+            effectiveResponsibleUserId = responsibleUserId;
           } else {
             effectiveResponsibleUserId = null;
           }

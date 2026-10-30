@@ -3368,6 +3368,27 @@ export function issueThreadInteractionService(
         resolverPolicy: policy.requestedResolverPolicy,
       };
 
+      if (normalizedData.idempotencyKey) {
+        const existing = await getIdempotentInteraction({
+          issueId: issue.id,
+          companyId: issue.companyId,
+          idempotencyKey: normalizedData.idempotencyKey,
+        });
+        if (existing) {
+          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+            throw conflict(
+              "Interaction idempotency key already exists for a different request",
+              {
+                idempotencyKey: normalizedData.idempotencyKey,
+              },
+            );
+          }
+          const interaction = hydrateInteraction(existing);
+          await enqueueIssueInteractionChatPublications(db, interaction);
+          return interaction;
+        }
+      }
+
       if (normalizedData.addresseeAgentId && normalizedData.addresseeUserId) {
         throw unprocessable(
           "An issue-thread interaction cannot address both an agent and a user",
@@ -3493,27 +3514,6 @@ export function issueThreadInteractionService(
               ...invokability.details,
             },
           );
-        }
-      }
-
-      if (normalizedData.idempotencyKey) {
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-            throw conflict(
-              "Interaction idempotency key already exists for a different request",
-              {
-                idempotencyKey: normalizedData.idempotencyKey,
-              },
-            );
-          }
-          const interaction = hydrateInteraction(existing);
-          await enqueueIssueInteractionChatPublications(db, interaction);
-          return interaction;
         }
       }
 

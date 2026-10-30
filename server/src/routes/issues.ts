@@ -3675,7 +3675,7 @@ export function issueRoutes(
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean }>;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -15133,7 +15133,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
                   );
@@ -15160,7 +15160,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
