@@ -108,6 +108,7 @@ export function monitoringDashboardRoutes(deps: MonitoringDashboardRoutesDeps) {
         vm: clients.vm,
         zabbix: clients.zabbix,
         now: deps.now,
+        db: deps.db,
       }),
     );
   });
