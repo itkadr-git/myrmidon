@@ -19,6 +19,52 @@ export const recoveryFactoryRequestSchema = z.object({
 }).strict();
 
 export type RecoveryFactoryRequest = z.infer<typeof recoveryFactoryRequestSchema>;
+export type RecoveryFactoryOwner = z.infer<typeof recoveryFactoryOwnerSchema>;
+export type RecoveryFactoryKind = RecoveryFactoryRequest["kind"];
+
+/**
+ * Baseline SLA in minutes for typed recovery kinds (design OPE-8312 §5.7).
+ * Values at launch:
+ * - ci_restart: 30
+ * - github_access: 60
+ * - branch_relay: 60
+ * - review_participant_restore: 60
+ * - workspace_myr_ws: 120
+ * - devbuild: 120
+ * - disk_space: 60
+ * - operator_action: 120
+ */
+export const RECOVERY_SLA_MINUTES_BY_KIND: Readonly<Record<RecoveryFactoryKind, number>> = Object.freeze({
+  ci_restart: 30,
+  github_access: 60,
+  branch_relay: 60,
+  review_participant_restore: 60,
+  workspace_myr_ws: 120,
+  devbuild: 120,
+  disk_space: 60,
+  operator_action: 120,
+  missing_disposition: 60,
+  deliberate_wait_without_target: 60,
+  stranded_assigned_issue: 60,
+  workspace_validation: 60,
+  configuration_validation: 60,
+  active_run_watchdog: 60,
+  issue_graph_liveness: 60,
+});
+
+export function resolveRecoverySlaMinutes(
+  kind: string,
+  overrides?: Partial<Record<string, number>> | null,
+): number {
+  if (overrides && typeof overrides[kind] === "number" && overrides[kind]! > 0) {
+    return overrides[kind]!;
+  }
+  const defaultSla = (RECOVERY_SLA_MINUTES_BY_KIND as Record<string, number>)[kind];
+  if (typeof defaultSla === "number" && defaultSla > 0) {
+    return defaultSla;
+  }
+  return 60;
+}
 
 export interface RecoveryFactoryResult {
   outcome: "created" | "deduped";
