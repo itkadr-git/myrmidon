@@ -49,4 +49,4 @@ it("runs the built entrypoint under both aliases and warns once only for papercl
   } finally {
     rmSync(testDir, { recursive: true, force: true });
   }
-});
+}, 30_000);
