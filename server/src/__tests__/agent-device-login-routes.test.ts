@@ -3,7 +3,7 @@ import request from "supertest";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withAccountHomeSecretMutationLock } from "@myrmidon/adapter-codex-local/server";
 import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
@@ -224,7 +224,10 @@ vi.mock("../services/device-login-service.js", async (importOriginal) => {
 // An in-memory session store. It mimics the active company-adapter slot: the
 // partial unique index allows one active session per company and adapter, so a
 // second active start throws the conflict error.
-function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, AdapterAuthSessionRow> } {
+function createMemoryStore(): AdapterAuthSessionStore & {
+  rows: Map<string, AdapterAuthSessionRow>;
+  clear(): void;
+} {
   const rows = new Map<string, AdapterAuthSessionRow>();
   const activeSlots = new Set<string>();
   // The active slot is scoped to the company, the owner, and the adapter.
@@ -234,6 +237,14 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
     status === "starting" || status === "waiting_for_user" || status === "promoting";
   return {
     rows,
+    clear() {
+      for (const row of rows.values()) {
+        row.status = "failed";
+        row.failureReason = "test_cleanup";
+      }
+      activeSlots.clear();
+      rows.clear();
+    },
     async insert(input) {
       const key = slotKey(input.companyId, input.startedByUserId, input.adapterType);
       if (activeSlots.has(key)) {
@@ -385,6 +396,15 @@ describe("adapter device-login routes", () => {
   // `afterEach` whether or not the route removed them itself.
   const accountHomeTestDirs: string[] = [];
 
+  // Load the real route and middleware modules once before the tests run. The
+  // first import transforms a large module graph (routes/agents.ts is ~8000 LOC).
+  // Under the loaded serial shard (maxWorkers=1) that cold cost crosses the 15s
+  // testTimeout of the first test. The hook has a 30s budget, so it absorbs the
+  // transform cost and every later createApp() call hits the cached modules.
+  beforeAll(async () => {
+    await createApp();
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
@@ -429,6 +449,9 @@ describe("adapter device-login routes", () => {
   afterEach(async () => {
     // Release the gate, so every in-flight login run ends and clears its timer.
     harness.releaseGate();
+    if (harness.store && typeof (harness.store as { clear?: () => void }).clear === "function") {
+      (harness.store as { clear: () => void }).clear();
+    }
     while (accountHomeTestDirs.length > 0) {
       const dir = accountHomeTestDirs.pop();
       if (!dir) continue;
