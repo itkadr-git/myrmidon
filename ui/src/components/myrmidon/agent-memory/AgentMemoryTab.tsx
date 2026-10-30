@@ -9,6 +9,7 @@ import { Brain, Download, Loader2, Trash2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { i18n, useTranslation } from "@/i18n";
 import {
   downloadMemoryExport,
   formatMemoryDate,
@@ -22,18 +23,19 @@ import {
 const PAGE_SIZE = 50;
 
 function readable(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || i18n.t("area.settings-agent-card.agent-memory-tab.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return i18n.t("area.settings-agent-card.agent-memory-tab.unexpectedError");
 }
 
 function statusLine(status: MemoryCardStatus | undefined, error: unknown): string {
   if (error) return readable(error);
-  if (!status) return "Loading memory status…";
-  if (!status.enabled) return "Agent memory is not enabled on this instance.";
-  if (!status.bank) return "This agent has no memory bank configured (its memory is closed).";
-  const source = status.bank.source === "agent-card" ? "agent card" : "plugin configuration";
-  return `Bank ${status.bank.bankId} (from the ${source}).`;
+  if (!status) return i18n.t("area.settings-agent-card.agent-memory-tab.statusLoading");
+  if (!status.enabled) return i18n.t("area.settings-agent-card.agent-memory-tab.statusDisabled");
+  if (!status.bank) return i18n.t("area.settings-agent-card.agent-memory-tab.statusNoBank");
+  return status.bank.source === "agent-card"
+    ? i18n.t("area.settings-agent-card.agent-memory-tab.statusBankCard", { bankId: status.bank.bankId })
+    : i18n.t("area.settings-agent-card.agent-memory-tab.statusBankPlugin", { bankId: status.bank.bankId });
 }
 
 export function AgentMemoryTabView({
@@ -65,6 +67,7 @@ export function AgentMemoryTabView({
   offset: number;
   onOffsetChange: (next: number) => void;
 }) {
+  const { t } = useTranslation();
   const [reasonDraft, setReasonDraft] = useState<Record<string, string>>({});
   const [clearDraft, setClearDraft] = useState("");
 
@@ -76,7 +79,7 @@ export function AgentMemoryTabView({
         <div>
           <div className="flex items-center gap-2">
             <Brain className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">Memory</h2>
+            <h2 className="text-lg font-semibold">{t("area.settings-agent-card.agent-memory-tab.title")}</h2>
           </div>
           <p className="mt-1 text-sm text-muted-foreground" data-testid="myrmidon-agent-memory-status">
             {statusLine(status, undefined)}
@@ -85,7 +88,7 @@ export function AgentMemoryTabView({
         {usable ? (
           <Button size="sm" variant="outline" disabled={exportPending} onClick={onExport} data-testid="myrmidon-agent-memory-export">
             {exportPending ? <Loader2 className="animate-spin" /> : <Download />}
-            Export bank
+            {t("area.settings-agent-card.agent-memory-tab.exportBank")}
           </Button>
         ) : null}
       </div>
@@ -109,12 +112,12 @@ export function AgentMemoryTabView({
                 {readable(pageError)}
               </p>
             ) : pending ? (
-              <p className="text-sm text-muted-foreground">Loading memories…</p>
+              <p className="text-sm text-muted-foreground">{t("area.settings-agent-card.agent-memory-tab.loadingMemories")}</p>
             ) : !page || page.items.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border p-5">
-                <p className="text-sm font-medium">No memories in this bank</p>
+                <p className="text-sm font-medium">{t("area.settings-agent-card.agent-memory-tab.emptyTitle")}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Entries appear here as the agent retains facts during runs.
+                  {t("area.settings-agent-card.agent-memory-tab.emptyDescription")}
                 </p>
               </div>
             ) : (
@@ -122,7 +125,7 @@ export function AgentMemoryTabView({
                 {page.items.map((item) => (
                   <li key={item.id} className="rounded-lg border border-border p-3" data-testid={`myrmidon-agent-memory-item-${item.id}`}>
                     <div className="flex items-start justify-between gap-3">
-                      <p className="whitespace-pre-wrap break-words text-sm">{item.text || <span className="text-muted-foreground">(no text)</span>}</p>
+                      <p className="whitespace-pre-wrap break-words text-sm">{item.text || <span className="text-muted-foreground">{t("area.settings-agent-card.agent-memory-tab.noText")}</span>}</p>
                       <span className="shrink-0 text-xs text-muted-foreground">
                         {item.factType ?? "—"}
                         {item.state && item.state !== "valid" ? ` · ${item.state}` : ""}
@@ -136,8 +139,8 @@ export function AgentMemoryTabView({
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <Input
                           className="h-7 max-w-xs text-xs"
-                          placeholder="Why this memory is removed"
-                          aria-label={`Reason for removing memory ${item.id}`}
+                          placeholder={t("area.settings-agent-card.agent-memory-tab.removeReasonPlaceholder")}
+                          aria-label={t("area.settings-agent-card.agent-memory-tab.removeReasonAria", { id: item.id })}
                           value={reasonDraft[item.id] ?? ""}
                           onChange={(event) => setReasonDraft({ ...reasonDraft, [item.id]: event.target.value })}
                         />
@@ -148,7 +151,7 @@ export function AgentMemoryTabView({
                           onClick={() => onDelete(item.id, (reasonDraft[item.id] ?? "").trim())}
                         >
                           <Trash2 />
-                          Remove
+                          {t("common.remove")}
                         </Button>
                       </div>
                     ) : null}
@@ -161,27 +164,31 @@ export function AgentMemoryTabView({
           {page && page.total > PAGE_SIZE ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => onOffsetChange(Math.max(0, offset - PAGE_SIZE))}>
-                Newer
+                {t("area.settings-agent-card.agent-memory-tab.newer")}
               </Button>
               <span data-testid="myrmidon-agent-memory-range">
-                {offset + 1}–{Math.min(offset + page.items.length, page.total)} of {page.total}
+                {t("area.settings-agent-card.agent-memory-tab.range", {
+                  from: offset + 1,
+                  to: Math.min(offset + page.items.length, page.total),
+                  total: page.total,
+                })}
               </span>
               <Button size="sm" variant="outline" disabled={offset + page.items.length >= page.total} onClick={() => onOffsetChange(offset + PAGE_SIZE)}>
-                Older
+                {t("area.settings-agent-card.agent-memory-tab.older")}
               </Button>
             </div>
           ) : null}
 
           <div className="rounded-lg border border-destructive/40 p-4">
-            <p className="text-sm font-medium">Clear the whole bank</p>
+            <p className="text-sm font-medium">{t("area.settings-agent-card.agent-memory-tab.clearTitle")}</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Removes every memory entry of this agent. Type the agent id to confirm.
+              {t("area.settings-agent-card.agent-memory-tab.clearDescription")}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Input
                 className="max-w-xs"
                 placeholder={agentId}
-                aria-label="Type the agent id to confirm clearing the bank"
+                aria-label={t("area.settings-agent-card.agent-memory-tab.clearInputAria")}
                 value={clearDraft}
                 onChange={(event) => setClearDraft(event.target.value)}
                 data-testid="myrmidon-agent-memory-clear-input"
@@ -193,7 +200,7 @@ export function AgentMemoryTabView({
                 onClick={() => onClear(clearDraft.trim() === agentId ? agentId : null)}
                 data-testid="myrmidon-agent-memory-clear-button"
               >
-                Clear bank
+                {t("area.settings-agent-card.agent-memory-tab.clearButton")}
               </Button>
             </div>
           </div>
@@ -204,6 +211,7 @@ export function AgentMemoryTabView({
 }
 
 export function AgentMemoryTab({ agentId }: { agentId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -233,7 +241,7 @@ export function AgentMemoryTab({ agentId }: { agentId: string }) {
       setActionNotice(null);
     },
     onSuccess: async () => {
-      setActionNotice("Memory removed. The service keeps it invalidated (recoverable) and the removal is in the activity log.");
+      setActionNotice(t("area.settings-agent-card.agent-memory-tab.removedNotice"));
       await refresh();
     },
     onError: (err) => setActionError(readable(err)),
@@ -246,7 +254,9 @@ export function AgentMemoryTab({ agentId }: { agentId: string }) {
       setActionNotice(null);
     },
     onSuccess: async (result) => {
-      setActionNotice(`Bank cleared (${result.deletedCount ?? "unknown"} entries removed). The clear is in the activity log.`);
+      setActionNotice(
+        t("area.settings-agent-card.agent-memory-tab.clearedNotice", { number: result.deletedCount ?? t("area.settings-agent-card.agent-memory-tab.unknownNumber") }),
+      );
       setOffset(0);
       await refresh();
     },
@@ -269,8 +279,8 @@ export function AgentMemoryTab({ agentId }: { agentId: string }) {
       URL.revokeObjectURL(url);
       setActionNotice(
         payload.truncated
-          ? `Exported ${payload.items.length} of ${payload.total} entries (large bank, export capped). The export is in the activity log.`
-          : `Exported ${payload.items.length} entries. The export is in the activity log.`,
+          ? t("area.settings-agent-card.agent-memory-tab.exportedTruncated", { shown: payload.items.length, total: payload.total })
+          : t("area.settings-agent-card.agent-memory-tab.exported", { shown: payload.items.length }),
       );
     },
     onError: (err) => setActionError(readable(err)),
@@ -279,7 +289,7 @@ export function AgentMemoryTab({ agentId }: { agentId: string }) {
   if (statusQuery.isError) {
     return (
       <section className="max-w-3xl space-y-3" data-testid="myrmidon-agent-memory">
-        <h2 className="text-lg font-semibold">Memory</h2>
+        <h2 className="text-lg font-semibold">{t("area.settings-agent-card.agent-memory-tab.title")}</h2>
         <p className="text-sm text-destructive" data-testid="myrmidon-agent-memory-status-error">
           {readable(statusQuery.error)}
         </p>

@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
-import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
+import { trackErrorHandlerCrash } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";

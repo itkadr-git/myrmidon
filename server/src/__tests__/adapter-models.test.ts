@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
-import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
-import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
-import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
-import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
-import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { models as claudeFallbackModels } from "@myrmidon/adapter-claude-local";
+import { resetClaudeModelsCacheForTests } from "@myrmidon/adapter-claude-local/server";
+import { models as codexFallbackModels } from "@myrmidon/adapter-codex-local";
+import { models as cursorFallbackModels } from "@myrmidon/adapter-cursor-local";
+import { models as opencodeFallbackModels } from "@myrmidon/adapter-opencode-local";
+import { resetOpenCodeModelsCacheForTests } from "@myrmidon/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";

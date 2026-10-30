@@ -6,6 +6,7 @@
  * default, and anything that is not a non-negative integer also falls back
  * to the default rather than being clamped or rejected.
  */
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const TELEGRAM_DM_CONVERSATIONS_ENV = "MYRMIDON_TELEGRAM_DM_CONVERSATIONS";
 
@@ -38,9 +39,10 @@ export function telegramDmConversationsConfigured(
 }
 
 function telegramDmConversationsEntries(env: NodeJS.ProcessEnv): string[] {
-  const raw = env[TELEGRAM_DM_CONVERSATIONS_ENV]?.trim();
-  if (!raw) return [];
-  return raw
+  const raw = env[TELEGRAM_DM_CONVERSATIONS_ENV] ?? liveBehaviorSetting<string>("telegramDmConversations");
+  const entriesRaw = raw?.trim();
+  if (!entriesRaw) return [];
+  return entriesRaw
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
@@ -83,18 +85,14 @@ function readNonNegativeInt(
 export function readCrossChannelSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): CrossChannelSettings {
+  const messages = env[CROSS_CHANNEL_MESSAGES_ENV] === undefined ? liveBehaviorSetting<number>("chatCrossChannelMessages") : null;
+  const messageChars = env[CROSS_CHANNEL_MESSAGE_CHARS_ENV] === undefined ? liveBehaviorSetting<number>("chatCrossChannelMessageChars") : null;
+  const totalChars = env[CROSS_CHANNEL_TOTAL_CHARS_ENV] === undefined ? liveBehaviorSetting<number>("chatCrossChannelTotalChars") : null;
+  const lookbackHours = env[CROSS_CHANNEL_LOOKBACK_HOURS_ENV] === undefined ? liveBehaviorSetting<number>("chatCrossChannelLookbackHours") : null;
   return {
-    messages: readNonNegativeInt(env, CROSS_CHANNEL_MESSAGES_ENV, DEFAULT_CROSS_CHANNEL_MESSAGES),
-    messageChars: readNonNegativeInt(
-      env,
-      CROSS_CHANNEL_MESSAGE_CHARS_ENV,
-      DEFAULT_CROSS_CHANNEL_MESSAGE_CHARS,
-    ),
-    totalChars: readNonNegativeInt(env, CROSS_CHANNEL_TOTAL_CHARS_ENV, DEFAULT_CROSS_CHANNEL_TOTAL_CHARS),
-    lookbackHours: readNonNegativeInt(
-      env,
-      CROSS_CHANNEL_LOOKBACK_HOURS_ENV,
-      DEFAULT_CROSS_CHANNEL_LOOKBACK_HOURS,
-    ),
+    messages: messages ?? readNonNegativeInt(env, CROSS_CHANNEL_MESSAGES_ENV, DEFAULT_CROSS_CHANNEL_MESSAGES),
+    messageChars: messageChars ?? readNonNegativeInt(env, CROSS_CHANNEL_MESSAGE_CHARS_ENV, DEFAULT_CROSS_CHANNEL_MESSAGE_CHARS),
+    totalChars: totalChars ?? readNonNegativeInt(env, CROSS_CHANNEL_TOTAL_CHARS_ENV, DEFAULT_CROSS_CHANNEL_TOTAL_CHARS),
+    lookbackHours: lookbackHours ?? readNonNegativeInt(env, CROSS_CHANNEL_LOOKBACK_HOURS_ENV, DEFAULT_CROSS_CHANNEL_LOOKBACK_HOURS),
   };
 }

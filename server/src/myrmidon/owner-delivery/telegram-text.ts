@@ -2,7 +2,7 @@ import type {
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { projectSafeChatPublicationText } from "../../services/chat-publication-projection.js";
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4_096;

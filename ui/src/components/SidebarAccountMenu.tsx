@@ -1,3 +1,4 @@
+import { DOCS_URL, FEEDBACK_URL } from "@/lib/myrmidon-links";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -9,7 +10,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
@@ -28,8 +29,6 @@ import { SidebarServerInfo } from "./SidebarServerInfo";
 import { LanguageToggle } from "./myrmidon/LanguageToggle";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
-const DOCS_URL = "https://docs.paperclip.ing/";
-const FEEDBACK_URL = "https://paperclip.ing/feedback";
 const ABOUT_SETTINGS_PATH = "/company/settings";
 
 interface SidebarAccountMenuProps {
@@ -263,7 +262,7 @@ export function SidebarAccountMenu({
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">Share feedback</TooltipContent>
+            <TooltipContent side="top">{t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
-import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@myrmidon/db";
+import { syncRoutineVariablesWithTemplate } from "@myrmidon/shared";
+import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@myrmidon/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -263,7 +263,7 @@ function readBuiltInText(relativePath: string, fallbackText: string) {
   );
 }
 
-const skillsCatalogRoot = resolvePackageRoot("@paperclipai/skills-catalog");
+const skillsCatalogRoot = resolvePackageRoot("@myrmidon/skills-catalog");
 const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md", FALLBACK_REFLECTION_COACH_INSTRUCTIONS);
 const REFLECTION_COACH_ROUTINE = readBuiltInText(
   "reflection-coach/routines/recent-agent-reflection.md",
@@ -303,6 +303,29 @@ const SUMMARIZER_SKILL = readBuiltInTextWithFallback(
 );
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([
+  {
+    // myrmidon(ADMIN-ASSISTANT): the instance administrator is a first-class
+    // built-in agent; routing policy lives in myrmidon/admin-assistant.
+    key: "admin-assistant",
+    displayName: "Instance Administrator",
+    featureKeys: ["admin-assistant"],
+    shortPurpose: "Maintains the instance and answers operator administration tasks.",
+    defaultInstructions:
+      `You are ${PN}'s Instance Administrator. Safely inspect and maintain the instance, explain proposed changes, and use only the tools and permissions granted to this agent.`,
+    defaultRole: "administrator",
+    defaultTitle: "Instance Administrator",
+    defaultIcon: "shield",
+    defaultPermissions: {
+      canCreateAgents: false,
+      canCreateSkills: false,
+    },
+    defaultStatus: "paused",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["hermes_gateway", "openclaw_gateway"],
+    defaultAdapterType: "hermes_gateway",
+    defaultAdapterConfig: {},
+    defaultBudgetMonthlyCents: 0,
+  },
   {
     key: "briefs",
     displayName: "Briefs Agent",

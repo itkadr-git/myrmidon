@@ -4,7 +4,7 @@
 // groups, the expansion of a group, «Назад» and «Ещё →».
 //
 // The tree itself (and the rules that turn the owner's settings and the
-// gateway catalog into it) lives in `@paperclipai/shared`
+// gateway catalog into it) lives in `@myrmidon/shared`
 // (`myrmidon-model-menu.ts`). This module is the presentation layer of the
 // bridge: given the resolved menu and a position in it, it answers which
 // entries one message shows and which position every entry leads to.
@@ -27,7 +27,7 @@ import type {
   ModelMenuModel,
   ModelMenuNode,
   ResolvedModelMenu,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** Telegram refuses a keyboard with more than 100 buttons; keep a spare row for navigation. */
 export const MODEL_MENU_MAX_ENTRIES = 96;

@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@myrmidon/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectDefaultCaste } from "./ProjectDefaultCaste";
 import { castesApi, type CasteView } from "./myrmidon/castes/castesApi";

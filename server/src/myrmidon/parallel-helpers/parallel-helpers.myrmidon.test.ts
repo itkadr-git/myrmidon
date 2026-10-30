@@ -7,7 +7,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { parallelHelpersRoutes } from "./routes.js";
 import { PARALLEL_HELPERS_ACTION, parallelHelpersService, type ParallelHelpersServiceDeps } from "./service.js";

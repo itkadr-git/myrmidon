@@ -53,7 +53,7 @@ describe("update command", () => {
         paths,
         executablePath: source === "global-npm" ? path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js") : entrypoint,
         runCommand, backup, restartActiveService,
-      })).rejects.toThrow("npx paperclipai@latest install --yes");
+      })).rejects.toThrow("npx myrmidon@latest install --yes");
       expect(runCommand).not.toHaveBeenCalled();
       expect(backup).not.toHaveBeenCalled();
       expect(restartActiveService).not.toHaveBeenCalled();
@@ -218,7 +218,7 @@ describe("update command", () => {
     const runCommand = vi.fn(async () => ({ stdout: '"2.0.0"\n', stderr: "" }));
 
     await expect(updateCommand({}, { paths, executablePath: executable, runCommand, backup, hasInstanceData: () => true })).rejects.toThrow(
-      "Start the service with `paperclipai service start` and retry, or skip the backup with `paperclipai update --no-backup`.",
+      "The Myrmidon database is not running or reachable, so the pre-update backup cannot be taken. Start the service with `myrmidon service start` and retry, or skip the backup with `myrmidon update --no-backup`.",
     );
     expect(backup).toHaveBeenCalledOnce();
     expect(readInstallManifest(paths)?.version).toBe("1.0.0");
@@ -250,7 +250,7 @@ describe("update command", () => {
     const executable = path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js");
     const runCommand = vi.fn(async (_file: string, args: string[]) => args[0] === "view" ? { stdout: '"2.0.0"\n', stderr: "" } : { stdout: "", stderr: "" });
     await updateCommand({ dryRun: true }, { paths, executablePath: executable, runCommand });
-    expect(runCommand).toHaveBeenCalledWith("npm", expect.arrayContaining(["view", "paperclipai@latest"]), expect.anything());
+    expect(runCommand).toHaveBeenCalledWith("npm", expect.arrayContaining(["view", "myrmidon@latest"]), expect.anything());
   });
 
   it("rolls back the active payload when restart validation fails", async () => {

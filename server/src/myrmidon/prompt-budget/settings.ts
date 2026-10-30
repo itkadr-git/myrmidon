@@ -14,7 +14,7 @@ import {
   normalizePromptBudgetSettings,
   promptBudgetSettingsSchema,
   type PromptBudgetSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type PromptBudgetSettingsService = Pick<

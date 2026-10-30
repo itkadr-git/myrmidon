@@ -7,6 +7,7 @@ import {
   prepareOAuthNavigation,
   readPendingCloudHandoff,
 } from "@/lib/oauthHandoff";
+import { i18n, useTranslation } from "@/i18n";
 
 export type ManagedOAuthHandoffPhase = "loading" | "reauthenticating" | "error";
 
@@ -21,6 +22,7 @@ export function ManagedOAuthHandoffState({
   onRetry: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const failed = phase === "error";
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -34,19 +36,19 @@ export function ManagedOAuthHandoffState({
         </span>
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight">
-            {failed ? "Sign-in couldn’t continue" : "Preparing secure sign-in"}
+            {failed ? t("area.apps-connections-3.paperclip-cloud-oauth-handoff.failedTitle") : t("area.apps-connections-3.paperclip-cloud-oauth-handoff.loadingTitle")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {failed
-              ? error ?? "Myrmidon couldn’t prepare the provider sign-in. Try again."
+              ? error ?? t("area.apps-connections-3.paperclip-cloud-oauth-handoff.prepareFailed")
               : phase === "reauthenticating"
-                ? "Your Myrmidon sign-in is being refreshed."
-                : "Myrmidon is opening the provider securely."}
+                ? t("area.apps-connections-3.paperclip-cloud-oauth-handoff.reauthenticating")
+                : t("area.apps-connections-3.paperclip-cloud-oauth-handoff.openingProvider")}
           </p>
           {failed ? (
             <div className="mt-6 flex items-center gap-2">
-              <Button type="button" onClick={onRetry}>Try again</Button>
-              <Button type="button" variant="ghost" onClick={onCancel}>Return to Myrmidon</Button>
+              <Button type="button" onClick={onRetry}>{t("area.apps-connections-3.paperclip-cloud-oauth-handoff.tryAgain")}</Button>
+              <Button type="button" variant="ghost" onClick={onCancel}>{t("area.apps-connections-3.paperclip-cloud-oauth-handoff.returnToMyrmidon")}</Button>
             </div>
           ) : null}
         </div>
@@ -64,7 +66,7 @@ export function PaperclipCloudOAuthHandoffPage() {
     const handoff = readPendingCloudHandoff();
     if (!handoff) {
       setPhase("error");
-      setError("This sign-in expired. Return to Myrmidon and start the connection again.");
+      setError(i18n.t("area.apps-connections-3.paperclip-cloud-oauth-handoff.expired"));
       return;
     }
     setPhase("loading");
@@ -73,14 +75,14 @@ export function PaperclipCloudOAuthHandoffPage() {
       const target = await prepareOAuthNavigation({ authorizationUrl: "", handoff });
       if (target.kind === "reauthentication") {
         setPhase("error");
-        setError("Myrmidon couldn’t refresh this sign-in. Try again to continue.");
+        setError(i18n.t("area.apps-connections-3.paperclip-cloud-oauth-handoff.refreshFailed"));
         return;
       }
       clearPendingCloudHandoff();
       navigateTopLevel(target.url);
     } catch (caught) {
       setPhase("error");
-      setError(caught instanceof Error ? caught.message : "Myrmidon couldn’t prepare secure sign-in.");
+      setError(caught instanceof Error ? caught.message : i18n.t("area.apps-connections-3.paperclip-cloud-oauth-handoff.secureFailed"));
     }
   }, []);
 

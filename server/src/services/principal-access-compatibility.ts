@@ -1,7 +1,7 @@
 import { and, eq, notInArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agents, companyMemberships, principalPermissionGrants } from "@myrmidon/db";
+import type { PermissionKey, PrincipalType } from "@myrmidon/shared";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
 
 type GrantInput = {

@@ -8,7 +8,7 @@
 // Neutral data only: agent-a, company-a, example.com.
 
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@myrmidon/shared";
 import { autonomyService, AUTONOMY_ACTIVITY_SOURCE } from "./service.js";
 import { memoryAutonomyStore } from "./store.js";
 

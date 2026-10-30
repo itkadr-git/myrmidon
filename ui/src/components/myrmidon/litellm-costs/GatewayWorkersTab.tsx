@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cpu } from "lucide-react";
-import { useTranslation } from "@/i18n";
+import { i18n, useTranslation } from "@/i18n";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,18 +32,18 @@ import { isNotEnabledError } from "./litellmCostsApi";
 /** The error text the operator sees from a failed PUT: server text first. */
 export function applyErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
-  return "Applying the worker count failed.";
+  return i18n.t("area.costs-budgets-2.gateway-workers-tab.applyFailed");
 }
 
 /** "current -> target" status line after the latest read. */
 export function applyStatusLine(
   state: LitellmWorkersState | undefined,
-  unknownLine = "Running now is unknown: the gateway did not report its pool size.",
+  unknownLine = i18n.t("litellmWorkers.statusUnknown"),
 ): string | null {
   if (!state) return null;
   if (state.current === null) return unknownLine;
-  if (state.current === state.target) return `${state.current} worker${state.current === 1 ? "" : "s"} running — applied.`;
-  return `Applying: ${state.current} running -> ${state.target} requested.`;
+  if (state.current === state.target) return i18n.t("area.costs-budgets-2.gateway-workers-tab.status.applied", { count: state.current });
+  return i18n.t("area.costs-budgets-2.gateway-workers-tab.status.applying", { current: state.current, target: state.target });
 }
 
 function MetricLine({ label, value }: { label: string; value: string }) {
@@ -104,12 +104,12 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
     return (
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">
-          <CardTitle className="text-base">Worker processes</CardTitle>
+          <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.control.title")}</CardTitle>
         </CardHeader>
         <CardContent className="px-5 pb-5 pt-2">
           <p className="text-sm text-destructive">
             {isNotEnabledError(error)
-              ? "LiteLLM worker control is not enabled on this instance."
+              ? t("area.costs-budgets-2.gateway-workers-tab.control.notEnabled")
               : (error as Error).message}
           </p>
         </CardContent>
@@ -120,10 +120,10 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
     return (
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">
-          <CardTitle className="text-base">Worker processes</CardTitle>
+          <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.control.title")}</CardTitle>
         </CardHeader>
         <CardContent className="px-5 pb-5 pt-2">
-          <p className="text-sm text-muted-foreground">Loading gateway worker state…</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-workers-tab.control.loading")}</p>
         </CardContent>
       </Card>
     );
@@ -135,15 +135,14 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Worker processes</CardTitle>
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.control.title")}</CardTitle>
         <CardDescription>
-          How many LiteLLM gateway processes handle requests. Changing the count is done without a restart
-          (the master signals its workers), so the gateway keeps serving while it applies.
+          {t("area.costs-budgets-2.gateway-workers-tab.control.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-5 pb-5 pt-2">
         <div className="space-y-1">
-          <Label htmlFor="myrmidon-workers-target">Number of processes</Label>
+          <Label htmlFor="myrmidon-workers-target">{t("area.costs-budgets-2.gateway-workers-tab.control.targetLabel")}</Label>
           <Input
             id="myrmidon-workers-target"
             inputMode="numeric"
@@ -155,7 +154,7 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
             }}
           />
           <p className="text-xs text-muted-foreground">
-            Max by CPU: {data.maxByCpu} · Max by memory: {data.maxByMemory} · {t("litellmWorkers.runningNow", { value: data.current ?? t("litellmWorkers.unknown") })}
+            {t("area.costs-budgets-2.gateway-workers-tab.control.limits", { cpu: data.maxByCpu, memory: data.maxByMemory })} · {t("litellmWorkers.runningNow", { value: data.current ?? t("litellmWorkers.unknown") })}
           </p>
           {problem && shown.trim() !== "" ? <p className="text-sm text-destructive">{problem}</p> : null}
         </div>
@@ -173,22 +172,35 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
                     mutation.mutate(target);
                   }}
                 >
-                  Confirm: set {target} worker{target === 1 ? "" : "s"}
+                  {t("area.costs-budgets-2.gateway-workers-tab.control.confirm", { count: target })}
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setConfirmApply(false)}>
-                  Cancel
+                  {t("common.cancel")}
                 </Button>
               </>
             ) : (
               <Button size="sm" disabled={!canApply} onClick={() => setConfirmApply(true)}>
-                Apply {target} worker{target === 1 ? "" : "s"}
+                {t("area.costs-budgets-2.gateway-workers-tab.control.apply", { count: target })}
               </Button>
             )
           ) : null}
-          {mutation.isPending ? <p className="text-sm text-muted-foreground">Applying…</p> : null}
+          {mutation.isPending ? <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-workers-tab.control.applying")}</p> : null}
         </div>
 
+        {data.apply?.interruption ? (
+          <p className="text-sm text-muted-foreground" data-testid="myrmidon-workers-restart-warning">
+            {t("litellmWorkers.restartWarning")}
+            {data.apply.configured ? "" : ` ${t("litellmWorkers.restartNotConfigured")}`}
+          </p>
+        ) : null}
+
         {statusLine ? <p className="text-sm text-muted-foreground">{statusLine}</p> : null}
+
+        {mutation.data && mutation.data.applied === false && mutation.data.applyError ? (
+          <div className="border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive" data-testid="myrmidon-workers-not-confirmed">
+            {t("litellmWorkers.notConfirmed", { reason: mutation.data.applyError })}
+          </div>
+        ) : null}
 
         {mutation.isError ? (
           <div className="border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive" data-testid="myrmidon-workers-error">
@@ -201,6 +213,7 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
 }
 
 function MetricsCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const { data } = useQuery({
     queryKey: litellmWorkersKey(companyId),
     queryFn: () => litellmWorkersApi.state(companyId),
@@ -213,10 +226,10 @@ function MetricsCard({ companyId }: { companyId: string }) {
     return (
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">
-          <CardTitle className="text-base">Gateway metrics</CardTitle>
+          <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.metrics.title")}</CardTitle>
         </CardHeader>
         <CardContent className="px-5 pb-5 pt-2">
-          <p className="text-sm text-muted-foreground">Waiting for the first metrics read…</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-workers-tab.metrics.waiting")}</p>
         </CardContent>
       </Card>
     );
@@ -225,17 +238,17 @@ function MetricsCard({ companyId }: { companyId: string }) {
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Gateway metrics</CardTitle>
-        <CardDescription>Read from the gateway every 30 seconds.</CardDescription>
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.metrics.title")}</CardTitle>
+        <CardDescription>{t("area.costs-budgets-2.gateway-workers-tab.metrics.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 px-5 pb-5 pt-2">
         {cpu.length === 0 ? (
-          <MetricLine label="CPU per worker" value="-" />
+          <MetricLine label={t("area.costs-budgets-2.gateway-workers-tab.metrics.cpuPerWorker")} value="-" />
         ) : (
           cpu.map((percent, index) => (
             <div key={index} className="flex items-center gap-3 border border-border px-4 py-2">
               <Cpu className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="w-24 shrink-0 text-sm text-muted-foreground">Worker {index + 1}</span>
+              <span className="w-24 shrink-0 text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-workers-tab.metrics.worker", { n: index + 1 })}</span>
               <div className="min-w-0 flex-1">
                 <CpuBar percent={percent} />
               </div>
@@ -246,11 +259,11 @@ function MetricsCard({ companyId }: { companyId: string }) {
           ))
         )}
         <MetricLine
-          label="Median response time"
-          value={data.metrics.medianLatencyMs == null ? "-" : `${Math.round(data.metrics.medianLatencyMs)} ms`}
+          label={t("area.costs-budgets-2.gateway-workers-tab.metrics.medianLatency")}
+          value={data.metrics.medianLatencyMs == null ? "-" : t("area.costs-budgets-2.gateway-workers-tab.metrics.ms", { value: Math.round(data.metrics.medianLatencyMs) })}
         />
         <MetricLine
-          label="Request queue"
+          label={t("area.costs-budgets-2.gateway-workers-tab.metrics.queue")}
           value={data.metrics.queueDepth == null ? "-" : String(data.metrics.queueDepth)}
         />
       </CardContent>
@@ -259,6 +272,7 @@ function MetricsCard({ companyId }: { companyId: string }) {
 }
 
 function AutoSelectCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data } = useQuery({
     queryKey: litellmWorkersKey(companyId),
@@ -279,11 +293,9 @@ function AutoSelectCard({ companyId }: { companyId: string }) {
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Auto-select</CardTitle>
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-workers-tab.auto.title")}</CardTitle>
         <CardDescription>
-          When on, the backend adds a worker while load stays above 80% and removes one below 30%, with
-          hysteresis and the ceilings above. The rule itself runs on the server; this switch only turns it
-          on or off.
+          {t("area.costs-budgets-2.gateway-workers-tab.auto.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 px-5 pb-5 pt-2">
@@ -292,16 +304,15 @@ function AutoSelectCard({ companyId }: { companyId: string }) {
             checked={enabled}
             disabled={!supported || mutation.isPending}
             onCheckedChange={(next) => mutation.mutate(next)}
-            aria-label="Auto-select worker count"
+            aria-label={t("area.costs-budgets-2.gateway-workers-tab.auto.ariaLabel")}
           />
           <span className="text-sm">
-            {supported ? (enabled ? "Auto-select is on" : "Auto-select is off") : "Not supported by this backend"}
+            {supported ? (enabled ? t("area.costs-budgets-2.gateway-workers-tab.auto.on") : t("area.costs-budgets-2.gateway-workers-tab.auto.off")) : t("area.costs-budgets-2.gateway-workers-tab.auto.unsupported")}
           </span>
         </div>
         {!supported && data ? (
           <p className="text-xs text-muted-foreground">
-            The server does not expose the auto-select setting yet, so the switch is disabled. Manual
-            worker control above still works.
+            {t("area.costs-budgets-2.gateway-workers-tab.auto.unsupportedHint")}
           </p>
         ) : null}
         {mutation.isError ? (

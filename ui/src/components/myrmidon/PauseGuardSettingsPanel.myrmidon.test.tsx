@@ -8,7 +8,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PauseGuardSettingKey, PauseGuardSettingsSource } from "@paperclipai/shared";
+import type { PauseGuardSettingKey, PauseGuardSettingsSource } from "@myrmidon/shared";
 import type { PauseGuardView } from "./pauseGuardApi";
 import {
   PauseGuardSettingsPanelView,

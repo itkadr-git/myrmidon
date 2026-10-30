@@ -30,7 +30,7 @@ import {
   toolApplications,
   toolConnections,
   toolOauthStates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,7 +47,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
-import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@myrmidon/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -4323,7 +4323,21 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const issueD = randomUUID();
     await db.insert(issues).values([
       { id: issueA, companyId, identifier: "PAP-1", title: "Issue A", status: "blocked", priority: "medium" },
-      { id: issueB, companyId, identifier: "PAP-2", title: "Issue B", status: "blocked", priority: "medium" },
+      {
+        id: issueB,
+        companyId,
+        identifier: "PAP-2",
+        title: "Issue B",
+        status: "blocked",
+        priority: "medium",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: randomUUID() },
+          nextCheckAt: "2026-10-25T12:00:00.000Z",
+          timeoutAt: "2026-10-26T12:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      },
       { id: issueC, companyId, identifier: "PAP-3", title: "Issue C", status: "blocked", priority: "medium" },
       { id: issueD, companyId, identifier: "PAP-4", title: "Issue D", status: "todo", priority: "high" },
     ]);
@@ -4339,6 +4353,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: issueB,
       identifier: "PAP-2",
       title: "Issue B",
+      blockerMetadata: {
+        blockReason: "dependency",
+        nextCheckAt: "2026-10-25T12:00:00.000Z",
+      },
       terminalBlockers: [
         expect.objectContaining({
           id: issueD,
@@ -4455,6 +4473,27 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       pendingFinalizeBlockerIssueIds: [],
       unresolvedBlockerIssueIds: [],
     });
+  });
+
+  it("sync-back pending (blockers done): the dependent stays blocked and passes the blocked-reason rule", async () => {
+    const { companyId, executionWorkspaceId, blockerId, dependentId } = await seedSharedWorkspaceDependency();
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: null,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+    });
+    // Re-entering blocked with no stated reason is allowed: the pending
+    // sync-back is the open blocker the rule counts.
+    await svc.update(dependentId, { status: "todo" });
+    const reblocked = await svc.update(dependentId, { status: "blocked" });
+    expect(reblocked?.status).toBe("blocked");
   });
 
   it("keeps dependents blocked on unattributed workspace operations for the blocker workspace", async () => {

@@ -19,8 +19,8 @@
 // "default") — the SETTINGS-TO-UI contract.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { budgetProjectionSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { budgetProjectionSettingsSchema } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/index.js";

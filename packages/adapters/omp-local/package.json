@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/adapter-omp-local",
+  "name": "@myrmidon/adapter-omp-local",
   "version": "0.1.0",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapters/omp-local"
   },
   "type": "module",
@@ -50,8 +50,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "@myrmidon/adapter-utils": "workspace:*",
+    "picocolors": "^1.1.1",
+    "@myrmidon/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

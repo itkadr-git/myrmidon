@@ -11,7 +11,7 @@
 // so shipping a detector change without looking at its effect on the
 // reference corpus is impossible. Refresh deliberately after changing any
 // detector or corpus file:
-//   pnpm --filter @paperclipai/server exec tsx \
+//   pnpm --filter @myrmidon/server exec tsx \
 //     ../scripts/myrmidon/guardrails-eval/refresh.ts
 // and commit both files in the same PR.
 

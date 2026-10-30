@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { forbidden, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   getCloudStackContext,
   type CloudInstanceEnv,

@@ -111,7 +111,7 @@ jobs:
           run_install: false
 
       - name: Install the production CLI from this checkout
-        run: pnpm install --frozen-lockfile --filter "paperclipai..."
+        run: pnpm install --frozen-lockfile --filter "myrmidon..."
 
       - name: Install PostgreSQL client tools
         run: |

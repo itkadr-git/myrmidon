@@ -7,7 +7,7 @@ import type {
   CatalogTeamInstallResult,
   CatalogTeamKind,
   InstalledCatalogTeam,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 export interface TeamCatalogListQuery {

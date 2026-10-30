@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent } from "@myrmidon/shared";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 

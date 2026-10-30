@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import {
   Dialog,
   DialogContent,
@@ -9,8 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { accessKindLabel } from "./accessKindLabel";
 import {
-  ACCESS_KIND_LABEL,
   ACCESS_KIND_ORDER,
   type AccessKind,
   type AccessRecord,
@@ -53,6 +55,7 @@ export function AccessValueDialogBody({
   onSubmit,
   onCancel,
 }: AccessValueDialogBodyProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [kind, setKind] = useState<AccessKind>("token");
@@ -63,11 +66,11 @@ export function AccessValueDialogBody({
 
   async function submit() {
     if (creating && !name.trim()) {
-      setValidationError("Give the access a name.");
+      setValidationError(t("area.access-hub.access-value-dialog.nameRequired"));
       return;
     }
     if (!value) {
-      setValidationError("Enter a value.");
+      setValidationError(t("area.access-hub.access-value-dialog.valueRequired"));
       return;
     }
     setValidationError(null);
@@ -102,29 +105,29 @@ export function AccessValueDialogBody({
       {creating ? (
         <>
           <label className="flex flex-col gap-1 text-sm">
-            Name
-            <Input value={name} onChange={(event) => setName(event.target.value)} aria-label="Access name" />
+            {t("area.access-hub.access-value-dialog.name")}
+            <Input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("area.access-hub.access-value-dialog.accessNameLabel")} />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Key
+            {t("area.access-hub.access-value-dialog.key")}
             <Input
               value={key}
               onChange={(event) => setKey(event.target.value)}
-              aria-label="Access key"
-              placeholder="derived from the name when empty"
+              aria-label={t("area.access-hub.access-value-dialog.accessKeyLabel")}
+              placeholder={t("area.access-hub.access-value-dialog.keyPlaceholder")}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Type
+            {t("area.access-hub.access-value-dialog.type")}
             <select
               value={kind}
-              aria-label="Access type"
+              aria-label={t("area.access-hub.access-value-dialog.accessTypeLabel")}
               onChange={(event) => setKind(event.target.value as AccessKind)}
               className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
             >
               {ACCESS_KIND_ORDER.map((option) => (
                 <option key={option} value={option}>
-                  {ACCESS_KIND_LABEL[option]}
+                  {accessKindLabel(t, option)}
                 </option>
               ))}
             </select>
@@ -132,20 +135,22 @@ export function AccessValueDialogBody({
         </>
       ) : (
         <p className="text-sm text-muted-foreground">
-          New value for <span className="font-medium text-foreground">{record?.name}</span> (
-          <span className="font-mono text-xs">{record?.key}</span>). The current version stays readable until the
-          write lands.
+          <Trans
+            i18nKey="area.access-hub.access-value-dialog.newValueFor"
+            values={{ name: record?.name ?? "", key: record?.key ?? "" }}
+            components={[<span key="name" className="font-medium text-foreground" />, <span key="key" className="font-mono text-xs" />]}
+          />
         </p>
       )}
 
       <label className="flex flex-col gap-1 text-sm">
-        Value
+        {t("area.access-hub.access-value-dialog.value")}
         <Input
           type="password"
           autoComplete="new-password"
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          aria-label="Secret value"
+          aria-label={t("area.access-hub.access-value-dialog.secretValueLabel")}
           data-testid="access-hub-value-input"
         />
       </label>
@@ -158,10 +163,10 @@ export function AccessValueDialogBody({
 
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          {creating ? "Create access" : "Save value"}
+          {creating ? t("area.access-hub.access-value-dialog.createAccess") : t("area.access-hub.access-value-dialog.saveValue")}
         </Button>
       </DialogFooter>
     </form>
@@ -174,13 +179,14 @@ export interface AccessValueDialogProps extends AccessValueDialogBodyProps {
 }
 
 export function AccessValueDialog({ open, onOpenChange, ...body }: AccessValueDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{body.mode === "create" ? "New access" : "Change value"}</DialogTitle>
+          <DialogTitle>{body.mode === "create" ? t("area.access-hub.access-value-dialog.titleCreate") : t("area.access-hub.access-value-dialog.titleSetValue")}</DialogTitle>
           <DialogDescription>
-            The value is written once and is never displayed again — after this it only appears as a version number.
+            {t("area.access-hub.access-value-dialog.description")}
           </DialogDescription>
         </DialogHeader>
         <AccessValueDialogBody {...body} />

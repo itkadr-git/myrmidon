@@ -10,11 +10,11 @@
 // settings at the top of every pass, so the change applies without a restart.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   patchDataRetentionSettingsSchema,
   type DataRetentionSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { DataRetentionService } from "./service.js";

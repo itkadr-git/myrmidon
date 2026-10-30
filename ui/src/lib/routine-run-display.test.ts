@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RoutineVariable } from "@paperclipai/shared";
+import type { RoutineVariable } from "@myrmidon/shared";
 import { dedupedTriggerLabel, runRowSubtitle } from "./routine-run-display";
 
 const variables: RoutineVariable[] = [

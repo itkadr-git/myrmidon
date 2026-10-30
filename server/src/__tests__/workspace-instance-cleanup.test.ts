@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseEnvContents } from "dotenv";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -11,7 +11,7 @@ import {
   readWorktreeInstancePointer,
   stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
-import type { WorkspaceOperation } from "@paperclipai/shared";
+import type { WorkspaceOperation } from "@myrmidon/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
 
 const tempRoots = new Set<string>();

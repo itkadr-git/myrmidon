@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents as agentsTable,
   assets,
@@ -26,9 +26,9 @@ import {
   issues,
   issueThreadInteractions,
   issueWorkProducts,
-} from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
+import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@myrmidon/adapter-utils/server-utils";
 import type {
   AgentDesiredSkillEntry,
   CatalogSkill,
@@ -95,7 +95,7 @@ import type {
   CompanySkillVersionFileInventoryEntry,
   IssueAttachment,
   IssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isUuidLike,
   joinFrontmatterBlock,
@@ -103,7 +103,7 @@ import {
   parseFrontmatterMarkdown,
   splitFrontmatterBlock,
   stringifyFrontmatter,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing skill texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";

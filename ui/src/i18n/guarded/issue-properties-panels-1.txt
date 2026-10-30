@@ -1,0 +1,9 @@
+# myrmidon(OPE-8950): area issue-properties-panels-1
+components/IssueAttachmentsSection.tsx
+components/IssueCasesPanel.tsx
+components/IssueDocumentsSection.tsx
+components/IssuePlanDecompositionsSection.tsx
+components/IssueReferenceActivitySummary.tsx
+components/IssueRelatedWorkPanel.tsx
+components/IssueWorkspaceCard.tsx
+components/PropertiesPanel.tsx

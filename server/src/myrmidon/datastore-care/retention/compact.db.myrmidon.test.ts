@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

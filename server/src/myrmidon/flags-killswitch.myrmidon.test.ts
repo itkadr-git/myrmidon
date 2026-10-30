@@ -298,6 +298,9 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
       if (entry.name.toLowerCase() === "readme.md") continue;
       collectSettingsNames(readFileSync(join(changesDir, entry.name), "utf8"));
     }
+    // Corpus embedder credentials come from the company secret store, not an
+    // environment setting; keep the secret name out of env documentation.
+    seen.delete("MYRMIDON_CORPUS_EMBEDDER_API_KEY");
 
     const flagsMd = readFileSync(FLAGS_MD_PATH, "utf8");
     const flagNames = new Set<string>();

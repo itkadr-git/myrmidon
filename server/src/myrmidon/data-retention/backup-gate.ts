@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
-} from "@paperclipai/shared/home-paths";
+} from "@myrmidon/shared/home-paths";
 
 /** The gate asks for a backup younger than this. */
 export const DATA_RETENTION_BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;

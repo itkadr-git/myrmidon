@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/shared",
+  "name": "@myrmidon/shared",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/shared"
   },
   "type": "module",
@@ -49,6 +49,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "typescript": "^7.0.2"
   },
   "engines": {

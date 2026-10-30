@@ -11,11 +11,12 @@ Uploads a generated file from the current workspace to the current Myrmidon
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:
-  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
+  MYRMIDON_API_URL, MYRMIDON_API_KEY, MYRMIDON_COMPANY_ID, MYRMIDON_TASK_ID, MYRMIDON_RUN_ID
+  (or legacy PAPERCLIP_* variables during transition)
 
 Options:
-  --issue-id ID          Issue id to attach to (default: PAPERCLIP_TASK_ID)
-  --company-id ID        Company id (default: PAPERCLIP_COMPANY_ID)
+  --issue-id ID          Issue id to attach to (default: MYRMIDON_TASK_ID or PAPERCLIP_TASK_ID)
+  --company-id ID        Company id (default: MYRMIDON_COMPANY_ID or PAPERCLIP_COMPANY_ID)
   --title TEXT           Work product title (default: file basename)
   --summary TEXT         Work product summary
   --content-type TYPE    Override detected upload content type
@@ -119,14 +120,16 @@ request_json() {
   local body="${3:-}"
   local response_file
   local status_code
+  local api_key="${MYRMIDON_API_KEY:-${PAPERCLIP_API_KEY:-}}"
+  local run_id="${MYRMIDON_RUN_ID:-${PAPERCLIP_RUN_ID:-}}"
 
   response_file="$(mktemp)"
   if [[ -n "$body" ]]; then
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+        -H "Authorization: Bearer $api_key" \
+        -H "X-Paperclip-Run-Id: $run_id" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
@@ -134,8 +137,8 @@ request_json() {
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+        -H "Authorization: Bearer $api_key" \
+        -H "X-Paperclip-Run-Id: $run_id"
     )"
   fi
 
@@ -161,14 +164,16 @@ upload_file() {
   local curl_status=0
   local indeterminate=0
 
+  local api_key="${MYRMIDON_API_KEY:-${PAPERCLIP_API_KEY:-}}"
+  local run_id="${MYRMIDON_RUN_ID:-${PAPERCLIP_RUN_ID:-}}"
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
   response_file="$(mktemp)"
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H "Authorization: Bearer $api_key" \
+      -H "X-Paperclip-Run-Id: $run_id" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )" || curl_status=$?
 
@@ -223,7 +228,7 @@ acquire_operation_lock() {
   local attempts=0
 
   umask 077
-  operation_state_root="${PAPERCLIP_HELPER_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-upload-artifact}"
+  operation_state_root="${MYRMIDON_HELPER_STATE_DIR:-${PAPERCLIP_HELPER_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-upload-artifact}}"
   mkdir -p "$operation_state_root"
   operation_lock_path="$operation_state_root/$operation_key.lock"
   operation_lock_owner="$$|$(process_start_identity "$$" || true)"
@@ -264,8 +269,8 @@ acquire_operation_lock() {
 }
 
 file_path=""
-issue_id="${PAPERCLIP_TASK_ID:-}"
-company_id="${PAPERCLIP_COMPANY_ID:-}"
+issue_id="${MYRMIDON_TASK_ID:-${PAPERCLIP_TASK_ID:-}}"
+company_id="${MYRMIDON_COMPANY_ID:-${PAPERCLIP_COMPANY_ID:-}}"
 title=""
 summary=""
 content_type=""
@@ -398,17 +403,21 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+api_url="${MYRMIDON_API_URL:-${PAPERCLIP_API_URL:-}}"
+api_key="${MYRMIDON_API_KEY:-${PAPERCLIP_API_KEY:-}}"
+run_id="${MYRMIDON_RUN_ID:-${PAPERCLIP_RUN_ID:-}}"
+
+if [[ -z "$api_url" || -z "$api_key" || -z "$run_id" ]]; then
+  printf 'Missing MYRMIDON_API_URL, MYRMIDON_API_KEY, or MYRMIDON_RUN_ID (or legacy PAPERCLIP_* aliases).\n' >&2
   exit 1
 fi
 
 if [[ -z "$issue_id" || -z "$company_id" ]]; then
-  printf 'Missing issue or company id. Pass --issue-id/--company-id or set PAPERCLIP_TASK_ID/PAPERCLIP_COMPANY_ID.\n' >&2
+  printf 'Missing issue or company id. Pass --issue-id/--company-id or set MYRMIDON_TASK_ID/MYRMIDON_COMPANY_ID (or legacy PAPERCLIP_* aliases).\n' >&2
   exit 1
 fi
 
-api_root="${PAPERCLIP_API_URL%/}"
+api_root="${api_url%/}"
 case "$api_root" in
   */api) api_base="$api_root" ;;
   *) api_base="$api_root/api" ;;
@@ -416,7 +425,7 @@ esac
 file_sha256="$(sha256_file "$file_path")"
 original_filename="$(basename "$file_path")"
 operation_key="$(
-  sha256_text "$api_base|$company_id|$issue_id|$PAPERCLIP_RUN_ID|$original_filename|$file_sha256|$content_type"
+  sha256_text "$api_base|$company_id|$issue_id|$run_id|$original_filename|$file_sha256|$content_type"
 )"
 acquire_operation_lock "$operation_key"
 trap release_operation_lock EXIT
@@ -433,7 +442,7 @@ for ((lookup_attempt = 1; lookup_attempt <= lookup_attempts; lookup_attempt++));
   attachment="$(
     jq -nc \
       --argjson attachments "$existing_attachments" \
-      --arg runId "$PAPERCLIP_RUN_ID" \
+      --arg runId "$run_id" \
       --arg sha256 "$file_sha256" \
       --arg originalFilename "$original_filename" \
       --arg contentType "$content_type" \
@@ -503,7 +512,7 @@ if [[ "$create_work_product" == "1" ]]; then
       --arg title "$title" \
       --arg summary "$summary" \
       --arg status "$status" \
-      --arg runId "$PAPERCLIP_RUN_ID" \
+      --arg runId "$run_id" \
       --arg attachmentId "$attachment_id" \
       --arg contentType "$content_type" \
       --argjson byteSize "$byte_size" \

@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 
 // myrmidon(AGENTS-TREE): pure hierarchy helpers for the agents tree views
 // (sidebar + roster page + UI 2.0 shell). The data already carries

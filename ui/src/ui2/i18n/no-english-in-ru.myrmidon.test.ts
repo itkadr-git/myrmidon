@@ -62,6 +62,18 @@ const ruKeys = flatten(ru);
 // the nested ui2: namespace (UI2-I18N panels) and the flat screen catalog.
 for (const key of Object.keys(ui2Messages.en)) catalogKeys.add(key);
 for (const key of Object.keys(ui2Messages.ru)) ruKeys.add(key);
+// myrmidon(OPE-8950): ui2 shell components translated through @/i18n use the
+// legacy area catalogs (area.<area>.*); accept those keys too (plural base included).
+const AREAS_DIR = join(UI2_ROOT, "../i18n/myrmidon-locales/areas");
+for (const file of readdirSync(AREAS_DIR)) {
+  const match = /^(.+)\.(en|ru)\.json$/.exec(file);
+  if (!match) continue;
+  const target = match[2] === "en" ? catalogKeys : ruKeys;
+  for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
+    target.add(key);
+    target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+  }
+}
 
 /** Attributes whose string values a human reads. */
 const USER_VISIBLE_ATTRIBUTES = new Set([

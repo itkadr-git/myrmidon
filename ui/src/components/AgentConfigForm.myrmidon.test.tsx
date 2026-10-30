@@ -7,8 +7,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "@paperclipai/shared";
-import { getEnvironmentCapabilities } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
+import { getEnvironmentCapabilities } from "@myrmidon/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
@@ -214,6 +214,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 async function act(callback: () => void | Promise<void>) {

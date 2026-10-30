@@ -14,7 +14,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "3b231978796d0a7274c3ec625eff5fe4fe5ac2117ffa5807d1c3d5a376c659dc",
         when: 1789743991329,
         tables: [],
-        columns: ["agents.appearance"],
+        columns: [],
       },
       {
         tag: "0281_true_boom_boom",
@@ -47,7 +47,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "3b231978796d0a7274c3ec625eff5fe4fe5ac2117ffa5807d1c3d5a376c659dc",
         when: 1789743991329,
         tables: [],
-        columns: ["agents.appearance"],
+        columns: [],
       },
       {
         tag: "0281_true_boom_boom",
@@ -138,7 +138,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "0dbe8ffdc523dfa689958cf36ba7887a0e4c3b2bae9cbf570dc81785f56ade4e",
         when: 1790796608171,
         tables: [],
-        columns: ["issues.title_needs_generation"],
+        columns: [],
       },
     ],
   },
@@ -150,7 +150,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "3b231978796d0a7274c3ec625eff5fe4fe5ac2117ffa5807d1c3d5a376c659dc",
         when: 1789743991329,
         tables: [],
-        columns: ["agents.appearance"],
+        columns: [],
       },
       {
         tag: "0281_true_boom_boom",
@@ -241,7 +241,7 @@ export const VENDOR_EXTRA_RELEASES: ReadonlyArray<VendorReleaseExtra> = [
         sha256: "0dbe8ffdc523dfa689958cf36ba7887a0e4c3b2bae9cbf570dc81785f56ade4e",
         when: 1790796608171,
         tables: [],
-        columns: ["issues.title_needs_generation"],
+        columns: [],
       },
       {
         tag: "0294_chilly_marvel_apes",

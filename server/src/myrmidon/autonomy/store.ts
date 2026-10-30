@@ -10,7 +10,7 @@
 // every mutation, so this document only holds current state.
 
 import { eq, sql } from "drizzle-orm";
-import { agents, instanceSettings, type Db } from "@paperclipai/db";
+import { agents, instanceSettings, type Db } from "@myrmidon/db";
 import {
   AUTONOMY_ACTION_CLASSES,
   AUTONOMY_CHANGE_ACTIONS,
@@ -26,7 +26,7 @@ import {
   type AutonomyRegulationStatus,
   type AutonomyRule,
   type AutonomyVerdict,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const AUTONOMY_GENERAL_KEY = "myrmidonAutonomyMatrix";
 // myrmidon(1.6-AUTONOMY-GW): the configurable tool -> action-class mapping.

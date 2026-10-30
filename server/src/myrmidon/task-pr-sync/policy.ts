@@ -16,7 +16,7 @@
 // No database access and no network here: the caller reads the rows and resolves
 // the PR state, then packs both into `TaskPrSyncFacts`.
 
-import type { IssueWorkProduct, PullRequestWorkProductMetadata } from "@paperclipai/shared";
+import type { IssueWorkProduct, PullRequestWorkProductMetadata } from "@myrmidon/shared";
 
 /** Effective state of one delivering PR, after the stored row and the resolved facts are merged. */
 export type TaskPrSyncPrState =

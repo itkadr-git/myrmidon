@@ -1,4 +1,4 @@
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 /**
  * Deliberate boot refusals and whether they should page Sentry.
  *

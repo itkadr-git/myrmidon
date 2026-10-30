@@ -9,7 +9,7 @@
 // material across agents.
 
 import { eq } from "drizzle-orm";
-import { agents, companies, type Db } from "@paperclipai/db";
+import { agents, companies, type Db } from "@myrmidon/db";
 import type { MemoryHindsightClient } from "../agent-memory/hindsight-client.js";
 import { resolveAgentMemoryBank } from "../agent-memory/service.js";
 import {

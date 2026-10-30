@@ -76,7 +76,8 @@
         "work": "Work"
       },
       "center": "Command center",
-      "fleet": "Server fleet",
+      "agents": "Agents",
+      "servers": "Servers",
       "swarmQueues": "Swarm: queues",
       "costs": "Costs",
       "quality": "Quality",

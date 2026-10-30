@@ -11,7 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useTranslation } from "@/i18n";
 import { botDiskQuotaApi, botDiskQuotaQueryKey } from "./botDiskQuotaApi";
+
+const CASTE_EXAMPLE = "engineer=20480\nreviewer=5120";
+const AGENT_EXAMPLE = "0f5d1c7e-…-uuid=1024";
 
 /** Parse `key=MB` lines; returns the entries and the first bad line. */
 function parseEntries<K extends string>(
@@ -35,6 +39,7 @@ function formatEntries(entries: ReadonlyArray<Record<string, string | number>>, 
 }
 
 export function BotDiskQuotaSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: view } = useQuery({ queryKey: botDiskQuotaQueryKey, queryFn: botDiskQuotaApi.get });
   const [defaultDraft, setDefaultDraft] = useState<string | null>(null);
@@ -61,13 +66,13 @@ export function BotDiskQuotaSettingsPanel() {
         defaultQuotaMb = null;
       } else {
         const parsed = Number(def);
-        if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`"${def}" is not a positive whole number of MB`);
+        if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(t("area.settings-bots-host-1.bot-disk-quota-settings-panel.errDefault", { value: def }));
         defaultQuotaMb = parsed;
       }
       const castes = parseEntries(casteDraft ?? "");
-      if (castes.bad) throw new Error(`"${castes.bad}" is not a "caste=MB" line`);
+      if (castes.bad) throw new Error(t("area.settings-bots-host-1.bot-disk-quota-settings-panel.errCaste", { line: castes.bad }));
       const agents = parseEntries(agentDraft ?? "");
-      if (agents.bad) throw new Error(`"${agents.bad}" is not a "agentId=MB" line`);
+      if (agents.bad) throw new Error(t("area.settings-bots-host-1.bot-disk-quota-settings-panel.errAgent", { line: agents.bad }));
       return botDiskQuotaApi.patch({
         defaultQuotaMb,
         perCaste: castes.entries.map((entry) => ({ casteKey: entry.key, quotaMb: entry.quotaMb })),
@@ -81,7 +86,7 @@ export function BotDiskQuotaSettingsPanel() {
       setAgentDraft(formatEntries(saved.settings.perAgent, "agentKey"));
       queryClient.invalidateQueries({ queryKey: botDiskQuotaQueryKey });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Could not save the quotas. Try again."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-quota-settings-panel.saveFailed")),
   });
 
   const unchanged =
@@ -94,14 +99,14 @@ export function BotDiskQuotaSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="bot-disk-quota-panel">
       <div className="flex items-center gap-2">
         <HardDrive className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Per-bot disk quota</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.title")}</h3>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-quota-default">Default quota, MB</Label>
+        <Label htmlFor="bot-disk-quota-default">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.defaultLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="bot-disk-quota-default"
-            placeholder="Empty: no quota unless an override sets one"
+            placeholder={t("area.settings-bots-host-1.bot-disk-quota-settings-panel.defaultPlaceholder")}
             value={defaultDraft ?? ""}
             onChange={(event) => {
               setDefaultDraft(event.target.value);
@@ -110,24 +115,21 @@ export function BotDiskQuotaSettingsPanel() {
             data-testid="bot-disk-quota-default-input"
           />
           <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || defaultDraft === null || unchanged}>
-            {save.isPending ? "Saving…" : "Save"}
+            {save.isPending ? t("area.settings-bots-host-1.bot-disk-quota-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Each bot&apos;s host volume (workspaces, scratch, profile) may not grow past this. A bot over quota gets
-          no new workspace clone and raises an attention card; a bot at 80% raises the card without blocking.
-          Overrides below win over the default; a bot card&apos;s container.diskQuotaMb wins over everything.
-          Applies without a restart: the next maintenance tick and the next workspace check already use the new values.
+          {t("area.settings-bots-host-1.bot-disk-quota-settings-panel.defaultHelp")}
         </p>
         {error && <p className="text-xs text-red-600">{error}</p>}
-        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-quota-caste">Per-caste overrides</Label>
+        <Label htmlFor="bot-disk-quota-caste">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.casteLabel")}</Label>
         <Textarea
           id="bot-disk-quota-caste"
           rows={3}
-          placeholder={"engineer=20480\nreviewer=5120"}
+          placeholder={CASTE_EXAMPLE}
           value={casteDraft ?? ""}
           onChange={(event) => {
             setCasteDraft(event.target.value);
@@ -135,14 +137,14 @@ export function BotDiskQuotaSettingsPanel() {
           }}
           data-testid="bot-disk-quota-caste-input"
         />
-        <p className="text-xs text-muted-foreground">One &quot;caste=MB&quot; per line (the agent role).</p>
+        <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.casteHelp")}</p>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-quota-agent">Per-bot overrides</Label>
+        <Label htmlFor="bot-disk-quota-agent">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.agentLabel")}</Label>
         <Textarea
           id="bot-disk-quota-agent"
           rows={3}
-          placeholder={"0f5d1c7e-…-uuid=1024"}
+          placeholder={AGENT_EXAMPLE}
           value={agentDraft ?? ""}
           onChange={(event) => {
             setAgentDraft(event.target.value);
@@ -150,11 +152,11 @@ export function BotDiskQuotaSettingsPanel() {
           }}
           data-testid="bot-disk-quota-agent-input"
         />
-        <p className="text-xs text-muted-foreground">One &quot;agentId=MB&quot; per line; wins over the caste entry.</p>
+        <p className="text-xs text-muted-foreground">{t("area.settings-bots-host-1.bot-disk-quota-settings-panel.agentHelp")}</p>
       </div>
       {view?.lastSweep && (
         <p className="text-xs text-muted-foreground" data-testid="bot-disk-quota-last-sweep">
-          Last sweep: {view.lastSweep.measured} measured, {view.lastSweep.signalling} signalling, {view.lastSweep.failed} failed.
+          {t("area.settings-bots-host-1.bot-disk-quota-settings-panel.lastSweep", { measured: view.lastSweep.measured, signalling: view.lastSweep.signalling, failed: view.lastSweep.failed })}
         </p>
       )}
     </section>

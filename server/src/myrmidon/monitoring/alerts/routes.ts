@@ -13,14 +13,14 @@
 
 import { Router, type Request } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { HttpError, unauthorized } from "../../../errors.js";
 import { validate } from "../../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../../routes/authz.js";
 import { logActivity } from "../../../services/activity-log.js";
 import { logger } from "../../../middleware/logger.js";
 import { issueService } from "../../../services/issues.js";
-import { agents } from "@paperclipai/db";
+import { agents } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { alertPriority, detectAlertSource, parseAlertmanagerAlerts, parseZabbixAlert, type AlertRouteSettings, type NormalizedAlert } from "./domain.js";
 import { createAlertService, tokenMatches, type AssigneeResolver, type IssuePorts } from "./service.js";

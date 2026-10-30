@@ -1,4 +1,4 @@
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 import { describe, expect, it } from "vitest";
 
 import { compileHermesProfile } from "./profile-compiler.js";

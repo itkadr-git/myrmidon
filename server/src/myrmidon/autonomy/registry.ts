@@ -9,7 +9,7 @@
 // PENDING_ENFORCEMENT with its reason, never in the registry — the registry
 // holds only points that exist on this tree.
 
-import type { AutonomyActionClass } from "@paperclipai/shared";
+import type { AutonomyActionClass } from "@myrmidon/shared";
 
 /**
  * Classes the matrix holds but no route seam is expected to enforce:
@@ -91,6 +91,14 @@ export const PENDING_ENFORCEMENT: Partial<Record<AutonomyActionClass, string>> =
   merge:
     "No route consults the merge verdict yet; the tool-gateway held-action path is the documented follow-up.",
   external_message: "No route consults the external-message verdict yet.",
+  knowledge_publish:
+    "The knowledge REST and MCP seams resolve the verdict through resolveAutonomy (server/src/myrmidon/knowledge/routes.ts, mcp.ts), not through assertAllowed/decide(req, class), so the registry pattern cannot match them; moving them onto the shared gate is the follow-up.",
+  rule_approve:
+    "Refused for agents by the knowledge route itself before the matrix is consulted (resolveAutonomy in server/src/myrmidon/knowledge/routes.ts); no assertAllowed/decide(req, class) seam yet.",
+  skill_promote:
+    "The matrix holds the class and its approval-required default; no route consults the skill-promotion verdict yet.",
+  knowledge_external_publish:
+    "Has no route by design: it is a tool-gateway action, and the tool-gateway held-action path is the documented follow-up.",
 };
 
 /** Every execution point registered for one class. */

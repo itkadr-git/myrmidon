@@ -15,7 +15,7 @@ import {
 const valid = {
   schema: PAPERCLIP_RUNNERD_BUILD_METADATA_SCHEMA,
   binaryName: "paperclip-runnerd",
-  packageName: "@paperclipai/paperclip-runner",
+  packageName: "@myrmidon/paperclip-runner",
   packageVersion: "0.0.0",
   binaryContractVersion: 2,
   nativeExecutionVersion: 1,

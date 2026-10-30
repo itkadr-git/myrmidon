@@ -1,4 +1,4 @@
-import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext } from "@myrmidon/plugin-sdk";
 import { workspaceDiffQuerySchema } from "./contracts.js";
 import { workspaceDiffService } from "./workspace-diff.js";
 

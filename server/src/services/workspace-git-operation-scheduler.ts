@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { setExpensiveWorkspaceGitExecutor } from "@myrmidon/adapter-utils/git-workspace-sync";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 
 export const WORKSPACE_GIT_SCAN_ERROR_CODES = {
   saturated: "workspace_git_scan_saturated",

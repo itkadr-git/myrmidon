@@ -1,0 +1,28 @@
+[Unit]
+Description=Myrmidon /tmp Janitor
+Documentation=https://github.com/itkadr-git/myrmidon
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# Runs unprivileged. It can only delete entries in /tmp (sticky bit) that its own
+# user owns, which is exactly the owner allow-list below. If the runner creates
+# profiles under other users, add them to MYRMIDON_JANITOR_OWNERS via a drop-in
+# AND run the unit as root (User=root) with the hardening below kept; document it
+# in the drop-in.
+User=myrmidon
+Group=myrmidon
+Environment=MYRMIDON_JANITOR_OWNERS=myrmidon
+ExecStart=/opt/myrmidon/scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh --target /tmp --ttl-minutes 60
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/tmp
+ProtectHome=read-only
+PrivateDevices=yes
+# /proc visibility is required (process activity check); PrivateTmp must stay off.
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

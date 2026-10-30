@@ -1,0 +1,9 @@
+# OPE-8950 i18n: task-chat-runner
+components/task-chat/TaskChatMarker.tsx
+components/task-chat/TaskChatPlanView.tsx
+components/task-chat/TaskChatProtocolActivityRow.tsx
+components/task-chat/TaskChatProtocolCard.tsx
+components/task-chat/TaskChatRunnerActivityGroup.tsx
+components/task-chat/TaskChatRunnerTurn.tsx
+components/task-chat/TaskChatToolCard.tsx
+components/task-chat/TaskChatTurnStatusIsland.tsx

@@ -1,15 +1,15 @@
-import type { ActivityEvent, Issue, SuccessfulRunHandoffState } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, SuccessfulRunHandoffState } from "@myrmidon/shared";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   matchesSuccessfulRunHandoffExhaustedNoticeBody,
   matchesSuccessfulRunHandoffRequiredNoticeBody,
-} from "@paperclipai/shared/myrmidon-successful-run-handoff-notices";
+} from "@myrmidon/shared/myrmidon-successful-run-handoff-notices";
 
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION = "issue.successful_run_handoff_required";
 export const SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION = "issue.successful_run_handoff_resolved";
 export const SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION = "issue.successful_run_handoff_escalated";
-// myrmidon(B1): the two notice bodies are defined once in @paperclipai/shared and
+// myrmidon(B1): the two notice bodies are defined once in @myrmidon/shared and
 // imported here and by server/src/services/recovery/successful-run-handoff.ts, so
 // this exact-text comment-type detection cannot drift from what the server posts.
 // The shared matchers also accept the pre-rename ("Paperclip ...") bodies, because

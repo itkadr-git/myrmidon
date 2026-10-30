@@ -5,7 +5,7 @@
 // preserves the key across vendor general writes.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import { parseStackDocument, STACK_GENERAL_KEY, type StackDocument } from "./domain.js";
 
 const SINGLETON_KEY = "default";

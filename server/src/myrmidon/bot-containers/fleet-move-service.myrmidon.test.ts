@@ -6,6 +6,7 @@ import {
   FleetMoveError,
   FleetMoveService,
   type FleetMoveRecord,
+  type FleetMoveServiceDeps,
   type SiteAgentClient,
 } from "./fleet-move-service.js";
 import { createBotKeyLock } from "./bot-key-lock.js";
@@ -16,6 +17,7 @@ describe("FleetMoveService", () => {
     srcSite?: string;
     dstSite?: string;
     botKey?: string;
+    beforeSnapshot?: FleetMoveServiceDeps["beforeSnapshot"];
   } = {}) {
     const botKey = initialState.botKey ?? "work-qa";
     const srcSite = initialState.srcSite ?? "myr-vm1";
@@ -187,6 +189,7 @@ describe("FleetMoveService", () => {
         },
       },
       lock: createBotKeyLock(),
+      beforeSnapshot: initialState.beforeSnapshot,
     });
 
     return {
@@ -242,6 +245,43 @@ describe("FleetMoveService", () => {
     expect(finalCard.adapterConfig.instructions).toBe("keep me");
     expect(harness.states.get("vm-core")).toBe("running");
     expect(harness.states.get("myr-vm1")).toBe("stopped");
+  });
+
+  it("runs the memory sync after the source is stopped and before the snapshot is opened", async () => {
+    const order: string[] = [];
+    let harness!: ReturnType<typeof createTestHarness>;
+    const seen: Array<{ moveId: string; srcSite: string; botKey: string; stopped: boolean; snapshots: number }> = [];
+    harness = createTestHarness({
+      beforeSnapshot: async (params) => {
+        seen.push({
+          moveId: params.moveId,
+          srcSite: params.srcSite,
+          botKey: params.botKey,
+          stopped: harness.states.get("myr-vm1") === "stopped",
+          snapshots: harness.siteSnapshotCalls.length,
+        });
+        order.push("memory-sync");
+      },
+    });
+
+    const result = await harness.service.startMove({ ...MOVE, dstSite: "vm-core" });
+
+    expect(result.phase).toBe("done");
+    expect(order).toEqual(["memory-sync"]);
+    expect(seen).toEqual([{ moveId: result.id, srcSite: "myr-vm1", botKey: "work-qa", stopped: true, snapshots: 0 }]);
+  });
+
+  it("goes on with the move when the memory sync before it fails", async () => {
+    const harness = createTestHarness({
+      beforeSnapshot: async () => {
+        throw new Error("hindsight is down");
+      },
+    });
+
+    const result = await harness.service.startMove({ ...MOVE, dstSite: "vm-core" });
+
+    expect(result.phase).toBe("done");
+    expect(harness.siteRestoreCalls).toEqual(["vm-core:work-qa:tar.zst mock data payload"]);
   });
 
   it("supports roundtrip move work-qa myr-vm1 -> vm-core -> back to myr-vm1", async () => {

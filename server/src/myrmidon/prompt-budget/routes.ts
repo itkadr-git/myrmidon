@@ -15,8 +15,8 @@
 // The contract is additive-only: fields are never renamed or removed.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { promptBudgetSettingsSchema, type PromptBudgetSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { promptBudgetSettingsSchema, type PromptBudgetSettings } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";

@@ -2,7 +2,7 @@
 // artifacts (server/src/myrmidon/guardrails/eval/report.{json,md}).
 //
 // Run from the server package so its dependencies resolve:
-//   pnpm --filter @paperclipai/server exec tsx \
+//   pnpm --filter @myrmidon/server exec tsx \
 //     ../scripts/myrmidon/guardrails-eval/refresh.ts
 //
 // Exit 0, printing the refreshed paths, when the recomputed report contains

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import {
   AGENT_KEY_SECRET_PREFIX,
   agentKeySecretName,
   readGatewayKeySettings,
   type GatewayKeySettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
 

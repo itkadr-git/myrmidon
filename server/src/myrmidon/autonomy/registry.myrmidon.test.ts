@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AUTONOMY_ACTION_CLASSES, type AutonomyActionClass } from "@paperclipai/shared";
+import { AUTONOMY_ACTION_CLASSES, type AutonomyActionClass } from "@myrmidon/shared";
 import {
   ACTION_EXECUTION_REGISTRY,
   PENDING_ENFORCEMENT,

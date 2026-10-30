@@ -1,4 +1,5 @@
 // myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
+import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -20,7 +21,20 @@ import {
   REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import {
+  extractIssueReferenceIdentifiers,
+  requiresExecutionReconciliation,
+  EXECUTION_RECONCILIATION_CAUSES,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
+import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
+import {
+  evaluateReviewerAvailability,
+  issueNeedsReviewer,
+  type RoutingIssue,
+} from "../myrmidon/review-routing/policy.js";
+import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -48,7 +62,8 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
@@ -71,6 +86,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  labels,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -78,8 +94,9 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
+import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -168,8 +185,8 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
-} from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
@@ -413,6 +430,8 @@ import {
 import * as handoffCas from "../myrmidon/handoff-cas.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Statuses in which a non-engineer may hold a code issue (review, finished).
+const ENGINEER_GATE_EXEMPT_STATUSES = new Set(["in_review", "done", "cancelled"]);
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
 // requires .safeExtend() on refined objects. interrupt was already optional
 // in the shared schema, so the refine is preserved via superRefine here.
@@ -1377,7 +1396,9 @@ function buildIssueBlockerDiagnosticsResponse(input: {
         ...blocker,
         isUnresolved,
         isPendingFinalize,
-        isDependencyReady: blocker.status === "done" && !isPendingFinalize,
+        isDependencyReady:
+          isBlockerResolved(blocker.status) &&
+          !isPendingFinalize,
         flags,
       };
     },
@@ -1452,15 +1473,8 @@ function buildIssueBlockerDiagnosis(input: {
     )} to finish workspace finalization.`;
   }
 
-  const cancelled = input.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
-      cancelled,
-    )}, which is cancelled; cancelled blockers do not resolve until the blocker relation is removed or replaced.`;
-  }
-
+  // A cancelled blocker counts as resolved (OPE-8904): it is reported as the
+  // `cancelled_blocker_in_set` flag only and never as the reason for waiting.
   const unresolved = input.blockers.find((blocker) => blocker.isUnresolved);
   if (unresolved) {
     return `${blockerDiagnosticLabel(input.issue)} is blocked by ${blockerDiagnosticLabel(
@@ -1784,15 +1798,6 @@ function buildIssueWakeDiagnosis(input: {
     return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
       input.issue,
     )} is waiting for ${blockerDiagnosticLabel(pendingFinalize)} to finish workspace finalization, so issue_blockers_resolved has not fired.`;
-  }
-
-  const cancelled = blockerDiagnostics.blockers.find(
-    (blocker) => blocker.status === "cancelled",
-  );
-  if (cancelled) {
-    return `No wake row exists for ${blockerDiagnosticLabel(input.issue)} in the bounded window. ${blockerDiagnosticLabel(
-      input.issue,
-    )} is blocked by ${blockerDiagnosticLabel(cancelled)}, which is cancelled; cancelled blockers do not fire issue_blockers_resolved.`;
   }
 
   const unresolved = blockerDiagnostics.blockers.find(
@@ -3728,6 +3733,69 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  // Gate for code issues (OPE-7776, Q1): an agent that is not an engineer cannot
+  // take an issue that requires one. Humans are never refused, and neither are
+  // issues in review or finished (a reviewer/manager legitimately holds those).
+  // The database-derived signals are fail-open and logged: an unreadable
+  // signal must not turn into a new silent stall (S2 recovery is the backstop).
+  async function assertEngineerForCodeIssue(input: {
+    companyId: string;
+    issue: (typeof issueRows.$inferSelect & { labels?: unknown }) | null;
+    status: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    projectId: string | null | undefined;
+    labelIds?: readonly string[];
+    casteKey?: string | null;
+    harnessKind?: string | null;
+    executionWorkspacePreference?: string | null;
+  }): Promise<void> {
+    if (!input.assigneeAgentId) return;
+    if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
+    const agent = await agentsSvc.getById(input.assigneeAgentId);
+    if (agent?.role === "engineer") return;
+    let issueLabelNames = normalizeLabels(input.issue?.labels);
+    let casteKey = input.casteKey ?? null;
+    let projectDefaultCasteKey: string | null = null;
+    try {
+      if (input.labelIds !== undefined) {
+        issueLabelNames = input.labelIds.length === 0
+          ? []
+          : await db
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, [...input.labelIds])))
+              .then((rows) => rows.map((row) => row.name));
+      }
+      // Only explicit signals count: the issue's own caste, else its project's
+      // default. The company-wide default caste (seeded as engineer) is NOT a
+      // signal, otherwise every plain issue would look like a code issue.
+      if (!casteKey) casteKey = input.issue?.casteKey ?? null;
+      if (!casteKey && input.projectId) {
+        projectDefaultCasteKey = (await projectsSvc.getById(input.projectId))?.defaultCasteKey ?? null;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, companyId: input.companyId, issueId: input.issue?.id ?? null },
+        "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
+      );
+    }
+    if (
+      requiresEngineer({
+        labels: issueLabelNames,
+        casteKey,
+        projectDefaultCasteKey,
+        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+        executionWorkspacePreference:
+          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+      })
+    ) {
+      throw unprocessable("This issue requires an engineer", {
+        code: "issue_requires_engineer",
+        issueId: input.issue?.id ?? null,
+        assigneeAgentId: input.assigneeAgentId,
+      });
+    }
+  }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
@@ -9827,7 +9895,8 @@ export function issueRoutes(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
-              issue: lockedIssue,
+              // myrmidon(OPE-9031): senior escalation chain for the round limit.
+              issue: await withDefaultEscalationChain(tx as unknown as Db, lockedIssue, executionPolicy),
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -10044,6 +10113,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_recovery_action_restored",
+            idempotencyKey: `recovery_resolved:${result.recoveryAction.id}`,
             payload: {
               issueId: result.issue.id,
               recoveryActionId: result.recoveryAction.id,
@@ -12323,6 +12393,20 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      await assertEngineerForCodeIssue({
+        companyId,
+        issue: null,
+        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        assigneeAgentId: normalizedAssigneeAgentId,
+        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
+        casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
+        harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
+        executionWorkspacePreference:
+          typeof rawCreateBody.executionWorkspacePreference === "string"
+            ? rawCreateBody.executionWorkspacePreference
+            : null,
+      });
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -13482,6 +13566,32 @@ export function issueRoutes(
           req.body.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const requestedAssigneeAgentId =
+        normalizedAssigneeAgentId === undefined
+          ? existing.assigneeAgentId
+          : normalizedAssigneeAgentId;
+      // Only a change of assignee is gated. A non-engineer who already holds the
+      // issue must still be able to move it (blocked, in_progress, todo, labels):
+      // refusing that would be a new silent stall (fail-open, Q1).
+      if (
+        normalizedAssigneeAgentId !== undefined &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
+      ) {
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: typeof req.body.status === "string" ? req.body.status : existing.status,
+          assigneeAgentId: requestedAssigneeAgentId,
+          projectId: existing.projectId,
+          labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
+          casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
+          harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : null,
+          executionWorkspacePreference:
+            typeof req.body.executionWorkspacePreference === "string"
+              ? req.body.executionWorkspacePreference
+              : null,
+        });
+      }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
       const existingRelations = Array.isArray(req.body.blockedByIssueIds)
@@ -13598,10 +13708,6 @@ export function issueRoutes(
         existing.companyId,
         updateFields.executionWorkspaceSettings?.environmentId,
       );
-      const requestedAssigneeAgentId =
-        normalizedAssigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : normalizedAssigneeAgentId;
       const explicitMoveToTodoRequested =
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
@@ -13836,21 +13942,52 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const transitionIssue: IssueRouteSnapshot & {
+        assigneeAgentRole?: string | null;
+        executionReviewParticipantAgentIds?: string[];
+        defaultEscalationAgentIds?: string[];
+      } = { ...existing };
+      Object.assign(
+        transitionIssue,
+        await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
+      );
+      const reviewParticipantAgentIds = nextExecutionPolicy
+        ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+            (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+          )
+        : [];
+      transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
+      // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
+      if (
+        nextExecutionPolicy === null &&
+        existing.assigneeAgentId &&
+        (existing.status === "in_review" || updateFields.status === "in_review")
+      ) {
+        transitionIssue.assigneeAgentRole =
+          (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
+      }
+      const explicitAssigneePatch = {
+        // Use the resolved agent id: req.body may carry a shortname that
+        // normalizeIssueAssigneeAgentReference already resolved above.
+        assigneeAgentId:
+          req.body.assigneeAgentId === undefined
+            ? undefined
+            : (normalizedAssigneeAgentId ?? null),
+        assigneeUserId:
+          req.body.assigneeUserId === undefined
+            ? undefined
+            : (updateFields.assigneeUserId as string | null),
+      };
       const transition = applyIssueExecutionPolicyTransition({
-        issue: existing,
+        // myrmidon(OPE-9031): senior escalation chain for the round limit.
+        issue: transitionIssue,
         policy: nextExecutionPolicy,
         previousPolicy: previousExecutionPolicy,
         requestedStatus:
           typeof updateFields.status === "string"
             ? updateFields.status
             : undefined,
-        requestedAssigneePatch: {
-          assigneeAgentId: normalizedAssigneeAgentId,
-          assigneeUserId:
-            req.body.assigneeUserId === undefined
-              ? undefined
-              : (req.body.assigneeUserId as string | null),
-        },
+        requestedAssigneePatch: explicitAssigneePatch,
         actor: {
           agentId: actor.agentId ?? null,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -13988,14 +14125,35 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+          "blockedByIssueIds or externalRef",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
+      if (
+        enteringBlocked &&
+        !blockerMetadataRaw.blockedByIssueIds?.length &&
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
+      ) {
+        res.status(422).json({
+          error: "Entering blocked requires a blocker reference in blockerMetadata",
+          missingFields: ["blockedByIssueIds or externalRef"],
+        });
+        return;
+      }
+
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
       // a transition out of blocked without new metadata clears it, so no stale reason survives.
       const leavingBlocked =
@@ -14201,14 +14359,12 @@ export function issueRoutes(
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
 
-      const nextAssigneeAgentId =
-        updateFields.assigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : (updateFields.assigneeAgentId as string | null);
-      const nextAssigneeUserId =
+      const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
           ? existing.assigneeUserId
           : (updateFields.assigneeUserId as string | null);
+      const nextAssigneeAgentId = requestedAssigneeAgentId;
+      const nextAssigneeUserId = requestedAssigneeUserId;
       const assigneeWillChange =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
@@ -14643,6 +14799,10 @@ export function issueRoutes(
         updateFields.status === "done";
       const shouldCollectTerminalIssueActions =
         updateFields.status === "done" || updateFields.status === "cancelled";
+      const closesRecoveryIssue =
+        shouldCollectTerminalIssueActions &&
+        existing.status !== updateFields.status &&
+        existing.originKind === "stranded_issue_recovery";
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
@@ -14815,21 +14975,77 @@ export function issueRoutes(
       const attachmentCommentSourceTrust = commentAttachmentIds?.length
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
+      const exitingReviewWithExplicitAssignee =
+        existing.status === "in_review" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "in_review" &&
+        (req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined);
       const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        Boolean(decision) ||
-        shouldRelayStop ||
-        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
-        persistReviewActivityTransactionally ||
-        ((updateFields.status === "in_review" || existing.status === "in_review") &&
-          assigneeWillChange) ||
-        reviewPolicySensitiveMutationRequested ||
-        humanUnblockPossible ||
-        // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
-        handoffGuarded;
+        closesRecoveryIssue ||
+          Boolean(commentAttachmentIds?.length) ||
+          Boolean(decision) ||
+          shouldRelayStop ||
+          enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
+          persistReviewActivityTransactionally ||
+          ((updateFields.status === "in_review" || existing.status === "in_review") &&
+            assigneeWillChange) ||
+          exitingReviewWithExplicitAssignee ||
+          reviewPolicySensitiveMutationRequested ||
+          humanUnblockPossible ||
+          // myrmidon(HANDOFF-CAS): the guarded commit needs the row lock.
+          handoffGuarded;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            const lockedExisting = await svc.getByIdForUpdate(id, tx);
+            if (!lockedExisting) return null;
+            const lockedReviewParticipants = nextExecutionPolicy
+              ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
+                  (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+                )
+              : [];
+            const lockedTransitionIssue: typeof transitionIssue = {
+              ...existing,
+              ...lockedExisting,
+              assigneeAgentRole: undefined,
+              executionReviewParticipantAgentIds: lockedReviewParticipants,
+            };
+            if (
+              nextExecutionPolicy === null &&
+              lockedExisting.assigneeAgentId &&
+              (lockedExisting.status === "in_review" || updateFields.status === "in_review")
+            ) {
+              lockedTransitionIssue.assigneeAgentRole =
+                (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;
+            }
+            const lockedTransition = applyIssueExecutionPolicyTransition({
+              issue: lockedTransitionIssue,
+              policy: nextExecutionPolicy,
+              previousPolicy: previousExecutionPolicy,
+              requestedStatus: updateFields.status,
+              requestedAssigneePatch: explicitAssigneePatch,
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              allowBoardOverride: req.actor.type === "board",
+              commentBody,
+              reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+              monitorExplicitlyUpdated:
+                req.body.executionPolicy !== undefined && monitorChanged,
+            });
+            Object.assign(updateFields, lockedTransition.patch);
+            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            if (lockedDecisionId) {
+              const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
+              if (!nextExecutionState || typeof nextExecutionState !== "object") {
+                throw new Error("Execution policy decision patch is missing executionState");
+              }
+              updateFields.executionState = {
+                ...nextExecutionState,
+                lastDecisionId: lockedDecisionId,
+              };
+            }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
             // row under SELECT ... FOR UPDATE, re-check CAS expectations and
             // the stopped-run fence (executionRunId unchanged, no live run)
@@ -15850,6 +16066,97 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
 
+      if (closesRecoveryIssue) {
+        try {
+          const recoveryWake = await db.transaction(async (tx) => {
+            const [recoveryAction] = await tx
+              .select()
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.recoveryIssueId, issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .for("update");
+            if (!recoveryAction) return null;
+
+            const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+              companyId: issue.companyId,
+              sourceIssueId: recoveryAction.sourceIssueId,
+              actionId: recoveryAction.id,
+              status: issue.status === "cancelled" ? "cancelled" : "resolved",
+              outcome: issue.status === "cancelled" ? "cancelled" : "restored",
+              resolutionNote: null,
+            }, tx);
+            if (!resolved) return null;
+            const [sourceIssue] = await tx
+              .select()
+              .from(issueRows)
+              .where(and(
+                eq(issueRows.id, recoveryAction.sourceIssueId),
+                eq(issueRows.companyId, issue.companyId),
+              ))
+              .for("update");
+            if (sourceIssue && sourceIssue.status === "blocked") {
+              const remainingBlockers = await tx
+                .select({ blockerIssueId: issueRelations.issueId })
+                .from(issueRelations)
+                .where(and(
+                  eq(issueRelations.companyId, issue.companyId),
+                  eq(issueRelations.relatedIssueId, recoveryAction.sourceIssueId),
+                  eq(issueRelations.type, "blocks"),
+                ));
+              const blockerIds = remainingBlockers
+                .map(({ blockerIssueId }) => blockerIssueId)
+                .filter((blockerId) => blockerId !== issue.id);
+              await svc.update(recoveryAction.sourceIssueId, {
+                status: blockerIds.length ? "blocked" : "todo",
+                blockedByIssueIds: blockerIds,
+                assigneeAgentId: recoveryAction.returnOwnerAgentId,
+                assigneeUserId: null,
+              }, tx);
+            }
+            return resolved.returnOwnerAgentId
+              ? {
+                  agentId: resolved.returnOwnerAgentId,
+                  actionId: resolved.id,
+                  sourceIssueId: resolved.sourceIssueId,
+                  outcome: resolved.outcome,
+                }
+              : null;
+          });
+          if (recoveryWake) {
+            await enqueueRecoveryActionWakeup(recoveryWake.agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_recovery_action_restored",
+              idempotencyKey: `recovery_resolved:${recoveryWake.actionId}`,
+              requestedByActorType: "system",
+              requestedByActorId: "recovery_issue_closed",
+              payload: {
+                issueId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                outcome: recoveryWake.outcome,
+              },
+              contextSnapshot: {
+                issueId: recoveryWake.sourceIssueId,
+                taskId: recoveryWake.sourceIssueId,
+                recoveryIssueId: issue.id,
+                recoveryActionId: recoveryWake.actionId,
+                source: "issue.recovery_closed",
+                wakeReason: "issue_recovery_action_restored",
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "failed to resolve recovery action after recovery issue closure",
+          );
+        }
+      }
+
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
       void (async () => {
         type WakeupRequest = NonNullable<
@@ -16141,6 +16448,7 @@ export function issueRoutes(
           }
         }
 
+
         const becameDone =
           existing.status !== "done" && issue.status === "done";
         if (becameDone) {
@@ -16358,6 +16666,54 @@ export function issueRoutes(
               },
             }
           : {};
+      const reviewerSignalIssue =
+        issue && issue.status === "in_review"
+          ? ({
+              id: issue.id,
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId,
+              assigneeUserId: issue.assigneeUserId,
+              createdByAgentId: issue.createdByAgentId,
+              createdByUserId: issue.createdByUserId,
+              responsibleUserId: issue.responsibleUserId,
+              executionPolicy: issue.executionPolicy,
+              executionState: issue.executionState,
+              reviewPolicy: issue.reviewPolicy,
+            } satisfies RoutingIssue)
+          : null;
+      const needsReviewer = reviewerSignalIssue ? issueNeedsReviewer(reviewerSignalIssue) : false;
+      if (issue && issue.id === existing.id) {
+        let unavailable = false;
+        if (needsReviewer) {
+          const reviewRoutingSettings = await readReviewRoutingSettings(instanceSettings);
+          if (reviewRoutingSettings.enabled && issue.reviewPolicy !== "human_only") {
+            const routingStore = createPgReviewRoutingStore(db);
+            const [reviewerRows, loadByAgent] = await Promise.all([
+              routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
+              routingStore.loadByAgent(issue.companyId),
+            ]);
+            unavailable =
+              evaluateReviewerAvailability({
+                reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true })),
+                loadByAgent,
+                issue: reviewerSignalIssue!,
+                maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
+              }).selected === null;
+          }
+        }
+        setImmediateNoReviewerSignal(
+          {
+            kind: "no_reviewer",
+            issueId: issue.id,
+            companyId: issue.companyId,
+            identifier: issue.identifier,
+            title: issue.title,
+            since: new Date().toISOString(),
+            hoursInReview: null,
+          },
+          unavailable,
+        );
+      }
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({

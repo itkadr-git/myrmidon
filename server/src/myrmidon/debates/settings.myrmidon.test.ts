@@ -4,7 +4,7 @@
 // family collision is reported instead of being silently dropped.
 
 import { describe, expect, it } from "vitest";
-import { DEBATE_SETTINGS_KEY, defaultDebateSettings, getModelFamily } from "@paperclipai/shared";
+import { DEBATE_SETTINGS_KEY, defaultDebateSettings, getModelFamily } from "@myrmidon/shared";
 import { preserveDebateGeneralKey, readDebateSettings } from "./settings.js";
 
 describe("myrmidon(1.7-DEBATE-ASYM-A): debate settings", () => {

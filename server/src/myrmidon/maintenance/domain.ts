@@ -198,29 +198,30 @@ export const DEFAULT_STUCK_GRACE_MS = 60_000;
 export function decideTick(window: MaintenanceWindow, runningRunIds: string[], now: Date): TickDecision {
   if (window.state === "leaving") return { kind: "finish_leaving" };
   if (window.state !== "entering") return { kind: "none" };
+  // Complete owned interrupts only after teardown has removed every run from
+  // the running set; this must take precedence over the ordinary mark-on path.
   if (runningRunIds.length === 0) {
-    // A maintenance interrupt drains the run asynchronously. Do not treat the
-    // empty running snapshot as a normal drain: the scheduled retries still
-    // need promotion before the window may become `on`.
-    if (window.interruptedRunIds.length > 0) return { kind: "drained_after_interrupts" };
-    return { kind: "mark_on" };
+    return window.interruptedRunIds.length > 0
+      ? { kind: "drained_after_interrupts" }
+      : { kind: "mark_on" };
   }
   const nowMs = now.getTime();
   const deadlineMs = Date.parse(window.drainDeadlineAt);
   if (nowMs < deadlineMs) return { kind: "none" };
   if (window.onTimeout === "interrupt_and_retry") {
+    // Here runningRunIds is non-empty (the empty case returned above). Teardown
+    // must finish before retries are promoted or the window leaves entering:
+    // any running run, including one already interrupted by us, holds the
+    // drain open; only the not-yet-interrupted ones are interrupted now.
     const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
-    if (unowned.length > 0) return { kind: "interrupt", runIds: unowned };
-    // Every run in scope was interrupted by this window and has left
-    // "running": the drain is complete for this window's part.
-    return { kind: "drained_after_interrupts" };
+    return unowned.length > 0 ? { kind: "interrupt", runIds: unowned } : { kind: "none" };
   }
   return window.drainTimedOut ? { kind: "none" } : { kind: "mark_timed_out" };
 }
 
 /**
- * myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop check for an open
- * (entering/on) window: has it been open past drain deadline + grace without
+ * myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop check for an
+ * `entering` window: has it been open past drain deadline + grace without
  * completing? A stuck window is retired with an error record so later card
  * changes for the same scope are not blocked (a same-scope `enter` while a
  * window is still `leaving` gets 409).
@@ -230,9 +231,12 @@ export function isStuckOpenWindow(
   now: Date,
   stuckGraceMs: number = DEFAULT_STUCK_GRACE_MS,
 ): boolean {
-  // `on` windows are closed only by an explicit exit. The backstop is solely
-  // for a drain stuck in `entering`; `leaving` has its own completion path.
-  if (window.state !== "entering") return false;
+  // The backstop is only authorized for agent-scoped profile maintenance;
+  // never retire deployment-wide or company maintenance windows here.
+  // Only `entering` is stuck: an `on` window is one the reconciler (or an
+  // operator) holds deliberately while it applies the profile; closing it by
+  // the clock could cut a profile apply short.
+  if (window.scope.type !== "agent" || window.state !== "entering") return false;
   const cutoff = Date.parse(window.drainDeadlineAt) + stuckGraceMs;
   return now.getTime() >= cutoff;
 }
