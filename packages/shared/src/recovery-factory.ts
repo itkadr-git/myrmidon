@@ -33,29 +33,33 @@ export interface RecoveryFactoryMetrics {
   age(kind: RecoveryFactoryRequest["kind"], seconds: number): void;
 }
 
-const recoveryFactoryMetricsCounters: Record<"created" | "deduped" | "succeeded", Map<IssueRecoveryActionKind, number>> = {
-  created: new Map(),
-  deduped: new Map(),
-  succeeded: new Map(),
-};
-const recoveryFactoryMetricsAges = new Map<IssueRecoveryActionKind, number>();
-const recoveryFactoryMetricsPorts = new WeakMap<RecoveryFactoryMetrics, {
+interface RecoveryFactoryMetricsPortState {
   created: Map<IssueRecoveryActionKind, number>;
   deduped: Map<IssueRecoveryActionKind, number>;
   succeeded: Map<IssueRecoveryActionKind, number>;
   ages: Map<IssueRecoveryActionKind, number>;
-}>();
+}
 
-export const recoveryFactoryMetrics: RecoveryFactoryMetrics = {
-  created: (kind) => recoveryFactoryMetricsCounters.created.set(kind, (recoveryFactoryMetricsCounters.created.get(kind) ?? 0) + 1),
-  deduped: (kind) => recoveryFactoryMetricsCounters.deduped.set(kind, (recoveryFactoryMetricsCounters.deduped.get(kind) ?? 0) + 1),
-  succeeded: (kind) => recoveryFactoryMetricsCounters.succeeded.set(kind, (recoveryFactoryMetricsCounters.succeeded.get(kind) ?? 0) + 1),
-  age: (kind, seconds) => recoveryFactoryMetricsAges.set(kind, Math.max(recoveryFactoryMetricsAges.get(kind) ?? 0, seconds)),
-};
-recoveryFactoryMetricsPorts.set(recoveryFactoryMetrics, {
-  ...recoveryFactoryMetricsCounters,
-  ages: recoveryFactoryMetricsAges,
-});
+const recoveryFactoryMetricsPorts = new WeakMap<RecoveryFactoryMetrics, RecoveryFactoryMetricsPortState>();
+
+export function createRecoveryFactoryMetrics(): RecoveryFactoryMetrics {
+  const state: RecoveryFactoryMetricsPortState = {
+    created: new Map<IssueRecoveryActionKind, number>(),
+    deduped: new Map<IssueRecoveryActionKind, number>(),
+    succeeded: new Map<IssueRecoveryActionKind, number>(),
+    ages: new Map<IssueRecoveryActionKind, number>(),
+  };
+  const port: RecoveryFactoryMetrics = {
+    created: (kind) => state.created.set(kind, (state.created.get(kind) ?? 0) + 1),
+    deduped: (kind) => state.deduped.set(kind, (state.deduped.get(kind) ?? 0) + 1),
+    succeeded: (kind) => state.succeeded.set(kind, (state.succeeded.get(kind) ?? 0) + 1),
+    age: (kind, seconds) => state.ages.set(kind, Math.max(state.ages.get(kind) ?? 0, seconds)),
+  };
+  recoveryFactoryMetricsPorts.set(port, state);
+  return port;
+}
+
+export const recoveryFactoryMetrics: RecoveryFactoryMetrics = createRecoveryFactoryMetrics();
 
 export function recoveryFactoryMetricsState(port: RecoveryFactoryMetrics) {
   let state = recoveryFactoryMetricsPorts.get(port);
@@ -66,14 +70,22 @@ export function recoveryFactoryMetricsState(port: RecoveryFactoryMetrics) {
   return state;
 }
 
-export function snapshotRecoveryFactoryMetrics() {
-  const state = recoveryFactoryMetricsState(recoveryFactoryMetrics);
+export function snapshotRecoveryFactoryMetrics(port: RecoveryFactoryMetrics = recoveryFactoryMetrics) {
+  const state = recoveryFactoryMetricsState(port);
   return {
     created: new Map(state.created),
     deduped: new Map(state.deduped),
     succeeded: new Map(state.succeeded),
     ages: new Map(state.ages),
   };
+}
+
+export function resetRecoveryFactoryMetrics(port: RecoveryFactoryMetrics = recoveryFactoryMetrics) {
+  const state = recoveryFactoryMetricsState(port);
+  state.created.clear();
+  state.deduped.clear();
+  state.succeeded.clear();
+  state.ages.clear();
 }
 
 export function buildRecoveryDedupeKey(input: {

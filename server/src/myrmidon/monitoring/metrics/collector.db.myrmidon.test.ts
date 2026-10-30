@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -119,33 +120,52 @@ describeEmbeddedPostgres("metrics collector", () => {
       updatedAt: NOW,
     });
     const recoveryActionId = randomUUID();
-    await db.insert(issueRecoveryActions).values({
-      id: recoveryActionId,
-      companyId,
-      sourceIssueId,
-      kind: "ci",
-      status: "active",
-      ownerType: "agent",
-      ownerAgentId: null,
-      ownerUserId: null,
-      ownerQueue: null,
-      cause: "ci_failure",
-      fingerprint: "fingerprint-a",
-      dedupeKey: "dedupe-a",
-      slaDueAt: new Date(NOW.getTime() + 60_000),
-      nextCheckAt: new Date(NOW.getTime() + 30_000),
-      nextAction: "inspect",
-      createdAt: new Date(NOW.getTime() - 45_000),
-      updatedAt: NOW,
-    });
-    const snapshot = await collectMetricsSnapshot({
-      db,
-      now: () => NOW,
-      errorWindowSec: 3600,
-      latencyWindowSec: 3600,
-    });
-    expect(snapshot.recoveryAddresslessActive).toBe(1);
-    expect(snapshot.recoveryAgeSeconds).toEqual([{ kind: "ci", seconds: 45 }]);
+    try {
+      await db.execute(sql`ALTER TABLE "issue_recovery_actions" DROP CONSTRAINT IF EXISTS "issue_recovery_actions_dedupe_owner_sla_check"`);
+      await db.insert(issueRecoveryActions).values({
+        id: recoveryActionId,
+        companyId,
+        sourceIssueId,
+        kind: "ci_restart",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerQueue: null,
+        cause: "ci_failure",
+        fingerprint: "fingerprint-a",
+        dedupeKey: "dedupe-a",
+        slaDueAt: new Date(NOW.getTime() + 60_000),
+        nextCheckAt: new Date(NOW.getTime() + 30_000),
+        nextAction: "inspect",
+        createdAt: new Date(NOW.getTime() - 45_000),
+        updatedAt: NOW,
+      });
+      const snapshot = await collectMetricsSnapshot({
+        db,
+        now: () => NOW,
+        errorWindowSec: 3600,
+        latencyWindowSec: 3600,
+      });
+      expect(snapshot.recoveryAddresslessActive).toBe(1);
+      expect(snapshot.recoveryAgeSeconds).toEqual([{ kind: "ci_restart", seconds: 45 }]);
+    } finally {
+      await db.delete(issueRecoveryActions);
+      await db.execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_recovery_actions_dedupe_owner_sla_check') THEN
+            ALTER TABLE "issue_recovery_actions" ADD CONSTRAINT "issue_recovery_actions_dedupe_owner_sla_check"
+              CHECK ("dedupe_key" IS NULL OR (
+                (CASE WHEN "owner_agent_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_user_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_queue" IS NOT NULL THEN 1 ELSE 0 END) = 1
+                AND "sla_due_at" IS NOT NULL
+                AND "next_check_at" IS NOT NULL
+              ));
+          END IF;
+        END $$;
+      `);
+    }
   });
 
   it("reports recovery factory counters and the manually inserted addressless row in /metrics", async () => {
@@ -153,40 +173,59 @@ describeEmbeddedPostgres("metrics collector", () => {
     const sourceIssueId = randomUUID();
     await db.insert(issues).values({ id: sourceIssueId, companyId, title: "Recovery source", status: "todo", priority: "normal", createdAt: NOW, updatedAt: NOW });
     const actionId = randomUUID();
-    await db.insert(issueRecoveryActions).values({
-      id: actionId, companyId, sourceIssueId, kind: "ci", status: "active", ownerType: "agent",
-      ownerAgentId: null, ownerUserId: null, ownerQueue: null, cause: "ci_failure", fingerprint: "recovery-metrics-test",
-      dedupeKey: "recovery-metrics-addressless", slaDueAt: new Date(NOW.getTime() + 60_000),
-      nextCheckAt: new Date(NOW.getTime() + 30_000), nextAction: "inspect",
-      createdAt: new Date(NOW.getTime() - 45_000), updatedAt: NOW,
-    });
-    const counters = {
-      created: new Map<IssueRecoveryActionKind, number>(),
-      deduped: new Map<IssueRecoveryActionKind, number>(),
-      succeeded: new Map<IssueRecoveryActionKind, number>(),
-    };
-    const ages = new Map<IssueRecoveryActionKind, number>();
-    const metrics: RecoveryFactoryMetricsPort = {
-      created: (kind) => counters.created.set(kind, (counters.created.get(kind) ?? 0) + 1),
-      deduped: (kind) => counters.deduped.set(kind, (counters.deduped.get(kind) ?? 0) + 1),
-      succeeded: (kind) => counters.succeeded.set(kind, (counters.succeeded.get(kind) ?? 0) + 1),
-      age: (kind, seconds) => ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds)),
-    };
-    metrics.created("ci");
-    metrics.deduped("github");
-    metrics.succeeded("myr-ws");
-    metrics.age("operator_action", 20);
-    metrics.age("operator_action", 42);
-    const text = renderMetricsText(await collectMetricsSnapshot({
-      db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600,
-      recoveryFactoryMetrics: metrics, recoveryCounters: counters, recoveryAges: ages, recoveryPort: metrics,
-    }));
-    expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci"} 1');
-    expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="github"} 1');
-    expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="myr-ws"} 1');
-    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 42');
-    expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="ci"} 45');
-    expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 1');
+    try {
+      await db.execute(sql`ALTER TABLE "issue_recovery_actions" DROP CONSTRAINT IF EXISTS "issue_recovery_actions_dedupe_owner_sla_check"`);
+      await db.insert(issueRecoveryActions).values({
+        id: actionId, companyId, sourceIssueId, kind: "ci_restart", status: "active", ownerType: "agent",
+        ownerAgentId: null, ownerUserId: null, ownerQueue: null, cause: "ci_failure", fingerprint: "recovery-metrics-test",
+        dedupeKey: "recovery-metrics-addressless", slaDueAt: new Date(NOW.getTime() + 60_000),
+        nextCheckAt: new Date(NOW.getTime() + 30_000), nextAction: "inspect",
+        createdAt: new Date(NOW.getTime() - 45_000), updatedAt: NOW,
+      });
+      const counters = {
+        created: new Map<IssueRecoveryActionKind, number>(),
+        deduped: new Map<IssueRecoveryActionKind, number>(),
+        succeeded: new Map<IssueRecoveryActionKind, number>(),
+      };
+      const ages = new Map<IssueRecoveryActionKind, number>();
+      const metrics: RecoveryFactoryMetricsPort = {
+        created: (kind) => counters.created.set(kind, (counters.created.get(kind) ?? 0) + 1),
+        deduped: (kind) => counters.deduped.set(kind, (counters.deduped.get(kind) ?? 0) + 1),
+        succeeded: (kind) => counters.succeeded.set(kind, (counters.succeeded.get(kind) ?? 0) + 1),
+        age: (kind, seconds) => ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds)),
+      };
+      metrics.created("ci_restart");
+      metrics.deduped("github_access");
+      metrics.succeeded("workspace_myr_ws");
+      metrics.age("operator_action", 20);
+      metrics.age("operator_action", 42);
+      const text = renderMetricsText(await collectMetricsSnapshot({
+        db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600,
+        recoveryFactoryMetrics: metrics,
+      }));
+      expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci_restart"} 1');
+      expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="github_access"} 1');
+      expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="workspace_myr_ws"} 1');
+      expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 42');
+      expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="ci_restart"} 45');
+      expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 1');
+    } finally {
+      await db.delete(issueRecoveryActions);
+      await db.execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_recovery_actions_dedupe_owner_sla_check') THEN
+            ALTER TABLE "issue_recovery_actions" ADD CONSTRAINT "issue_recovery_actions_dedupe_owner_sla_check"
+              CHECK ("dedupe_key" IS NULL OR (
+                (CASE WHEN "owner_agent_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_user_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_queue" IS NOT NULL THEN 1 ELSE 0 END) = 1
+                AND "sla_due_at" IS NOT NULL
+                AND "next_check_at" IS NOT NULL
+              ));
+          END IF;
+        END $$;
+      `);
+    }
   });
 
   it("counts active, queued and failed runs", async () => {

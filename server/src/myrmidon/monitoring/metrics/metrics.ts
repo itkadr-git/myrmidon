@@ -56,7 +56,7 @@ import {
 } from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
-import { recoveryFactoryMetrics as processRecoveryMetrics, type IssueRecoveryActionKind, type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
+import { recoveryFactoryMetrics as processRecoveryMetrics, ISSUE_RECOVERY_ACTION_KINDS, type IssueRecoveryActionKind, type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import { recoveryFactoryMetricsState, snapshotRecoveryFactoryMetrics } from "@myrmidon/shared";
 import { issueRecoveryActions } from "@myrmidon/db";
 
@@ -950,7 +950,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     name,
     help,
     "counter",
-    values ? ISSUE_RECOVERY_ACTION_KINDS.map((kind) => `${name}{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(values.get(kind) ?? 0)}`) : [],
+    values ? [...values.entries()].map(([kind, count]) => `${name}{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(count)}`) : [],
   ));
   recoveryCounterFamily("myrmidon_recovery_created_total", "Recovery actions created by kind, cumulative since process start.", snapshot.recoveryCreatedTotal);
   recoveryCounterFamily("myrmidon_recovery_deduped_total", "Recovery action requests deduplicated by kind, cumulative since process start.", snapshot.recoveryDedupedTotal);

@@ -7,6 +7,8 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueRelations,
+  activityLog,
   issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
@@ -87,7 +89,7 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
       status: "active",
       adapterType: "codex_local",
       adapterConfig: {},
-      runtimeConfig: { heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 1, wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
     return { companyId, agentId };
@@ -104,6 +106,20 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
       assigneeAgentId: agentId,
     });
     return issueId;
+  }
+
+  async function expectCheckoutContext(contextSnapshot: unknown, companyId: string, agentId: string) {
+    const runId = (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))[0]!.id;
+    const { assertRunHasTaskSourceContext } = await import("../myrmidon/issue-checkout-guard.ts");
+    await expect(assertRunHasTaskSourceContext(db, { companyId, agentId, runId })).resolves.toBe(
+      (contextSnapshot as { issueId: string }).issueId,
+    );
+    const unscopedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unscopedRunId, companyId, agentId, invocationSource: "timer", status: "running", contextSnapshot: {},
+    });
+    await expect(assertRunHasTaskSourceContext(db, { companyId, agentId, runId: unscopedRunId }))
+      .rejects.toMatchObject({ status: 403, details: { code: "cross_issue_influence_run_context_required" } });
   }
 
   const timerWake = (agentId: string) =>
@@ -127,6 +143,80 @@ describeEmbeddedPostgres("skip idle timer heartbeats (M3)", () => {
     ]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("timer scheduler binds its wake to the ready assigned issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue(companyId, agentId, "todo");
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2000-01-01T00:00:00Z") }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date());
+
+    const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)).limit(1);
+    expect(run[0]?.contextSnapshot).toMatchObject({ issueId, reason: "interval_elapsed" });
+    await expectCheckoutContext(run[0]!.contextSnapshot, companyId, agentId);
+  });
+
+  it("does not schedule a timer wake when the agent's only assigned task is blocked", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const blockedId = await seedIssue(companyId, agentId, "todo");
+    const blockerId = await seedIssue(companyId, null, "in_progress");
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: blockedId, type: "blocks" });
+    const baseline = new Date("2000-01-01T00:00:00Z");
+    await db.update(agents).set({ lastHeartbeatAt: baseline }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date(baseline.getTime() + 1_500));
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
+  });
+
+  it("does not schedule a duplicate timer wake when the assigned task already has a live run", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const liveId = await seedIssue(companyId, agentId, "in_progress");
+    const liveRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: liveRunId, companyId, agentId, invocationSource: "on_demand", status: "running",
+      contextSnapshot: { issueId: liveId },
+    });
+    const baseline = new Date("2000-01-01T00:00:00Z");
+    await db.update(agents).set({ lastHeartbeatAt: baseline }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date(baseline.getTime() + 1_500));
+
+    const runs = await db.select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(liveRunId);
+    expect(runs[0]?.contextSnapshot).toMatchObject({ issueId: liveId });
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+  });
+
+  it("does not inspect timer work or log no-actionable-work before the timer is due", async () => {
+    const { agentId } = await seedAgent();
+    const baseline = new Date("2026-01-01T00:00:00.000Z");
+    await db.update(agents).set({ lastHeartbeatAt: baseline }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date(baseline.getTime() + 500));
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .not.toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
+  });
+
+  it("does not schedule a timer wake when the agent has no ready task", async () => {
+    const { agentId } = await seedAgent();
+    const baseline = new Date("2000-01-01T00:00:00Z");
+    await db.update(agents).set({ lastHeartbeatAt: baseline }).where(eq(agents.id, agentId));
+
+    await heartbeat.tickTimers(new Date(baseline.getTime() + 1_500));
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    expect(await wakeRequests(agentId)).toHaveLength(0);
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(eq(activityLog.agentId, agentId)))
+      .toContainEqual({ action: "heartbeat.timer.no_actionable_work" });
   });
 
   it("runs when the agent has a todo issue", async () => {

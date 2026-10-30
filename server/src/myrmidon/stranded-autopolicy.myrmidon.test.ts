@@ -97,6 +97,30 @@ describe("decideStrandedAutoPolicy", () => {
     expect(secondAttempt).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
   });
 
+  it("retries before escalation even with a workflow or an ADM target", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 1,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      hasExecutionWorkflow: true,
+      targetIsAdm: true,
+    })).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
+  });
+
+  it("blocks with the senior owner after the successful handoff budget is exhausted", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      successfulRunHandoffExhausted: true,
+    })).toEqual({
+      kind: "disposition_blocked",
+      ownerAgentId: "lead-1",
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+    });
+  });
+
   it("hands off to the manager once the cap is reached and a manager exists", () => {
     const decision = decideStrandedAutoPolicy({
       attemptsInWindow: 2,
@@ -270,6 +294,12 @@ describe("issueHasExistingExecutionWorkflow", () => {
   it("is false for an issue with no policy and no state at all", () => {
     expect(issueHasExistingExecutionWorkflow({})).toBe(false);
     expect(issueHasExistingExecutionWorkflow({ executionPolicy: null, executionState: null })).toBe(false);
+  });
+
+  it("treats an open pull request work product with active status as an existing execution workflow", () => {
+    // Paperclip's linked GitHub PR work product remains `active` while the PR is open.
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: true })).toBe(true);
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: false })).toBe(false);
   });
 
   it("is true when an execution policy already has configured stages, even before any stage has started", () => {
