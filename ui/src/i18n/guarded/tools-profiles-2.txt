@@ -1,0 +1,8 @@
+# OPE-8950: tools-profiles-2
+pages/tools/profiles/ProfileDetailRoute.tsx
+pages/tools/profiles/ProfileWizard.tsx
+pages/tools/profiles/ProfileWizardRoute.tsx
+pages/tools/profiles/ProfilesIndex.tsx
+pages/tools/profiles/ToolsAdminGate.tsx
+pages/tools/profiles/WizardToolsStep.tsx
+pages/tools/shared.tsx

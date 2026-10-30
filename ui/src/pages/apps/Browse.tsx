@@ -15,13 +15,13 @@ import {
   ServerCog,
   Trash2,
 } from "lucide-react";
-import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
+import type { ToolApplication, ToolConnection } from "@myrmidon/shared";
 import {
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
   aiSubscriptionNeedsIsolatedLogin,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import { appCopyFor } from "@/lib/app-gallery-copy";
@@ -79,6 +79,7 @@ import {
   connectionOwnerProfile,
   type ConnectionOwnerProfile,
 } from "./connection-owner";
+import { i18n, useTranslation } from "@/i18n";
 
 type ConnectorRowModel = {
   key: string;
@@ -164,30 +165,30 @@ function connectionState(connection: ToolConnection): ConnectionState {
   if (connection.status === "draft") {
     return {
       kind: "draft",
-      label: "Setup incomplete",
-      message: "Finish setup before agents can use this account.",
+      label: i18n.t("area.apps-connections-3.browse.stateDraft"),
+      message: i18n.t("area.apps-connections-3.browse.stateDraftMsg"),
     };
   }
   if (connection.enabled === false || connection.status === "disabled") {
     return {
       kind: "paused",
-      label: "Paused",
-      message: "Agents can’t use this account right now.",
+      label: i18n.t("area.apps-connections-3.browse.statePaused"),
+      message: i18n.t("area.apps-connections-3.browse.statePausedMsg"),
     };
   }
   if ((connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config))) || isToolConnectionAttentionHealth(connection.healthStatus)) {
     return {
       kind: "attention",
-      label: "Needs attention",
+      label: i18n.t("area.apps-connections-3.browse.stateAttention"),
       message:
         connection.healthMessage ??
         connection.lastError ??
         (connection.authKind === "oauth"
-          ? "Sign in again to restore access."
-          : "Replace the credential to restore access."),
+          ? i18n.t("area.apps-connections-3.browse.stateSignInAgain")
+          : i18n.t("area.apps-connections-3.browse.stateReplaceCredential")),
     };
   }
-  return { kind: "connected", label: "Connected", message: null };
+  return { kind: "connected", label: i18n.t("area.apps-connections-3.browse.stateConnected"), message: null };
 }
 
 function connectionRank(connection: ToolConnection): number {
@@ -221,32 +222,32 @@ function connectorAction(
       )
     : null;
   if (row.connections.length > 0 || row.chatEndpoints.length > 0) {
-    if (chatHref) return { label: "Add connection", href: chatHref };
+    if (chatHref) return { label: i18n.t("area.apps-connections-3.browse.actionAddConnection"), href: chatHref };
     if (row.entry && applicationId) {
       return {
-        label: "Add account",
+        label: i18n.t("area.apps-connections-3.browse.actionAddAccount"),
         href: additionalConnectionHref(row.entry, applicationId),
       };
     }
     return {
-      label: "Add account",
+      label: i18n.t("area.apps-connections-3.browse.actionAddAccount"),
       href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
     };
   }
 
   if (row.entry?.availability?.available === false) {
     return {
-      label: "Unavailable",
+      label: i18n.t("area.apps-connections-3.browse.actionUnavailable"),
       href: null,
       title:
         row.entry.availability.reason ??
-        "This connector is unavailable on this instance.",
+        i18n.t("area.apps-connections-3.browse.actionUnavailableReason"),
     };
   }
-  if (chatHref) return { label: "Connect", href: chatHref };
-  if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
+  if (chatHref) return { label: i18n.t("area.apps-connections-3.browse.actionConnect"), href: chatHref };
+  if (row.entry) return { label: i18n.t("area.apps-connections-3.browse.actionConnect"), href: connectHrefFor(row.entry) };
   return {
-    label: "Connect",
+    label: i18n.t("area.apps-connections-3.browse.actionConnect"),
     href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
   };
 }
@@ -267,6 +268,7 @@ function accountActionHref(
  * account; unconnected providers retain the same catalog setup flows.
  */
 export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const preselectedChatAgentId =
     typeof window === "undefined"
@@ -282,9 +284,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors" }]);
+    setBreadcrumbs([{ label: t("area.apps-connections-3.browse.breadcrumbConnectors") }]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -329,19 +331,19 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         queryKey: queryKeys.apps.attention(selectedCompanyId!),
       });
       pushToast({
-        title: "Connection removed",
+        title: t("area.apps-connections-3.browse.removedTitle"),
         body:
           target.remainingConnectionCount > 0
-            ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+            ? t("area.apps-connections-3.browse.removedStillHas", { app: target.providerName, count: target.remainingConnectionCount })
+            : t("area.apps-connections-3.browse.removedNoLonger", { app: target.providerName }),
         tone: "success",
       });
       setConnectionToRemove(null);
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't remove the connection",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("area.apps-connections-3.browse.removeFailed"),
+        body: error instanceof Error ? error.message : t("area.apps-connections-3.browse.tryAgainShort"),
         tone: "error",
       }),
   });
@@ -414,35 +416,35 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       });
     }
     const nativeChatProviders = [
-      { provider: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
+      { provider: "imessage-photon", name: "iMessage Photon", description: t("area.apps-connections-3.browse.descImessage") },
       {
         provider: "slack",
         name: "Slack",
         description:
-          "Chat with agents from Slack channels and direct messages.",
+          t("area.apps-connections-3.browse.descSlack"),
       },
       {
         provider: "github",
         name: "GitHub",
         description:
-          "Chat with agents from issues, pull requests, and review threads.",
+          t("area.apps-connections-3.browse.descGithub"),
       },
       {
         provider: "discord",
         name: "Discord",
         description:
-          "Chat with agents from Discord channels, threads, and direct messages.",
+          t("area.apps-connections-3.browse.descDiscord"),
       },
       {
         provider: "microsoft-teams",
         name: "Microsoft Teams",
-        description: "Chat with agents from Teams channels and conversations.",
+        description: t("area.apps-connections-3.browse.descTeams"),
       },
       {
         provider: "telegram",
         name: "Telegram",
         description:
-          "Chat with agents from Telegram direct messages, groups, and topics.",
+          t("area.apps-connections-3.browse.descTelegram"),
       },
     ] as const;
     for (const item of chatConnectorsEnabled ? nativeChatProviders : []) {
@@ -515,7 +517,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         name: application.name,
         description:
           application.description ??
-          "A custom connector configured for this organization.",
+          t("area.apps-connections-3.browse.descCustom"),
         brandKey: applicationSlug ?? application.name,
         entry: null,
         applications: [application],
@@ -544,7 +546,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           key: `chat:${endpoint.provider}`,
           slug: endpoint.provider,
           name: names[endpoint.provider],
-          description: `Chat with agents through ${names[endpoint.provider]}.`,
+          description: t("area.apps-connections-3.browse.descChatThrough", { provider: names[endpoint.provider] }),
           brandKey: endpoint.provider,
           entry: null,
           applications: [],
@@ -581,6 +583,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     chatConnectorsEnabled,
     connectionsQuery.data,
     gallery,
+    t,
   ]);
 
   const trimmed = query.trim().toLocaleLowerCase();
@@ -599,12 +602,16 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     );
   }, [rows, trimmed]);
   const showCustomConnector =
-    !trimmed || "connect your own tool custom mcp server".includes(trimmed);
+    !trimmed || [
+      t("area.apps-connections-3.browse.customTitle"),
+      t("area.apps-connections-3.browse.customDescription"),
+      "mcp",
+    ].join(" ").toLocaleLowerCase().includes(trimmed);
 
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Select an organization to manage connectors.
+        {t("area.apps-connections-3.browse.selectOrganization")}
       </div>
     );
   }
@@ -630,8 +637,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search connectors…"
-            aria-label="Search connectors"
+            placeholder={t("area.apps-connections-3.browse.searchPlaceholder")}
+            aria-label={t("area.apps-connections-3.browse.searchLabel")}
             className="pl-9"
           />
         </div>
@@ -644,8 +651,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <p className="min-w-0 flex-1">
-            Couldn’t load every connector. Existing accounts are shown where
-            available.
+            {t("area.apps-connections-3.browse.loadFailed")}
           </p>
           <Button
             type="button"
@@ -658,13 +664,13 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               if (chatConnectorsEnabled) void chatEndpointsQuery.refetch();
             }}
           >
-            Try again
+            {t("area.apps-connections-3.browse.tryAgainButton")}
           </Button>
         </div>
       ) : null}
 
       {loading ? (
-        <div className="space-y-3" aria-label="Loading connectors">
+        <div className="space-y-3" aria-label={t("area.apps-connections-3.browse.loadingLabel")}>
           {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="h-24 w-full rounded-xl" />
           ))}
@@ -672,10 +678,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : nothingMatches ? (
         <p className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
           <Link2 className="h-4 w-4" />
-          No connectors match “{query.trim()}”.
+          {t("area.apps-connections-3.browse.noMatch", { query: query.trim() })}
         </p>
       ) : (
-        <div className="space-y-3" role="list" aria-label="Connector list">
+        <div className="space-y-3" role="list" aria-label={t("area.apps-connections-3.browse.listLabel")}>
           {visibleRows.map((row) => (
             <ConnectorCard
               renderAccountDetails={renderAccountDetails}
@@ -704,20 +710,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Remove {connectionToRemove?.accountName ?? "this"} connection?
+              {connectionToRemove
+                ? t("area.apps-connections-3.browse.removeDialogTitle", { name: connectionToRemove.accountName })
+                : t("area.apps-connections-3.browse.removeDialogTitleGeneric")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {connectionToRemove && connectionToRemove.childConnectionCount > 0
-                ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
+                ? t("area.apps-connections-3.browse.childServices", { count: connectionToRemove.childConnectionCount })
                 : connectionToRemove &&
                     connectionToRemove.remainingConnectionCount > 0
-                  ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
-                  : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+                  ? t("area.apps-connections-3.browse.otherConnections", { app: connectionToRemove.providerName, count: connectionToRemove.remainingConnectionCount })
+                  : t("area.apps-connections-3.browse.removeNoOthers")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={removeConnection.isPending}>
-              Cancel
+              {t("common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -733,7 +741,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               ) : (
                 <Trash2 />
               )}
-              {removeConnection.isPending ? "Removing…" : "Remove connection"}
+              {removeConnection.isPending ? t("common.removing") : t("area.apps-connections-3.browse.removeConnection")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -761,6 +769,7 @@ export function ConnectorCard({
   preselectedAgentId?: string | null;
   chatConnectorsEnabled: boolean;
 }) {
+  const { t } = useTranslation();
   const action = connectorAction(
     row,
     chatConnectorsEnabled,
@@ -858,12 +867,12 @@ export function ConnectorCard({
                     onNavigate(`/apps/chat/${endpoint.id}/settings`)
                   }
                 >
-                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : "Chat"}
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? t("area.apps-connections-3.browse.kindEmail") : t("area.apps-connections-3.browse.kindChat")}
                 </button>
                 <p className="truncate text-xs text-muted-foreground">
                   {endpoint.providerAccountLabel ??
                     endpoint.botLabel ??
-                    "Provider identity"}
+                    t("area.apps-connections-3.browse.providerIdentity")}
                 </p>
               </div>
               <span className="text-xs text-muted-foreground">
@@ -880,7 +889,7 @@ export function ConnectorCard({
                   )
                 }
               >
-                {endpoint.status === "draft" ? "Finish setup" : "Manage"}
+                {endpoint.status === "draft" ? t("area.apps-connections-3.browse.finishSetup") : t("area.apps-connections-3.browse.manage")}
               </Button>
             </div>
           ))}
@@ -905,6 +914,7 @@ function ConnectionAccountRow({
   onNavigate: (href: string) => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const state = connectionState(connection);
   const actionHref = accountActionHref(row, connection);
   const accountName = connectionDisplayNameForOwner(
@@ -921,7 +931,7 @@ function ConnectionAccountRow({
           <button
             type="button"
             className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
-            aria-label={`Open ${accountName} permissions`}
+            aria-label={t("area.apps-connections-3.browse.openPermissionsLabel", { name: accountName })}
             onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}
           >
             {accountName}
@@ -943,7 +953,7 @@ function ConnectionAccountRow({
 
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Connected by</span>
+          <span>{t("area.apps-connections-3.browse.connectedBy")}</span>
           <ConnectionOwnerIdentity owner={owner} />
         </div>
         {state.kind === "attention" || state.kind === "draft" ? (
@@ -955,9 +965,9 @@ function ConnectionAccountRow({
           >
             {state.kind === "attention"
               ? connection.requiresReauthorization === false
-                ? "Retry access"
-                : "Reconnect"
-              : "Finish setup"}
+                ? t("area.apps-connections-3.browse.retryAccess")
+                : t("area.apps-connections-3.browse.reconnect")
+              : t("area.apps-connections-3.browse.finishSetup")}
           </Button>
         ) : null}
         <DropdownMenu>
@@ -966,7 +976,7 @@ function ConnectionAccountRow({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={`Manage ${accountName} connection`}
+              aria-label={t("area.apps-connections-3.browse.manageConnectionLabel", { name: accountName })}
             >
               <MoreHorizontal className="h-4 w-4" />
             </Button>
@@ -975,12 +985,12 @@ function ConnectionAccountRow({
             <DropdownMenuItem
               onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
             >
-              Permissions
+              {t("area.apps-connections-3.browse.permissions")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
               <Trash2 />
-              Remove connection
+              {t("area.apps-connections-3.browse.removeConnection")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1033,6 +1043,7 @@ function CustomConnectorCard({
 }: {
   onNavigate: (href: string) => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -1047,10 +1058,10 @@ function CustomConnectorCard({
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Connect your own tool
+            {t("area.apps-connections-3.browse.customTitle")}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Add a custom MCP server or paste an existing configuration.
+            {t("area.apps-connections-3.browse.customDescription")}
           </p>
         </div>
         <Button
@@ -1061,7 +1072,7 @@ function CustomConnectorCard({
           aria-controls="custom-connector-options"
           onClick={() => setExpanded((open) => !open)}
         >
-          {expanded ? "Close" : "Connect"}
+          {expanded ? t("common.close") : t("area.apps-connections-3.browse.actionConnect")}
         </Button>
       </div>
 
@@ -1072,14 +1083,14 @@ function CustomConnectorCard({
         >
           <CustomConnectorOption
             icon={ServerCog}
-            title="Connect your own MCP server"
-            description="Enter the URL for a custom or self-hosted MCP server."
+            title={t("area.apps-connections-3.browse.byoTitle")}
+            description={t("area.apps-connections-3.browse.byoDescription")}
             onClick={() => onNavigate("/apps/byo")}
           />
           <CustomConnectorOption
             icon={ClipboardPaste}
-            title="Paste a config"
-            description="Paste an existing setup snippet and connect it."
+            title={t("area.apps-connections-3.browse.pasteTitle")}
+            description={t("area.apps-connections-3.browse.pasteDescription")}
             onClick={() => onNavigate("/apps/advanced/paste-config")}
           />
         </div>

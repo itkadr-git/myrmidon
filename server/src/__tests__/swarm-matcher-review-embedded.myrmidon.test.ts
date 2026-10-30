@@ -27,9 +27,9 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -544,6 +544,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),
@@ -612,6 +613,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),

@@ -11,7 +11,7 @@ import type {
   FeatureHealthStatus,
   FeatureSettingsLink,
   FeatureToggle,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { OutcomeSummary } from "./recorder.js";
 
 export type { FeatureConfigEntry, FeatureHealth, FeatureHealthStatus };
@@ -128,7 +128,7 @@ export interface FeatureDefinition {
   health(ctx: FeatureContext, config: FeatureConfig): FeatureHealth | Promise<FeatureHealth>;
   /** Flip the feature's own switch; present only for simple on/off features. */
   setEnabled?(
-    ctx: FeatureContext & { db: import("@paperclipai/db").Db },
+    ctx: FeatureContext & { db: import("@myrmidon/db").Db },
     enabled: boolean,
     actor: FeatureActor,
   ): Promise<void>;

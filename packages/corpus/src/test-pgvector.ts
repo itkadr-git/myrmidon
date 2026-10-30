@@ -56,7 +56,7 @@ function embeddedPostgresNativeRoot(): string | null {
 /**
  * Environment handed to the archive tools.
  *
- * `@paperclipai/db`'s embedded-postgres helper prepends its native lib dir to `LD_LIBRARY_PATH`,
+ * `@myrmidon/db`'s embedded-postgres helper prepends its native lib dir to `LD_LIBRARY_PATH`,
  * and that dir carries an older `liblzma.so.5` (`XZ_5.3`): the system `xz` then refuses to start
  * (`version `XZ_5.4' not found`) and `tar -J` exits 1, which reads as "the package cannot be
  * extracted" rather than "the tool inherited a library path". Both loader variables are dropped for

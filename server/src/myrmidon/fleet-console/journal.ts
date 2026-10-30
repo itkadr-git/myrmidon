@@ -8,7 +8,7 @@
 // No entry carries the token, the shared secret or the node password.
 
 import { and, desc, eq } from "drizzle-orm";
-import { activityLog, type Db } from "@paperclipai/db";
+import { activityLog, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import {
   CONSOLE_SESSION_CLOSED_ACTION,

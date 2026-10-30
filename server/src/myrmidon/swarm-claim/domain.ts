@@ -21,7 +21,7 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export {
   isSwarmLeaseExpired,
@@ -127,6 +127,7 @@ export interface SwarmClaimPlan {
   agentId: string;
   role: string | null;
   runId: string | null;
+  origin: "auto_match" | "checkout" | null;
   claimedAt: Date;
   heartbeatAt: Date;
   expiresAt: Date;
@@ -142,6 +143,7 @@ export function planClaim(input: {
   agentId: string;
   role: string | null;
   runId: string | null;
+  origin: "auto_match" | "checkout" | null;
   now: Date;
   settings: Pick<SwarmClaimSettings, "leaseTtlSec">;
 }): SwarmClaimPlan {
@@ -150,6 +152,7 @@ export function planClaim(input: {
     agentId: input.agentId,
     role: input.role,
     runId: input.runId,
+    origin: input.origin,
     claimedAt: input.now,
     heartbeatAt: input.now,
     expiresAt: swarmLeaseExpiresAt(input.now, input.settings),

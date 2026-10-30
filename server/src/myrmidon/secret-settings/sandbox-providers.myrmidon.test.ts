@@ -1,0 +1,250 @@
+// myrmidon(SETTINGS-UI E2.8): sandbox provider credentials through the instance secret-ref
+// resolver. Pure: in-memory store, no database.
+
+import { describe, expect, it } from "vitest";
+import { HttpError } from "../../errors.js";
+import { buildPluginWorkerEnv } from "../../services/plugin-loader.js";
+import { InstanceSecretSettingRegistry, INSTANCE_SECRET_SETTINGS } from "./registry.js";
+import {
+  createInstanceSecretSettingResolver,
+  type InstanceSecretBinding,
+  type InstanceSecretSettingStore,
+} from "./resolver.js";
+import {
+  SANDBOX_PROVIDER_REGISTRY_ENTRIES,
+  SANDBOX_PROVIDER_SECRET_SETTINGS,
+  resolveSandboxProviderSecret,
+} from "./sandbox-providers.js";
+import {
+  RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY,
+  RUNNER_ACPX_CODEX_AUTH_SETTING,
+  resolveRunnerAcpxCodexAuthEnv,
+} from "./runner-environment.js";
+
+const COMPANY = "11111111-1111-4111-8111-111111111111";
+const SECRET = "22222222-2222-4222-8222-222222222222";
+const REF_VALUE = "ref-held-sandbox-key-must-not-leak";
+const ENV_VALUE = "env-break-glass-sandbox-key";
+
+function make(env: NodeJS.ProcessEnv = {}) {
+  const bindings = new Map<string, InstanceSecretBinding>();
+  const secret = { name: "daytona", status: "active", companyId: COMPANY, value: REF_VALUE };
+  const redacted: string[] = [];
+  const store: InstanceSecretSettingStore = {
+    async getBinding(name) {
+      return bindings.get(name) ?? null;
+    },
+    async resolveValue() {
+      if (secret.status !== "active") {
+        throw new HttpError(422, "Secret is not active", { code: "secret_inactive" });
+      }
+      return secret.value;
+    },
+    async describeSecret() {
+      return { name: secret.name, status: secret.status, companyId: COMPANY };
+    },
+    async createSecret() {
+      return SECRET;
+    },
+    async setBinding(name, secretId) {
+      const b = { companyId: COMPANY, secretId };
+      bindings.set(name, b);
+      return b;
+    },
+    async clearBinding(name) {
+      return bindings.delete(name);
+    },
+  };
+  const resolver = createInstanceSecretSettingResolver({
+    registry: new InstanceSecretSettingRegistry(SANDBOX_PROVIDER_REGISTRY_ENTRIES),
+    store,
+    env,
+    registerForRedaction: (v) => redacted.push(v),
+  });
+  const warnings: Array<Record<string, unknown>> = [];
+  const log = { warn: (obj: Record<string, unknown>) => void warnings.push(obj) };
+  return { resolver, secret, redacted, warnings, log };
+}
+
+const DAYTONA = SANDBOX_PROVIDER_SECRET_SETTINGS[0]!;
+
+describe("sandbox provider secret settings", () => {
+  it("registers exactly the four provider keys with their documented env override", () => {
+    const rows = INSTANCE_SECRET_SETTINGS.filter((e) => e.name.startsWith("sandbox."));
+    expect(rows.map((r) => [r.name, r.envOverride, r.consumers])).toEqual([
+      ["sandbox.daytona.api_key", "DAYTONA_API_KEY", ["plugin-worker:daytona"]],
+      ["sandbox.e2b.api_key", "E2B_API_KEY", ["plugin-worker:e2b"]],
+      ["sandbox.exe-dev.api_key", "EXE_API_KEY", ["plugin-worker:exe-dev"]],
+      ["sandbox.novita.api_key", "NOVITA_API_KEY", ["plugin-worker:novita"]],
+    ]);
+  });
+
+  it("returns null for an unbound ref (missing) without logging a failure", async () => {
+    const t = make();
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBeNull();
+    expect(t.warnings).toEqual([]);
+  });
+
+  it("resolves a bound ref and registers the value for masking", async () => {
+    const t = make();
+    await t.resolver.setRef(DAYTONA.settingName, SECRET);
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBe(REF_VALUE);
+    expect(t.redacted).toEqual([REF_VALUE]);
+  });
+
+  it("emergency env override wins over the ref (priority)", async () => {
+    const t = make({ DAYTONA_API_KEY: ENV_VALUE });
+    await t.resolver.setRef(DAYTONA.settingName, SECRET);
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBe(ENV_VALUE);
+  });
+
+  it("change: swapping the ref applies on the next resolve; revoke: clearing it empties the result", async () => {
+    const t = make();
+    await t.resolver.setRef(DAYTONA.settingName, SECRET);
+    t.secret.value = "rotated-value";
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBe("rotated-value");
+    await t.resolver.clearRef(DAYTONA.settingName);
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBeNull();
+  });
+
+  it("denied: another plugin worker cannot resolve the daytona setting", async () => {
+    const t = make();
+    await t.resolver.setRef(DAYTONA.settingName, SECRET);
+    await expect(
+      t.resolver.resolve(DAYTONA.settingName, { consumerId: "plugin-worker:e2b" }),
+    ).rejects.toMatchObject({ status: 403, details: { code: "setting_consumer_denied" } });
+  });
+
+  it("an inactive secret yields null and a code-only warning with no value", async () => {
+    const t = make();
+    await t.resolver.setRef(DAYTONA.settingName, SECRET);
+    t.secret.status = "disabled";
+    expect(await resolveSandboxProviderSecret(t.resolver, "DAYTONA_API_KEY", t.log)).toBeNull();
+    expect(t.warnings).toEqual([{ settingName: DAYTONA.settingName, code: "secret_inactive" }]);
+    expect(JSON.stringify(t.warnings)).not.toContain(REF_VALUE);
+  });
+
+  it("ignores env vars that are not sandbox provider keys", async () => {
+    const t = make();
+    expect(await resolveSandboxProviderSecret(t.resolver, "SLACK_BOT_TOKEN", t.log)).toBeNull();
+  });
+});
+
+describe("buildPluginWorkerEnv with instance secret refs", () => {
+  const instanceInfo = { deploymentMode: "authenticated", deploymentExposure: "public" };
+  const manifest = {
+    capabilities: ["environment.drivers.register"],
+    environmentDrivers: [{ driverKey: "daytona" }],
+  } as never;
+
+  it("hands the ref-resolved key to a trusted provider worker", () => {
+    const env = buildPluginWorkerEnv({
+      manifest,
+      packageName: "@myrmidon/plugin-daytona",
+      packagePath: null,
+      instanceInfo,
+      processEnv: {},
+      instanceSecretEnv: { DAYTONA_API_KEY: REF_VALUE },
+    });
+    expect(env.DAYTONA_API_KEY).toBe(REF_VALUE);
+  });
+
+  it("process env (emergency override) wins over the resolved ref", () => {
+    const env = buildPluginWorkerEnv({
+      manifest,
+      packageName: "@myrmidon/plugin-daytona",
+      packagePath: null,
+      instanceInfo,
+      processEnv: { DAYTONA_API_KEY: ENV_VALUE },
+      instanceSecretEnv: { DAYTONA_API_KEY: REF_VALUE },
+    });
+    expect(env.DAYTONA_API_KEY).toBe(ENV_VALUE);
+  });
+
+  it("an untrusted plugin claiming the name receives nothing", () => {
+    const env = buildPluginWorkerEnv({
+      manifest,
+      packageName: "@myrmidon/plugin-daytona",
+      packagePath: "/home/op/evil-plugin",
+      trustedLocalPluginRoots: ["/opt/trusted"],
+      instanceInfo,
+      processEnv: {},
+      instanceSecretEnv: { DAYTONA_API_KEY: REF_VALUE },
+    });
+    expect(env).not.toHaveProperty("DAYTONA_API_KEY");
+  });
+
+  it("a key outside the provider's own list is never injected", () => {
+    const env = buildPluginWorkerEnv({
+      manifest,
+      packageName: "@myrmidon/plugin-daytona",
+      packagePath: null,
+      instanceInfo,
+      processEnv: {},
+      instanceSecretEnv: { E2B_API_KEY: REF_VALUE },
+    });
+    expect(env).not.toHaveProperty("E2B_API_KEY");
+  });
+});
+
+describe("runner ACPX Codex auth JSON path", () => {
+  const ctxResolver = (env: NodeJS.ProcessEnv = {}) => {
+    const t = make(env);
+    const resolver = createInstanceSecretSettingResolver({
+      registry: new InstanceSecretSettingRegistry([RUNNER_ACPX_CODEX_AUTH_REGISTRY_ENTRY]),
+      store: (() => {
+        let b: InstanceSecretBinding | null = null;
+        return {
+          getBinding: async () => b,
+          createSecret: async () => SECRET,
+          resolveValue: async () => REF_VALUE,
+          describeSecret: async () => ({ name: "codex", status: "active", companyId: COMPANY }),
+          setBinding: async (_n: string, id: string) => (b = { companyId: COMPANY, secretId: id }),
+          clearBinding: async () => ((b = null), true),
+        } satisfies InstanceSecretSettingStore;
+      })(),
+      env,
+      registerForRedaction: (v) => t.redacted.push(v),
+    });
+    return { resolver, t };
+  };
+  const NAME = RUNNER_ACPX_CODEX_AUTH_SETTING;
+  const input = { existing: {}, managedCredentialFile: false };
+
+  it("ref set -> the runner environment receives the value under the name the runner reads", async () => {
+    const { resolver, t } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({
+      PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: REF_VALUE,
+    });
+    expect(t.redacted).toEqual([REF_VALUE]);
+  });
+
+  it("ref revoked -> nothing is passed", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    await resolver.clearRef(NAME);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({});
+  });
+
+  it("emergency env has priority over the ref", async () => {
+    const { resolver } = ctxResolver({ PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE });
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, input)).toEqual({
+      PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: ENV_VALUE,
+    });
+  });
+
+  it("does not add a second credential source (api key, managed file, existing JSON)", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, { existing: { CODEX_API_KEY: "k" }, managedCredentialFile: false })).toEqual({});
+    expect(await resolveRunnerAcpxCodexAuthEnv(resolver, { existing: {}, managedCredentialFile: true })).toEqual({});
+  });
+
+  it("is scoped to the runner environment consumer only", async () => {
+    const { resolver } = ctxResolver();
+    await resolver.setRef(NAME, SECRET);
+    await expect(resolver.resolve(NAME, { consumerId: "plugin-worker:e2b" })).rejects.toMatchObject({ status: 403 });
+  });
+});

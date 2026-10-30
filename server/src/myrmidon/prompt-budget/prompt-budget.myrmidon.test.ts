@@ -21,7 +21,7 @@
 //      carries the window), a second pass in the same window writes nothing.
 
 import { describe, expect, it } from "vitest";
-import { agents, companies } from "@paperclipai/db";
+import { agents, companies } from "@myrmidon/db";
 import {
   ATTENTION_SOURCE_KINDS,
   PROMPT_BUDGET_SETTINGS_KEY,
@@ -35,7 +35,7 @@ import {
   topPromptBudgetParts,
   type PromptBudgetAgentStatus,
   type PromptBudgetSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { buildPromptBudgetAttentionCards } from "./attention.js";
 import {
   hasPromptBudgetSignal,

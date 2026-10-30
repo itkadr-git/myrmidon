@@ -10,7 +10,7 @@
 //
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { 
   computeBaselineMetrics, 
@@ -20,7 +20,7 @@ import {
   compareWithBaseline,
   type BaselineComparisonResult
 } from "./service.js";
-import { baselineMetricSnapshots } from "@paperclipai/db";
+import { baselineMetricSnapshots } from "@myrmidon/db";
 import { eq, and } from "drizzle-orm";
 import { assertBoard } from "../../routes/authz.js";
 import type { BaselineWindow } from "./metrics.js";

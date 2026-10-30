@@ -2,7 +2,7 @@
 // updateGeneral/getGeneral (they were accepted by the validator but dropped by
 // the normalizeGeneralSettings whitelist).
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
 // updateGeneral reads the row through select().from().where().limit(1).for("update")

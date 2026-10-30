@@ -2,7 +2,7 @@ import type {
   ModelMenuCatalogModel,
   ModelMenuSettings,
   ResolvedModelMenu,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** One adapter type the editor may resolve a catalog against. */
 export interface ModelMenuAdapterType {

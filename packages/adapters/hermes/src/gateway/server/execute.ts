@@ -9,16 +9,16 @@ import type {
   PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
-import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
-import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
-import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+} from "@myrmidon/adapter-utils";
+import { githubLauncherPayload } from "@myrmidon/adapter-utils/github-launcher";
+import { measureSections } from "@myrmidon/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@myrmidon/adapter-utils/input-overflow";
 import {
   INPUT_LIMIT_CONFIG_KEY,
   decideInputLimit,
   readInputLimitHint,
   trimTextToChars,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -28,7 +28,7 @@ import {
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
@@ -66,7 +66,7 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
-// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Myrmidon-managed
 // skills (see ./myrmidon-skills-reconcile.ts for the route decision).
 import {
   buildPaperclipSkillsField,
@@ -423,9 +423,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
   // measured as its own prompt section.
   const identityContract = [
-    `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
+    `You are ${ctx.agent.name}, an AI agent employee in a Myrmidon-managed company.`,
     "",
-    "Paperclip runtime identity:",
+    "Myrmidon runtime identity:",
     `- Agent ID: ${ctx.agent.id}`,
     `- Company ID: ${ctx.agent.companyId}`,
     // myrmidon(G4): this attempt's own ctx.runId (passed in as
@@ -504,9 +504,9 @@ function buildGitHubBrokerField(
 }
 
 // myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
-// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// /v1/runs request — `{key, repo, baseRef?, branch?}` — from which the gateway runs
 // `myr-ws open` before the model starts. The shapes mirror
-// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// `runWorkspaceFieldSchema` of @myrmidon/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
 // key: the board identifier of the run's issue; repo: `owner/name` derived
 // from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
@@ -547,13 +547,23 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
 
 function buildWorkspaceField(
   context: Record<string, unknown>,
-): { key: string; repo: string; baseRef?: string } | undefined {
+): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // The task's own pull request decides the repository and the branch: the project is only the
+  // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
+  // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
+  // head branch, not the project's repository on `bot/<KEY>`.
+  const pullRequest = parseObject(context.paperclipPullRequest);
+  const prRepoRaw = asString(pullRequest.repo, "").trim();
+  const prRepo = prRepoRaw && WS_REPO_NAME_RE.test(prRepoRaw) ? prRepoRaw : null;
+  const prBranchRaw = asString(pullRequest.headRef, "").trim().replace(/^refs\/heads\//, "");
+  const prBranch = prRepo && prBranchRaw && prBranchRaw.length <= 200 && WS_GIT_REF_RE.test(prBranchRaw) && !prBranchRaw.startsWith("-") && !prBranchRaw.includes("..") ? prBranchRaw : "";
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  const projectRepo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = prRepo ?? projectRepo;
   let usedDefault = false;
   if (!repo) {
     const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
@@ -563,12 +573,13 @@ function buildWorkspaceField(
     }
   }
   if (!repo) return undefined;
-  // The ref belongs to the project workspace's own repository, not to the fallback one.
-  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the PR's or the fallback one.
+  const baseRef = usedDefault || repo !== projectRepo ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
     ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+    ...(prBranch ? { branch: prBranch } : {}),
   };
 }
 
@@ -615,8 +626,8 @@ function buildRunBody(
   const cardInstructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
-    "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
-  // myrmidon(G4): prepend the Paperclip-managed instructions bundle (the same
+    "Follow the Myrmidon wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  // myrmidon(G4): prepend the Myrmidon-managed instructions bundle (the same
   // file hermes_local injects via instructionsFilePath) ahead of the card's
   // own stable instructions string, mirroring local's `agentInstructions +
   // "\n\n---\n\n" + prompt` layering.
@@ -657,7 +668,7 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
-    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // myrmidon(1.6.6-HERMES-SKILLS-A): Myrmidon-managed skills for the run's
     // profile (see the buildRunBody signature note); the gateway image's
     // run-scoped-skills patch materializes them before the agent starts.
     paperclip_skills: paperclipSkillsField,
@@ -1325,6 +1336,88 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   };
 }
 
+function parseGatewayCallIds(value: unknown): {
+  gatewayCallIds: string[];
+  gatewayCallIdsTruncated: boolean;
+  litellmRequestIds: string[];
+  litellmRequestIdsTruncated: boolean;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      gatewayCallIds: [], gatewayCallIdsTruncated: false,
+      litellmRequestIds: [], litellmRequestIdsTruncated: false,
+    };
+  }
+  const usage = asRecord(record.usage);
+  const gatewayCallIds = new Set<string>();
+  const litellmRequestIds = new Set<string>();
+  const addIds = (target: Set<string>, candidate: unknown) => {
+    for (const raw of Array.isArray(candidate) ? candidate : [candidate]) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (id.length > 0 && id.length <= 256) target.add(id);
+    }
+  };
+  for (const source of [record, usage]) {
+    if (!source) continue;
+    addIds(gatewayCallIds, source.gateway_call_ids);
+    addIds(gatewayCallIds, source.gatewayCallIds);
+    addIds(litellmRequestIds, source.litellm_request_ids);
+    addIds(litellmRequestIds, source.litellmRequestIds);
+    for (const candidate of [source.model_call_ids, source.call_ids, source.model_call_id, source.call_id]) {
+      addIds(gatewayCallIds, candidate);
+    }
+  }
+  const gatewayCallIdsTruncated = gatewayCallIds.size > 500;
+  const litellmRequestIdsTruncated = litellmRequestIds.size > 500;
+  return {
+    gatewayCallIds: [...gatewayCallIds].slice(0, 500),
+    gatewayCallIdsTruncated,
+    litellmRequestIds: [...litellmRequestIds].slice(0, 500),
+    litellmRequestIdsTruncated,
+  };
+}
+
+function parseModelCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  const readCount = (candidate: unknown): number | null => {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    return Number.isSafeInteger(count) && count >= 0 ? Math.min(count, 100_000) : null;
+  };
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  const nested = asRecord(record?.model_calls) ?? asRecord(usage?.model_calls);
+  for (const candidate of [nested?.count, nested?.total]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  return null;
+}
+
+function parseOutputCallCount(outputChunks: string[]): number | null {
+  let count = 0;
+  for (const chunk of outputChunks) {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (/^\s*(?:┊\s*)?🔧\s*Calling\s+/.test(line)) count += 1;
+    }
+  }
+  return count > 0 ? Math.min(count, 100_000) : null;
+}
+
+function parseGatewayCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isSafeInteger(count) && count >= 0) return Math.min(count, 100_000);
+  }
+  return null;
+}
+
 function parseCostUsd(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record?.cost_usd ?? record?.costUsd ?? asRecord(record?.usage)?.cost_usd ?? asRecord(record?.usage)?.costUsd;
@@ -1419,6 +1512,12 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const payloadCallIds = parseGatewayCallIds(payload);
+  const gatewayModelCallCount = parseGatewayCallCount(payload);
+  const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
+  const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
+  const modelCallCount = explicitCallCount ?? metadataCallCount;
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -1484,6 +1583,12 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      modelCallCount: modelCallCount,
+      modelCallCountSource,
+      gatewayCallIds: payloadCallIds.gatewayCallIds,
+      gatewayCallIdsTruncated: payloadCallIds.gatewayCallIdsTruncated,
+      litellmRequestIds: payloadCallIds.litellmRequestIds,
+      litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     },
   };
@@ -1954,7 +2059,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Myrmidon-managed skills
   // before POST /v1/runs, at the same boundary hermes_local reconcile skills
   // (execute.ts:372-389). The preferred route — reading/writing the gateway
   // profile's skills.external_dirs over the API — does not exist on the
@@ -1965,7 +2070,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // whole block is a no-op (a developer outside the board is unaffected) —
   // buildPaperclipSkillsField returns undefined and JSON drops the field.
   // Any reconcile/fact-check failure aborts before the run is created, with
-  // the same "Cannot start without the required Paperclip-managed skills"
+  // the same "Cannot start without the required Myrmidon-managed skills"
   // message as hermes_local; the redactor is applied defensively even though
   // the module's own messages never carry secrets.
   let paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined;
@@ -1987,21 +2092,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
         await ctx.onLog(
           "stdout",
-          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Paperclip-managed skill(s) verified in the run-body field\n`,
+          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Myrmidon-managed skill(s) verified in the run-body field\n`,
         );
       }
     } catch (err) {
       const reason = redactErrorMessage(err, redactText);
       await ctx.onLog(
         "stderr",
-        `[hermes-gateway] Cannot start without the required Paperclip-managed skills: ${reason}\n`,
+        `[hermes-gateway] Cannot start without the required Myrmidon-managed skills: ${reason}\n`,
       );
       return {
         exitCode: 1,
         signal: null,
         timedOut: false,
         errorCode: "paperclip_skills_unavailable",
-        errorMessage: `Cannot start without the required Paperclip-managed skills: ${reason}`,
+        errorMessage: `Cannot start without the required Myrmidon-managed skills: ${reason}`,
         provider: "hermes_gateway",
         sessionParams: { strategy },
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,

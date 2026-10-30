@@ -12,14 +12,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { createKnowledgeModule } from "./service.js";
 import { parseKnowledgeTree } from "./domain.js";
 import { buildKnowledgeGitTree, readKnowledgeExportSettings, type KnowledgeExportSettings } from "./git-export.js";
 import { errorMessage, publishKnowledgeExport, type PublishKnowledgeExportResult } from "./git-export-git.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface KnowledgeExportPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -142,7 +143,7 @@ export function startKnowledgeExport(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalHours * 60 * 60 * 1000);
   if (typeof timer.unref === "function") timer.unref();

@@ -10,12 +10,16 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { agents, myrmidonFleetSites, type Db } from "@paperclipai/db";
+import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { fleetMoveStore } from "./fleet-move-store.js";
 import { fleetMoveRoutes } from "./fleet-move-routes.js";
 import { FleetMoveService, type SiteAgentClient } from "./fleet-move-service.js";
+import { siteStatusIsReachable } from "./site-health-flag.js";
+import { fleetReplicaStoreFromEnv } from "./fleet-replica-store.js";
 import { fleetMoveMaintenance } from "./fleet-move-maintenance.js";
-import { createSiteAgentClient } from "./site-agent-client.js";
+import { createSiteAgentClient, type SiteAgentMemoryClient } from "./site-agent-client.js";
+import { fleetMemorySyncFromEnv } from "./fleet-memory-sync-wiring.js";
+import { forcedSyncBeforeMove } from "./fleet-memory-sync.js";
 import { parseFleetHosts } from "./fleetd-hosts.js";
 import { fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
@@ -42,6 +46,10 @@ export interface FleetMoveContext {
   service: FleetMoveService;
   /** The company that owns the bot (agent), or null when there is no such agent. */
   botCompanyId(botKey: string): Promise<string | null>;
+  /** The container spec the bot's card asks for (limits, image): what the drift check compares with. */
+  botSpec(botKey: string): Promise<BotContainerSpec>;
+  /** The site-agent client of a site, for the company that owns the bot (site-agent calls outside the driver contract). */
+  siteAgentClient(siteName: string, companyId: string): Promise<SiteAgentMemoryClient>;
 }
 
 export function createFleetMoveContext(db: Db): FleetMoveContext {
@@ -126,7 +134,10 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     if (!row) {
       throw new Error(`site "${siteName}" is unknown: it is neither in MYRMIDON_FLEET_HOSTS nor in the site registry`);
     }
-    if (row.status !== "active") {
+    // A draining site is still reachable for what happens on it (stopping or snapshotting the
+    // bots that are being moved off); that it takes no new bots is the scheduler's rule.
+    // Tied to MYRMIDON_SITE_HEALTH: without it only an active site is reachable, as before T4.
+    if (!siteStatusIsReachable(row.status)) {
       throw new Error(`site "${siteName}" is ${row.status}, not active`);
     }
     if (!row.tokenSecret) {
@@ -135,7 +146,32 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
     return { url: row.url, token: await readSecretValue(companyId, row.tokenSecret, `site "${siteName}"`) };
   }
 
+  async function botSpec(botKey: string): Promise<BotContainerSpec> {
+    const runtime = requireRuntime();
+    const row = await readAgentRow(botKey);
+    if (!row) throw new Error(`Bot "${botKey}" not found`);
+    const parsed = readBotContainerAgentConfig(
+      row.adapterType,
+      isRecord(row.adapterConfig) ? row.adapterConfig : {},
+      await runtime.readSharedMountSettings?.(),
+      row.id,
+    );
+    if (!parsed.ok) throw new Error(`Bot "${botKey}" has no usable container card: ${parsed.reason}`);
+    return botContainerSpec(botKey, parsed.config, runtime.network);
+  }
+
+  // myrmidon(1.6.6 C-MEM): the memory sync right before a live move; null when not configured.
+  const memorySync = fleetMemorySyncFromEnv(db, process.env, async (site, botKey) => {
+    const { url, token } = await resolveSiteHost(site.name, site.companyId);
+    return createSiteAgentClient({ baseUrl: url, token }).memoryExport(botKey);
+  });
+
   const service = new FleetMoveService({
+    async beforeSnapshot({ moveId, companyId, botKey, srcSite }) {
+      if (!memorySync || srcSite === LOCAL_SITE) return;
+      await forcedSyncBeforeMove(memorySync, { companyId, siteName: srcSite, botKey, moveId }, { log: logger });
+    },
+
     getMove: store.getMove,
     getLatestMoveForBot: store.getLatestMoveForBot,
     createMove: store.createMove,
@@ -158,22 +194,16 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
       return url;
     },
 
+    // myrmidon(1.6.6 REMOTE-SITES-T4): the replicas the board keeps of remote datadirs, when
+    // MYRMIDON_FLEET_REPLICA_DIR names the store. Without it a replica move has nothing to open.
+    async openReplica(site: string, botKey: string) {
+      return (await fleetReplicaStoreFromEnv()?.open(site, botKey)) ?? null;
+    },
+
     getAgentCard,
     updateAgentCard,
 
-    async getBotSpec(botKey: string): Promise<BotContainerSpec> {
-      const runtime = requireRuntime();
-      const row = await readAgentRow(botKey);
-      if (!row) throw new Error(`Bot "${botKey}" not found`);
-      const parsed = readBotContainerAgentConfig(
-        row.adapterType,
-        isRecord(row.adapterConfig) ? row.adapterConfig : {},
-        await runtime.readSharedMountSettings?.(),
-        row.id,
-      );
-      if (!parsed.ok) throw new Error(`Bot "${botKey}" has no usable container card: ${parsed.reason}`);
-      return botContainerSpec(botKey, parsed.config, runtime.network);
-    },
+    getBotSpec: botSpec,
 
     async getCompiledProfile(botKey: string): Promise<CompiledProfile> {
       // The profile is compiled from the card as it is now (the card already names the destination).
@@ -192,6 +222,11 @@ export function createFleetMoveContext(db: Db): FleetMoveContext {
   return {
     service,
     botCompanyId,
+    botSpec,
+    async siteAgentClient(siteName: string, companyId: string) {
+      const { url, token } = await resolveSiteHost(siteName, companyId);
+      return createSiteAgentClient({ baseUrl: url, token });
+    },
   };
 }
 

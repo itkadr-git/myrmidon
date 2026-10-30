@@ -6,7 +6,7 @@
 // site there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import { parseDeployJobDocument, type DeployJobDocument } from "./domain.js";
 
 export const DEPLOY_JOBS_GENERAL_KEY = "myrmidonDeployJobs";

@@ -4,14 +4,14 @@
 // One definition failing to evaluate never breaks the page: its row reports
 // `unknown` with the reason, and the other rows are unaffected.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   FEATURE_HEALTH_STATUSES,
   FEATURE_HEALTH_WINDOW_MS,
   type FeatureHealth,
   type FeaturesReport,
   type FeatureView,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { featureBrokenSince, observeFeatureHealth } from "./attention.js";
 import { errorMessage, makeHealth } from "./health.js";

@@ -3,11 +3,35 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+// Keep startServer wiring tests independent of optional observability bootstrap
+// endpoints inherited from the runner; startServer awaits both modules at entry.
+const ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const ORIGINAL_SENTRY_DSN_BACKEND = process.env.SENTRY_DSN_BACKEND;
+const ORIGINAL_SENTRY_DSN = process.env.SENTRY_DSN;
+const ORIGINAL_SENTRY_DSN_FRONTEND = process.env.SENTRY_DSN_FRONTEND;
+delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+delete process.env.SENTRY_DSN_BACKEND;
+delete process.env.SENTRY_DSN;
+delete process.env.SENTRY_DSN_FRONTEND;
+
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_PROCESS_ROLE = process.env.PAPERCLIP_PROCESS_ROLE;
+const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
+const ORIGINAL_MYRMIDON_CONFIG = process.env.MYRMIDON_CONFIG;
+const ORIGINAL_MYRMIDON_HOME = process.env.MYRMIDON_HOME;
+const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
+const isolatedConfigPath = path.join(tmpdir(), `myrmidon-startup-${process.pid}-${Date.now()}.json`);
+const isolatedHome = path.join(tmpdir(), `myrmidon-startup-home-${process.pid}-${Date.now()}`);
+delete process.env.PAPERCLIP_CONFIG;
+delete process.env.MYRMIDON_CONFIG;
+delete process.env.PAPERCLIP_HOME;
+delete process.env.MYRMIDON_HOME;
+process.env.PAPERCLIP_CONFIG = isolatedConfigPath;
+process.env.PAPERCLIP_HOME = isolatedHome;
 
 const {
   createAppMock,
@@ -26,12 +50,16 @@ const {
   fakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
+  inspectMigrationsMock,
   issueThreadInteractionServiceFactoryMock,
   issueThreadInteractionServiceMock,
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  existingSettingsRows,
+  connectionDeliverySweepPendingMock,
+  questionResponseDeliverySweepPendingMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
@@ -40,11 +68,17 @@ const {
     },
   }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
-  const createDbMock = vi.fn(() => ({
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({ where: vi.fn(async () => []) })),
-    })),
-  }) as never);
+  const existingSettingsRows: Array<Record<string, unknown>> = [];
+  const createDbMock = vi.fn(() => {
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ then: (resolve: (rows: Array<Record<string, unknown>>) => unknown) => resolve(existingSettingsRows) })),
+        })),
+      })),
+    };
+    return db as never;
+  });
   const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
@@ -83,6 +117,15 @@ const {
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
+  const inspectMigrationsMock = vi.fn(async () => ({ status: "upToDate" }));
+  const connectionDeliverySweepPendingMock = vi.fn(async () => ({ scanned: 0, failed: 0 }));
+  const questionResponseDeliverySweepPendingMock = vi.fn(async () => ({
+    scanned: 0,
+    steered: 0,
+    coalesced: 0,
+    wakeFallback: 0,
+    failed: 0,
+  }));
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
     sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
@@ -127,10 +170,18 @@ const {
     on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
-    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-      callback?.();
-      return fakeServer;
-    }),
+    listen: vi.fn(
+      (
+        _portOrOptions: number | Record<string, unknown>,
+        hostOrCallback?: string | (() => void),
+        callback?: () => void,
+      ) => {
+        // API-role startup uses Node's options-object overload; the default
+        // role uses (port, host, callback). Both must signal the bound await.
+        (typeof hostOrCallback === "function" ? hostOrCallback : callback)?.();
+        return fakeServer;
+      },
+    ),
     close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
   };
   const loadConfigMock = vi.fn();
@@ -152,12 +203,16 @@ const {
     fakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
+    inspectMigrationsMock,
     issueThreadInteractionServiceFactoryMock,
     issueThreadInteractionServiceMock,
     loadConfigMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    existingSettingsRows,
+    connectionDeliverySweepPendingMock,
+    questionResponseDeliverySweepPendingMock,
   };
 });
 
@@ -206,20 +261,26 @@ vi.mock("node:http", () => ({
   createServer: vi.fn(() => fakeServer),
 }));
 
+vi.mock("embedded-postgres", () => ({
+  default: vi.fn(),
+}));
+
 vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", async (importOriginal) => ({
+vi.mock("@myrmidon/db", async (importOriginal) => ({
   // Spread the real module: the startup module graph (via wip-limit ->
   // services/issues.js -> documents.ts / execution-projection.ts) reads dozens
   // of table exports at module scope, and a partial mock breaks as soon as the
   // graph gains a new edge. Only the startup-path functions are overridden.
-  ...(await importOriginal<typeof import("@paperclipai/db")>()),
+  ...(await importOriginal<typeof import("@myrmidon/db")>()),
+  ...(await importOriginal<typeof import("@myrmidon/db")>()),
+  createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+  inspectMigrations: inspectMigrationsMock,
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
@@ -369,19 +430,13 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/connection-intent-delivery.js", () => ({
   connectionIntentDeliveryService: vi.fn(() => ({
-    sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
+    sweepPending: connectionDeliverySweepPendingMock,
   })),
 }));
 
 vi.mock("../services/question-response-delivery.js", () => ({
   questionResponseDeliveryService: vi.fn(() => ({
-    sweepPending: vi.fn(async () => ({
-      scanned: 0,
-      steered: 0,
-      coalesced: 0,
-      wakeFallback: 0,
-      failed: 0,
-    })),
+    sweepPending: questionResponseDeliverySweepPendingMock,
   })),
 }));
 
@@ -411,7 +466,7 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
 }));
 
 // The bot container sweep is off unless enabled and is not under test here; its port wiring
-// pulls the real services graph, which this test replaces with a partial @paperclipai/db mock.
+// pulls the real services graph, which this test replaces with a partial @myrmidon/db mock.
 vi.mock("../myrmidon/bot-containers/startup.js", () => ({
   startBotContainers: vi.fn(),
   stopBotContainers: vi.fn(),
@@ -419,7 +474,7 @@ vi.mock("../myrmidon/bot-containers/startup.js", () => ({
 
 // myrmidon(R5-B): same for the bot image canary wiring — the canary index
 // imports the bot container runtime, which pulls the real services graph and
-// the partial @paperclipai/db mock has no table columns. The canary itself is
+// the partial @myrmidon/db mock has no table columns. The canary itself is
 // a no-op unless MYRMIDON_BOT_CANARY is set and has its own suites.
 vi.mock("../myrmidon/bot-containers/canary-index.js", () => ({
   startBotCanary: vi.fn(),
@@ -446,10 +501,16 @@ vi.mock("../auth/better-auth.js", () => ({
 import { startServer } from "../index.ts";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
+import { logger } from "../middleware/logger.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    existingSettingsRows.length = 0;
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
+    delete process.env.DATABASE_URL;
+    delete process.env.MYRMIDON_DATABASE_URL;
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
@@ -618,6 +679,53 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("does not create heartbeat recovery, execution-control interval, or background sweeps in the api role", async () => {
+    const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
+    process.env.PAPERCLIP_PROCESS_ROLE = "api";
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    existingSettingsRows.push({
+      singletonKey: "default",
+      general: {},
+      experimental: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      databaseUrl: "postgres://paperclip:***@127.0.0.1:5432/paperclip",
+    }));
+    const intervals: number[] = [];
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      intervals.push(interval);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileHotRestartAdoption).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.recoverNativeRunsAfterRestart).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(reconcileSafeNativeReplacements).not.toHaveBeenCalled();
+      expect(intervals).not.toContain(EXECUTION_RECONCILIATION_INTERVAL_MS);
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
+      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
+      expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(connectionDeliverySweepPendingMock).not.toHaveBeenCalled();
+      expect(questionResponseDeliverySweepPendingMock).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
+      else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
+    }
+  });
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -692,6 +800,23 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("logs cleanup sweep failures for non-api roles instead of leaking rejections", async () => {
+    process.env.PAPERCLIP_PROCESS_ROLE = "worker";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.sweepPendingCleanupLeases.mockRejectedValueOnce(new Error("cleanup unavailable"));
+
+    await startServer();
+
+    expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalledWith({ backoffMs: 0 });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      "environment lease cleanup sweep failed",
+    );
+  });
+
   it("does not replay hot-restart adoption when the orphan reaper retries", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -756,6 +881,9 @@ describe("startServer feedback export wiring", () => {
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
+    delete process.env.DATABASE_URL;
+    delete process.env.MYRMIDON_DATABASE_URL;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
@@ -830,10 +958,20 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
     clearMyrmidonStartupEnv();
   });
 
   afterEach(() => {
+    if (ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT === undefined) delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    else process.env.OTEL_EXPORTER_OTLP_ENDPOINT = ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT;
+    if (ORIGINAL_SENTRY_DSN_BACKEND === undefined) delete process.env.SENTRY_DSN_BACKEND;
+    else process.env.SENTRY_DSN_BACKEND = ORIGINAL_SENTRY_DSN_BACKEND;
+    if (ORIGINAL_SENTRY_DSN === undefined) delete process.env.SENTRY_DSN;
+    else process.env.SENTRY_DSN = ORIGINAL_SENTRY_DSN;
+    if (ORIGINAL_SENTRY_DSN_FRONTEND === undefined) delete process.env.SENTRY_DSN_FRONTEND;
+    else process.env.SENTRY_DSN_FRONTEND = ORIGINAL_SENTRY_DSN_FRONTEND;
+
     clearMyrmidonStartupEnv();
     if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
@@ -852,6 +990,16 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+    if (ORIGINAL_PAPERCLIP_PROCESS_ROLE === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
+    else process.env.PAPERCLIP_PROCESS_ROLE = ORIGINAL_PAPERCLIP_PROCESS_ROLE;
+    if (ORIGINAL_PAPERCLIP_CONFIG === undefined) delete process.env.PAPERCLIP_CONFIG;
+    else process.env.PAPERCLIP_CONFIG = ORIGINAL_PAPERCLIP_CONFIG;
+    if (ORIGINAL_MYRMIDON_CONFIG === undefined) delete process.env.MYRMIDON_CONFIG;
+    else process.env.MYRMIDON_CONFIG = ORIGINAL_MYRMIDON_CONFIG;
+    if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+    if (ORIGINAL_MYRMIDON_HOME === undefined) delete process.env.MYRMIDON_HOME;
+    else process.env.MYRMIDON_HOME = ORIGINAL_MYRMIDON_HOME;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {

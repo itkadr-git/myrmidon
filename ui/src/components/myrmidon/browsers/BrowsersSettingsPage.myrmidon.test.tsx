@@ -31,7 +31,7 @@ vi.mock("../connectorPanelApi", () => ({
 import { BrowserScreenPanel, BrowserScreenPanelView, type ScreenPanelState } from "./BrowserScreenPanel";
 import { BrowsersSettingsPageView } from "./BrowsersSettingsPage";
 import type { BridgeSettings } from "../connectorPanelApi";
-import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
+import type { BrowserConsoleStatus } from "@myrmidon/shared/myrmidon-browser-console";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

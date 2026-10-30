@@ -12,18 +12,20 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useTranslation } from "@/i18n";
 import { botImageRolloutApi, botImageRolloutQueryKey } from "./botImageRolloutApi";
 
 /** Parse a seconds/count field; "" means "no override" (env/default applies). */
-function parseField(raw: string, label: string): number | undefined {
+function parseField(raw: string, notWhole: (value: string) => string): number | undefined {
   const trimmed = raw.trim();
   if (trimmed === "") return undefined;
   const value = Number(trimmed);
-  if (!Number.isInteger(value) || value < 0) throw new Error(`"${trimmed}" is not a whole number of ${label}`);
+  if (!Number.isInteger(value) || value < 0) throw new Error(notWhole(trimmed));
   return value;
 }
 
 export function BotImageRolloutSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: view } = useQuery({ queryKey: botImageRolloutQueryKey, queryFn: botImageRolloutApi.get });
   const [timeoutDraft, setTimeoutDraft] = useState<string | null>(null);
@@ -45,9 +47,9 @@ export function BotImageRolloutSettingsPanel() {
   const save = useMutation({
     mutationFn: () => {
       return botImageRolloutApi.patch({
-        botTimeoutSec: parseField(timeoutDraft ?? "", "seconds"),
-        batchSize: parseField(batchDraft ?? "", "bots"),
-        busySoftPauseSec: parseField(pauseDraft ?? "", "seconds"),
+        botTimeoutSec: parseField(timeoutDraft ?? "", (value) => t("area.settings-bots-host-1.bot-image-rollout-settings-panel.notWholeSeconds", { value })),
+        batchSize: parseField(batchDraft ?? "", (value) => t("area.settings-bots-host-1.bot-image-rollout-settings-panel.notWholeBots", { value })),
+        busySoftPauseSec: parseField(pauseDraft ?? "", (value) => t("area.settings-bots-host-1.bot-image-rollout-settings-panel.notWholeSeconds", { value })),
       });
     },
     onSuccess: (saved) => {
@@ -57,7 +59,7 @@ export function BotImageRolloutSettingsPanel() {
       setPauseDraft(saved.settings.busySoftPauseSec === undefined ? "" : String(saved.settings.busySoftPauseSec));
       queryClient.invalidateQueries({ queryKey: botImageRolloutQueryKey });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Could not save the rollout settings. Try again."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-image-rollout-settings-panel.saveFailed")),
   });
 
   const unchanged =
@@ -68,26 +70,23 @@ export function BotImageRolloutSettingsPanel() {
 
   const resolved = view?.resolved;
   const sourceLabel = (source: "env" | "settings" | "default") =>
-    source === "env" ? "env" : source === "settings" ? "settings" : "default";
+    source === "env" ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.sourceEnv") : source === "settings" ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.sourceSettings") : t("area.settings-bots-host-1.bot-image-rollout-settings-panel.sourceDefault");
 
   return (
     <section className="space-y-4 rounded-lg border p-4" data-testid="bot-image-rollout-panel">
       <div className="flex items-center gap-2">
         <RefreshCw className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Release bot-image rollout</h3>
+        <h3 className="text-sm font-medium">{t("area.settings-bots-host-1.bot-image-rollout-settings-panel.title")}</h3>
       </div>
       <p className="text-xs text-muted-foreground">
-        How the release&apos;s bot images roll onto the fleet: a busy bot keeps its old image and is retried until the
-        timeout, then the periodic sweep applies the release image when the bot frees up. An empty field means the
-        environment variable&apos;s value (or the module default) applies; the env value is also the upper bound of each
-        field.
+        {t("area.settings-bots-host-1.bot-image-rollout-settings-panel.intro")}
       </p>
       <div className="space-y-2">
-        <Label htmlFor="bot-rollout-timeout">Busy-bot wait timeout, s</Label>
+        <Label htmlFor="bot-rollout-timeout">{t("area.settings-bots-host-1.bot-image-rollout-settings-panel.timeoutLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="bot-rollout-timeout"
-            placeholder={resolved ? `Effective: ${resolved.botTimeoutSec.value} (${sourceLabel(resolved.botTimeoutSec.source)})` : ""}
+            placeholder={resolved ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectivePlaceholder", { value: resolved.botTimeoutSec.value, source: sourceLabel(resolved.botTimeoutSec.source) }) : ""}
             value={timeoutDraft ?? ""}
             onChange={(event) => {
               setTimeoutDraft(event.target.value);
@@ -98,16 +97,15 @@ export function BotImageRolloutSettingsPanel() {
         </div>
         {resolved && (
           <p className="text-xs text-muted-foreground" data-testid="bot-rollout-timeout-effective">
-            Effective: {resolved.botTimeoutSec.value}s ({sourceLabel(resolved.botTimeoutSec.source)}; cap{" "}
-            {resolved.botTimeoutSec.envCap}s)
+            {t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectiveSeconds", { value: resolved.botTimeoutSec.value, source: sourceLabel(resolved.botTimeoutSec.source), cap: resolved.botTimeoutSec.envCap })}
           </p>
         )}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-rollout-batch">Batch size (at most 5)</Label>
+        <Label htmlFor="bot-rollout-batch">{t("area.settings-bots-host-1.bot-image-rollout-settings-panel.batchLabel")}</Label>
         <Input
           id="bot-rollout-batch"
-          placeholder={resolved ? `Effective: ${resolved.batchSize.value} (${sourceLabel(resolved.batchSize.source)})` : ""}
+          placeholder={resolved ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectivePlaceholder", { value: resolved.batchSize.value, source: sourceLabel(resolved.batchSize.source) }) : ""}
           value={batchDraft ?? ""}
           onChange={(event) => {
             setBatchDraft(event.target.value);
@@ -117,15 +115,15 @@ export function BotImageRolloutSettingsPanel() {
         />
         {resolved && (
           <p className="text-xs text-muted-foreground" data-testid="bot-rollout-batch-effective">
-            Effective: {resolved.batchSize.value} ({sourceLabel(resolved.batchSize.source)}; cap {resolved.batchSize.envCap})
+            {t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectiveCount", { value: resolved.batchSize.value, source: sourceLabel(resolved.batchSize.source), cap: resolved.batchSize.envCap })}
           </p>
         )}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-rollout-pause">Soft pause after a busy bot, s (0 = off)</Label>
+        <Label htmlFor="bot-rollout-pause">{t("area.settings-bots-host-1.bot-image-rollout-settings-panel.pauseLabel")}</Label>
         <Input
           id="bot-rollout-pause"
-          placeholder={resolved ? `Effective: ${resolved.busySoftPauseSec.value} (${sourceLabel(resolved.busySoftPauseSec.source)})` : ""}
+          placeholder={resolved ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectivePlaceholder", { value: resolved.busySoftPauseSec.value, source: sourceLabel(resolved.busySoftPauseSec.source) }) : ""}
           value={pauseDraft ?? ""}
           onChange={(event) => {
             setPauseDraft(event.target.value);
@@ -135,17 +133,16 @@ export function BotImageRolloutSettingsPanel() {
         />
         {resolved && (
           <p className="text-xs text-muted-foreground" data-testid="bot-rollout-pause-effective">
-            Effective: {resolved.busySoftPauseSec.value}s ({sourceLabel(resolved.busySoftPauseSec.source)}; cap{" "}
-            {resolved.busySoftPauseSec.envCap}s)
+            {t("area.settings-bots-host-1.bot-image-rollout-settings-panel.effectiveSeconds", { value: resolved.busySoftPauseSec.value, source: sourceLabel(resolved.busySoftPauseSec.source), cap: resolved.busySoftPauseSec.envCap })}
           </p>
         )}
       </div>
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || timeoutDraft === null || unchanged}>
-          {save.isPending ? "Saving…" : "Save"}
+          {save.isPending ? t("area.settings-bots-host-1.bot-image-rollout-settings-panel.saving") : t("common.save")}
         </Button>
         {error && <p className="text-xs text-red-600">{error}</p>}
-        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-image-rollout-settings-panel.saved")}</p>}
       </div>
     </section>
   );

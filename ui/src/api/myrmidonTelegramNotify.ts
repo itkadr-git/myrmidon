@@ -5,13 +5,13 @@
 // `GET /api/myrmidon/telegram-notify` (company access; the companyId query
 // parameter first, then the single active company membership) and
 // `PATCH /api/myrmidon/telegram-notify` (board only). The types come from
-// @paperclipai/shared so the UI and the core cannot drift; while the core
+// @myrmidon/shared so the UI and the core cannot drift; while the core
 // half is unmerged the tests mock this module and assert the JSON contract.
 
 import type {
   TelegramNotifySettings,
   TelegramNotifySettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 /** What GET/PATCH answer: the settings plus the bounded change log. */

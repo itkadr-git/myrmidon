@@ -1,7 +1,7 @@
 /**
  * Generates README.md with Mermaid org chart for company exports.
  */
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@myrmidon/shared";
 // myrmidon(B1): product name and attribution in the exported README; see product.ts.
 import { PRODUCT_ATTRIBUTION, PRODUCT_NAME } from "../myrmidon/product.js";
 

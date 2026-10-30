@@ -19,7 +19,7 @@
 // project stays open to the company. A manually assigned task is never gated.
 
 import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
-import { agentNests, agents, issues, projectMemberships, projects, type Db } from "@paperclipai/db";
+import { agentNests, agents, issues, projectMemberships, projects, type Db } from "@myrmidon/db";
 
 /**
  * The claim gate over the outer `issues` row (a SQL twin of

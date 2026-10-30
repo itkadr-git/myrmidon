@@ -10,7 +10,7 @@
 // path uses them; this module re-exports the names and keeps the millisecond
 // view the sweep works in.
 
-import { readRunStallFromEnv } from "@paperclipai/shared";
+import { readRunStallFromEnv } from "@myrmidon/shared";
 import { liveRunStallSettings } from "../runs-queue-settings/live.js";
 
 export {
@@ -27,7 +27,7 @@ export {
   RUN_STALL_ENABLED_ENV,
   RUN_STALL_PAGE_SIZE_ENV,
   RUN_STALL_THRESHOLD_SEC_ENV,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface RunStallSettings {
   enabled: boolean;

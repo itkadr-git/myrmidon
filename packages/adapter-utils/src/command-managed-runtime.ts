@@ -360,7 +360,12 @@ export function createCommandManagedRuntimeClient(input: {
       }
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
-        throw new Error(`Could not determine remote file size for ${remotePath}`);
+        const stdout = sizeResult.stdout.trim().slice(0, 200);
+        const stderr = sizeResult.stderr.trim().slice(0, 200);
+        throw new Error(
+          `Could not determine remote file size for ${remotePath} ` +
+            `(wc stdout: ${JSON.stringify(stdout)}, stderr: ${JSON.stringify(stderr)})`,
+        );
       }
 
       // Read in bounded remote chunks so the runner never has to materialize a

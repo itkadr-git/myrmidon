@@ -32,7 +32,7 @@ import {
   type CasteDebateResolution,
   type DebateSettings,
   type DebateSettingsResolution,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { DEBATE_SETTINGS_KEY } from "./settings.js";
 
 export interface CasteDebateStoreDeps {

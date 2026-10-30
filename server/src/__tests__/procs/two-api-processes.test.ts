@@ -18,6 +18,7 @@ import {
   type EmbeddedPostgresTestDatabase,
 } from "../helpers/embedded-postgres.js";
 import {
+  pickFreePort,
   requestApi,
   startApiProcesses,
   stopApiProcess,
@@ -247,4 +248,72 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       expect(response.status).toBe(200);
     }
   }, 120_000);
+
+  it("scenario 5: SO_REUSEPORT shares one public port across every api replica", async () => {
+    // Keep the boot ids from the first fixture so stale live rows from earlier
+    // runs cannot be mistaken for the replicas created by this scenario.
+    // Scenario 3 drained processes[0], so read through whichever replica is still alive.
+    const survivor = processes.find((handle) => handle.alive());
+    expect(survivor, "a live api process from the earlier scenarios").toBeDefined();
+    const beforeSharedPort = await readBoardProcesses(survivor!);
+    const previousBootIds = new Set(beforeSharedPort.processes.map((row) => row.bootId));
+    await stopApiProcesses(processes);
+    processes = [];
+
+    const sharedPort = await pickFreePort();
+    const replicaCount = 2;
+    processes = await startApiProcesses({
+      count: replicaCount,
+      baseDir,
+      connectionString: database?.connectionString ?? externalTestDatabaseUrl!,
+      role: "api",
+      sharedPort,
+    });
+
+    // Deterministic check, no reliance on kernel flow hashing: every replica
+    // writes its own registry row (with the port it bound) before it reports
+    // readiness, so a replica that did not bind the shared port or did not come
+    // up cannot appear here. Rows of earlier fixtures are excluded by boot id.
+    let replicaRows: typeof beforeSharedPort.processes = [];
+    let lastRegistryError = "no registry read attempted";
+    const registryDeadline = Date.now() + 30_000;
+    while (Date.now() < registryDeadline) {
+      try {
+        const sharedRegistry = await readBoardProcesses(processes[0]!);
+        replicaRows = sharedRegistry.processes.filter(
+          (row) => row.role === "api" && row.status === "live" && !previousBootIds.has(row.bootId),
+        );
+        if (replicaRows.length === replicaCount) break;
+        lastRegistryError = `found ${replicaRows.length}/${replicaCount} new live replicas`;
+      } catch (error) {
+        lastRegistryError = error instanceof Error ? error.message : String(error);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(replicaRows.map((row) => row.apiPort), lastRegistryError).toEqual(
+      Array.from({ length: replicaCount }, () => sharedPort),
+    );
+    const replicaBootIds = new Set(replicaRows.map((row) => row.bootId));
+    expect(replicaBootIds.size, lastRegistryError).toBe(replicaCount);
+
+    // Every successful request to the shared port is served by one of the
+    // registered replicas. A brief refusal can occur while the two listeners
+    // finish joining the reuse-port group, so keep the assertion focused on
+    // successful responses rather than turning that handoff into a race.
+    const requestDeadline = Date.now() + 30_000;
+    let successfulReads = 0;
+    let lastReadError = "no request attempted";
+    while (successfulReads < 16 && Date.now() < requestDeadline) {
+      try {
+        const response = await readBoardProcesses(processes[0]!);
+        expect(replicaBootIds.has(response.selfBootId), `unknown replica ${response.selfBootId}`).toBe(true);
+        successfulReads += 1;
+      } catch (error) {
+        lastReadError = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    expect(successfulReads, lastReadError).toBe(16);
+  }, 180_000);
+
 });

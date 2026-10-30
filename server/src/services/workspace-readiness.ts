@@ -18,14 +18,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { authUsers, companies, companyMemberships, issues } from "@myrmidon/db";
 import type {
   WorkspaceReadiness,
   WorkspaceReadinessState,
   WorkspaceSeedReadinessState,
-} from "@paperclipai/shared";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+} from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   resolveWorkspaceHandoffLocalCompanyId,
   resolveWorkspaceHandoffLocalKey,

@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -262,6 +262,25 @@ describe("myrmidon(B1a): no paperclip artwork is rendered", () => {
   it("the design-guide announcement preview image does not say paperclip", () => {
     const svg = readFileSync(path.join(REPO_ROOT, "ui", "public", "announcement-preview.svg"), "utf-8");
     expect(svg).not.toMatch(/paperclip/i);
+  });
+});
+
+describe("Myrmidon first-party UI destinations", () => {
+  it.each([
+    "components/SidebarAccountMenu.tsx",
+    "components/SidebarAccountMenu.production.tsx",
+    "pages/IssueDetail.tsx",
+    "pages/InstanceGeneralSettings.tsx",
+    "lib/myrmidon-links.ts",
+    "bootstrapSetup.ts",
+  ])("%s has no upstream product destinations or bootstrap command", (rel) => {
+    const source = readFileSync(path.join(UI_SRC, rel), "utf8");
+    expect(source).not.toMatch(/https?:\/\/(?:docs\.)?paperclip\.ing\b/i);
+    expect(source).not.toMatch(/npx\s+paperclipai\s+auth\s+bootstrap/i);
+    expect(source).not.toMatch(/npx\s+myrmidon\b/i);
+    if (rel.startsWith("components/") || rel.startsWith("pages/")) {
+      expect(source).toContain('from "@/lib/myrmidon-links"');
+    }
   });
 });
 

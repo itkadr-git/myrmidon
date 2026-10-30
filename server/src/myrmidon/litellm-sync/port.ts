@@ -31,9 +31,28 @@ export interface LitellmSyncPort {
   unregisterModel(litellmModelName: string): Promise<void>;
 
   /**
+   * Updates the credential reference of an existing deployment in place
+   * (`POST /model/update`, addressed by deployment id). No second deployment is
+   * created and the model is never absent from the gateway.
+   */
+  updateDeployment(input: {
+    modelId: string;
+    litellmModelName: string;
+    providerType: string;
+    baseUrl: string | null;
+    credentialSecretName: string;
+    additionalConfig?: Record<string, unknown>;
+  }): Promise<void>;
+
+  /** Removes one deployment by its id (`POST /model/delete` with `{ id }`). */
+  deleteDeployment(modelId: string): Promise<void>;
+
+  /**
    * Fetches the list of currently registered models from LiteLLM.
    */
   listRegisteredModels(): Promise<Array<{
+    /** The gateway deployment id (`model_info.id`), when the gateway reports one. */
+    modelId?: string;
     /** The model name as registered in LiteLLM. */
     litellmModelName: string;
     /** The provider type. */

@@ -4,7 +4,7 @@
 // point of the ticket: "видно, почему проход был пропущен".
 import { describe, expect, it, vi } from "vitest";
 import type { Logger } from "pino";
-import { FORAGING_PASS_JOURNAL_KEY } from "@paperclipai/shared";
+import { FORAGING_PASS_JOURNAL_KEY } from "@myrmidon/shared";
 import { foragingPassJournalService, type ForagingPassJournalServiceDeps } from "./pass-journal.js";
 import { createForagingService, type ForagingIdleCheck } from "./service.js";
 import type { ForagingReader } from "./service.js";

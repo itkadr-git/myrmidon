@@ -1,0 +1,8 @@
+pages/apps/gateways/panels/GatewayActivityPanel.tsx
+pages/apps/gateways/panels/GatewayAdvancedPanel.tsx
+pages/apps/gateways/panels/OverviewPanel.tsx
+pages/apps/gateways/panels/TokensPanel.tsx
+pages/tools/GatewaysTab.tsx
+pages/tools/McpConfigHelpDialog.tsx
+pages/tools/PasteConfigTab.tsx
+pages/tools/connection-dialogs.tsx

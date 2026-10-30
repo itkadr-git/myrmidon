@@ -17,13 +17,13 @@
  * The env-var parsing is a pure function so it is trivially unit-testable.
  */
 
-import type { Db } from "@paperclipai/db";
-import type { InstanceExecutionMode } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { InstanceExecutionMode } from "@myrmidon/shared";
 import { logger } from "../middleware/logger.js";
 import { environmentService, type KubernetesEnvironmentConfigInput } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { parseAdapterRegistryEnv } from "./adapter-registry-bootstrap.js";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 

@@ -12,7 +12,7 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   BOT_DISK_LAYOUT_KEYS,
@@ -34,7 +34,7 @@ import {
   type BotDiskSettings,
   type BotDiskSettingsPatch,
   type ResolvedBotDiskSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { sweepAllBotVolumes } from "./draft-lifecycle.js";
@@ -44,6 +44,7 @@ import { dropCloneSignalsExcept, ingestCloneReport, noteCloneReportSeen } from "
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js"; // myrmidon(1.6.4-BOT-CONTAINER-CARD)
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export type BotDiskView = ResolvedBotDiskSettings;
 
@@ -360,7 +361,7 @@ export function startCloneReportCollection(
       });
     return inFlight;
   };
-  const timer = setInterval(() => void pass(), intervalMs);
+  const timer = backgroundInterval(() => void pass(), intervalMs);
   timer.unref?.();
   void pass();
   return () => {

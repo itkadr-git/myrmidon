@@ -1,4 +1,4 @@
-import type { SidebarOrderPreference, UpsertSidebarOrderPreference } from "@paperclipai/shared";
+import type { SidebarOrderPreference, UpsertSidebarOrderPreference } from "@myrmidon/shared";
 import { api } from "./client";
 
 export const sidebarPreferencesApi = {

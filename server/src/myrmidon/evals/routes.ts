@@ -17,8 +17,8 @@
 
 import { Router } from "express";
 import { and, asc, eq } from "drizzle-orm";
-import { agents } from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+import { agents } from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/index.js";

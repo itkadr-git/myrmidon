@@ -1,0 +1,365 @@
+{
+  "area": {
+    "issue-properties-panels-2": {
+      "issue-output-section": {
+        "browseInGallery": "Browse {{filename}} in gallery",
+        "open": "Open {{filename}}",
+        "ariaLabel": "Task outputs",
+        "title": "Output",
+        "alsoProduced": "Also produced"
+      },
+      "issue-properties-artifacts-tab": {
+        "bytes": {
+          "b": "{{value}} B",
+          "kb": "{{value}} KB",
+          "mb": "{{value}} MB"
+        },
+        "statusForReview": "For review",
+        "statusChangesRequested": "Changes requested",
+        "statusFailed": "Failed",
+        "tooLarge": "This Markdown file is too large to preview. Use Raw or Download instead.",
+        "documentEmpty": "Document is empty.",
+        "previewUnsupported": "This file can't be previewed as Markdown. Use Raw or Download instead.",
+        "previewFailed": "Preview failed to load.",
+        "preparingPreview": "Preparing preview…",
+        "revision": "Rev {{number}}",
+        "openRaw": "Open raw {{title}}",
+        "openRawShort": "Open raw",
+        "download": "Download {{title}}",
+        "downloadShort": "Download",
+        "empty": "No artifacts yet. Work products, documents, and agent-produced files will appear here.",
+        "run": "Run {{id}}"
+      },
+      "issue-properties-plans-tab": {
+        "loading": "Loading plan…",
+        "planModeNoDocument": "This task is in plan mode but no plan document has been written yet.",
+        "confirmationPendingNoDocument": "A plan confirmation is pending, but the plan document it should confirm is missing.",
+        "empty": "No plan yet. The plan document, accepted plans, and their revisions will appear here.",
+        "revisionUpdated": "Revision {{revision}} · updated {{date}}"
+      },
+      "issue-properties": {
+        "copyable": {
+          "copy": "Copy {{value}} to clipboard",
+          "copied": "Copied"
+        },
+        "pheromone": {
+          "label": "Pheromone strength",
+          "hint": "Higher tasks of the same caste are claimed first.",
+          "effectiveNow": "Effective now: {{value}} (strength + aging)."
+        },
+        "p0": {
+          "label": "P0",
+          "hint": "P0 preempts the queue regardless of the pheromone strength."
+        },
+        "caste": {
+          "label": "Caste",
+          "none": "No caste (project default)",
+          "hint": "Routed to this caste's queue."
+        },
+        "about": {
+          "unarchiveFailed": "Failed to unarchive this issue. Please try again.",
+          "via": "via {{name}}",
+          "archivedBy": "Archived by {{name}} · {{date}}",
+          "unarchiving": "Unarchiving…",
+          "unarchive": "Unarchive"
+        },
+        "workspace": {
+          "newIsolated": "New isolated workspace",
+          "reuseExisting": "Reuse existing workspace",
+          "default": "Default",
+          "notAttached": "This task is not attached to a workspace.",
+          "jobCompleted": "Workspace job completed.",
+          "serviceStopped": "Workspace service stopped.",
+          "serviceRestarted": "Workspace service restarted.",
+          "serviceStarted": "Workspace service started.",
+          "controlFailed": "Failed to control workspace commands.",
+          "defaultHint": "Use the project workspace policy",
+          "newIsolatedHint": "Create a fresh workspace on the next run",
+          "reuseExistingEllipsis": "Reuse existing workspace…",
+          "reuseHint": "Pick a workspace to reuse",
+          "appliesNextRunKeepCurrent": "Current workspace stays active. Applies on the next run.",
+          "appliesNextRun": "Applies on the next run.",
+          "backToOptions": "Back to workspace options",
+          "mode": "Workspace mode",
+          "search": "Search workspaces...",
+          "searchAria": "Search reusable workspaces",
+          "loading": "Loading workspaces...",
+          "loadFailed": "Failed to load workspaces.",
+          "noMatching": "No matching workspaces.",
+          "view": "View workspace",
+          "waiting": "Waiting for workspace"
+        },
+        "model": {
+          "overrideSummary": "Override · {{details}}",
+          "overrideAdapterOptions": "Override · adapter options",
+          "overrideTitle": "Task-level model override — replaces the agent's primary model for this issue.",
+          "primaryModel": "Primary model",
+          "lane": "Model lane",
+          "lanePrimary": "Primary",
+          "laneOverride": "Override",
+          "model": "Model",
+          "defaultModel": "Default model",
+          "searchModels": "Search models...",
+          "noModels": "No models found.",
+          "thinkingEffort": "Thinking effort",
+          "enableChrome": "Enable Chrome (--chrome)",
+          "noEditableOverrides": "This assignee's adapter does not expose editable task overrides.",
+          "selectCompatibleAssignee": "Select a compatible assignee agent to edit these overrides.",
+          "clearAdapterOptions": "Clear adapter options"
+        },
+        "execution": {
+          "runReviewNow": "Run review now",
+          "runApprovalNow": "Run approval now",
+          "reviewChangesRequestedBy": "Review requested changes by {{name}}",
+          "approvalChangesRequestedBy": "Approval requested changes by {{name}}",
+          "reviewChangesRequested": "Review requested changes",
+          "approvalChangesRequested": "Approval requested changes",
+          "reviewPendingWith": "Review pending with {{name}}",
+          "approvalPendingWith": "Approval pending with {{name}}",
+          "reviewPending": "Review pending",
+          "approvalPending": "Approval pending",
+          "searchReviewers": "Search reviewers...",
+          "searchApprovers": "Search approvers...",
+          "noReviewers": "No reviewers",
+          "noApprovers": "No approvers"
+        },
+        "watchdog": {
+          "disabled": "(disabled)",
+          "agent": "Watchdog agent",
+          "selectAgent": "Select agent",
+          "noAgent": "No watchdog agent",
+          "searchAgents": "Search agents...",
+          "noAgentsFound": "No agents found.",
+          "instructions": "Instructions",
+          "optional": "(optional)",
+          "instructionsPlaceholder": "What should the watchdog watch for and how should it keep work moving?",
+          "task": "Watchdog task:",
+          "viewTask": "View task",
+          "saving": "Saving…",
+          "set": "Set watchdog",
+          "openTask": "Open watchdog task"
+        },
+        "labels": {
+          "addLabel": "Add label",
+          "more": "+{{count}} more",
+          "search": "Search labels...",
+          "newLabel": "New label",
+          "creating": "Creating…",
+          "create": "Create label"
+        },
+        "monitor": {
+          "cleared": "Cleared",
+          "checkingMomentarily": "checking momentarily…",
+          "firesOnNextTick": "fires on next tick",
+          "attempt": "Attempt {{count}}",
+          "lastChecked": "last checked {{when}}",
+          "afterAttempt": "after attempt {{count}}",
+          "title": "Monitor",
+          "nextCheck": "Next check",
+          "watching": "Watching",
+          "notes": "Notes",
+          "lastTriggered": "Last triggered",
+          "notYetTriggered": "not yet triggered",
+          "checking": "Checking…",
+          "checkNow": "Check now",
+          "edit": "Edit",
+          "clear": "Clear",
+          "notesPlaceholder": "What should the agent re-check?",
+          "servicePlaceholder": "External service",
+          "schedule": "Schedule"
+        },
+        "retry": {
+          "pendingSchedule": "Pending schedule",
+          "continuationDueNow": "Continuation due now",
+          "retryDueNow": "Retry due now",
+          "continuationWhen": "Continuation {{when}}",
+          "retryWhen": "Retry {{when}}",
+          "scheduledContinuation": "Scheduled continuation",
+          "scheduledRetry": "Scheduled retry",
+          "reason": "Reason",
+          "failureClass": "Failure class",
+          "nextAttempt": "Next attempt",
+          "replacesRun": "Replaces run",
+          "agent": "Agent",
+          "lastError": "Last error",
+          "alreadyPromoted": "Already promoted",
+          "promoted": "Promoted",
+          "retryNow": "Retry now",
+          "promoting": "Promoting scheduled retry",
+          "alreadyPromotedStarting": "Already promoted — run starting",
+          "promotedStarting": "Promoted — run starting",
+          "pullsContinuation": "Pulls continuation forward immediately",
+          "pullsRetry": "Pulls retry forward immediately"
+        },
+        "assignee": {
+          "unassigned": "Unassigned",
+          "assignToMe": "Assign to me",
+          "assignTo": "Assign to {{name}}",
+          "assignToRequester": "Assign to requester",
+          "requesterSearch": "requester",
+          "noAssignee": "No assignee",
+          "search": "Search assignees...",
+          "agents": "Agents",
+          "boardUsers": "Board users",
+          "noMatches": "No matches.",
+          "requester": "Requester"
+        },
+        "project": {
+          "noProject": "No project",
+          "search": "Search projects..."
+        },
+        "parent": {
+          "parentTask": "Parent task",
+          "noParent": "No parent"
+        },
+        "tasks": {
+          "search": "Search tasks...",
+          "searching": "Searching tasks...",
+          "noMatching": "No matching tasks."
+        },
+        "blockers": {
+          "searchAria": "Search tasks to add as blockers",
+          "none": "No blockers",
+          "add": "Add blocker"
+        },
+        "subtasks": {
+          "none": "No subtasks yet.",
+          "add": "Add subtask",
+          "addSubTask": "Add sub-task"
+        },
+        "rows": {
+          "status": "Status",
+          "priority": "Priority",
+          "model": "Model",
+          "project": "Project",
+          "labels": "Labels",
+          "parent": "Parent",
+          "blockedBy": "Blocked by",
+          "blocking": "Blocking",
+          "subtasks": "Subtasks",
+          "subTasks": "Sub-tasks",
+          "referenced": "Referenced",
+          "relatedTasks": "Related tasks",
+          "approvals": "Approvals",
+          "reviewers": "Reviewers",
+          "approvers": "Approvers",
+          "execution": "Execution",
+          "workspace": "Workspace",
+          "scheduledRetry": "Scheduled retry",
+          "monitor": "Monitor",
+          "watchdog": "Watchdog",
+          "service": "Service",
+          "branch": "Branch",
+          "folder": "Folder",
+          "originating": "Originating",
+          "started": "Started",
+          "completed": "Completed",
+          "created": "Created",
+          "updated": "Updated",
+          "archived": "Archived",
+          "depth": "Depth"
+        },
+        "sections": {
+          "relationships": "Relationships",
+          "execution": "Execution",
+          "workspace": "Workspace",
+          "work": "Work",
+          "triage": "Triage",
+          "about": "About"
+        },
+        "tabs": {
+          "properties": "Properties",
+          "subtasks": "Subtasks",
+          "references": "References",
+          "plan": "Plan",
+          "artifacts": "Artifacts",
+          "panelAria": "Properties panel sections",
+          "close": "Close {{label}} tab",
+          "openClosed": "Open closed sidebar tab",
+          "allOpen": "All sidebar tabs are open"
+        }
+      },
+      "output-primary-card": {
+        "browseInGallery": "Browse {{filename}} in gallery",
+        "open": "Open {{filename}}",
+        "metadataUnavailable": "Output metadata is unavailable — this file can’t be played or downloaded here.",
+        "primary": "Primary",
+        "browse": "Browse",
+        "openButton": "Open",
+        "downloadFile": "Download {{filename}}",
+        "download": "Download"
+      },
+      "output-row": {
+        "detailsUnavailable": "File details unavailable",
+        "openInNewTab": "Open in new tab",
+        "open": "Open {{filename}}",
+        "download": "Download",
+        "downloadFile": "Download {{filename}}"
+      },
+      "standalone-browser-controls": {
+        "linkCopied": "Link copied",
+        "shareFailed": "Share failed",
+        "shareFailedBody": "Try opening the page in your browser.",
+        "refresh": "Refresh",
+        "share": "Share",
+        "openInBrowser": "Open in Browser"
+      },
+      "workspace-file-browser": {
+        "unavailable": {
+          "remoteTitle": "Remote workspace preview not supported",
+          "remoteBody": "This workspace is hosted remotely and is not available for inline preview yet.",
+          "noWorkspaceTitle": "No workspace yet",
+          "noWorkspaceBody": "This issue does not have a workspace to browse. Files appear here once a run creates one.",
+          "goneTitle": "Workspace is no longer available",
+          "goneBody": "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
+          "genericTitle": "Workspace unavailable",
+          "genericBody": "These workspace files can't be browsed right now."
+        },
+        "breadcrumbs": {
+          "currentFolder": "Current folder"
+        },
+        "row": {
+          "download": "Download {{name}}"
+        },
+        "tree": {
+          "loadingFolder": "Loading folder…",
+          "ariaLabel": "Workspace files"
+        },
+        "loadMoreFolder": "Load more from this folder",
+        "announcement": {
+          "loading": "Loading workspace files…",
+          "error": "Unable to load workspace files.",
+          "none": "No matching files.",
+          "count_one": "{{count}} item found.",
+          "count_other": "{{count}} items found."
+        },
+        "state": {
+          "noOrgTitle": "No organization selected",
+          "noOrgBody": "Choose an organization before browsing another project workspace.",
+          "loadingProjectsTitle": "Loading project workspaces",
+          "loadingProjectsBody": "Registered workspaces will appear here.",
+          "noProjectsTitle": "No project workspaces",
+          "noProjectsBody": "No same-organization project has a registered workspace to browse."
+        },
+        "error": {
+          "changedTempTitle": "Changed files temporarily unavailable",
+          "loadFailedTitle": "Couldn't load files",
+          "throttledBody": "Myrmidon is limiting workspace scans to keep the server responsive. Try again in a moment.",
+          "notAvailableBody": "Workspace browsing isn't available for this issue.",
+          "genericBody": "Something went wrong loading workspace files."
+        },
+        "empty": {
+          "noMatch": "No files match “{{query}}”",
+          "noRecent": "No recently changed files yet",
+          "hint": "Try searching by name or path."
+        },
+        "search": {
+          "placeholder": "Search files by name or path…",
+          "ariaLabel": "Search workspace files",
+          "refresh": "Refresh workspace files"
+        },
+        "showingFirst": "Showing first {{shown}} — refine the search to narrow."
+      }
+    }
+  }
+}

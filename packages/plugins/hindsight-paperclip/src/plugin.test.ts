@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { Agent, Issue, IssueComment, PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import type { Agent, Issue, IssueComment, PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
+import { createTestHarness } from "@myrmidon/plugin-sdk/testing";
 import { createHindsightPlugin, type FetchLike } from "./plugin.js";
 import manifest from "./manifest.js";
 import { resolveBank } from "./bank.js";

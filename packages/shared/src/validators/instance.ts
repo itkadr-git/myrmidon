@@ -12,6 +12,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
+import { modelApiPricingSettingsSchema } from "../myrmidon-model-api-pricing.js"; // OPE-9499: operator-maintained API-equivalent prices
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
@@ -210,11 +211,15 @@ export const instanceGeneralSettingsSchema = z.object({
   // automatically". Lenient: a hand-edited row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-model-menu.ts).
   modelMenu: storedModelMenuSettingsSchema,
+  // OPE-9499: API-equivalent price list for subscription-backed token usage.
+  modelApiPricing: modelApiPricingSettingsSchema.optional(),
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
   botDisk: storedBotDiskSettingsSchema,
+  // myrmidon(OPE-7898): live idle-container stop policy.
+  idleStop: z.object({ enabled: z.boolean(), afterSec: z.number().int().min(60).max(31_536_000), healthTimeoutMs: z.number().int().min(1_000).max(600_000) }).strict().optional(),
   // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota, changed from
   // /api/myrmidon/bot-disk-quota; absent means "no quota" (enforcement off).
   // Lenient: an invalid value reads as absent (see myrmidon-bot-disk-quota.ts).
@@ -386,6 +391,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // packages/shared/src/myrmidon-attention-feed.ts.
   attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
   attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
+  // myrmidon(1.6.6 P1.10): the blocker-graph root fan-out alert limit; absent
+  // means the default (10). Same contract comment as the field in
+  // packages/shared/src/types/instance.ts.
+  blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the

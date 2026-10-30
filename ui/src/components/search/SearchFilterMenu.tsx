@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -57,13 +58,14 @@ function summarizeTrigger(label: string, selected: string[], options: FilterMenu
 }
 
 export function SearchFilterMenu(props: SearchFilterMenuProps) {
+  const { t } = useTranslation();
   const {
     label,
     options,
     selected,
     searchable = false,
-    searchPlaceholder = "Search…",
-    emptyMessage = "No options",
+    searchPlaceholder = t("area.search-timeline-audit-1.search-filter-menu.searchPlaceholder"),
+    emptyMessage = t("area.search-timeline-audit-1.search-filter-menu.emptyMessage"),
     triggerClassName,
     contentClassName,
     align = "start",
@@ -102,7 +104,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
             active && "border-primary/60 text-foreground",
             triggerClassName,
           )}
-          aria-label={`Filter by ${label}`}
+          aria-label={t("area.search-timeline-audit-1.search-filter-menu.filterBy", { label })}
         >
           <span className="truncate">{summarizeTrigger(label, selected, options)}</span>
           {active ? (
@@ -123,7 +125,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
               className="text-xs text-muted-foreground hover:text-foreground"
               onClick={() => props.onClear()}
             >
-              Clear
+              {t("area.search-timeline-audit-1.search-filter-menu.clear")}
             </button>
           ) : null}
         </div>

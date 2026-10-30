@@ -5,7 +5,7 @@
 // while answering a bridged message (a few seconds of cache at most), so there
 // is no startup apply step.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { bridgeLanguageRoutes } from "./routes.js";
 import { bridgeLanguageService } from "./service.js";
 

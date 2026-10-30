@@ -29,7 +29,7 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { badRequest } from "../../errors.js";
 import { assertInstanceAdmin } from "../../routes/authz.js";
 import {

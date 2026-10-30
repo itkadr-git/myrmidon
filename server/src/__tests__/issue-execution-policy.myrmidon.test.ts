@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
@@ -868,6 +868,39 @@ describe("issue execution policy transitions", () => {
   });
 
   describe("policy removal mid-flow", () => {
+    it("does not reassign to a reviewer when no safe return assignee exists", () => {
+      const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeAgentRole: "reviewer",
+          executionReviewParticipantAgentIds: [qaAgentId],
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "pending",
+            currentStageId: stageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: qaAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: null,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+      expect(result.patch.assigneeUserId).toBeUndefined();
+    });
+
     it("clears execution state when policy removed and returns to executor", () => {
       // Use a real UUID for currentStageId so parseIssueExecutionState succeeds
       const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -1174,7 +1207,6 @@ describe("issue execution policy transitions", () => {
         commentBody: "Done",
       });
 
-      // coderAgentId is the returnAssignee, so QA should be selected
       expect(result.patch.assigneeAgentId).toBe(qaAgentId);
     });
 
@@ -1429,6 +1461,40 @@ describe("issue execution policy transitions", () => {
   });
 
   describe("changes requested with no return assignee", () => {
+    it("does not clear or replace the assignee when the stored return assignee is a reviewer", () => {
+      const policy = twoStagePolicy();
+      const reviewStageId = policy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionReviewParticipantAgentIds: [qaAgentId],
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: qaAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Changes needed",
+      });
+
+      expect(result.patch.assigneeAgentId).toBeUndefined();
+      expect(result.patch.assigneeUserId).toBeUndefined();
+      expect(result.patch.executionState).toMatchObject({ status: "changes_requested" });
+    });
+
     it("throws when requesting changes with no return assignee", () => {
       const policy = twoStagePolicy();
       const reviewStageId = policy.stages[0].id;
@@ -1991,6 +2057,7 @@ describe("review round circuit breaker", () => {
     expect(result.patch.executionState).toMatchObject({
       status: "changes_requested",
       changesRequestedCount: 1,
+      lastDecisionOutcome: "changes_requested",
     });
   });
 
@@ -2029,9 +2096,9 @@ describe("review round circuit breaker", () => {
     });
   });
 
-  it("escalates the pending stage to the responsible human at the round cap", () => {
+  it("escalates the pending stage to the senior chain agent at the round cap, never to a human", () => {
     const result = applyIssueExecutionPolicyTransition({
-      issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
+      issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), defaultEscalationAgentIds: [ctoAgentId] },
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
@@ -2043,13 +2110,13 @@ describe("review round circuit breaker", () => {
     // responsible human as participant instead of bouncing to the executor.
     expect(result.decision).toMatchObject({ outcome: "changes_requested" });
     expect(result.patch.status).toBe("in_review");
-    expect(result.patch.assigneeAgentId).toBeNull();
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+    expect(result.patch.assigneeUserId).toBeNull();
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
       currentStageId: reviewStageId,
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 3,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
+      changesRequestedCount: 0,
     });
   });
 
@@ -2211,6 +2278,7 @@ describe("review round circuit breaker", () => {
         assigneeAgentId: qaAgentId,
         assigneeUserId: null,
         responsibleUserId: boardUserId,
+        defaultEscalationAgentIds: [ctoAgentId],
         executionPolicy: strictPolicy,
         executionState: {
           status: "pending",
@@ -2231,11 +2299,11 @@ describe("review round circuit breaker", () => {
       commentBody: "First and only agent round",
     });
 
-    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.assigneeUserId).toBeNull();
+    expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
-      currentParticipant: { type: "user", userId: boardUserId },
-      changesRequestedCount: 1,
+      currentParticipant: { type: "agent", agentId: ctoAgentId },
     });
   });
 });

@@ -19,7 +19,7 @@
  *     [--dry-run] [--json]
  *
  * Or in a Paperclip checkout shell:
- *   pnpm --filter @paperclipai/db exec tsx scripts/clean-poisoned-claude-sessions.ts --dry-run
+ *   pnpm --filter @myrmidon/db exec tsx scripts/clean-poisoned-claude-sessions.ts --dry-run
  *
  * Exits 0 on success even when nothing was healed. Idempotent.
  */
@@ -29,7 +29,7 @@ import path from "node:path";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { createDb } from "../src/client.js";
 import { agentTaskSessions } from "../src/schema/index.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const CLAUDE_ADAPTER_TYPE = "claude_local";
 

@@ -17,7 +17,9 @@ describe("Apps agent selector contract", () => {
     expect(appConnect).toContain("<ConnectionSetupFlow");
     expect(connectionSetupFlow).toContain("<AgentMultiSelect");
     expect(permissions).toContain("<AgentMultiSelect");
-    expect(tester).toContain('placeholder="Search agents…"');
+    // myrmidon(OPE-8950): the search placeholder copy lives in the apps-detail area catalog
+    expect(tester).toContain('placeholder={t("area.apps-detail.test-panel.searchAgentsPlaceholder")}');
+    expect(source("../../i18n/myrmidon-locales/areas/apps-detail.en.json")).toContain('"searchAgentsPlaceholder": "Search agents…"');
 
     expect(profiles.match(/<AgentSelect/g)).toHaveLength(2);
     expect(profiles).not.toContain("<Select value={agentId}");

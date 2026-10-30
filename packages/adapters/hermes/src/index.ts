@@ -13,7 +13,7 @@ import type {
   AdapterRuntimeCommandSpec,
   AdapterSessionManagement,
   ServerAdapterModule,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 import { ADAPTER_TYPE, ADAPTER_LABEL } from "./shared/constants.js";
 import {

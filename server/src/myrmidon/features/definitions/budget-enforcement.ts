@@ -10,7 +10,7 @@ import {
   BUDGET_ENFORCEMENT_SETTINGS_KEY,
   budgetEnforcementStopsWork,
   resolveBudgetEnforcement,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { entry, healthOff, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 

@@ -486,3 +486,60 @@ describe("myr-ws open — errors from ensureBase pass through with their code", 
     }
   });
 });
+
+describe("myr-ws open — two repositories for one task (OPE-8946)", { skip: !hasGit }, () => {
+  const OTHER = "acme/vault";
+
+  it("opens a second copy next to the first instead of failing", async () => {
+    const first = copyOf(await run(["ABC-401", REPO, "--json"]));
+    const r = await run(["ABC-401", OTHER, "--json"]);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const second = checkOpenSchema(copyOf(r));
+    assert.equal(first.path, path.join(ctx.workspaceRoot, "ABC-401"));
+    assert.equal(second.path, path.join(ctx.workspaceRoot, "ABC-401.vault"));
+    assert.equal(second.repo, OTHER);
+    assert.equal(second.branch, "bot/ABC-401");
+    assert.equal(second.reused, false);
+    assert.ok(fs.statSync(path.join(second.path, ".git")).isFile());
+    assert.ok(fs.existsSync(first.path), "the first copy stays");
+    const reg = JSON.parse(fs.readFileSync(path.join(ctx.home, "ws-registry.json"), "utf8"));
+    assert.deepEqual(
+      reg.entries.filter((e) => e.key === "ABC-401").map((e) => [e.repo, e.path]),
+      [[REPO, first.path], [OTHER, second.path]],
+    );
+  });
+
+  it("is idempotent per repository", async () => {
+    const first = copyOf(await run(["ABC-402", REPO, "--json"]));
+    const second = copyOf(await run(["ABC-402", OTHER, "--json"]));
+    const again1 = copyOf(await run(["ABC-402", REPO, "--json"]));
+    const again2 = copyOf(await run(["ABC-402", OTHER, "--json"]));
+    assert.equal(again1.path, first.path);
+    assert.equal(again1.reused, true);
+    assert.equal(again2.path, second.path);
+    assert.equal(again2.reused, true);
+  });
+
+  it("the order does not matter: the second repository opened first keeps the primary path", async () => {
+    const a = copyOf(await run(["ABC-403", OTHER, "--json"]));
+    const b = copyOf(await run(["ABC-403", REPO, "--json"]));
+    assert.equal(a.path, path.join(ctx.workspaceRoot, "ABC-403"));
+    assert.equal(b.path, path.join(ctx.workspaceRoot, "ABC-403.widgets"));
+  });
+
+  it("without a repository the first copy is returned", async () => {
+    const first = copyOf(await run(["ABC-404", REPO, "--json"]));
+    await run(["ABC-404", OTHER, "--json"]);
+    const r = copyOf(await run(["ABC-404", "--json"]));
+    assert.equal(r.path, first.path);
+    assert.equal(r.reused, true);
+  });
+
+  it("a stale registry entry of another repository does not push the new copy aside", async () => {
+    const first = copyOf(await run(["ABC-405", REPO, "--json"]));
+    fs.rmSync(first.path, { recursive: true, force: true });
+    const second = copyOf(await run(["ABC-405", OTHER, "--json"]));
+    assert.equal(second.path, first.path);
+    assert.equal(second.repo, OTHER);
+  });
+});

@@ -13,7 +13,7 @@ function envOverride<T>(
 }
 
 function parseBoolean(raw: string): boolean | null {
-  const lower = raw.toLowerCase();
+  const lower = raw.trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(lower)) return true;
   if (["0", "false", "no", "off"].includes(lower)) return false;
   return null;
@@ -21,6 +21,7 @@ function parseBoolean(raw: string): boolean | null {
 
 function parseIntInRange(min: number, max: number) {
   return (raw: string): number | null => {
+    if (raw.trim() === "") return null;
     const value = Number(raw);
     if (!Number.isInteger(value) || value < min || value > max) return null;
     return value;
@@ -29,6 +30,7 @@ function parseIntInRange(min: number, max: number) {
 
 function parseClampedInt(min: number, max: number) {
   return (raw: string): number | null => {
+    if (raw.trim() === "") return null;
     const value = Number(raw);
     if (!Number.isInteger(value) || value < 0 || value > max) return null;
     return Math.max(min, value);
@@ -36,6 +38,7 @@ function parseClampedInt(min: number, max: number) {
 }
 
 function parseIdlePickupInterval(raw: string): number | null {
+  if (raw.trim() === "") return null;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) return null;
   return Math.max(5, value);
@@ -46,7 +49,7 @@ function parseExactOne(raw: string): boolean | null {
 }
 
 function parseDisabledUnlessExplicitlyOff(raw: string): boolean {
-  return !["0", "false"].includes(raw.toLowerCase());
+  return !["0", "false"].includes(raw.trim().toLowerCase());
 }
 
 function parseIntList(raw: string): number[] | null {
@@ -81,7 +84,7 @@ export function liveIdlePickupSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     enabled: resolve(env, "MYRMIDON_IDLE_PICKUP_ENABLED", "runsQueue.idlePickup.enabled", parseBoolean, true),
     intervalSec: resolve(env, "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC", "runsQueue.idlePickup.intervalSec", parseIdlePickupInterval, 30),
-    recentSuccessWindowMs: resolve(env, "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS", "runsQueue.idlePickup.recentSuccessWindowMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 15 * 60 * 1000),
+    recentSuccessWindowMs: resolve(env, "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS", "runsQueue.idlePickup.recentSuccessWindowMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 2 * 60 * 60 * 1000),
   };
 }
 

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Search, Users } from "lucide-react";
 import { useTranslation } from "@/i18n";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 import { cn } from "../lib/utils";
 import {
   type AgentForest,

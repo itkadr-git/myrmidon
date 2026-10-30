@@ -4,7 +4,7 @@
 // quotas off the sweep measures nothing, which is a configuration choice and
 // reported as off.
 
-import { WORKSPACE_HYGIENE_ENV_KEYS, resolveWorkspaceHygieneLimits } from "@paperclipai/shared";
+import { WORKSPACE_HYGIENE_ENV_KEYS, resolveWorkspaceHygieneLimits } from "@myrmidon/shared";
 import { entry, healthOff, healthUnknown, iso, makeHealth } from "../health.js";
 import type { FeatureDefinition } from "../types.js";
 

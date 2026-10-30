@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
+import type { Agent, Company, InstanceExperimentalSettings } from "@myrmidon/shared";
 import {
   assertTestDriveDatabaseIsolation,
   bootstrapTestDrive,

@@ -26,7 +26,7 @@ import type {
   SwarmClaimSettingsPatch,
   SwarmClaimSettingSource,
   SwarmSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   SWARM_COOLDOWN_BASE_MIN_DEFAULT,
   SWARM_COOLDOWN_BASE_MIN_MAX,
@@ -35,7 +35,7 @@ import {
   SWARM_COOLDOWN_CEILING_HOURS_MAX,
   SWARM_COOLDOWN_CEILING_HOURS_MIN,
   SWARM_RUN_WITHOUT_TASK_GATE_DEFAULT,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

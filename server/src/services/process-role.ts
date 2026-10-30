@@ -24,7 +24,7 @@
 // unchanged behavior) and reports itself as invalid, so the caller logs it
 // loudly at startup.
 
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Environment variable that overrides the process role. */
 export const PROCESS_ROLE_ENV = "MYRMIDON_PROCESS_ROLE";
@@ -128,7 +128,9 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
         executesRuns: false,
         migrations: "await",
         runsBackups: false,
-        listen: { host: PROCESS_ROLE_API_HOST, port: PROCESS_ROLE_API_PORT, reusePort: true },
+        // Keep the configured board port; only the socket sharing is role-specific.
+        // Hard-coding 3100 would make PORT ineffective for split deployments.
+        listen: { host: PROCESS_ROLE_API_HOST, port: null, reusePort: true },
         loopbackListen: null,
       };
     case "worker":
@@ -160,6 +162,22 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
 }
 
 /**
+ * The worker's loopback address: `MYRMIDON_WORKER_HOST` / `MYRMIDON_WORKER_PORT`
+ * when the launch map (orchestrator, dev stand, test stand) writes them, else
+ * 127.0.0.1:3101. The api side (`resolveSingletonProxyTarget`) reads the same
+ * two variables, so the listener the worker opens and the address the api
+ * dials cannot drift apart. A port outside 1024..65535 falls back to 3101.
+ */
+export function resolveWorkerLoopbackAddress(
+  env: NodeJS.ProcessEnv = process.env,
+): ProcessRoleLoopbackListenSpec {
+  const host = (env.MYRMIDON_WORKER_HOST ?? "").trim() || PROCESS_ROLE_WORKER_HOST;
+  const rawPort = Number((env.MYRMIDON_WORKER_PORT ?? "").trim());
+  const port = Number.isInteger(rawPort) && rawPort >= 1024 && rawPort <= 65535 ? rawPort : PROCESS_ROLE_WORKER_PORT;
+  return { host, port };
+}
+
+/**
  * The process role for this process. Resolved on every call from the current
  * environment — cheap, pure, and free of side effects, so a caller may read it
  * wherever it needs a gate.
@@ -168,8 +186,10 @@ export function processRole(
   env: NodeJS.ProcessEnv = process.env,
 ): ProcessRoleProfile & { resolvedFrom: NodeJS.ProcessEnv } {
   const resolved = resolveProcessRole(readProductEnvFrom(env, "PROCESS_ROLE"));
+  const profile = processRoleProfileFor(resolved.role);
   return {
-    ...processRoleProfileFor(resolved.role),
+    ...profile,
+    loopbackListen: profile.loopbackListen ? resolveWorkerLoopbackAddress(env) : null,
     source: resolved.source,
     rawValue: resolved.rawValue,
     invalidValue: resolved.invalidValue,

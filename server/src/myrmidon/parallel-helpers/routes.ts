@@ -9,8 +9,8 @@
 // reaches every bot's config.yaml within one tick without a restart.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchParallelHelpersSettingsSchema, type ParallelHelpersSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { patchParallelHelpersSettingsSchema, type ParallelHelpersSettings } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { ParallelHelpersService } from "./service.js";

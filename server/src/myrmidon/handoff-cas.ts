@@ -9,8 +9,8 @@ import {
   activityLog,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import { HttpError, conflict } from "../errors.js";
 import { logActivity, type ActivityPublication } from "../services/activity-log.js";
 

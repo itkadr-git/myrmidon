@@ -18,7 +18,7 @@
 //   DELETE /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref
 //          -> { removed: true }
 //
-// Types live here (not in @paperclipai/shared) while part A is unmerged, so the
+// Types live here (not in @myrmidon/shared) while part A is unmerged, so the
 // UI touches neither server nor shared files; once A lands, the types move to
 // the shared contract and this module keeps only the calls — the same split the
 // WIP limit screen uses.

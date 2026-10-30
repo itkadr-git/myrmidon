@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import type { IssueDocument } from "@paperclipai/shared";
+import type { IssueDocument } from "@myrmidon/shared";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
 import { AppLogo } from "@/pages/apps/AppLogo";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { useTranslation } from "@/i18n";
 import type { TaskChatInteractionItem } from "./task-chat-model";
 
 type InteractionCardProps = Omit<
@@ -41,6 +42,7 @@ export function TaskChatInteractionCard({
   draftKey,
   ...cardProps
 }: TaskChatInteractionCardProps) {
+  const { t } = useTranslation();
   const interaction = item.interaction;
   if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
     const action = interaction.payload.toolAction;
@@ -53,7 +55,7 @@ export function TaskChatInteractionCard({
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <AppLogo name={action.appDisplayName || action.toolDisplayName} size={36} />
             <div className="min-w-0 flex-1"><MarkdownBody>{action.previewMarkdown.split(/\n\s*\n/)[0] || action.toolDisplayName}</MarkdownBody></div>
-            <Button className="ml-auto" size="sm" variant="outline" disabled={!onReviewRequest} onClick={() => onReviewRequest?.(interaction.id)}>Review request</Button>
+            <Button className="ml-auto" size="sm" variant="outline" disabled={!onReviewRequest} onClick={() => onReviewRequest?.(interaction.id)}>{t("area.task-chat-2.interaction-card.reviewRequest")}</Button>
           </div>
         ) : (
           <IssueThreadInteractionCard interaction={interaction} {...cardProps} />

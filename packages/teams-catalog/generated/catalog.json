@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageName": "@paperclipai/teams-catalog",
+  "packageName": "@myrmidon/teams-catalog",
   "packageVersion": "0.1.0",
   "generatedAt": "2026-06-04T18:03:41.262Z",
   "teams": [

@@ -12,8 +12,8 @@ import {
   createDb,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
-import { notificationWakeAllowed } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { notificationWakeAllowed } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

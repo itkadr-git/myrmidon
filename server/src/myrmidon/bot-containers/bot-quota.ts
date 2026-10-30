@@ -25,7 +25,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Dirent } from "node:fs";
 import { eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import {
   BOT_DISK_QUOTA_SETTINGS_KEY,
   botDiskQuotaDedupKey,
@@ -37,7 +37,7 @@ import {
   type BotDiskQuotaSettings,
   type BotDiskQuotaSignal,
   type WsDiskApiResponse,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js";

@@ -129,7 +129,7 @@ register({
 register({
   key: "runsQueue.idlePickup.recentSuccessWindowMs",
   envName: "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS",
-  default: 15 * 60 * 1000,
+  default: 2 * 60 * 60 * 1000,
   scope: "instance",
   section: RUNS_QUEUE_SECTION,
   valueType: "number",

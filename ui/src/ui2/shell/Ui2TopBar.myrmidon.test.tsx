@@ -29,20 +29,25 @@ vi.mock("../Ui2CommanderPalette", () => ({
   Ui2CommanderPalette: () => null,
 }));
 
-// i18n: run the EN defaultValue path (the chip passes defaultValue), so the
-// rendered label is the English template with interpolations applied.
-vi.mock("@/i18n", () => ({
-  useTranslation: () => ({
-    t: (_key: string, opts?: { defaultValue?: string } & Record<string, unknown>) => {
-      let out = opts?.defaultValue ?? _key;
-      for (const [k, v] of Object.entries(opts ?? {})) {
-        if (k === "defaultValue") continue;
-        out = out.replaceAll(`{{${k}}}`, String(v));
-      }
-      return out;
-    },
-  }),
-}));
+// i18n: resolve keys against the real EN area catalog, so the rendered label
+// is the English template with interpolations applied.
+vi.mock("@/i18n", async () => {
+  const en = (await import("../../i18n/myrmidon-locales/areas/ui2-shell.en.json")).default as Record<string, unknown>;
+  const lookup = (key: string): string => {
+    const found = key.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], en);
+    return typeof found === "string" ? found : key;
+  };
+  return {
+    useTranslation: () => ({
+      i18n: { language: "en-US" },
+      t: (key: string, opts?: Record<string, unknown>) => {
+        let out = lookup(key);
+        for (const [k, v] of Object.entries(opts ?? {})) out = out.replaceAll(`{{${k}}}`, String(v));
+        return out;
+      },
+    }),
+  };
+});
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),

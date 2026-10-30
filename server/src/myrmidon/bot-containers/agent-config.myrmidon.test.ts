@@ -217,6 +217,34 @@ describe("readBotContainerAgentConfig: container.extraMounts", () => {
   });
 });
 
+const PINNED_IMAGE = `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+
+describe("botContainerCardSaveProblem image (1.6.6 OPE-8916)", () => {
+  const card = (image: unknown) => ({ container: { ...VALID_CONTAINER_CONFIG, image } });
+
+  it("refuses an enabled card with a tag-only, empty or missing image", () => {
+    for (const image of ["ghcr.io/itkadr-git/myrmidon-hermes:latest", "myrmidon-hermes:latest", `x@sha256:${"a".repeat(63)}`, "", undefined]) {
+      const problem = botContainerCardSaveProblem("hermes_gateway", card(image), {});
+      expect(problem, String(image)).toContain("adapterConfig.container.image");
+    }
+  });
+
+  it("accepts a digest-pinned image when no allowlist is set", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", card(PINNED_IMAGE), {})).toBeNull();
+  });
+
+  it("checks the allowlist when MYRMIDON_BOT_IMAGE_ALLOWLIST is set", () => {
+    const env = { MYRMIDON_BOT_IMAGE_ALLOWLIST: "ghcr.io/itkadr-git/myrmidon-hermes*@sha256:*" };
+    expect(botContainerCardSaveProblem("hermes_gateway", card(PINNED_IMAGE), env)).toBeNull();
+    const other = `evil.example/bot@sha256:${"b".repeat(64)}`;
+    expect(botContainerCardSaveProblem("hermes_gateway", card(other), env)).toContain("is not in MYRMIDON_BOT_IMAGE_ALLOWLIST");
+  });
+
+  it("does not judge the image of a disabled card", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x:latest" } }, {})).toBeNull();
+  });
+});
+
 describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   it("has the defaults the form and the migration use", () => {
     expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
@@ -229,7 +257,9 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   });
 
   it("accepts a complete enabled block and any explicitly disabled one", () => {
-    expect(botContainerCardSaveProblem("hermes_gateway", { container: VALID_CONTAINER_CONFIG })).toBeNull();
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE } }, {}),
+    ).toBeNull();
     expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
   });
 
@@ -257,8 +287,8 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   it("validates host and hostPinned when provided", () => {
     expect(
       botContainerCardSaveProblem("hermes_gateway", {
-        container: { ...VALID_CONTAINER_CONFIG, host: "myr-vm1", hostPinned: true },
-      }),
+        container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, host: "myr-vm1", hostPinned: true },
+      }, {}),
     ).toBeNull();
 
     expect(

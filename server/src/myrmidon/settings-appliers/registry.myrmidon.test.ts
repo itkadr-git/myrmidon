@@ -1,6 +1,6 @@
 // myrmidon(PROCS-1.8): the settings applier registry maps keys to appliers and runs them in order.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 const startRuntimeLimits = vi.hoisted(() => vi.fn());
 const resetMaintenanceGateCaches = vi.hoisted(() => vi.fn());

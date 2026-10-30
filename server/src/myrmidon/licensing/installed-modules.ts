@@ -4,8 +4,8 @@
 // go into the default license request.
 
 import { and, inArray, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { plugins } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { plugins } from "@myrmidon/db";
 import { findServerAdapter } from "../../adapters/registry.js";
 import { MODULE_ADAPTER_TYPES, MODULE_PLUGIN_KEYS } from "./client-license.js";
 

@@ -5,7 +5,7 @@
 // change reaches them without a restart. This file wires the routes and
 // re-exports the reader the sweeps take.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { teamLivenessRoutes } from "./routes.js";
 import { teamLivenessReader, type TeamLivenessReader } from "./settings.js";
 import { teamLivenessService, type TeamLivenessService } from "./service.js";

@@ -23,8 +23,8 @@ import {
   startEmbeddedPostgresTestDatabase,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidon/db";
+import type { Db } from "@myrmidon/db";
 import {
   runDigestForCompany,
   runEscalationsForCompany,

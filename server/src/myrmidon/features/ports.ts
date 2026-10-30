@@ -15,8 +15,8 @@ import {
   heartbeatRuns,
   litellmCostEvents,
   type Db,
-} from "@paperclipai/db";
-import { countBotLspModes, resolveBotLsp, type BotLspSettings } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { countBotLspModes, resolveBotLsp, type BotLspSettings } from "@myrmidon/shared";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "../bot-containers/agents-query.js";
 import { hostDiskRuntime } from "../host-disk/index.js";
 import { currentHostMemoryGate } from "../run-admission.js";

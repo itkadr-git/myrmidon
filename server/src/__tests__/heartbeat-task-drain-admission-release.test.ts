@@ -13,7 +13,7 @@ import {
   heartbeatRuns,
   heartbeatRunContinuations,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

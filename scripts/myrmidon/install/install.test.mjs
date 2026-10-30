@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { composeEnvVars, composeInterpolation } from "./compose-check.mjs";
 
@@ -16,6 +16,27 @@ const INSTALL = path.join(HERE, "install.sh");
 const A = `sha256:${"a".repeat(64)}`;
 const B = `sha256:${"b".repeat(64)}`;
 const C = `sha256:${"c".repeat(64)}`;
+
+const cleanups = new Set();
+
+export function cleanupSandbox(sb) {
+  const dir = typeof sb === "string" ? sb : sb?.dir;
+  if (dir && fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    cleanups.delete(dir);
+  }
+}
+
+afterEach(() => {
+  for (const dir of cleanups) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  cleanups.clear();
+});
 
 const FAKE_DOCKER = `#!/usr/bin/env bash
 if [[ "$1" == "compose" ]]; then
@@ -84,7 +105,9 @@ exit 0
 const FAKE_NOOP = "#!/usr/bin/env bash\nexit 0\n";
 
 function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-install-test-"));
+  const scratchRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+  const dir = fs.mkdtempSync(path.join(scratchRoot, "myrmidon-install-test-"));
+  cleanups.add(dir);
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   for (const [name, body] of [
@@ -103,6 +126,9 @@ function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null }
 }
 
 function run(sb, args = [], env = {}) {
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BASH_ENV;
+  delete cleanEnv.ENV;
   return spawnSync("bash", [INSTALL, "--dir", sb.opt, ...args], {
     cwd: sb.dir,
     encoding: "utf8",
@@ -115,6 +141,7 @@ function run(sb, args = [], env = {}) {
       MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL: "1",
       MYRMIDON_INSTALL_LANG: "en",
       MYRMIDON_INSTALL_HEALTH_TIMEOUT: "5",
+      MYR_LICENSE_INSTANCE_ID: "test-instance-id",
       ...env,
     },
   });
@@ -144,7 +171,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
-    assert.match(env, /MYR_LICENSE_INSTANCE_ID=$/m);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=test-instance-id$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
@@ -164,6 +191,9 @@ describe("install.sh", () => {
     );
     const config = JSON.parse(fs.readFileSync(path.join(sb.opt, "dockergate", "config.json"), "utf8"));
     assert.deepEqual(config.images, [`ghcr.io/itkadr-git/myrmidon-hermes@${C}`]);
+    assert.match(compose, /container_name:\s*myrmidon-board/, "fresh installs must use the branded board container name");
+    assert.match(compose, /myrmidon-bots:\s*\n\s+aliases:[\s\S]{0,600}- paperclip-server-1/, "legacy DNS name stays available on the bot network");
+    assert.equal(config.caller.container, "myrmidon-board", "dockergate tracks the renamed board container");
     assert.equal(config.caller.mode, "container-main-process");
     assert.ok(calls(sb).includes("pull --quiet"));
     assert.ok(calls(sb).includes("up -d"));
@@ -587,5 +617,23 @@ describe("install.sh", () => {
     });
     assert.equal(piped.status, 0, piped.stderr);
     assert.match(piped.stdout, /--database-url/);
+  });
+
+  it("sandbox cleanup removes created temporary directories", () => {
+    const sb = sandbox();
+    assert.ok(fs.existsSync(sb.dir), "sandbox directory exists before cleanup");
+    cleanupSandbox(sb);
+    assert.ok(!fs.existsSync(sb.dir), "sandbox directory is removed after cleanup");
+  });
+
+  it("install.sh cleans up temporary manifest file on completion", () => {
+    const sb = sandbox();
+    const tmpRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+    const tmpBefore = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const tmpAfter = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const leaked = tmpAfter.filter((f) => !tmpBefore.includes(f));
+    assert.deepEqual(leaked, [], "install.sh must not leave temporary manifest files behind");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { FALLBACK_SIGNAL_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { FALLBACK_SIGNAL_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
 // myrmidon(BOT-RUNTIME-TUNING D2): the service half of the settings contract.

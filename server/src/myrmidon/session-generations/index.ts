@@ -13,7 +13,7 @@
 // One resolver (and so one cache) per database handle and process, like the
 // board's other myrmidon runtimes.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 import { decideSessionGeneration, renderSessionGenerationHandoff } from "./generations.js";
 import { resolveSessionGenerationSettings, SESSION_GENERATIONS_SETTINGS_KEY, type SessionGenerationSettings } from "./settings.js";

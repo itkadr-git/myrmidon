@@ -34,6 +34,7 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+import { shouldSkipContinuation } from "../../../myrmidon/swarm-claim/requires-engineer.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -351,6 +352,16 @@ async function runReleaseDrain(
 
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
+
+    if (shouldSkipContinuation({ agentRole: deferredAgent.role, issueRole: issue.issueRole })) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred continuation skipped because agent and issue roles differ",
+        now: input.now,
+      });
+      continue;
+    }
 
     const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;

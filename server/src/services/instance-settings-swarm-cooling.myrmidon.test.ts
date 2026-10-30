@@ -8,8 +8,8 @@
 //      of every "own page inside general" feature).
 // The stub harness mirrors instance-settings-foraging-idle-gate.myrmidon.test.ts.
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { resolveSwarmSettings, SWARM_SETTINGS_DEFAULTS } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { resolveSwarmSettings, SWARM_SETTINGS_DEFAULTS } from "@myrmidon/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 
 function stubRows<T>(values: T[]) {

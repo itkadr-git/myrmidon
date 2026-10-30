@@ -20,8 +20,8 @@
 // bridge. Identifiers, command names, model ids and reasoning levels are
 // input, not prose, and never enter the catalogs.
 import { eq } from "drizzle-orm";
-import { instanceSettings, userUiLanguage, type Db } from "@paperclipai/db";
-import { BRIDGE_LANGUAGE_SETTINGS_KEY, readStoredBridgeLanguage } from "@paperclipai/shared";
+import { instanceSettings, userUiLanguage, type Db } from "@myrmidon/db";
+import { BRIDGE_LANGUAGE_SETTINGS_KEY, readStoredBridgeLanguage } from "@myrmidon/shared";
 import { bridgeTextEn, type BridgeTextKey } from "./en.js";
 import { bridgeTextRu } from "./ru.js";
 

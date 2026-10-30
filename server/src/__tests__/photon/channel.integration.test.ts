@@ -45,7 +45,7 @@ import {
   chatEndpointResources,
   issueAttachments,
   assets,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { startEmbeddedPostgresTestDatabase } from "../helpers/embedded-postgres.js";
 import {
   chatChannelService,
