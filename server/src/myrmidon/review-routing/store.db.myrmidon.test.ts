@@ -84,4 +84,62 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
     expect(completed.attempts).toBe(3);
     expect(completed.lastWakeAt).toEqual(persistedWake?.createdAt);
   });
+
+  it("extracts the latest cancelled reviewer run timestamp for retry calculation and records escalations", async () => {
+    const cancelledIssueId = await makeIssue();
+    const store = createPgReviewRoutingStore(db!);
+    const firstCancelledAt = new Date("2026-10-25T18:00:00.000Z");
+    const secondCancelledAt = new Date("2026-10-25T18:15:00.000Z");
+
+    await db!.insert(heartbeatRuns).values({
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "on_demand",
+      status: "cancelled",
+      nativeIssueId: cancelledIssueId,
+      finishedAt: firstCancelledAt,
+      createdAt: firstCancelledAt,
+    });
+
+    let state = await store.reviewWakeState({ companyId, issueId: cancelledIssueId, reviewerAgentId: reviewerId, stageId: "review" });
+    expect(state.activeRun).toBe(false);
+    expect(state.lastCancelledRunAt).toEqual(firstCancelledAt);
+
+    // Repeated cancellation: verify the newer cancelled run timestamp is returned
+    await db!.insert(heartbeatRuns).values({
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "on_demand",
+      status: "cancelled",
+      nativeIssueId: cancelledIssueId,
+      finishedAt: secondCancelledAt,
+      createdAt: secondCancelledAt,
+    });
+
+    state = await store.reviewWakeState({ companyId, issueId: cancelledIssueId, reviewerAgentId: reviewerId, stageId: "review" });
+    expect(state.lastCancelledRunAt).toEqual(secondCancelledAt);
+
+    // Verify recordReviewWakeEscalation persists escalation in activityLog
+    await store.recordReviewWakeEscalation({
+      companyId,
+      issueId: cancelledIssueId,
+      reviewerAgentId: reviewerId,
+      stageId: "review",
+      attempts: 5,
+      at: secondCancelledAt,
+    });
+
+    const [escalation] = await db!.select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, cancelledIssueId),
+        eq(activityLog.action, "issue.review_routing.wake_escalation_required"),
+      ))
+      .limit(1);
+
+    expect(escalation).toBeDefined();
+    expect((escalation?.details as Record<string, unknown>)?.owner).toBe("ADM");
+    expect((escalation?.details as Record<string, unknown>)?.attempts).toBe(5);
+  });
 });

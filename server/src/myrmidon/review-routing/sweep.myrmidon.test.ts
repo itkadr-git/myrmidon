@@ -55,7 +55,7 @@ interface Fixture {
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
-  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
 }
@@ -83,11 +83,11 @@ function makeStore(fx: Fixture) {
     },
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
     reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
-      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: null };
     },
     recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
     recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
-      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: null };
       fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
     },
     applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
@@ -316,6 +316,92 @@ describe("review wake liveness", () => {
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
     expect(t.wakes[0]?.retryAttempt).toBe(2);
+  });
+
+  it("retries a cancelled reviewer run after ten minutes even without an earlier wake marker or on fresh issue update", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: new Date(NOW.getTime() - 10 * 60_000) }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(1);
+  });
+
+  it("does not retry a cancelled reviewer run before the ten-minute backoff expires", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: new Date(NOW.getTime() - 5 * 60_000) }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("retries repeatedly cancelled reviewer runs on exponential backoff anchored at each cancellation", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+
+    // Run 1 was cancelled at T0 (30m ago)
+    const t0 = new Date(NOW.getTime() - 30 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: null,
+      attempts: 0,
+      lastCancelledRunAt: t0,
+    });
+
+    // 5 minutes after first cancel: within 10m backoff -> no wake
+    const at5m = new Date(t0.getTime() + 5 * 60_000);
+    expect((await t.sweep.sweep(at5m, { force: true })).woken).toBe(0);
+
+    // 10 minutes after first cancel: reaches 10m backoff -> wakes attempt 1
+    const at10m = new Date(t0.getTime() + 10 * 60_000);
+    const res1 = await t.sweep.sweep(at10m, { force: true });
+    expect(res1.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(1);
+
+    // Run was launched and cancelled at T1 = t0 + 12m
+    const t1 = new Date(t0.getTime() + 12 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: at10m,
+      attempts: 1,
+      lastCancelledRunAt: t1,
+    });
+
+    // 5 minutes after second cancel: within 10m backoff -> no wake
+    const at17m = new Date(t1.getTime() + 5 * 60_000);
+    expect((await t.sweep.sweep(at17m, { force: true })).woken).toBe(0);
+
+    // 10 minutes after second cancel: reaches 10m backoff -> wakes attempt 2
+    const at22m = new Date(t1.getTime() + 10 * 60_000);
+    const res2 = await t.sweep.sweep(at22m, { force: true });
+    expect(res2.woken).toBe(1);
+    expect(t.wakes[1]?.retryAttempt).toBe(2);
+
+    // Second retry run was launched and cancelled again at T2 = t1 + 12m
+    const t2 = new Date(t1.getTime() + 12 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: at22m,
+      attempts: 2,
+      lastCancelledRunAt: t2,
+    });
+
+    // Backoff for attempt 2 is 20 minutes (10m * 2^1)
+    // 15 minutes after third cancel: within 20m backoff -> no wake
+    const at37m = new Date(t2.getTime() + 15 * 60_000);
+    expect((await t.sweep.sweep(at37m, { force: true })).woken).toBe(0);
+
+    // 20 minutes after third cancel: reaches 20m backoff -> wakes attempt 3
+    const at42m = new Date(t2.getTime() + 20 * 60_000);
+    const res3 = await t.sweep.sweep(at42m, { force: true });
+    expect(res3.woken).toBe(1);
+    expect(t.wakes[2]?.retryAttempt).toBe(3);
   });
 
   it("does not wake a review before 30 minutes or inside retry backoff", async () => {

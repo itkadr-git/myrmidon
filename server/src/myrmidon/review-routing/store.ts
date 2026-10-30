@@ -338,7 +338,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           eq(heartbeatRuns.status, "cancelled"),
           sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
         ))
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .orderBy(desc(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.createdAt})`), desc(heartbeatRuns.id))
         .limit(1);
       return {
         activeRun: Boolean(activeRun),
