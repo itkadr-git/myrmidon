@@ -209,30 +209,46 @@ function TreeBranch({
   node,
   activeKey,
   onSelect,
+  t,
 }: {
   node: KnowledgeTreeNode;
   activeKey: string | null;
   onSelect: (item: KnowledgeItemSummary) => void;
+  t: Translate;
 }) {
   const key = revisionKey(node.item);
   const active = key === activeKey;
+  const isSpace = node.item.slug === "";
+  const isFolder = node.item.id.startsWith("folder:");
+  const [expanded, setExpanded] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 768px)").matches : true);
+  const label = node.displayLabel ?? node.item.title;
   return (
-    <li className="ui2-knowledge-tree-node" data-depth={node.depth}>
-      <button
-        type="button"
-        className={`ui2-knowledge-tree-item w-full rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${
-          active ? "bg-accent font-medium" : "text-muted-foreground"
-        }`}
-        style={{ paddingLeft: `${8 + node.depth * 12}px` }}
-        aria-current={active ? "page" : undefined}
-        onClick={() => onSelect(node.item)}
-      >
-        {node.item.title}
-      </button>
-      {node.children.length > 0 ? (
+    <li className="ui2-knowledge-tree-node" data-depth={node.depth} data-folder={node.folder}>
+      <div className="flex items-center gap-1" style={{ paddingInlineStart: `${node.depth * 0.75}rem` }}>
+        {node.children.length > 0 ? (
+          <button type="button" className="rounded px-1" aria-label={t(expanded ? "ui2.knowledge.tree.collapse" : "ui2.knowledge.tree.expand")} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+            {expanded ? "▾" : "▸"}
+          </button>
+        ) : null}
+        {isSpace || isFolder ? (
+          <span className={`ui2-knowledge-space-label min-w-0 flex-1 px-2 py-1 text-xs font-semibold ${isSpace ? "uppercase tracking-wide text-muted-foreground" : "text-foreground"}`}>
+            {isFolder ? t("ui2.knowledge.tree.folder", { name: label }) : label}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={`ui2-knowledge-tree-item min-w-0 flex-1 rounded-md px-2 py-1 text-left text-sm hover:bg-accent ${active ? "bg-accent font-medium" : "text-muted-foreground"}`}
+            aria-current={active ? "page" : undefined}
+            onClick={() => onSelect(node.item)}
+          >
+            {label}
+          </button>
+        )}
+      </div>
+      {node.children.length > 0 && expanded ? (
         <ul className="ui2-knowledge-tree-children flex flex-col gap-0.5">
           {node.children.map((child) => (
-            <TreeBranch key={revisionKey(child.item)} node={child} activeKey={activeKey} onSelect={onSelect} />
+            <TreeBranch key={revisionKey(child.item)} node={child} activeKey={activeKey} onSelect={onSelect} t={t} />
           ))}
         </ul>
       ) : null}
@@ -442,6 +458,9 @@ function KnowledgePagePane({
           <span className="ui2-knowledge-page-updated">
             {t("ui2.knowledge.item.updated", { when: formatWhen(item.updatedAt) })}
           </span>
+          <span className="ui2-knowledge-page-status">
+            {t(`ui2.knowledge.item.status.${item.status.toLowerCase()}` as Ui2MessageKey, { status: item.status })}
+          </span>
           {item.language ? (
             <span className="ui2-knowledge-page-language">
               {t("ui2.knowledge.item.language", { language: item.language })}
@@ -459,7 +478,9 @@ function KnowledgePagePane({
         </div>
       </div>
 
-      <KnowledgeMarkdown body={item.body ?? ""} spaceKey={item.spaceKey} basePath={basePath} />
+      <div className="ui2-knowledge-article max-w-[72ch] overflow-x-auto">
+        <KnowledgeMarkdown body={item.body ?? ""} spaceKey={item.spaceKey} basePath={basePath} />
+      </div>
 
       <SourcePanel
         title={t("ui2.knowledge.sources.title")}
@@ -575,8 +596,8 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
   const { selectedCompanyId } = useCompany();
   const companyId = selectedCompanyId ?? "";
   const params = useParams<{ spaceKey?: string; slug?: string }>();
-  const [localSelection, setLocalSelection] = useState<{ spaceKey: string; slug: string } | null>(null);
   const [query, setQuery] = useState("");
+  const [localSelection, setLocalSelection] = useState<{ spaceKey: string; slug: string } | null>(null);
   const [mode, setMode] = useState<KnowledgeSearchMode>("fulltext");
 
   const paramSelection =
@@ -601,9 +622,10 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
   const tree = useMemo(() => buildKnowledgeTree(listQuery.data?.items ?? []), [listQuery.data]);
 
   const activeKey = selection ? `${selection.spaceKey}/${selection.slug}` : null;
+  const [treeOpen, setTreeOpen] = useState(false);
 
   return (
-    <Ui2Page title={t("ui2.knowledge.title")} subtitle={t("ui2.knowledge.subtitle")}>
+    <Ui2Page className="ui2-knowledge-page !max-w-none" title={t("ui2.knowledge.title")} subtitle={t("ui2.knowledge.subtitle")}>
       <SearchPanel
         companyId={companyId}
         query={query}
@@ -629,9 +651,12 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
       ) : tree.length === 0 ? (
         <Ui2EmptyStateView title={t("ui2.knowledge.tree.empty")} variant="done" />
       ) : (
-        <div className="ui2-knowledge-layout flex flex-col gap-4 md:flex-row">
-          <div className="ui2-knowledge-tree-pane md:sticky md:top-0 md:w-72 md:shrink-0 md:self-start">
-          <Ui2Section title={t("ui2.knowledge.tree.aria")}>
+        <div className="ui2-knowledge-layout flex w-full min-w-0 flex-col gap-4 md:flex-row">
+          <button type="button" className="ui2-knowledge-mobile-tree-toggle rounded-md border border-border px-3 py-2 text-sm md:hidden" aria-expanded={treeOpen} onClick={() => setTreeOpen((open) => !open)}>
+            {t(treeOpen ? "ui2.knowledge.tree.collapse" : "ui2.knowledge.tree.menu")}
+          </button>
+          <div className={`ui2-knowledge-tree-pane md:sticky md:top-0 md:w-[clamp(18rem,24vw,30rem)] md:shrink-0 md:resize-x md:overflow-auto md:self-start ${treeOpen ? "" : "hidden md:block"}`}>
+        <Ui2Section title={t("ui2.knowledge.tree.aria")}>
             <div className="ui2-knowledge-tree-scroll max-h-[40dvh] overflow-y-auto md:max-h-[calc(100dvh-24rem)]" data-testid="knowledge-tree-scroll">
             <ul className="ui2-knowledge-tree flex flex-col gap-0.5" aria-label={t("ui2.knowledge.tree.aria")}>
               {tree.map((node) => (
@@ -639,6 +664,7 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
                   key={revisionKey(node.item)}
                   node={node}
                   activeKey={activeKey}
+                  t={t}
                   onSelect={(item) => {
                     if (basePath) navigate(knowledgeHref({ spaceKey: item.spaceKey, slug: item.slug, anchor: null }, basePath));
                     else setLocalSelection({ spaceKey: item.spaceKey, slug: item.slug });

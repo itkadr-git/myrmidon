@@ -169,10 +169,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     result: ReviewRoutingSweepResult,
   ): Promise<ReviewRoutingSignal[]> {
     const rows = await deps.store.listInReviewIssues(companyId, REVIEW_ROUTING_PAGE_SIZE);
+    for (const row of rows) {
+      row.reviewPathRecoveryEligible = issueNeedsReviewer(row);
+      row.reviewRecoveryNow = now;
+      row.reviewRecoveryUpdatedAt = row.updatedAt;
+    }
     result.scanned += rows.length;
 
     const rowById = new Map(rows.map((row) => [row.id, row] as const));
-    const needing = rows.filter((row) => issueNeedsReviewer(row));
+    const needing = rows.filter(
+      (row) => row.reviewPathRecoveryEligible && issueNeedsReviewer(row),
+    );
     const pending = rows
       .map((row) => ({ row, review: readPendingAgentReview(row) }))
       .filter((entry): entry is { row: InReviewIssueRow; review: NonNullable<typeof entry.review> } => entry.review !== null);
@@ -195,18 +202,38 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const signals: ReviewRoutingSignal[] = [];
     let moves = 0;
     let reviewerPool: ReviewerCandidate[] | null = null;
-    const pool = async (): Promise<ReviewerCandidate[]> => {
+    const managerChains = new Map<string, ReviewerCandidate[]>();
+    const managerCandidates = async (engineerId: string | null): Promise<ReviewerCandidate[]> => {
+      if (!engineerId) return [];
+      if (managerChains.has(engineerId)) return managerChains.get(engineerId)!;
+      const [agentRows, load] = await Promise.all([
+        deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
+        deps.store.loadByAgent(companyId),
+      ]);
+      const candidates = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      managerChains.set(engineerId, candidates);
+      return candidates;
+    };
+    const globalPool = async (): Promise<ReviewerCandidate[]> => {
       if (reviewerPool) return reviewerPool;
       const [agentRows, load] = await Promise.all([
         deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
         deps.store.loadByAgent(companyId),
       ]);
-      reviewerPool = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      reviewerPool = agentRows.map((agent) => ({
+        id: agent.id,
+        role: agent.role,
+        invokable: agent.invokable ?? true,
+        load: load.get(agent.id) ?? 0,
+      }));
       return reviewerPool;
     };
+    const pool = globalPool;
     const bumpLoad = (agentId: string, delta: number) => {
-      const candidate = reviewerPool?.find((entry) => entry.id === agentId);
-      if (candidate) candidate.load = Math.max(0, candidate.load + delta);
+      for (const pool of [reviewerPool, ...managerChains.values()]) {
+        const candidate = pool?.find((entry) => entry.id === agentId);
+        if (candidate) candidate.load = Math.max(0, candidate.load + delta);
+      }
     };
 
     for (const row of needing) {
@@ -221,8 +248,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       };
       if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) continue;
       try {
+        let candidates: ReviewerCandidate[];
+        try {
+          candidates = await managerCandidates(row.assigneeAgentId);
+          if (candidates.length === 0) candidates = await globalPool();
+        } catch (error) {
+          log.warn({ err: error, issueId: row.id, companyId }, "Review-routing reviewer lookup failed");
+          signals.push(signal);
+          result.failed += 1;
+          continue;
+        }
         const picked = pickReviewer({
-          candidates: await pool(),
+          candidates,
           excluded: excludedReviewerIds(row),
           maxLoad: settings.maxLoadPerReviewer,
         });
@@ -383,7 +420,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       deps.store.openPrTaskLoadByAgent(companyId, "review"),
       deps.store.openPrTaskLoadByAgent(companyId, "merge"),
     ]);
-    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
+    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ ...agent, invokable: agent.invokable ?? true, load: 0 }));
     const stewards: ReviewerCandidate[] = stewardRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
     const openReviewByAgent = new Map(openReviewLoad);
     const openMergeByAgent = new Map(openMergeLoad);
