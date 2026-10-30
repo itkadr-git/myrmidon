@@ -7,6 +7,14 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { routinesApi } from "@/api/routines";
 import { EmptyState } from "@/components/EmptyState";
 import { StatusBadge } from "@/components/StatusBadge";
+import {
+  OutcomeBadge,
+  OutcomeRunsPanel,
+  filterRunsByTimeRange,
+  formatWakeReason,
+  getRunTelemetryMetrics,
+  type TimeRangePreset,
+} from "@/components/myrmidon/OutcomeRunsPanel";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -133,6 +141,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
+  const wakeReason = searchParams.get("wakeReason") ?? ALL;
+  const timeRange = (searchParams.get("timeRange") as TimeRangePreset) ?? "all";
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -161,16 +171,28 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     () => Array.from(new Set((runs.data ?? []).map((run) => run.status))).sort(),
     [runs.data],
   );
-  const visibleRuns = useMemo(
-    () => (runs.data ?? []).filter((run) => status === ALL || run.status === status),
-    [runs.data, status],
-  );
+  const visibleRuns = useMemo(() => {
+    let list = runs.data ?? [];
+    if (timeRange !== "all") {
+      list = filterRunsByTimeRange(list, timeRange);
+    }
+    if (status !== ALL) {
+      list = list.filter((run) => run.status === status);
+    }
+    if (wakeReason !== ALL) {
+      list = list.filter((run) => {
+        const m = getRunTelemetryMetrics(run);
+        return m.wakeReason === wakeReason;
+      });
+    }
+    return list;
+  }, [runs.data, status, wakeReason, timeRange]);
 
-  const updateFilter = (key: "agentId" | "runStatus", value: string) => {
+  const updateFilter = (key: string, value: string) => {
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
-        if (value === ALL) next.delete(key);
+        if (value === ALL || value === "__all" || (key === "timeRange" && value === "all")) next.delete(key);
         else next.set(key, value);
         return next;
       },
@@ -184,11 +206,15 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         const next = new URLSearchParams(current);
         next.delete("agentId");
         next.delete("runStatus");
+        next.delete("wakeReason");
+        next.delete("timeRange");
         return next;
       },
       { replace: true },
     );
   };
+
+  const hasActiveFilters = agentId !== ALL || status !== ALL || wakeReason !== ALL || timeRange !== "all";
 
   if (routineId) {
     return (
@@ -209,6 +235,19 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
           {t("area.search-timeline-audit-2.audit-runs.page.description")}
         </p>
       </div>
+
+      {!routineId && (
+        <OutcomeRunsPanel
+          runs={runs.data ?? []}
+          agents={agents.data ?? []}
+          selectedAgentId={agentId}
+          onSelectAgent={(value) => updateFilter("agentId", value)}
+          selectedWakeReason={wakeReason}
+          onSelectWakeReason={(value) => updateFilter("wakeReason", value)}
+          selectedTimeRange={timeRange}
+          onSelectTimeRange={(value) => updateFilter("timeRange", value)}
+        />
+      )}
 
       <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
@@ -243,7 +282,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             </SelectContent>
           </Select>
         </label>
-        {agentId !== ALL || status !== ALL ? (
+        {hasActiveFilters ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
             {t("area.search-timeline-audit-2.audit-runs.page.clearFilters")}
           </Button>
@@ -265,8 +304,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         </div>
       ) : visibleRuns.length === 0 ? (
         <EmptyState
-          icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}
-          message={agentId !== ALL || status !== ALL ? t("area.search-timeline-audit-2.audit-runs.page.emptyFiltered") : t("area.search-timeline-audit-2.audit-runs.page.empty")}
+          icon={hasActiveFilters ? CircleDotDashed : Activity}
+          message={hasActiveFilters ? t("area.search-timeline-audit-2.audit-runs.page.emptyFiltered") : t("area.search-timeline-audit-2.audit-runs.page.empty")}
         />
       ) : (
         <ul className="divide-y divide-border border-y border-border" aria-label={t("area.search-timeline-audit-2.audit-runs.page.listLabel")}>
@@ -274,6 +313,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             const agent = agentById.get(run.agentId);
             const summary = runSummary(run);
             const duration = runDuration(run);
+            const telemetry = (run.runTelemetry ?? (run.resultJson as any)?.runTelemetry) as Record<string, unknown> | null | undefined;
             return (
               <li key={run.id}>
                 <Link
@@ -289,6 +329,9 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
                         {run.id.slice(0, 8)}
                       </span>
                       <StatusBadge status={run.status} />
+                      {telemetry?.outcomeCategory ? (
+                        <OutcomeBadge category={telemetry.outcomeCategory as string} />
+                      ) : null}
                     </div>
                     <p className="mt-1 truncate text-sm text-muted-foreground">
                       {summary ?? t("area.search-timeline-audit-2.audit-runs.page.sourceRun", { source: readableSource(run.invocationSource) })}
@@ -296,6 +339,11 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
                   </div>
                   <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground sm:justify-end">
                     <span className="capitalize">{readableSource(run.invocationSource)}</span>
+                    {telemetry?.wakeReason ? (
+                      <span className="font-mono text-muted-foreground">
+                        ({formatWakeReason(telemetry.wakeReason as string)})
+                      </span>
+                    ) : null}
                     {duration ? <span>{duration}</span> : null}
                     <time dateTime={new Date(run.createdAt).toISOString()}>
                       {relativeTime(run.createdAt)}
