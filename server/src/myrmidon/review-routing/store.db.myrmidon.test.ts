@@ -30,6 +30,9 @@ describeEmbeddedPostgres("Postgres review routing wake state", () => {
 
   afterEach(async () => {
     if (db && companyId) {
+      for (const issueId of issueIds) {
+        await db.delete(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, issueId)));
+      }
       await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
       await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
