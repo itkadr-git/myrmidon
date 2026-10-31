@@ -76,6 +76,7 @@ export interface SiteAgentClient {
   snapshot(botKey: string): Promise<Readable>;
   restore(botKey: string, stream: Readable): Promise<void>;
   quarantine(botKey: string): Promise<void>;
+  logs(botKey: string, tail?: number): Promise<string>;
 }
 
 /** The agent's maintenance window (R3) for the duration of a move. `enter` resolves once

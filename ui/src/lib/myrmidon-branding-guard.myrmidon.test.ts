@@ -265,11 +265,40 @@ describe("myrmidon(B1a): no paperclip artwork is rendered", () => {
   });
 });
 
+describe("Myrmidon first-party UI destinations", () => {
+  it.each([
+    "components/SidebarAccountMenu.tsx",
+    "components/SidebarAccountMenu.production.tsx",
+    "pages/IssueDetail.tsx",
+    "pages/InstanceGeneralSettings.tsx",
+    "lib/myrmidon-links.ts",
+    "bootstrapSetup.ts",
+  ])("%s has no upstream product destinations or bootstrap command", (rel) => {
+    const source = readFileSync(path.join(UI_SRC, rel), "utf8");
+    expect(source).not.toMatch(/https?:\/\/(?:docs\.)?paperclip\.ing\b/i);
+    expect(source).not.toMatch(/npx\s+paperclipai\s+auth\s+bootstrap/i);
+    expect(source).not.toMatch(/npx\s+myrmidon\b/i);
+    if (rel.startsWith("components/") || rel.startsWith("pages/")) {
+      expect(source).toContain('from "@/lib/myrmidon-links"');
+    }
+  });
+});
+
 describe("myrmidon(B1a): company export README names Myrmidon, not the upstream site", () => {
   it("CompanyExport.tsx has no link to the upstream project site and signs as the exporting product", () => {
     const source = readFileSync(path.join(UI_SRC, "pages", "CompanyExport.tsx"), "utf-8");
     expect(source).not.toContain("paperclip.ing");
     expect(source).toContain("Exported from ${PRODUCT_NAME}");
     expect(source).toContain("UPSTREAM_ATTRIBUTION.text");
+    expect(source).toContain("npx myrmidon company import");
+    expect(source).not.toContain("npx paperclipai company import");
+  });
+});
+
+describe("myrmidon(B1a): announcement previews and smoke specs use Myrmidon branding", () => {
+  it("announcement-preview.ts links to Myrmidon docs, not upstream", () => {
+    const source = readFileSync(path.join(UI_SRC, "lib", "announcement-preview.ts"), "utf-8");
+    expect(source).not.toContain("paperclip.ing");
+    expect(source).toContain("DOCS_URL");
   });
 });
