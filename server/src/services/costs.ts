@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@myrmidon/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@myrmidon/db";
@@ -521,6 +521,53 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
+    },
+
+    byIssue: async (companyId: string, range?: CostDateRange, limit: number = 20) => {
+      const conditions: SQL[] = [
+        eq(costEvents.companyId, companyId),
+        eq(issues.companyId, companyId),
+        isNotNull(costEvents.issueId),
+      ];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+
+      const rows = await db
+        .select({
+          issueId: costEvents.issueId,
+          identifier: issues.identifier,
+          title: issues.title,
+          costCents: costCentsExpr,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          runs: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+        })
+        .from(costEvents)
+        .innerJoin(
+          issues,
+          and(
+            eq(costEvents.issueId, issues.id),
+            eq(issues.companyId, companyId),
+          ),
+        )
+        .where(and(...conditions))
+        .groupBy(costEvents.issueId, issues.identifier, issues.title)
+        .orderBy(desc(costCentsExpr), desc(costEvents.issueId))
+        .limit(limit);
+
+      return rows.map((row) => ({
+        issueId: row.issueId as string,
+        identifier: row.identifier,
+        title: row.title,
+        costCents: Number(row.costCents),
+        inputTokens: Number(row.inputTokens),
+        cachedInputTokens: Number(row.cachedInputTokens),
+        outputTokens: Number(row.outputTokens),
+        runs: Number(row.runs ?? 0),
+      }));
     },
   };
 }
