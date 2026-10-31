@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { isUuidLike } from "@myrmidon/shared";
 import {
   connectionGrants,
@@ -6,6 +6,8 @@ import {
   projectWorkspaces,
   runIdentityContexts,
   toolConnections,
+  agents,
+  companySecrets,
   type Db,
 } from "@myrmidon/db";
 import { forbidden } from "../errors.js";
@@ -17,7 +19,7 @@ import {
 import { secretService } from "./secrets.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
-import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import { normalizeGitHubRepository, readGitHubSharedIdentitySettings, githubAppsFor, githubPatsFor } from "../myrmidon/github-shared-identity/settings.js";
 import { onResetGitHubAppTokenCache } from "../myrmidon/github-shared-identity/index.js";
 import {
   allowsGitHubCredentialExport,
@@ -47,6 +49,7 @@ export type GitHubCredentialSummary = {
   connectionId?: string;
   grantId?: string;
   authenticationMode?: "managed" | "host" | "anonymous";
+  expiresAt?: string;
 };
 
 /**
@@ -87,21 +90,27 @@ async function inferRunRepository(
 }
 
 const GITHUB_CREDENTIAL_CACHE_TTL_MS = 50 * 60 * 1000; // ~50 minutes
+const GITHUB_CREDENTIAL_CACHE_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
+
+interface CachedGitHubCredentialResult {
+  identityContextId: string | null;
+  revision: number | null;
+  status: GitHubCredentialSummary["status"];
+  source?: GitHubCredentialSummary["source"];
+  repository?: string;
+  login?: string;
+  connectionId?: string | null;
+  grantId?: string | null;
+  authenticationMode?: string;
+  expiresAt?: string;
+  reason?: string;
+  env: Record<string, string>;
+}
 
 interface CachedGitHubCredentialEntry {
-  result: {
-    identityContextId: string | null;
-    revision: number | null;
-    status: GitHubCredentialSummary["status"];
-    source?: string;
-    login?: string;
-    connectionId?: string | null;
-    grantId?: string | null;
-    authenticationMode?: string;
-    reason?: string;
-    env: Record<string, string>;
-  };
+  result: CachedGitHubCredentialResult;
   cachedAt: number;
+  expiresAt?: number;
 }
 
 const githubCredentialCache = new Map<string, CachedGitHubCredentialEntry>();
@@ -112,25 +121,69 @@ export function clearGitHubOperationCredentialCache(): void {
 
 onResetGitHubAppTokenCache(clearGitHubOperationCredentialCache);
 
+function credentialExpiresAt(summary: GitHubCredentialSummary): number | undefined {
+  if (!summary.expiresAt) return undefined;
+  const expiresAt = Date.parse(summary.expiresAt);
+  return Number.isFinite(expiresAt) ? expiresAt : undefined;
+}
+
+function cachedCredentialIsFresh(entry: CachedGitHubCredentialEntry, now: number): boolean {
+  if (now - entry.cachedAt >= GITHUB_CREDENTIAL_CACHE_TTL_MS) return false;
+  return entry.expiresAt === undefined
+    || now < entry.expiresAt - GITHUB_CREDENTIAL_CACHE_EXPIRY_MARGIN_MS;
+}
+
 async function isCachedCredentialStillActive(
   db: Db,
+  companyId: string,
+  agentId: string,
   connectionId?: string | null,
   grantId?: string | null,
+  credential?: { source?: string; repository?: string },
 ): Promise<boolean> {
   try {
     if (connectionId) {
       const rows = await db
-        .select({ enabled: toolConnections.enabled })
+        .select({ enabled: toolConnections.enabled, status: toolConnections.status })
         .from(toolConnections)
-        .where(eq(toolConnections.id, connectionId));
-      if (!rows.length || !rows[0].enabled) return false;
+        .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+      if (!rows.length || !rows[0].enabled || rows[0].status !== "active") return false;
     }
     if (grantId) {
       const rows = await db
         .select({ status: connectionGrants.status })
         .from(connectionGrants)
-        .where(eq(connectionGrants.id, grantId));
+        .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, companyId)));
       if (!rows.length || rows[0].status !== "active") return false;
+    }
+    const [agent] = await db
+      .select({ role: agents.role, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+    if (!agent || agent.status !== "active" || agent.role === "viewer") return false;
+    const shared = await readGitHubSharedIdentitySettings(db, companyId);
+    const repo = normalizeGitHubRepository(credential?.repository);
+    if (shared.enabled && repo) {
+      const patMatches = githubPatsFor(shared, agentId, repo);
+      const appMatches = githubAppsFor(shared, { id: agentId, role: agent.role }, repo);
+      for (const pat of patMatches) {
+        const [secret] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+          eq(companySecrets.id, pat.tokenSecretId), eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"), eq(companySecrets.status, "active"),
+          isNull(companySecrets.deletedAt),
+        ));
+        if (!secret) return false;
+      }
+      for (const app of appMatches) {
+        const [secret] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+          eq(companySecrets.id, app.privateKeySecretId), eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "company"), eq(companySecrets.status, "active"),
+          isNull(companySecrets.deletedAt),
+        ));
+        if (!secret) return false;
+      }
+      if (credential?.source === "app" && appMatches.length === 0) return false;
+      if (credential?.source === "pat" && patMatches.length === 0) return false;
     }
     return true;
   } catch {
@@ -179,21 +232,22 @@ export async function resolveGitHubOperationCredentials(
   const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
   const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
   const cached = githubCredentialCache.get(cacheKey);
-  if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
-    if (cached.result.connectionId || cached.result.grantId) {
-      const active = await isCachedCredentialStillActive(
-        db,
-        cached.result.connectionId,
-        cached.result.grantId,
-      );
-      if (!active) {
-        githubCredentialCache.delete(cacheKey);
-      } else {
-        return cached.result;
-      }
+  if (cached && cachedCredentialIsFresh(cached, Date.now())) {
+    const active = await isCachedCredentialStillActive(
+      db,
+      input.companyId,
+      input.agentId,
+      cached.result.connectionId,
+      cached.result.grantId,
+      cached.result,
+    );
+    if (!active) {
+      githubCredentialCache.delete(cacheKey);
     } else {
       return cached.result;
     }
+  } else if (cached) {
+    githubCredentialCache.delete(cacheKey);
   }
   try {
     const resolved = await resolveManagedGitHubCredential(
@@ -222,6 +276,10 @@ export async function resolveGitHubOperationCredentials(
         connectionId: resolved.credential.connectionId,
         grantId: resolved.credential.grantId,
         authenticationMode: "managed",
+        expiresAt:
+          resolved.credential.source === "managed_connection"
+            ? resolved.credential.expiresAt
+            : undefined,
       };
       env = buildGitAuthInvocation(resolved.credential).env;
     } else {
@@ -249,6 +307,7 @@ export async function resolveGitHubOperationCredentials(
         });
         if (app) {
           summary = app.summary;
+          if (app.expiresAt) summary.expiresAt = app.expiresAt;
           env = app.env;
         }
       }
@@ -266,7 +325,7 @@ export async function resolveGitHubOperationCredentials(
       .update(runIdentityContexts)
       .set({ github: summary })
       .where(eq(runIdentityContexts.id, context.id));
-  const result = {
+  const result: CachedGitHubCredentialResult = {
     identityContextId: context?.id ?? null,
     revision: context?.revision ?? null,
     ...summary,
@@ -276,14 +335,13 @@ export async function resolveGitHubOperationCredentials(
     if (githubCredentialCache.size > 2000) {
       const now = Date.now();
       for (const [k, v] of githubCredentialCache.entries()) {
-        if (now - v.cachedAt >= GITHUB_CREDENTIAL_CACHE_TTL_MS) {
-          githubCredentialCache.delete(k);
-        }
+        if (!cachedCredentialIsFresh(v, now)) githubCredentialCache.delete(k);
       }
     }
     githubCredentialCache.set(cacheKey, {
       result,
       cachedAt: Date.now(),
+      expiresAt: credentialExpiresAt(summary),
     });
   }
   return result;
