@@ -56,6 +56,17 @@ describe("myrmidon(UI2) route table integration", () => {
     ]);
   });
 
+  it("preserves full Secrets screen under UI2 without shadowing by a placeholder route", () => {
+    // Under UI2, the secrets section must NOT be shadowed by UI2_ROUTE_TABLE placeholders,
+    // allowing boardRoutes to serve the full Secrets screen with both instance secret references
+    // and standard secret management tabs.
+    const secretsUi2Route = UI2_ROUTE_TABLE.find((entry) => entry.path === "company/settings/secrets");
+    expect(secretsUi2Route).toBeUndefined();
+
+    const secretsSection = UI2_SETTINGS_SECTIONS.find((section) => section.key === "secrets");
+    expect(secretsSection?.path).toBe("/company/settings/secrets");
+  });
+
   it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
     const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
     for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
