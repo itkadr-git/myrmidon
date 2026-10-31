@@ -15,6 +15,7 @@ describeEmbeddedPostgres("issue list route performance (OPE-9997)", () => {
   const ctx = useEmbeddedPostgres("issue-list-perf");
 
   beforeEach(async () => {
+    await ctx.db.delete(agents);
     await resetCompanyIssueFixtures(ctx.db);
   });
 
