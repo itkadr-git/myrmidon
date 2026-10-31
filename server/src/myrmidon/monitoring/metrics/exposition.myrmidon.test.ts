@@ -5,14 +5,18 @@
 import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
+  collectMetricsParts,
   escapeLabelValue,
   formatSampleValue,
   percentile,
   renderMetricsText,
+  type CapacityDashboardMetricsSnapshot,
   type MetricsSnapshot,
 } from "./metrics.js";
 import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { BLOCKER_DASHBOARD_PANELS } from "@myrmidon/shared";
+import { computeBlockedMetrics } from "./blocked.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
@@ -92,6 +96,69 @@ describe("prometheus exposition format", () => {
     } finally {
       swarmClaimMetrics.reset();
     }
+  });
+
+  it("exposes the approved capacity provider fixture through scrape collection and rendering", async () => {
+    const fixture: CapacityDashboardMetricsSnapshot = {
+      readinessRatio: 0.5,
+      queueAgeSeconds: 120,
+      projectShare: [
+        { project: "11111111-1111-4111-8111-111111111111", share: 0.75 },
+        { project: "22222222-2222-4222-8222-222222222222", share: 0.25 },
+      ],
+      starvationTotal: 2,
+      claimRejectionTotal: {
+        capacity_limit: 3, project_scope: 1, caste_scope: 0, assignment_conflict: 0,
+        dependency_blocked: 0, interaction_pending: 0, already_claimed: 0, not_ready: 0, other: 0,
+      },
+    };
+    const target = () => target;
+    const mockDbProxy: any = new Proxy(target, {
+      get(_t, prop) {
+        if (prop === "then") return (res: (v: unknown[]) => unknown) => Promise.resolve([]).then(res);
+        if (prop === "catch") return (res: (err: unknown) => unknown) => Promise.resolve([]).catch(res);
+        return () => mockDbProxy;
+      },
+      apply() { return mockDbProxy; },
+    });
+    const collected = await collectMetricsParts({
+      db: { select: () => mockDbProxy } as never,
+      now: () => new Date("2026-10-27T00:00:00.000Z"),
+      errorWindowSec: 300,
+      latencyWindowSec: 300,
+      capacityDashboard: () => fixture,
+    });
+    expect(collected.errors).toEqual([]);
+    const text = renderMetricsText(snapshot(collected.fields));
+    expect(text).toContain("# TYPE myrmidon_readiness_ratio gauge");
+    expect(text).toContain('myrmidon_readiness_ratio{role="all"} 0.5');
+    expect(text).toContain('myrmidon_queue_age_seconds{role="all"} 120');
+    expect(text).toContain('myrmidon_project_share{role="all",project="11111111-1111-4111-8111-111111111111"} 0.75');
+    expect(text).toContain('myrmidon_project_share{role="all",project="22222222-2222-4222-8222-222222222222"} 0.25');
+    expect(text).toContain("# TYPE myrmidon_starvation_total counter");
+    expect(text).toContain('myrmidon_starvation_total{role="all"} 2');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="capacity_limit"} 3');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="caste_scope"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="other"} 0');
+  });
+
+  it("omits unavailable capacity samples, including replacing an earlier snapshot", () => {
+    const prior = renderMetricsText(snapshot({ capacityDashboard: {
+      readinessRatio: 0.5, queueAgeSeconds: 120, projectShare: [], starvationTotal: 2,
+      claimRejectionTotal: { capacity_limit: 0, project_scope: 0, caste_scope: 0, assignment_conflict: 0, dependency_blocked: 0, interaction_pending: 0, already_claimed: 0, not_ready: 0, other: 0 },
+    } }));
+    expect(prior).toContain("myrmidon_readiness_ratio{");
+    const unavailable = renderMetricsText(snapshot({ capacityDashboard: null }));
+    for (const family of ["readiness_ratio", "queue_age_seconds", "project_share", "starvation_total", "claim_rejection_total"]) {
+      expect(unavailable).toContain(`# HELP myrmidon_${family} `);
+      expect(unavailable).not.toContain(`myrmidon_${family}{`);
+    }
+    const unknownQueue = renderMetricsText(snapshot({ capacityDashboard: {
+      readinessRatio: 0.5, queueAgeSeconds: null, projectShare: null, starvationTotal: 2, claimRejectionTotal: null,
+    } }));
+    expect(unknownQueue).not.toContain("myrmidon_queue_age_seconds{");
+    expect(unknownQueue).not.toContain("myrmidon_project_share{");
+    expect(unknownQueue).not.toContain("myrmidon_claim_rejection_total{");
   });
 
   it("renders exactly one HELP and one TYPE line per family", () => {
@@ -349,6 +416,35 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_corpus_shadow_ragflow_latency_seconds{");
     expect(text).toContain("# TYPE myrmidon_corpus_shadow_module_latency_seconds summary");
     expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
+  });
+
+  it("registers every dashboard panel source in the live Prometheus exposition", () => {
+    const panelSources = BLOCKER_DASHBOARD_PANELS.map(({ query }) => query);
+    for (const source of panelSources) {
+      expect(METRIC_FAMILIES, `registered family for dashboard source ${source}`).toContain(source);
+    }
+
+    const text = renderMetricsText(snapshot({
+      blocked: [{
+        companyId: "company-a",
+        groups: computeBlockedMetrics([{
+          id: "blocked-a",
+          status: "blocked",
+          blockedSince: new Date("2026-10-01T00:00:00Z"),
+          blockerMetadata: null,
+        }], new Date("2026-10-02T00:00:00Z")),
+      }],
+      blockerRoots: { companies: [{
+        companyId: "company-a",
+        roots: [{ root: "root-a", fanout: 2 }],
+        terminalCount: 1,
+        rootsOverLimit: 0,
+      }] },
+    }));
+    for (const source of panelSources) {
+      expect(text, `rendered metric ${source}`).toContain(`# TYPE ${source} `);
+      expect(text, `sample for ${source}`).toMatch(new RegExp(`^${source}(?:[{ ]|$)`, "m"));
+    }
   });
 
   it("ends with a newline and separates families with blank lines", () => {
