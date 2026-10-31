@@ -84,7 +84,7 @@ export function isNoncodingRole(role: string | null | undefined): boolean {
  * Returns true if an issue belongs to a dev project or is a code issue.
  */
 export function isDevProjectCodeIssue(input: {
-  labels: unknown;
+  labels?: unknown;
   casteKey?: string | null;
   projectDefaultCasteKey?: string | null;
   projectName?: string | null;
@@ -94,7 +94,7 @@ export function isDevProjectCodeIssue(input: {
   hasEngineerPr?: boolean;
   hasReviewState?: boolean;
 }): boolean {
-  const labelsList = normalizeLabels(input.labels);
+  const labelsList = normalizeLabels(input.labels ?? []);
   const isExplicitCode = requiresEngineer({
     labels: labelsList,
     casteKey: input.casteKey ?? null,
@@ -106,12 +106,12 @@ export function isDevProjectCodeIssue(input: {
 
   if (input.hasEngineerPr) return true;
 
-  // Only PRs created by an engineer count as a code task signal
+  // Having a pull_request work product indicates code work
   if (input.prWorkProducts && input.prWorkProducts.length > 0) {
-    const hasEngineerPr = input.prWorkProducts.some(
-      (p) => p.type === "pull_request" && p.creatorRole === "engineer",
+    const hasPr = input.prWorkProducts.some(
+      (p) => p.type === "pull_request",
     );
-    if (hasEngineerPr) return true;
+    if (hasPr) return true;
   }
 
   // Project default caste is engineer

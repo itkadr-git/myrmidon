@@ -327,7 +327,7 @@ describe("issue assignee invokability guard", () => {
   it("allows assignee change when moving a code task out of in_progress to in_review", async () => {
     const existing = makeIssue({
       status: "in_progress",
-      assigneeAgentId: ENGINEER_AGENT_ID,
+      assigneeAgentId: IDLE_AGENT_ID,
       executionWorkspacePreference: "reuse_existing",
     });
     mockIssueService.getById.mockResolvedValue(existing);

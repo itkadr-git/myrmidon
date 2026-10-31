@@ -327,6 +327,7 @@ describe("1.6.6 GUARD-RETURN: sweeper execution", () => {
               leftJoin: vi.fn().mockReturnValue({
                 where: vi.fn().mockResolvedValue([candidateIssue]),
               }),
+              where: vi.fn().mockResolvedValue([]),
             }),
             where: vi.fn().mockImplementation(() => {
               // Handle queries based on table structure
@@ -418,6 +419,7 @@ describe("1.6.6 GUARD-RETURN: sweeper execution", () => {
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockResolvedValue([]),
             }),
+            where: vi.fn().mockResolvedValue([]),
           }),
         }),
       }),
@@ -474,6 +476,7 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockResolvedValue([mockCandidate]),
             }),
+            where: vi.fn().mockResolvedValue([]),
           }),
           where: vi.fn().mockResolvedValue([]),
         })),
@@ -514,6 +517,7 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockResolvedValue([mockCandidate]),
             }),
+            where: vi.fn().mockResolvedValue([]),
           }),
           where: vi.fn().mockResolvedValue([]),
         })),
@@ -564,6 +568,7 @@ describe("1.6.6 GUARD-RETURN: alert evaluation", () => {
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockResolvedValue([mockCandidate]),
             }),
+            where: vi.fn().mockResolvedValue([]),
           }),
           where: vi.fn().mockResolvedValue(mockActivityLog),
         })),

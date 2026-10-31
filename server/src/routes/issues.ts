@@ -1510,6 +1510,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "budget.blocked",
   "company.inactive",
   "email_received",
+  "execution_changes_requested",
   "execution_reconciliation_required",
   "execution_review_participant_recovery",
   "execution_review_requested",
