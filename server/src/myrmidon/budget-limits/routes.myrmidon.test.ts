@@ -48,26 +48,34 @@ function fakeStore() {
         (item) => item.companyId === companyId && (!level || item.level === level),
       )),
     get: vi.fn(async (companyId: string, level: string, ref: string) => limits.get(key(companyId, level, ref)) ?? null),
-    upsert: vi.fn(async (companyId: string, level: string, ref: string, input: Record<string, unknown>, actor: Record<string, unknown>) => {
-      const existing = limits.get(key(companyId, level, ref));
-      const view = { ...row(companyId, level, ref), ...input } as BudgetLimitView;
-      limits.set(key(companyId, level, ref), view);
-      const entry: BudgetLimitChangeView = {
-        id: `change-${journal.length + 1}`,
-        companyId,
-        limitId: view.id,
-        action: existing ? "update" : "create",
-        level: level as BudgetLimitView["level"],
-        ref,
-        before: (existing ?? null) as Record<string, unknown> | null,
-        after: view as unknown as Record<string, unknown>,
-        actorType: String(actor.actorType),
-        actorId: String(actor.actorId),
-        at: now().toISOString(),
-      };
-      journal.unshift(entry);
-      return view;
-    }),
+    upsert: vi.fn(
+      async (
+        companyId: string,
+        level: string,
+        ref: string,
+        input: Record<string, unknown>,
+        actor: Record<string, unknown> = { actorType: "system", actorId: "test" },
+      ) => {
+        const existing = limits.get(key(companyId, level, ref));
+        const view = { ...row(companyId, level, ref), ...input } as BudgetLimitView;
+        limits.set(key(companyId, level, ref), view);
+        const entry: BudgetLimitChangeView = {
+          id: `change-${journal.length + 1}`,
+          companyId,
+          limitId: view.id,
+          action: existing ? "update" : "create",
+          level: level as BudgetLimitView["level"],
+          ref,
+          before: (existing ?? null) as Record<string, unknown> | null,
+          after: view as unknown as Record<string, unknown>,
+          actorType: String(actor?.actorType ?? "system"),
+          actorId: String(actor?.actorId ?? "test"),
+          at: now().toISOString(),
+        };
+        journal.unshift(entry);
+        return view;
+      },
+    ),
     remove: vi.fn(async (companyId: string, level: string, ref: string) => {
       return limits.delete(key(companyId, level, ref));
     }),
@@ -195,33 +203,39 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
 
     it("evaluates warningThreshold and filters by threshold parameter", async () => {
       const store = fakeStore();
-      await store.upsert({
-        companyId: "company-a",
-        level: "nest",
-        ref: "company",
-        amountCents: 10_000,
-        period: "calendar_month_utc",
-        mode: "hard",
-        isActive: true,
-      });
-      await store.upsert({
-        companyId: "company-a",
-        level: "caste",
-        ref: "engineer",
-        amountCents: 10_000,
-        period: "calendar_month_utc",
-        mode: "hard",
-        isActive: true,
-      });
-      await store.upsert({
-        companyId: "company-a",
-        level: "foraging",
-        ref: "foraging",
-        amountCents: 10_000,
-        period: "calendar_month_utc",
-        mode: "hard",
-        isActive: true,
-      });
+      await store.upsert(
+        "company-a",
+        "nest",
+        "company",
+        {
+          amountCents: 10_000,
+          period: "calendar_month_utc",
+          mode: "hard",
+          isActive: true,
+        },
+      );
+      await store.upsert(
+        "company-a",
+        "caste",
+        "engineer",
+        {
+          amountCents: 10_000,
+          period: "calendar_month_utc",
+          mode: "hard",
+          isActive: true,
+        },
+      );
+      await store.upsert(
+        "company-a",
+        "foraging",
+        "foraging",
+        {
+          amountCents: 10_000,
+          period: "calendar_month_utc",
+          mode: "hard",
+          isActive: true,
+        },
+      );
 
       const { app } = appFor(boardActor, {
         store,
