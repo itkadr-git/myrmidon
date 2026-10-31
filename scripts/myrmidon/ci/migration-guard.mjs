@@ -2,13 +2,23 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 const PREFIX = "packages/db/src/migrations/";
 const SQL = /(?:^|\/)(\d{4})_[^/]+\.sql$/;
 
-export function migrationNumber(path) {
-  if (typeof path !== "string") return null;
-  return SQL.exec(path)?.[1] ?? null;
+export function migrationNumber(filePath) {
+  if (typeof filePath !== "string") return null;
+  return SQL.exec(filePath)?.[1] ?? null;
+}
+
+export const parseMigrationNumber = migrationNumber;
+
+export function calculateNextAvailableNumber(occupiedNumbers) {
+  const nums = Array.from(occupiedNumbers).map((n) => parseInt(n, 10)).filter((n) => !Number.isNaN(n));
+  if (nums.length === 0) return "0000";
+  const max = Math.max(...nums);
+  return String(max + 1).padStart(4, "0");
 }
 
 export function checkMainCollisions(mainFiles, addedFiles) {
@@ -17,69 +27,26 @@ export function checkMainCollisions(mainFiles, addedFiles) {
     const number = migrationNumber(file);
     if (number) occupied.set(number, file);
   }
-  const occupiedNumbers = Array.from(occupied.keys(), Number);
-  const maximum = Math.max(-1, ...occupiedNumbers);
-  const next = String(maximum + 1).padStart(4, "0");
+
   const errors = [];
-  const added = new Map();
+  const addedNumbers = new Set();
   for (const file of addedFiles) {
     const number = migrationNumber(file);
     if (!number) continue;
+
+    if (addedNumbers.has(number)) {
+      errors.push(`${file}: duplicate migration number ${number} within the same PR`);
+      continue;
+    }
+    addedNumbers.add(number);
+
     if (occupied.has(number)) {
-      errors.push(`${file}: migration number ${number} is already occupied in main by ${occupied.get(number)}. Next free number: ${next}. Regenerate the snapshot and journal after renumbering.`);
-    }
-    if (added.has(number)) {
-      errors.push(`${file}: migration number ${number} is also used in this PR by ${added.get(number)}.`);
-    }
-    added.set(number, file);
-  }
-  return errors;
-}
-
-export function checkGeneratorCollisions(mainFiles, localFiles, journal) {
-  const errors = [];
-  const occupied = new Map();
-  for (const file of mainFiles) {
-    const number = migrationNumber(file);
-    if (number) occupied.set(number, file);
-  }
-  const occupiedNumbers = Array.from(occupied.keys(), Number);
-  const maxMain = Math.max(-1, ...occupiedNumbers);
-  const next = String(maxMain + 1).padStart(4, "0");
-
-  // Check if any local SQL file collides with main under a different name
-  for (const file of localFiles) {
-    const number = migrationNumber(file);
-    if (!number) continue;
-    if (occupied.has(number)) {
-      const mainFile = occupied.get(number);
-      const localBase = file.split("/").pop();
-      const mainBase = mainFile.split("/").pop();
-      if (localBase !== mainBase) {
-        errors.push(`${file}: migration number ${number} is occupied in main by ${mainFile}. Update main before generating.`);
-      }
+      const next = calculateNextAvailableNumber(occupied.keys());
+      errors.push(
+        `${file}: migration number ${number} is already occupied in main by ${occupied.get(number)}. Next free number: ${next}. Regenerate the snapshot and journal after renumbering.`
+      );
     }
   }
-
-  // Check if local journal is behind main's highest migration number
-  const journalEntries = journal?.entries ?? [];
-  const journalNumbers = journalEntries
-    .map((e) => {
-      if (typeof e.idx === "number" && !Number.isNaN(e.idx)) return e.idx;
-      const match = /(?:^|\/)(\d{4})_/.exec(e.tag ?? "");
-      return match ? Number(match[1]) : null;
-    })
-    .filter((n) => n !== null);
-  const maxJournal = Math.max(-1, ...journalNumbers);
-
-  if (maxMain > maxJournal) {
-    const formattedMain = String(maxMain).padStart(4, "0");
-    const formattedJournal = String(Math.max(0, maxJournal)).padStart(4, "0");
-    errors.push(
-      `Cannot generate migrations: origin/main contains migration ${formattedMain}, but local migration journal only goes up to ${formattedJournal}. Generating now would silently create duplicate migration numbers (${String(Math.max(0, maxJournal) + 1).padStart(4, "0")}). Pull or rebase on origin/main first (next free number in main is ${next}).`
-    );
-  }
-
   return errors;
 }
 
@@ -90,21 +57,210 @@ export function openPrWarnings(addedFiles, pulls) {
     .map((file) => `Migration number ${migrationNumber(file)} is also used by open PR #${number}: ${file}. Coordinate renumbering before merge.`));
 }
 
-function paths(args) {
-  return execFileSync("git", args, { encoding: "utf8" }).split("\0").filter(Boolean);
+export function checkOpenPrCollisions(addedFiles, pulls, currentPrNumber) {
+  const currentNum = currentPrNumber ? parseInt(currentPrNumber, 10) : null;
+  const numbers = new Set(addedFiles.map(migrationNumber).filter(Boolean));
+  const errors = [];
+
+  const allOccupied = new Set();
+  for (const p of pulls) {
+    for (const f of p.files || []) {
+      const n = migrationNumber(f);
+      if (n) allOccupied.add(n);
+    }
+  }
+
+  for (const pull of pulls) {
+    if (currentNum && pull.number === currentNum) continue;
+    for (const file of pull.files || []) {
+      const num = migrationNumber(file);
+      if (num && numbers.has(num)) {
+        if (!currentNum || pull.number < currentNum) {
+          const next = calculateNextAvailableNumber(allOccupied);
+          errors.push(
+            `Migration number ${num} is already reserved in open PR #${pull.number}: ${file}. Next free number: ${next}. Renumber using: pnpm db:renumber ${num} ${next}`
+          );
+        }
+      }
+    }
+  }
+  return errors;
 }
 
-function annotation(kind, message) {
-  console.log(`::${kind}::${message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`);
+export function checkGeneratorCollisions(repoRoot = process.cwd()) {
+  const migrationsDir = path.join(repoRoot, PREFIX);
+  const journalPath = path.join(migrationsDir, "meta", "_journal.json");
+
+  if (!existsSync(journalPath)) return [];
+
+  let mainJournalRaw;
+  try {
+    mainJournalRaw = execFileSync("git", ["show", "origin/main:" + PREFIX + "meta/_journal.json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+  } catch {
+    return [];
+  }
+
+  let mainEntries = [];
+  try {
+    mainEntries = JSON.parse(mainJournalRaw)?.entries ?? [];
+  } catch {
+    return [];
+  }
+
+  let localEntries = [];
+  try {
+    localEntries = JSON.parse(readFileSync(journalPath, "utf8"))?.entries ?? [];
+  } catch {
+    return [];
+  }
+
+  const errors = [];
+  if (localEntries.length < mainEntries.length) {
+    errors.push(
+      `Local journal (${localEntries.length} entries) is behind origin/main (${mainEntries.length} entries). Run: git fetch origin main && git merge origin/main before generating migrations.`
+    );
+  }
+
+  for (let i = 0; i < Math.min(localEntries.length, mainEntries.length); i++) {
+    const local = localEntries[i];
+    const main = mainEntries[i];
+    if (local?.tag !== main?.tag) {
+      errors.push(
+        `Journal entry ${i} tag mismatch: local has "${local?.tag}", origin/main has "${main?.tag}". Rebase/merge main before generating migrations.`
+      );
+    }
+  }
+
+  let mainFiles = [];
+  try {
+    const raw = execFileSync("git", ["ls-tree", "-r", "--name-only", "-z", "origin/main", "--", PREFIX], {
+      cwd: repoRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    mainFiles = raw.toString("utf8").split("\0").filter(Boolean);
+  } catch {
+    return errors;
+  }
+
+  const mainSqlMap = new Map();
+  for (const f of mainFiles) {
+    const num = migrationNumber(f);
+    if (num) mainSqlMap.set(num, path.basename(f));
+  }
+
+  const localFiles = readdirSync(migrationsDir);
+  for (const f of localFiles) {
+    const num = migrationNumber(f);
+    if (num && mainSqlMap.has(num)) {
+      const mainBase = mainSqlMap.get(num);
+      if (f !== mainBase) {
+        errors.push(
+          `Local migration ${f} conflicts with origin/main ${mainBase} (same number ${num}). Rebase/merge main before generating migrations.`
+        );
+      }
+    }
+  }
+
+  return errors;
 }
 
-async function fetchOpenPrFilesGraphQL(repo, currentPrNumber, token) {
-  const [owner, name] = repo.split("/");
+export function getMainMigrationNumbers(repoRoot = process.cwd()) {
+  try {
+    const raw = execFileSync("git", ["ls-tree", "-r", "--name-only", "-z", "origin/main", "--", PREFIX], {
+      cwd: repoRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const paths = raw.toString("utf8").split("\0").filter(Boolean);
+    const set = new Set();
+    for (const p of paths) {
+      const n = migrationNumber(p);
+      if (n) set.add(n);
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+export function getAddedMigrationsFromGit(baseRef = "origin/main", repoRoot = process.cwd()) {
+  try {
+    const raw = execFileSync("git", ["diff", "--name-only", "--diff-filter=A", "-z", `${baseRef}...HEAD`, "--", PREFIX], {
+      cwd: repoRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return raw.toString("utf8").split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export function checkCollisions({ addedMigrations, mainNumbers = new Set(), openPrMigrations = [] }) {
+  const collisions = [];
+  const occupiedInMain = new Set(mainNumbers);
+  const occupiedInPrs = new Map();
+
+  for (const pr of openPrMigrations) {
+    for (const mig of pr.migrations || []) {
+      const num = migrationNumber(mig);
+      if (num) occupiedInPrs.set(num, { prNumber: pr.prNumber, file: mig });
+    }
+  }
+
+  const allOccupied = new Set([...occupiedInMain, ...occupiedInPrs.keys()]);
+  const seenNumbers = new Set();
+
+  for (const mig of addedMigrations) {
+    const num = migrationNumber(mig);
+    if (!num) continue;
+
+    if (seenNumbers.has(num)) {
+      collisions.push({
+        type: "duplicate_in_pr",
+        file: mig,
+        number: num,
+        message: `Duplicate migration number ${num} within the current PR: ${mig}`
+      });
+      continue;
+    }
+    seenNumbers.add(num);
+
+    if (occupiedInMain.has(num)) {
+      const nextFree = calculateNextAvailableNumber(allOccupied);
+      collisions.push({
+        type: "main_collision",
+        file: mig,
+        number: num,
+        nextFree,
+        message: `Migration number ${num} is already occupied in main. Next free number is ${nextFree}. Renumber using: pnpm db:renumber ${num} ${nextFree}`
+      });
+    } else if (occupiedInPrs.has(num)) {
+      const other = occupiedInPrs.get(num);
+      const nextFree = calculateNextAvailableNumber(allOccupied);
+      collisions.push({
+        type: "open_pr_collision",
+        file: mig,
+        number: num,
+        conflictingPr: other.prNumber,
+        conflictingFile: other.file,
+        nextFree,
+        message: `Migration number ${num} is already reserved in open PR #${other.prNumber} (${other.file}). Next free number is ${nextFree}. Renumber using: pnpm db:renumber ${num} ${nextFree}`
+      });
+    }
+  }
+
+  return collisions;
+}
+
+export async function fetchOpenPrMigrations({ repo, token, currentPrNumber }) {
+  if (!token) return [];
   const query = `
-    query($owner: String!, $repo: String!, $cursor: String) {
-      repository(owner: $owner, name: $repo) {
-        pullRequests(first: 100, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(states: OPEN, first: 50, orderBy: {field: CREATED_AT, direction: ASC}) {
           nodes {
             number
             files(first: 100) {
@@ -117,128 +273,131 @@ async function fetchOpenPrFilesGraphQL(repo, currentPrNumber, token) {
       }
     }
   `;
+  const [owner, name] = (repo || "").split("/");
+  if (!owner || !name) return [];
 
-  const pulls = [];
-  let cursor = null;
-  // Fetch up to 300 open PRs (up to 3 pages) with a 15s timeout
-  for (let page = 0; page < 3; page++) {
-    const res = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      headers: {
-        "User-Agent": "migration-guard",
-        "Authorization": `bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query, variables: { owner, repo: name, cursor } }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) {
-      throw new Error(`GraphQL HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    if (data.errors?.length) {
-      throw new Error(data.errors[0].message);
-    }
-    const nodes = data.data?.repository?.pullRequests?.nodes ?? [];
-    for (const pr of nodes) {
-      if (pr.number === Number(currentPrNumber)) continue;
-      const files = (pr.files?.nodes ?? [])
-        .map((f) => f.path)
-        .filter((p) => migrationNumber(p));
-      if (files.length > 0) {
-        pulls.push({ number: pr.number, files });
-      }
-    }
-    const pageInfo = data.data?.repository?.pullRequests?.pageInfo;
-    if (!pageInfo?.hasNextPage) break;
-    cursor = pageInfo.endCursor;
-  }
-  return pulls;
+  const res = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      "Authorization": `bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": "myrmidon-migration-guard"
+    },
+    body: JSON.stringify({ query, variables: { owner, name } })
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  const pulls = data?.data?.repository?.pullRequests?.nodes || [];
+
+  return pulls
+    .filter((p) => !currentPrNumber || String(p.number) !== String(currentPrNumber))
+    .map((p) => ({
+      prNumber: p.number,
+      number: p.number,
+      files: (p.files?.nodes || []).map((f) => f.path).filter((f) => SQL.test(f)),
+      migrations: (p.files?.nodes || []).map((f) => f.path).filter((f) => SQL.test(f))
+    }))
+    .filter((p) => p.files.length > 0);
 }
 
-export async function runGuard(mode, args, env = process.env) {
-  if (mode !== "pr" && mode !== "generate") {
-    throw new Error("Usage: migration-guard.mjs pr <head-sha> <pr-number> | generate");
+function annotation(level, message) {
+  console.log(`::${level}::${message}`);
+}
+
+export async function runGuard(modeOrOptions, args = [], env = process.env) {
+  if (typeof modeOrOptions === "object" && modeOrOptions !== null) {
+    const opts = modeOrOptions;
+    const addedMigrations = opts.addedMigrations ?? getAddedMigrationsFromGit(opts.baseRef, opts.repoRoot);
+    if (addedMigrations.length === 0) return { ok: true, collisions: [] };
+
+    const mainNumbers = opts.mainNumbers ?? getMainMigrationNumbers(opts.repoRoot);
+    const openPrMigrations = opts.openPrMigrations ?? (await fetchOpenPrMigrations({
+      repo: opts.repo || env.GITHUB_REPOSITORY,
+      token: opts.token || env.GITHUB_TOKEN,
+      currentPrNumber: opts.prNumber || env.PR_NUMBER
+    }));
+
+    const collisions = checkCollisions({ addedMigrations, mainNumbers, openPrMigrations });
+    return { ok: collisions.length === 0, collisions };
   }
 
-  // Always compare against current main
-  try {
-    execFileSync("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"], { stdio: "ignore" });
-  } catch {}
-
-  const mainFiles = paths(["ls-tree", "-r", "--name-only", "-z", "origin/main", "--", PREFIX]);
-
+  const mode = modeOrOptions;
   if (mode === "generate") {
-    let localFiles = [];
-    if (existsSync("packages/db/src/migrations")) {
-      localFiles = readdirSync("packages/db/src/migrations")
-        .filter((file) => file.endsWith(".sql"))
-        .map((file) => `${PREFIX}${file}`);
-    }
-    let journal = null;
-    const journalPath = "packages/db/src/migrations/meta/_journal.json";
-    if (existsSync(journalPath)) {
-      try {
-        journal = JSON.parse(readFileSync(journalPath, "utf8"));
-      } catch {}
-    }
-    const generatorErrors = checkGeneratorCollisions(mainFiles, localFiles, journal);
-    for (const error of generatorErrors) {
-      annotation("error", error);
-      console.error(`Error: ${error}`);
-    }
-    if (generatorErrors.length) {
+    const errors = checkGeneratorCollisions();
+    if (errors.length > 0) {
+      for (const err of errors) console.error(`Error: ${err}`);
       return 1;
     }
+    console.log("Migration generator check: journal and migrations aligned with origin/main.");
     return 0;
   }
 
-  const head = args[0];
-  const prNumber = args[1];
-  if (!/^[a-f0-9]{40}$/i.test(head ?? "") || !/^\d+$/.test(prNumber ?? "")) {
-    throw new Error("Expected a 40-character head SHA and PR number");
-  }
-
-  const addedFiles = paths(["diff", "--name-only", "--diff-filter=A", "-z", `origin/main...${head}`, "--", PREFIX]);
-  const errors = checkMainCollisions(mainFiles, addedFiles);
-  for (const error of errors) {
-    annotation("error", error);
-    console.error(`Error: ${error}`);
-  }
-
-  if (errors.length) {
-    return 1;
-  }
-
-  const token = env.GITHUB_TOKEN;
-  const repo = env.GITHUB_REPOSITORY;
-  const numbers = new Set(addedFiles.map(migrationNumber).filter(Boolean));
-  if (!numbers.size || !token || !/^[^/]+\/[^/]+$/.test(repo ?? "")) {
-    return 0;
-  }
-
-  try {
-    const otherPulls = await fetchOpenPrFilesGraphQL(repo, prNumber, token);
-    for (const warning of openPrWarnings(addedFiles, otherPulls)) {
-      annotation("warning", warning);
-      console.warn(`Warning: ${warning}`);
+  if (mode === "pr") {
+    const [head, prNumber] = args;
+    if (!head || !prNumber) {
+      console.error("Usage: migration-guard.mjs pr <head-sha> <pr-number>");
+      return 2;
     }
-  } catch (err) {
-    annotation("warning", `Could not query open PRs for collision warnings: ${err.message}`);
+
+    const paths = (gitArgs) => {
+      try {
+        const out = execFileSync("git", gitArgs, { stdio: ["pipe", "pipe", "pipe"] });
+        return out.toString("utf8").split("\0").filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+
+    const mainFiles = paths(["ls-tree", "-r", "--name-only", "-z", "origin/main", "--", PREFIX]);
+    const addedFiles = paths(["diff", "--name-only", "--diff-filter=A", "-z", `origin/main...${head}`, "--", PREFIX]);
+
+    if (addedFiles.length === 0) {
+      console.log("Migration guard: no new migrations added in this PR.");
+      return 0;
+    }
+
+    const mainErrors = checkMainCollisions(mainFiles, addedFiles);
+    if (mainErrors.length > 0) {
+      for (const err of mainErrors) {
+        annotation("error", err);
+        console.error(`Error: ${err}`);
+      }
+      return 1;
+    }
+
+    const repo = env.GITHUB_REPOSITORY || "itkadr-git/myrmidon";
+    const token = env.GITHUB_TOKEN;
+    if (token) {
+      try {
+        const otherPulls = await fetchOpenPrMigrations({ repo, token, currentPrNumber: prNumber });
+        for (const warning of openPrWarnings(addedFiles, otherPulls)) {
+          annotation("warning", warning);
+          console.warn(`Warning: ${warning}`);
+        }
+        const prErrors = checkOpenPrCollisions(addedFiles, otherPulls, prNumber);
+        if (prErrors.length > 0) {
+          for (const err of prErrors) {
+            annotation("error", err);
+            console.error(`Error: ${err}`);
+          }
+          return 1;
+        }
+      } catch (err) {
+        annotation("warning", `Could not query open PRs for collision warnings: ${err.message}`);
+      }
+    }
+
+    console.log(`Migration guard: all ${addedFiles.length} new migrations have unique, reserved numbers.`);
+    return 0;
   }
 
-  return 0;
+  console.error(`Unknown mode: ${mode}. Expected "generate" or "pr".`);
+  return 2;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [mode, ...args] = process.argv.slice(2);
-  runGuard(mode, args)
-    .then((code) => {
-      if (code) process.exit(code);
-    })
-    .catch((error) => {
-      annotation("error", error.message);
-      console.error(error.message);
-      process.exit(1);
-    });
+  const [,, mode = "pr", ...args] = process.argv;
+  const exitCode = await runGuard(mode, args);
+  process.exit(exitCode);
 }
