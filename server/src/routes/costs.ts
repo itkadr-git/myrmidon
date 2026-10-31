@@ -47,6 +47,19 @@ export function parseCostLimit(query: Record<string, unknown>) {
   return limit;
 }
 
+export function parseIssueCostLimit(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  if (raw == null || raw === "") return 20;
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    throw badRequest("invalid 'limit' value");
+  }
+  const num = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isInteger(num) || num <= 0 || num > 100) {
+    throw badRequest("invalid 'limit' value");
+  }
+  return num;
+}
+
 export function costRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -385,6 +398,16 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
     const rows = await costs.byProject(companyId, range);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/by-issue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseIssueCostLimit(req.query);
+    const rows = await costs.byIssue(companyId, range, limit);
     res.json(rows);
   });
 
