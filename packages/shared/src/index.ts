@@ -3018,6 +3018,7 @@ export * from "./myrmidon-agent-exchange-feed.js";
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+export * from "./myrmidon-capacity-policy-schema.js";
 export * from "./myrmidon-capacity-policy.js";
 export * from "./myrmidon-capacity-policy-order.js";
 export * from "./blocker-graph.js";

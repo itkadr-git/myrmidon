@@ -42,14 +42,10 @@ function makeLease(issueId: string, expiresAt: Date): SwarmClaimLease {
   return {
     id: `lease-${issueId}`,
     issueId,
-    companyId: "comp-1",
     agentId: "agent-1",
-    role: "engineer",
-    claimedAt: new Date(NOW.getTime() - 60_000),
     heartbeatAt: new Date(NOW.getTime() - 10_000),
     expiresAt,
     releasedAt: null,
-    releasedReason: null,
   };
 }
 

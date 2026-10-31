@@ -3,7 +3,7 @@ import {
   DEFAULT_CAPACITY_POLICY,
   capacityPolicySchema,
   type CapacityPolicy,
-} from "./myrmidon-capacity-policy.js";
+} from "./myrmidon-capacity-policy-schema.js";
 
 /**
  * Per-role task queues with leased claims (myrmidon 1.6, SWARM-CLAIM).
