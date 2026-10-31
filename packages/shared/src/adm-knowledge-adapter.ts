@@ -63,15 +63,57 @@ export interface AdmKnowledgeItem {
   [key: string]: unknown;
 }
 
+export type AdmWriteResult = {
+  itemId: string;
+  revisionId: string;
+  status: "draft" | "proposed" | "published";
+};
+
+export interface AdmKnowledgeWritePort {
+  proposeRule(input: {
+    slug: string;
+    title: string;
+    summary: string;
+    body: string;
+    sourceRef: string;
+    baseRevisionId?: string;
+    idempotencyKey: string;
+  }): Promise<AdmWriteResult>;
+  writeLesson(input: {
+    slug: string;
+    title: string;
+    summary: string;
+    body: string;
+    sourceRef: string;
+    baseRevisionId?: string;
+    idempotencyKey: string;
+    status?: "draft" | "published";
+  }): Promise<AdmWriteResult>;
+}
+
 export interface AdmKnowledgeRestPort {
   search(query: string, options: { space: string; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
-  list(options: { space: string; kind: string; status: "published"; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
+  list(options: { space: string; kind?: string; status: "published"; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
   read(id: string): Promise<AdmKnowledgeItem | null>;
+  proposeRule?: AdmKnowledgeWritePort["proposeRule"];
+  writeLesson?: AdmKnowledgeWritePort["writeLesson"];
+}
+
+function requireWrite<T extends keyof AdmKnowledgeWritePort>(rest: AdmKnowledgeRestPort, operation: T): AdmKnowledgeWritePort[T] {
+  const fn = rest[operation];
+  if (typeof fn !== "function") throw new AdmConnectorError("ADM_FORBIDDEN", `ADM ${operation} operation is not available`);
+  return fn as AdmKnowledgeWritePort[T];
+}
+
+function assertIdempotencyKey(key: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/.test(key)) throw new AdmConnectorError("ADM_INVALID_METADATA", "A stable idempotency key is required");
 }
 
 export class AdmConnectorError extends Error {
-  constructor(readonly code: AdmConnectorCode, message: string, options?: ErrorOptions) {
+  readonly code: AdmConnectorCode;
+  constructor(code: AdmConnectorCode, message: string, options?: ErrorOptions) {
     super(message, options);
+    this.code = code;
     this.name = "AdmConnectorError";
   }
 }
@@ -79,8 +121,9 @@ export class AdmConnectorError extends Error {
 function mapError(error: unknown): AdmConnectorError {
   if (error instanceof AdmConnectorError) return error;
   const status = typeof error === "object" && error !== null && "status" in error ? Number(error.status) : 0;
+  const message = typeof error === "object" && error !== null && "message" in error && typeof error.message === "string" ? error.message : "";
   const code: AdmConnectorCode = status === 401 ? "ADM_UNAUTHORIZED"
-    : status === 403 ? "ADM_FORBIDDEN"
+    : (status === 403 || message.includes("knowledge_rule_approve_forbidden")) ? "ADM_FORBIDDEN"
     : status === 404 ? "ADM_NOT_FOUND"
     : status === 409 ? "ADM_REVISION_CONFLICT"
     : status === 429 ? "ADM_RATE_LIMITED"
@@ -101,7 +144,124 @@ function assertNamespaceItem(item: AdmKnowledgeItem, namespace: AdmKnowledgeName
 
 /** Thin REST adapter: deterministic selection stays in connector code; reads use stable item IDs. */
 export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
+  const idempotencyCache = new Map<string, AdmWriteResult>();
+
+  const proposeRule = async (input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0]): Promise<AdmWriteResult> => {
+    assertIdempotencyKey(input.idempotencyKey);
+    const cached = idempotencyCache.get(input.idempotencyKey);
+    if (cached) return cached;
+
+    if (!input.slug.startsWith(ADM_KNOWLEDGE_SPACES.policy.prefix) && !input.slug.startsWith(ADM_KNOWLEDGE_SPACES.trigger.prefix)) {
+      throw new AdmConnectorError("ADM_INVALID_METADATA", "Rules must use an ADM policy or trigger namespace");
+    }
+    try {
+      const result = await requireWrite(rest, "proposeRule")(input);
+      const published = await rest.read(result.itemId);
+      if (result.status === "published" || (published?.status === "published" && published.deliveredRevisionId === result.revisionId)) {
+        throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must not be self-published");
+      }
+      if (result.status !== "proposed") {
+        throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must only be proposed");
+      }
+      if (!result.revisionId) {
+        throw new AdmConnectorError("ADM_UPSTREAM_UNAVAILABLE", "Proposal did not return a verified revisionId");
+      }
+      idempotencyCache.set(input.idempotencyKey, result);
+      return result;
+    } catch (error) { throw mapError(error); }
+  };
+
+  const proposeRuleWithConflictRetry = async (
+    input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0] & {
+      itemId?: string;
+      onConflict: (diff: string) => boolean | Promise<boolean>;
+    },
+    nextIdempotencyKey: string,
+  ): Promise<{ result: AdmWriteResult; diff: string; conflictResolved: boolean }> => {
+    assertIdempotencyKey(nextIdempotencyKey);
+    try {
+      const result = await proposeRule(input);
+      return { result, diff: "", conflictResolved: false };
+    } catch (error) {
+      if (error instanceof AdmConnectorError && error.code === "ADM_REVISION_CONFLICT") {
+        const ns = namespaceOf(input.slug);
+        if (!ns) throw error;
+        let itemId = input.itemId;
+        let latest: AdmKnowledgeItem | null = null;
+        try {
+          if (!itemId) {
+            const items = await rest.search(input.slug, { space: ADM_KNOWLEDGE_SPACES[ns].prefix, limit: 50 });
+            itemId = items.find((i) => i.slug === input.slug)?.id;
+          }
+          if (!itemId) throw new AdmConnectorError("ADM_NOT_FOUND", "Item not found on conflict reread");
+          latest = await rest.read(itemId);
+        } catch (readError) {
+          throw mapError(readError);
+        }
+        if (!latest) throw new AdmConnectorError("ADM_NOT_FOUND", "Item not found on conflict reread");
+
+        const latestBody = typeof latest.content === "string" ? latest.content : typeof latest.body === "string" ? latest.body : "";
+        const diff = [
+          `--- base: ${input.baseRevisionId ?? "initial"}`,
+          `+++ latest: ${latest.deliveredRevisionId ?? (typeof latest.revisionId === "string" ? latest.revisionId : "unknown")}`,
+          `summary:`,
+          `- ${latest.summary ?? ""}`,
+          `+ ${input.summary ?? ""}`,
+          `body:`,
+          `- ${latestBody}`,
+          `+ ${input.body ?? ""}`,
+        ].join("\n");
+
+        if (typeof input.onConflict !== "function") {
+          throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry requires owner approval callback (onConflict)", { cause: error });
+        }
+        const proceed = await input.onConflict(diff);
+        if (!proceed) {
+          throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry aborted after diff review", { cause: error });
+        }
+
+        const retryBaseRevisionId = latest.deliveredRevisionId ?? (typeof latest.revisionId === "string" ? latest.revisionId : undefined);
+        const retryResult = await proposeRule({
+          ...input,
+          baseRevisionId: retryBaseRevisionId,
+          idempotencyKey: nextIdempotencyKey,
+        });
+        if (retryResult.status !== "proposed") {
+          throw new AdmConnectorError("ADM_FORBIDDEN", "Rules must not be self-published on conflict retry");
+        }
+        if (!retryResult.revisionId) {
+          throw new AdmConnectorError("ADM_UPSTREAM_UNAVAILABLE", "Conflict retry proposal did not return a verified revisionId");
+        }
+        return { result: retryResult, diff, conflictResolved: true };
+      }
+      throw error;
+    }
+  };
+
+  const writeLesson = async (input: Parameters<AdmKnowledgeWritePort["writeLesson"]>[0]): Promise<AdmWriteResult> => {
+    assertIdempotencyKey(input.idempotencyKey);
+    const cached = idempotencyCache.get(input.idempotencyKey);
+    if (cached) return cached;
+
+    if (!input.slug.startsWith(ADM_KNOWLEDGE_SPACES.lessons.prefix)) {
+      throw new AdmConnectorError("ADM_INVALID_METADATA", "Lessons must use the ADM lessons namespace");
+    }
+    const targetStatus = input.status ?? "published";
+    try {
+      const result = await requireWrite(rest, "writeLesson")(input);
+      const item = await rest.read(result.itemId);
+      if (!item || item.status !== targetStatus || item.deliveredRevisionId !== result.revisionId) {
+        throw new AdmConnectorError("ADM_UPSTREAM_UNAVAILABLE", `${targetStatus === "published" ? "Published" : "Draft"} lesson could not be verified by read-back`);
+      }
+      idempotencyCache.set(input.idempotencyKey, result);
+      return result;
+    } catch (error) { throw mapError(error); }
+  };
+
   return {
+    proposeRule,
+    proposeRuleWithConflictRetry,
+    writeLesson,
     async search(query: string, namespace: AdmKnowledgeNamespace, limit = 50): Promise<AdmKnowledgeItem[]> {
       if (!query.trim()) throw new AdmConnectorError("ADM_INVALID_METADATA", "Search query must not be empty");
       try {
@@ -139,6 +299,34 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
       const parsed = metadataSchema.safeParse(value);
       if (!parsed.success) throw new AdmConnectorError("ADM_INVALID_METADATA", "ADM knowledge metadata is invalid", { cause: parsed.error });
       return parsed.data;
+    },
+    createHookLoader(): (args?: { event?: "SessionStart" | "UserPromptSubmit"; triggers?: string[] }) => Promise<{ items: AdmKnowledgeItem[]; fetchedAt: number; degraded: boolean }> {
+      return async (args) => {
+        try {
+          const items = await rest.list({
+            space: "adm/",
+            status: "published",
+            limit: 100,
+          });
+          const published = items.filter((item) => item.slug.startsWith("adm/") && item.status === "published");
+          const normalized = published.map((item) => {
+            const itemTriggers = (item.triggers as string[] | undefined) ?? ((item.tags as string[] | undefined) ?? []).map((t) => t.replace(/^trigger:/, ""));
+            const shouldIncludeBody = args?.event === "UserPromptSubmit" && (args?.triggers ?? []).some((t) => itemTriggers.includes(t));
+            return {
+              ...item,
+              summary: item.summary ?? "",
+              triggers: itemTriggers,
+              priority: typeof item.priority === "number" ? item.priority : 0,
+              revision_id: (item.deliveredRevisionId ?? item.revisionId ?? item.revision_id ?? "") as string,
+              updated_at: (item.updatedAt ?? new Date().toISOString()) as string,
+              body: shouldIncludeBody ? (item.body ?? item.content ?? "") : "",
+            };
+          });
+          return { items: normalized, fetchedAt: Date.now(), degraded: false };
+        } catch {
+          return { items: [], fetchedAt: 0, degraded: true };
+        }
+      };
     },
   };
 }

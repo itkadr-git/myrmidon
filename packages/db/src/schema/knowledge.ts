@@ -256,6 +256,8 @@ export const knowledgeSuggestions = pgTable(
     /** Provenance trust (L-5): `external` = the only source is a foreign url. */
     trust: text("trust").$type<KnowledgeSuggestionTrust>(),
     status: text("status").$type<KnowledgeSuggestionStatus>().notNull().default("pending"),
+    /** Server-side idempotency for propose (1.6.6 ADM-CONN E): unique per nest. */
+    idempotencyKey: text("idempotency_key"),
     createdByAgentId: text("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),
     decidedBy: text("decided_by"),
@@ -267,6 +269,14 @@ export const knowledgeSuggestions = pgTable(
     companyIdx: index("knowledge_suggestions_company_idx").on(table.companyId),
     // L-5: provenance lookups (which external suggestions are pending).
     trustIdx: index("knowledge_suggestions_trust_idx").on(table.trust),
+    // Idempotency (1.6.6 ADM-CONN E): at most one suggestion per
+    // (nest_id, idempotency_key). Partial unique index — Postgres unique
+    // indexes allow multiple NULLs, so legacy rows without a key are not
+    // affected. This is the DB-side atomicity contract behind store.ts's
+    // unique-violation read-back.
+    idempotencyKeyUq: uniqueIndex("knowledge_suggestions_idempotency_key_uq")
+      .on(table.nestId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} is not null`),
   }),
 );
 
