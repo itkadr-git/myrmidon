@@ -158,4 +158,20 @@ describe("AuditRuns", () => {
     expect(container.textContent).toContain("Daily forecast");
     expect(container.querySelector('a[href="/issues/TES-42"]')).toBeTruthy();
   });
+
+  it("renders the OutcomeRunsPanel and displays telemetry outcome badges", async () => {
+    listRunsMock.mockResolvedValue([
+      run({
+        runTelemetry: {
+          outcomeCategory: "artifact",
+          wakeReason: "timer",
+        },
+      }),
+    ]);
+    await render();
+
+    expect(container.querySelector('[data-testid="outcome-runs-panel"]')).toBeTruthy();
+    expect(container.textContent).toContain("Artifact");
+    expect(container.textContent).toContain("(Timer)");
+  });
 });
