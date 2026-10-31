@@ -1,106 +1,114 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
+import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { agents, issues } from "@myrmidon/db";
+import { issueRoutes } from "../routes/issues.js";
+import {
+  describeEmbeddedPostgres,
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
 
-describe("issue list query optimization & CPU perf proof (OPE-9997)", () => {
-  const HERE = path.dirname(fileURLToPath(import.meta.url));
+describeEmbeddedPostgres("issue list route performance (OPE-9997)", () => {
+  const ctx = useEmbeddedPostgres();
 
-  it("verifies successful-run-handoff-state uses companyId + status indexed lookups without unindexed JSON coalesce in WHERE", () => {
-    const handoffSource = fs.readFileSync(
-      path.join(HERE, "../services/successful-run-handoff-state.ts"),
-      "utf8",
-    );
-    // Verified: uses indexed companyId and status in SQL, matches issue IDs in Node.js memory
-    expect(handoffSource).toMatch(/eq\(heartbeatRuns\.companyId,\s*companyId\)/);
-    expect(handoffSource).toMatch(/inArray\(heartbeatRuns\.status,\s*\[\.\.\.SUCCESSFUL_RUN_HANDOFF_LIVE_RUN_STATUSES\]\)/);
-    expect(handoffSource).toMatch(/unresolvedSet\.has\(row\.issueId\)/);
+  beforeEach(async () => {
+    await resetCompanyIssueFixtures(ctx.db);
   });
 
-  it("verifies issues service uses indexed lookups for active runs and wakeup requests in listIssueReviewAttentionMap", () => {
-    const issuesSource = fs.readFileSync(
-      path.join(HERE, "../services/issues.ts"),
-      "utf8",
-    );
-    // Verified: uses indexed companyId + status for active runs and wake requests
-    expect(issuesSource).toMatch(/inArray\(heartbeatRuns\.status,\s*\["queued",\s*"running"\]\)/);
-    expect(issuesSource).toMatch(/inArray\(agentWakeupRequests\.status,\s*\["queued",\s*"deferred_issue_execution",\s*"claimed"\]\)/);
-  });
-
-  it("proves in-memory filtering of 200 issues across 10,000 active records executes in < 50 ms (well below 500 ms target)", () => {
-    // Simulate matching 200 issue IDs against 10,000 active rows in memory
-    const targetIssueIds = Array.from({ length: 200 }, (_, i) => `issue-${i}`);
-    const issueSet = new Set(targetIssueIds);
-
-    const activeRows = Array.from({ length: 10_000 }, (_, i) => ({
-      id: `run-${i}`,
-      issueId: i % 50 === 0 ? `issue-${(i / 50) % 200}` : `other-issue-${i}`,
+  async function seed200Issues(companyId: string) {
+    const rows = Array.from({ length: 200 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      title: `Issue ${index} with realistic title length`,
+      description: `Detailed description for issue ${index} with multiple sentences simulating real board payloads.`,
+      status: index % 2 === 0 ? "in_progress" : "todo",
+      priority: index % 3 === 0 ? "high" : "medium",
     }));
+    await ctx.db.insert(issues).values(rows);
+    return rows;
+  }
+
+  async function createAgentActor(companyId: string) {
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "perf-agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return {
+      type: "agent" as const,
+      source: "agent_jwt",
+      agentId,
+      companyId,
+      runId: null,
+      isInstanceAdmin: false,
+    };
+  }
+
+  it("proves complete GET /api/companies/:id/issues route responds in < 500 ms for 200 compact rows", async () => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "Perf Company");
+    const { companyId } = company;
+    await seed200Issues(companyId);
+
+    const actor = await createAgentActor(companyId);
+    const app = routeApp(ctx.db, actor as never, issueRoutes);
+
+    // Warm-up call
+    await request(app).get(`/api/companies/${companyId}/issues`).expect(200);
 
     const t0 = performance.now();
-    const matched = activeRows.filter((r) => r.issueId && issueSet.has(r.issueId));
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .expect(200);
     const elapsedMs = performance.now() - t0;
 
-    expect(matched.length).toBeGreaterThan(0);
-    // Under 50ms (issue target is < 500ms for 200 compact items)
-    expect(elapsedMs).toBeLessThan(50);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(200);
+    expect(res.headers.etag).toMatch(/^"compact-issues:/);
+    // Compact rows do not include large description payloads
+    for (const row of res.body) {
+      expect(row).not.toHaveProperty("description");
+    }
+    // Behavioral acceptance: route completes full query, projection, and serialization < 500 ms
+    expect(elapsedMs).toBeLessThan(500);
   });
 
-  it("proves complete 200-issue compact list projection, handoff resolution, and serialization pipeline takes < 250 ms", async () => {
-    const states = new Map<string, any>();
-    for (let i = 0; i < 200; i++) {
-      states.set(`issue-${i}`, {
-        state: i % 2 === 0 ? "required" : "escalated",
-        hasLiveContinuation: false,
-      });
-    }
+  it("proves integration board keys (source: board_key) also receive 200 compact rows in < 500 ms", async () => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "Perf BoardKey Company");
+    const { companyId } = company;
+    await seed200Issues(companyId);
 
-    // Mock dbOrTx resolving indexed company queries for active runs & wakes
-    const mockDb = {
-      select: () => ({
-        from: () => ({
-          where: async () => [
-            ...Array.from({ length: 500 }, (_, i) => ({
-              id: `run-${i}`,
-              issueId: `issue-${i % 200}`,
-            })),
-          ],
-        }),
-      }),
+    const boardKeyActor = {
+      ...company.actor,
+      source: "board_key" as const,
+      keyId: randomUUID(),
     };
+    const app = routeApp(ctx.db, boardKeyActor as never, issueRoutes);
+
+    // Warm-up call
+    await request(app).get(`/api/companies/${companyId}/issues`).expect(200);
 
     const t0 = performance.now();
-    const hydratedStates = await hydrateSuccessfulRunHandoffLiveness(
-      mockDb,
-      "company-123",
-      states,
-    );
-
-    const issues = Array.from({ length: 200 }, (_, i) => {
-      const issueId = `issue-${i}`;
-      const state = hydratedStates.get(issueId);
-      return {
-        id: `c007e385-e63c-4364-813b-${String(i).padStart(12, "0")}`,
-        identifier: `OPE-${9000 + i}`,
-        title: `Issue number ${i} for performance testing`,
-        status: i % 2 === 0 ? "in_progress" : "todo",
-        priority: "high",
-        assigneeAgentId: "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        reviewAttention: { kind: "participant", active: true },
-        handoffState: state,
-      };
-    });
-
-    const serialized = JSON.stringify(issues);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .expect(200);
     const elapsedMs = performance.now() - t0;
 
-    expect(hydratedStates.size).toBe(200);
-    expect(issues.length).toBe(200);
-    expect(serialized.length).toBeGreaterThan(1000);
-    // Entire pipeline well under 250 ms (target < 500 ms)
-    expect(elapsedMs).toBeLessThan(250);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(200);
+    expect(res.headers.etag).toMatch(/^"compact-issues:/);
+    for (const row of res.body) {
+      expect(row).not.toHaveProperty("description");
+    }
+    expect(elapsedMs).toBeLessThan(500);
   });
 });

@@ -92,7 +92,7 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
       priority: "medium",
     }));
     await ctx.db.insert(issues).values(rows);
-    return { companyId, rows };
+    return { companyId, company, rows };
   }
 
   async function setAgentDefaultsEnabled(enabled: boolean | null) {
@@ -121,14 +121,10 @@ describeEmbeddedPostgres("issue list agent defaults", () => {
   });
 
   it("applies the agent defaults to integration board keys (source: board_key)", async () => {
-    const { companyId } = await seedCompanyWithIssues(ISSUE_LIST_AGENT_DEFAULT_LIMIT + 5);
+    const { companyId, company } = await seedCompanyWithIssues(ISSUE_LIST_AGENT_DEFAULT_LIMIT + 5);
     const boardKeyActor = {
-      type: "board" as const,
+      ...company.actor,
       source: "board_key" as const,
-      userId: `user-${randomUUID()}`,
-      companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
-      isInstanceAdmin: false,
       keyId: randomUUID(),
     };
     const res = await request(routeApp(ctx.db, boardKeyActor as never, issueRoutes))

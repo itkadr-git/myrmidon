@@ -9,8 +9,14 @@ vi.mock("../services/github-credential-policy.js", () => ({
   allowsGitHubCredentialExport: vi.fn(),
 }));
 
-vi.mock("../services/managed-github-credentials.js", () => ({
+vi.mock("../services/git-credentials.js", () => ({
   resolveManagedGitHubCredential: vi.fn(),
+  buildGitAuthInvocation: vi.fn((cred) => ({
+    configArgs: [],
+    env: { GH_TOKEN: cred.token },
+    source: cred.source ?? "personal",
+    secretName: null,
+  })),
 }));
 
 vi.mock("../myrmidon/github-shared-identity/broker.js", () => ({
@@ -19,7 +25,7 @@ vi.mock("../myrmidon/github-shared-identity/broker.js", () => ({
 
 import { captureRunIdentity } from "../services/run-identity.js";
 import { allowsGitHubCredentialExport } from "../services/github-credential-policy.js";
-import { resolveManagedGitHubCredential } from "../services/managed-github-credentials.js";
+import { resolveManagedGitHubCredential } from "../services/git-credentials.js";
 import { resetGitHubAppTokenCacheForTests } from "../myrmidon/github-shared-identity/app-token.js";
 import {
   clearGitHubOperationCredentialCache,
@@ -28,7 +34,11 @@ import {
 
 describe("github operation credentials in-memory cache (OPE-9997)", () => {
   const dummyDb: any = {
-    select: vi.fn(),
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ enabled: true, status: "active" }]),
+      }),
+    }),
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
@@ -68,15 +78,16 @@ describe("github operation credentials in-memory cache (OPE-9997)", () => {
     });
 
     vi.mocked(resolveManagedGitHubCredential).mockResolvedValue({
-      summary: {
-        status: "available",
-        source: "personal",
-        login: "user-1",
-      },
-      env: {
-        GH_TOKEN: "token-user-1",
-      },
-    });
+      credential: {
+        identitySource: "personal",
+        githubIdentity: { login: "user-1" },
+        connectionId: "conn-1",
+        grantId: "grant-1",
+        token: "token-user-1",
+        source: "managed_connection",
+        secretName: null,
+      } as any,
+    } as any);
   });
 
   it("caches resolved credentials per run, context, and repo, returning immediately on repeat calls", async () => {
@@ -108,9 +119,16 @@ describe("github operation credentials in-memory cache (OPE-9997)", () => {
       context: { id: "ctx-1", companyId: "company-1", runId: "run-1", revision: 2, responsibleUserId: "user-2" } as any,
     });
     vi.mocked(resolveManagedGitHubCredential).mockResolvedValue({
-      summary: { status: "available", source: "personal", login: "user-2" },
-      env: { GH_TOKEN: "token-user-2" },
-    });
+      credential: {
+        identitySource: "personal",
+        githubIdentity: { login: "user-2" },
+        connectionId: "conn-2",
+        grantId: "grant-2",
+        token: "token-user-2",
+        source: "managed_connection",
+        secretName: null,
+      } as any,
+    } as any);
 
     const steered = await resolveGitHubOperationCredentials(dummyDb, baseInput);
     expect(steered).toMatchObject({
