@@ -382,7 +382,10 @@ export async function propagateReviewApprovalToPullRequest(
   const tokenProvider = deps.tokenProvider ?? ((c, r) => resolveGitHubTokenForApproval(deps.db, c, r));
 
   // Requirement 3: Negative path verification
-  if (input.decisionOutcome && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) {
+  const isNonApproval =
+    (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
+    (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  if (isNonApproval) {
     if (input.issueId) {
       await logActivity(deps.db, {
         companyId: input.companyId,
@@ -395,7 +398,7 @@ export async function propagateReviewApprovalToPullRequest(
         entityId: input.issueId,
         details: {
           reason: "non_approval",
-          decisionOutcome: input.decisionOutcome,
+          decisionOutcome: input.decisionOutcome ?? null,
         },
       }).catch(() => {});
     }
@@ -640,7 +643,9 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Check if an approving GitHub review is already submitted on this head
   let alreadyHasApprovedReview = false;
-  if (client.listReviews) {
+  let canCheckReviews = false;
+  if (typeof client.listReviews === "function") {
+    canCheckReviews = true;
     try {
       const existingReviews = await executeWithRetry(
         () => client.listReviews!({ repository: targetRepo!, number: targetNumber!, token }),
@@ -654,12 +659,12 @@ export async function propagateReviewApprovalToPullRequest(
     }
   }
 
-  // If both label and approving review are already present on this head: complete no-op
-  if (alreadyLabeled && alreadyHasApprovedReview) {
+  // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
+  if (alreadyLabeled && (!canCheckReviews || alreadyHasApprovedReview)) {
     return {
       success: true,
       action: "noop",
-      reason: "already_approved_and_labeled",
+      reason: "already_labeled",
       repository: targetRepo,
       pullRequestNumber: targetNumber,
       currentHeadSha: prDetails.headSha,
