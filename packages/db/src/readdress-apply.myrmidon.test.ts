@@ -249,7 +249,7 @@ describe("readdress-apply", () => {
       // Verify targeted fixture cards have addressees and unchanged payload
       const rowsAfterApply = (await db.execute(sql`
         SELECT id, payload, title, summary, result, route_type, timeout_at,
-               addressee_agent_id, addressee_user_id, addressee_queue
+               addressee_agent_id, addressee_user_id, addressee_queue, escalation_chain
         FROM issue_thread_interactions
         ORDER BY id
       `)) as unknown as Array<{
@@ -263,6 +263,7 @@ describe("readdress-apply", () => {
         addressee_agent_id: string | null;
         addressee_user_id: string | null;
         addressee_queue: string | null;
+        escalation_chain: Array<{ recipient: Record<string, string>; afterMinutes: number }> | null;
       }>;
 
       // Card 5 -> addressed to agent:id(3)
@@ -274,6 +275,11 @@ describe("readdress-apply", () => {
       expect(new Date(card5.timeout_at!).toISOString()).toBe(
         new Date(testNow.getTime() + 30 * 60_000).toISOString(),
       );
+      expect(card5.escalation_chain).toEqual([
+        { recipient: { agentId: id(3) }, afterMinutes: 0 },
+        { recipient: { agentId: id(4) }, afterMinutes: 30 },
+        { recipient: { serviceQueue: "review-recovery" }, afterMinutes: 60 },
+      ]);
 
       // Card 7 -> addressed to agent:id(10)
       const card7 = rowsAfterApply.find((r) => r.id === id(7))!;

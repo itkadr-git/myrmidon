@@ -71,6 +71,31 @@ export function computeTimeoutAt(card: PendingCard, now = new Date()): Date {
   return new Date("9999-12-31T23:59:59.000Z");
 }
 
+function recipientFromLabel(label: string): Record<string, string> {
+  const separator = label.indexOf(":");
+  if (separator <= 0 || separator === label.length - 1) {
+    throw new Error(`Invalid escalation recipient label: ${label}`);
+  }
+  const kind = label.slice(0, separator);
+  const value = label.slice(separator + 1);
+  if (kind === "agent") return { agentId: value };
+  if (kind === "user") return { userId: value };
+  if (kind === "queue") return { serviceQueue: value };
+  throw new Error(`Unknown escalation recipient label: ${label}`);
+}
+
+function buildStoredEscalationChain(
+  escalationChain: Array<{ recipient: string; afterMinutes: number | null }> | undefined,
+): Array<{ recipient: Record<string, string>; afterMinutes: number }> | null {
+  if (!escalationChain?.length || escalationChain.some((step) => step.afterMinutes === null)) {
+    return null;
+  }
+  return escalationChain.map((step) => ({
+    recipient: recipientFromLabel(step.recipient),
+    afterMinutes: step.afterMinutes as number,
+  }));
+}
+
 export async function applyReaddress(
   databaseUrlOrDb: string | Db,
   options: ReaddressApplyOptions = {},
@@ -183,6 +208,7 @@ export async function applyReaddress(
 
       const routeType = computeRouteType(card);
       const timeoutAt = computeTimeoutAt(card, now);
+      const escalationChain = buildStoredEscalationChain(resolution.escalationChain);
 
       if (dryRun) {
         appliedCount++;
@@ -203,6 +229,7 @@ export async function applyReaddress(
                 addressee_queue = ${addresseeQueue}::text,
                 route_type = ${routeType}::text,
                 timeout_at = ${timeoutAt.toISOString()}::timestamptz,
+                escalation_chain = ${escalationChain ? JSON.stringify(escalationChain) : null}::jsonb,
                 updated_at = ${now.toISOString()}::timestamptz
             WHERE id = ${card.id}::uuid
               AND status = 'pending'
