@@ -1673,7 +1673,9 @@
     },
     "journalCreated": "Лимит создан: {{amount}}",
     "journalDeleted": "Лимит удалён: {{amount}}",
-    "journalUpdated": "Было {{before}}, стало {{after}}"
+    "journalUpdated": "Было {{before}}, стало {{after}}",
+    "exportCsv": "Экспорт CSV",
+    "exportJson": "Экспорт JSON"
   },
   "pluginLabels": {
     "myrmidon_personal-bot": {

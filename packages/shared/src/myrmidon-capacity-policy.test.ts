@@ -109,6 +109,53 @@ describe("capacity policy contract", () => {
     }, DEFAULT_CAPACITY_POLICY)).toEqual({ allowed: true, reason: "allowed" });
   });
 
+  it("promotes candidates after the starvation threshold without mutating input", () => {
+    const now = Date.parse("2026-01-01T02:00:00Z");
+    const old = { priority: "low", createdAt: now - 61 * 60_000 };
+    const fresh = { priority: "high", createdAt: now - 60_000 };
+    const candidates = [old, fresh];
+    const policy = {
+      ...DEFAULT_CAPACITY_POLICY,
+      starvation: { afterMin: 60, promoteBy: 2 },
+    };
+    expect(applyStarvationProtection(candidates, now, policy)[0]).toBe(old);
+    expect(candidates).toEqual([old, fresh]);
+  });
+
+  it("does not starve any candidate through 1000 queue ticks", () => {
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      id: index,
+      priority: index === 0 ? "critical" : "low",
+      createdAt: index,
+    }));
+    const policy = {
+      ...DEFAULT_CAPACITY_POLICY,
+      starvation: { afterMin: 1, promoteBy: 4 },
+    };
+    const served = new Set<number>();
+    for (let tick = 0; tick < 1000; tick += 1) {
+      const now = tick * 60_000;
+      const next = applyStarvationProtection(candidates, now, policy)[0];
+      served.add(next.id);
+      candidates.splice(candidates.indexOf(next), 1);
+      candidates.push({ ...next, createdAt: now });
+    }
+    expect([...served].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("treats undefined createdAt as age 0 without starvation promotion", () => {
+    const now = Date.parse("2026-01-01T02:00:00Z");
+    const freshWithoutDate = { priority: "low" };
+    const freshWithDate = { priority: "low", createdAt: now - 10 * 60_000 };
+    const candidates = [freshWithoutDate, freshWithDate];
+    const policy = {
+      ...DEFAULT_CAPACITY_POLICY,
+      starvation: { afterMin: 60, promoteBy: 2 },
+    };
+    const ordered = applyStarvationProtection(candidates, now, policy);
+    expect(ordered).toEqual([freshWithDate, freshWithoutDate]);
+  });
+
   it("scores priority bands above aging while keeping aging monotone and capped", () => {
     const now = Date.parse("2026-01-01T01:00:00Z");
     const candidate = (priority: string, ageMin: number) => ({ priority, createdAt: now - ageMin * 60_000 });

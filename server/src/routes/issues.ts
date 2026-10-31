@@ -30,8 +30,14 @@ import {
 import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
 import { triggerReviewApprovalPropagation } from "../services/pull-request-approval-propagation.js";
 import {
+  buildReviewRoutingAssignPatch,
   evaluateReviewerAvailability,
+  excludedReviewerIds,
   issueNeedsReviewer,
+  pickReviewer,
+  policyHasReviewerParticipant,
+  readPendingAgentReview,
+  type ReviewerCandidate,
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
@@ -15249,8 +15255,74 @@ export function issueRoutes(
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
+            let reviewRoutingAssignment: { reviewerId: string; patch: Record<string, unknown> } | null = null;
+            const lockedForReviewRouting = enteringReviewRequested
+              ? await svc.getByIdForUpdate(id, tx)
+              : null;
+            const targetPolicy = updateFields.executionPolicy !== undefined
+              ? updateFields.executionPolicy
+              : lockedForReviewRouting?.executionPolicy;
+            const targetReviewPolicy = updateFields.reviewPolicy !== undefined
+              ? updateFields.reviewPolicy
+              : lockedForReviewRouting?.reviewPolicy;
+            const hasExistingReviewer = policyHasReviewerParticipant(targetPolicy);
+            if (
+              enteringReviewRequested &&
+              lockedForReviewRouting &&
+              lockedForReviewRouting.status !== "in_review" &&
+              targetReviewPolicy !== "human_only" &&
+              !hasExistingReviewer &&
+              !readPendingAgentReview(lockedForReviewRouting as never)
+            ) {
+              const routingIssue = lockedForReviewRouting as typeof existing;
+              const settings = await readReviewRoutingSettings(instanceSettings);
+              const storeDb = (typeof (tx as any)?.select === "function" ? tx : db) as unknown as Db;
+              if (settings.enabled && typeof (storeDb as any)?.select === "function") {
+                const txReviewRoutingStore = createPgReviewRoutingStore(storeDb);
+                try {
+                  const authorModel = routingIssue.createdByAgentId
+                    ? await txReviewRoutingStore.getAgentModel?.(routingIssue.companyId, routingIssue.createdByAgentId) ?? null
+                    : null;
+                  const [candidateRows, loads] = await Promise.all([
+                    txReviewRoutingStore.listReviewerAgents(routingIssue.companyId, settings.reviewerRoles),
+                    txReviewRoutingStore.loadByAgent(routingIssue.companyId),
+                  ]);
+                  const candidates: ReviewerCandidate[] = candidateRows.map((candidate) => ({
+                    ...candidate,
+                    load: loads.get(candidate.id) ?? 0,
+                  }));
+                  const reviewer = pickReviewer({
+                    candidates,
+                    excluded: excludedReviewerIds(routingIssue),
+                    maxLoad: settings.maxLoadPerReviewer,
+                    authorModel,
+                  });
+                  if (reviewer) {
+                    reviewRoutingAssignment = {
+                      reviewerId: reviewer.id,
+                      patch: buildReviewRoutingAssignPatch({ issue: routingIssue, reviewerAgentId: reviewer.id }),
+                    };
+                  }
+                } catch (err) {
+                  logger.warn({ err, issueId: id }, "failed to compute immediate review routing assignment");
+                }
+              }
+            }
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (reviewRoutingAssignment && updated.status === "in_review") {
+              const routed = await svc.update(
+                id,
+                reviewRoutingAssignment.patch,
+                tx,
+                undefined,
+                postCommitIssueActions,
+              );
+              if (routed) {
+                Object.assign(updated, routed);
+                reviewRoutingAssignment = null;
+              }
+            }
             if (handoffGuarded && handoffLockedRow) {
               // Fresh-revision invariant: a committed handoff always moves
               // statusVersion by one. The DB trigger
@@ -16894,19 +16966,31 @@ export function issueRoutes(
         let unavailable = false;
         if (needsReviewer) {
           const reviewRoutingSettings = await readReviewRoutingSettings(instanceSettings);
-          if (reviewRoutingSettings.enabled && issue.reviewPolicy !== "human_only") {
-            const routingStore = createPgReviewRoutingStore(db);
-            const [reviewerRows, loadByAgent] = await Promise.all([
-              routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
-              routingStore.loadByAgent(issue.companyId),
-            ]);
-            unavailable =
-              evaluateReviewerAvailability({
-                reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true })),
-                loadByAgent,
-                issue: reviewerSignalIssue!,
-                maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
-              }).selected === null;
+          if (
+            reviewRoutingSettings.enabled &&
+            issue.reviewPolicy !== "human_only" &&
+            typeof (db as any)?.select === "function"
+          ) {
+            try {
+              const routingStore = createPgReviewRoutingStore(db);
+              const [reviewerRows, loadByAgent] = await Promise.all([
+                routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
+                routingStore.loadByAgent(issue.companyId),
+              ]);
+              const authorModel = reviewerSignalIssue?.createdByAgentId
+                ? await routingStore.getAgentModel?.(issue.companyId, reviewerSignalIssue.createdByAgentId) ?? null
+                : null;
+              unavailable =
+                evaluateReviewerAvailability({
+                  reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true, model: agent.model })),
+                  loadByAgent,
+                  issue: reviewerSignalIssue!,
+                  maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
+                  authorModel,
+                }).selected === null;
+            } catch (err) {
+              logger.warn({ err, issueId: issue.id }, "failed to evaluate post-update reviewer availability");
+            }
           }
         }
         setImmediateNoReviewerSignal(
