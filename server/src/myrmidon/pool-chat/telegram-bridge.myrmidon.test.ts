@@ -26,6 +26,7 @@ function createMockPoolChatService(
   }),
 ): PoolChatService {
   return {
+    capabilities: vi.fn() as unknown as PoolChatService["capabilities"],
     submit: vi.fn(handler) as unknown as PoolChatService["submit"],
     status: vi.fn() as unknown as PoolChatService["status"],
   };

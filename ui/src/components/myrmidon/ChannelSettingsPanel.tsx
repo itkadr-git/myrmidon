@@ -106,8 +106,24 @@ export function parseChannelSettingsDraft(draft: {
   return { patch, errors };
 }
 
+const NUMERIC_FIELDS = [
+  "telegramSplitMaxParts",
+  "telegramFileLimitBytes",
+  "paperclipAttachmentMaxBytes",
+  "chatCrossChannelMessages",
+  "chatCrossChannelMessageChars",
+  "chatCrossChannelTotalChars",
+  "chatCrossChannelLookbackHours",
+  "chatReconcileIntervalMs",
+] as const;
+
+type EditableSettingKey =
+  | "telegramDmConversations"
+  | "telegramDmStatus"
+  | (typeof NUMERIC_FIELDS)[number];
+
 type StringDraft = Record<
-  Exclude<ChannelSettingKey, "telegramDmStatus">,
+  Exclude<EditableSettingKey, "telegramDmStatus">,
   string
 > & { telegramDmStatus: boolean };
 
@@ -128,17 +144,6 @@ function toDraft(settings: ChannelSettingsView): StringDraft {
         : String(settings.chatReconcileIntervalMs.value),
   };
 }
-
-const NUMERIC_FIELDS = [
-  "telegramSplitMaxParts",
-  "telegramFileLimitBytes",
-  "paperclipAttachmentMaxBytes",
-  "chatCrossChannelMessages",
-  "chatCrossChannelMessageChars",
-  "chatCrossChannelTotalChars",
-  "chatCrossChannelLookbackHours",
-  "chatReconcileIntervalMs",
-] as const;
 
 /** Labels are resolved at render time so a language switch applies at once. */
 function fieldLabels(): Record<(typeof NUMERIC_FIELDS)[number], string> {
@@ -170,7 +175,7 @@ function fieldHints(): Record<(typeof NUMERIC_FIELDS)[number] | "telegramDmConve
 }
 
 function sourceLabel(view: ChannelSettingsView, key: ChannelSettingKey): string {
-  return describeChannelSettingSource(view[key].source);
+  return describeChannelSettingSource(view[key]?.source);
 }
 
 export function ChannelSettingsPanelView({
@@ -314,14 +319,14 @@ export function ChannelSettingsPanelView({
               placeholder={key === "chatReconcileIntervalMs" ? t("area.settings-integrations.channel-settings-panel.standardPace") : t("area.settings-integrations.channel-settings-panel.required")}
               value={numbers[key]}
               onChange={(event) => setField(key, event.target.value)}
-              disabled={view[key].overridden}
+              disabled={view[key]?.overridden}
             />
             <div className="text-xs text-muted-foreground">
               <span data-testid={`channel-settings-source-${key}`}>
                 {sourceLabel(view, key as ChannelSettingKey)}
               </span>
-              {view[key].overridden ? (
-                <span className="ml-2 font-mono">{view[key].envName}</span>
+              {view[key]?.overridden ? (
+                <span className="ml-2 font-mono">{view[key]?.envName}</span>
               ) : null}
               {errors[key] ? (
                 <span data-testid={`channel-settings-error-${key}`} className="ml-2 text-destructive">
