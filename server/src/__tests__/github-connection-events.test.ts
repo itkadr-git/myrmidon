@@ -724,7 +724,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     let events = [createEvent(`pr-delivery-${randomUUID()}`)];
     const connector = {
       getCapabilities: vi.fn(async () => ["github.code" as const]),
-      startAuthorization: vi.fn(),
+      startAuthorization: vi.fn(async () => ({ authorizationUrl: "https://github.com/login/oauth/authorize", state: "state" })),
       claim: vi.fn(),
       refresh: vi.fn(),
       revoke: vi.fn(),
@@ -733,7 +733,8 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       acknowledgeEvents: vi.fn(async () => events.length),
     } as unknown as PaperclipCloudConnector;
 
-    const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup });
+    let currentTime = new Date("2026-10-30T10:00:00.000Z");
+    const service = githubConnectionEventService(db, { connector, now: () => currentTime, assignmentWakeup: wakeup });
 
     // First event: transitions to in_progress, appends comment, wakes author once
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
@@ -747,6 +748,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(firstComments).toHaveLength(1);
 
     // Second event (repeated CONFLICTING webhook): task is already in_progress, must skip comment & wakeup
+    currentTime = new Date(currentTime.getTime() + 6_000);
     events = [createEvent(`pr-delivery-${randomUUID()}`)];
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
 
