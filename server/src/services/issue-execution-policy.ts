@@ -79,6 +79,11 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /**
+   * myrmidon(OPE-10045): internal — the participant of a stage whose id no
+   * longer exists in the policy; preferred when the replacement stage starts.
+   */
+  restartPreferredParticipant?: IssueExecutionStagePrincipal | null;
 };
 
 type TransitionResult = {
@@ -877,6 +882,25 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    // myrmidon(OPE-10045): the stored stage id is gone from the policy (the
+    // policy was re-sent, e.g. by an operator returning a blocked task to
+    // review). A request for `in_review` must start the policy's stage, not
+    // leave the task in review with an idle state and no participant who could
+    // decide. The return assignee and the previous participant carry over.
+    if (requestedStatus === "in_review") {
+      return applyIssueExecutionStageTransition({
+        ...input,
+        issue: {
+          ...input.issue,
+          executionState: {
+            ...blankExecutionState(),
+            returnAssignee: existingState.returnAssignee ?? null,
+            monitor: existingState.monitor ?? null,
+          },
+        },
+        restartPreferredParticipant: existingState.currentParticipant ?? null,
+      });
+    }
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
@@ -1287,7 +1311,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
-        : explicitAssignee,
+        : explicitAssignee ?? input.restartPreferredParticipant ?? null,
     exclude: pendingStage.participants.length === 1 &&
       stageHasParticipant(pendingStage, participantExclusion) ? returnAssignee : participantExclusion,
   });

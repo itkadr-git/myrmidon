@@ -13,9 +13,10 @@
 // coverage re-checked inside the same guarded path, so two racing passes never
 // create two tasks for one head.
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { sql, and, eq, inArray, desc, isNull } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   externalObjects,
@@ -25,25 +26,33 @@ import {
   runIdentityContexts,
   type Db,
 } from "@myrmidon/db";
-import { isAgentStatusInvokable } from "@myrmidon/shared";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY,
   REVIEW_ROUTING_PR_KIND_METADATA_KEY,
+  isAgentStatusInvokable,
 } from "@myrmidon/shared";
+import { REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
+import { issueNeedsReviewer } from "./policy.js";
+
+const activeStatuses = ["queued", "running", "scheduled_retry"] as const;
 
 export interface InReviewIssueRow extends RoutingIssue {
   companyId: string;
   identifier: string | null;
   title: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface ReviewerAgentRow {
   id: string;
   role: string;
+  invokable?: boolean;
 }
 
 export interface RoutingHistory {
@@ -55,11 +64,29 @@ export interface RoutingHistory {
 export interface ReviewRoutingStore {
   listActiveCompanyIds(): Promise<string[]>;
   listInReviewIssues(companyId: string, limit: number): Promise<InReviewIssueRow[]>;
+  listManagerChainReviewerAgents(
+    companyId: string,
+    engineerId: string,
+    roles: readonly string[],
+  ): Promise<ReviewerAgentRow[]>;
+  countUnroutedReviewIssues(companyId: string, asOf?: Date): Promise<number>;
+  countBlockedWithoutAssignee(): Promise<number>;
   /** Invokable agents of the company whose role is one of `roles`. */
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
+  countActiveRunsForAgent(companyId: string, agentId: string): Promise<number>;
+  countActiveRunsForIssue(companyId: string, agentId: string, issueId: string): Promise<number>;
   routingHistory(companyId: string, issueIds: readonly string[]): Promise<Map<string, RoutingHistory>>;
+  reviewWakeState(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }): Promise<{
+    activeRun: boolean;
+    pendingWake: boolean;
+    lastWakeAt: Date | null;
+    attempts: number;
+    lastCancelledRunAt?: Date | null;
+  }>;
+  recordReviewWake(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }): Promise<void>;
+  recordReviewWakeEscalation(input: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; attempts: number; at: Date }): Promise<void>;
   /**
    * Re-reads the issue under a lock, applies `build(fresh)` when `guard(fresh)`
    * holds, and returns the updated row; null when the guard failed, the row is
@@ -162,9 +189,16 @@ function toRoutingIssue(row: typeof issues.$inferSelect): RoutingIssue {
     responsibleUserId: row.responsibleUserId ?? null,
     executionPolicy: row.executionPolicy,
     executionState: row.executionState,
-    // myrmidon(HUMAN-REVIEW-WAIT): the human wait must reach issueNeedsReviewer.
     reviewPolicy: row.reviewPolicy ?? null,
   };
+}
+
+/** Snapshot metrics use the same semantic check as routing. */
+export async function countUnroutedReviewIssues(db: Db): Promise<number> {
+  const store = createPgReviewRoutingStore(db);
+  const companyIds = await store.listActiveCompanyIds();
+  const counts = await Promise.all(companyIds.map((companyId) => store.countUnroutedReviewIssues(companyId, new Date())));
+  return counts.reduce((total, countValue) => total + countValue, 0);
 }
 
 export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
@@ -176,25 +210,105 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
 
     async listInReviewIssues(companyId, limit) {
       const rows = await db
-        .select()
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          reviewPolicy: issues.reviewPolicy,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
         .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.status, "in_review"),
-            isNull(issues.hiddenAt),
-            isNull(issues.conversationAgentId),
-            isNull(issues.conversationUserId),
-          ),
-        )
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ))
         .orderBy(issues.updatedAt, issues.id)
         .limit(limit);
       return rows.map((row) => ({
-        ...toRoutingIssue(row),
+        ...toRoutingIssue(row as typeof issues.$inferSelect),
         companyId: row.companyId,
         identifier: row.identifier,
         title: row.title,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
       }));
+    },
+
+    async listManagerChainReviewerAgents(companyId, engineerId, roles) {
+      if (roles.length === 0) return [];
+      const rows = await db
+        .select({ id: agents.id, role: agents.role, status: agents.status, reportsTo: agents.reportsTo })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const result: ReviewerAgentRow[] = [];
+      const seen = new Set<string>([engineerId]);
+      let managerId = byId.get(engineerId)?.reportsTo ?? null;
+      while (managerId && !seen.has(managerId)) {
+        seen.add(managerId);
+        const manager = byId.get(managerId);
+        if (!manager) break;
+        if (roles.includes(manager.role) && isAgentStatusInvokable(manager.status)) {
+          result.push({ id: manager.id, role: manager.role });
+        }
+        managerId = manager.reportsTo ?? null;
+      }
+      return result;
+    },
+
+    async countUnroutedReviewIssues(companyId, asOf = new Date()) {
+      const rows = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
+          updatedAt: issues.updatedAt,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          reviewPolicy: issues.reviewPolicy,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.hiddenAt),
+          isNull(issues.conversationAgentId),
+          isNull(issues.conversationUserId),
+        ));
+      const recoveryCutoff = asOf.getTime() - 15 * 60 * 1000;
+      return rows.filter((row) => issueNeedsReviewer({
+        ...row,
+        reviewPathRecoveryEligible: row.updatedAt.getTime() <= recoveryCutoff,
+        reviewRecoveryNow: asOf,
+        reviewRecoveryUpdatedAt: row.updatedAt,
+      })).length;
+    },
+
+    async countBlockedWithoutAssignee() {
+      const [row] = await db
+        .select({ total: sql<number>`count(*)` })
+        .from(issues)
+        .where(and(eq(issues.status, "blocked"), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), isNull(issues.hiddenAt)));
+      return Number(row?.total ?? 0);
     },
 
     async listReviewerAgents(companyId, roles) {
@@ -203,7 +317,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .select({ id: agents.id, role: agents.role, status: agents.status })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, [...roles])));
-      return rows.filter((row) => isAgentStatusInvokable(row.status)).map((row) => ({ id: row.id, role: row.role }));
+      return rows.map(({ id, role, status }) => ({ id, role, invokable: isAgentStatusInvokable(status) }));
     },
 
     async loadByAgent(companyId) {
@@ -224,6 +338,29 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       return load;
     },
 
+    async countActiveRunsForAgent(companyId, agentId) {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
+        ));
+      return count ?? 0;
+    },
+    async countActiveRunsForIssue(companyId, agentId, issueId) {
+      const [result] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ));
+      return result?.count ?? 0;
+    },
     async routingHistory(companyId, issueIds) {
       const history = new Map<string, RoutingHistory>();
       if (issueIds.length === 0) return history;
@@ -250,6 +387,83 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         history.set(row.entityId, entry);
       }
       return history;
+    },
+
+    async reviewWakeState({ companyId, issueId, reviewerAgentId, stageId }) {
+      const [activeRun] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, reviewerAgentId),
+          inArray(heartbeatRuns.status, [...activeStatuses]),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ))
+        .limit(1);
+      const [pendingWake] = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, reviewerAgentId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+          sql`(${agentWakeupRequests.payload} ->> 'issueId' = ${issueId} or ${agentWakeupRequests.payload} ->> 'taskId' = ${issueId})`,
+        ))
+        .limit(1);
+      const [lastWake] = await db
+        .select({ requestedAt: activityLog.createdAt, attempt: sql<number>`coalesce((${activityLog.details} ->> 'attempt')::int, 0)` })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, REVIEW_ROUTING_WAKE_ACTION),
+          sql`${activityLog.details} ->> 'reviewerAgentId' = ${reviewerAgentId}`,
+          sql`${activityLog.details} ->> 'stageId' = ${stageId}`,
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      const [lastCancelledRun] = await db
+        .select({ finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, reviewerAgentId),
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId', (${heartbeatRuns.contextSnapshot} -> 'paperclipIssue') ->> 'id', ${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId}`,
+        ))
+        .orderBy(desc(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.createdAt})`), desc(heartbeatRuns.id))
+        .limit(1);
+      return {
+        activeRun: Boolean(activeRun),
+        pendingWake: Boolean(pendingWake),
+        lastWakeAt: lastWake?.requestedAt ?? null,
+        attempts: lastWake?.attempt ?? 0,
+        lastCancelledRunAt: lastCancelledRun ? (lastCancelledRun.finishedAt ?? lastCancelledRun.updatedAt ?? lastCancelledRun.createdAt) : null,
+      };
+    },
+
+    async recordReviewWakeEscalation({ companyId, issueId, reviewerAgentId, stageId, attempts, at }) {
+      await db.insert(activityLog).values({
+        companyId, actorType: "system", actorId: "review_routing_sweep",
+        action: "issue.review_routing.wake_escalation_required", entityType: "issue", entityId: issueId, agentId: reviewerAgentId,
+        details: { reviewerAgentId, stageId, attempts, owner: "ADM", nextAction: "inspect reviewer runtime and manually replay the review wake; preserve stage unless intentionally returned" },
+        createdAt: at,
+      });
+    },
+
+    async recordReviewWake({ companyId, issueId, reviewerAgentId, stageId, at, attempt }) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "review_routing_sweep",
+        action: REVIEW_ROUTING_WAKE_ACTION,
+        entityType: "issue",
+        entityId: issueId,
+        agentId: reviewerAgentId,
+        details: { reviewerAgentId, stageId, attempt },
+        createdAt: at,
+      });
     },
 
     async applyPatch(input) {

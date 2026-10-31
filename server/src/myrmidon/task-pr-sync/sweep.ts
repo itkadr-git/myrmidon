@@ -20,9 +20,10 @@
 // recorded on the work product (`metadata.lastMergedSha`) so a re-run that somehow
 // sees the same merge does not comment twice.
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   approvals,
+  heartbeatRuns,
   issueApprovals,
   issueComments,
   issueThreadInteractions,
@@ -33,6 +34,7 @@ import {
 import type { IssueWorkProduct } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
+import { parseIssueExecutionState } from "../../services/issue-execution-policy.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
 import type {
   PullRequestMergeDetails,
@@ -91,6 +93,7 @@ const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as con
 export const TASK_PR_SYNC_ACTIVITY_ACTOR = "task_pr_sync";
 export const TASK_PR_SYNC_SETTLED_ACTION = "myrmidon.task_pr_sync.settled";
 export const TASK_PR_SYNC_RETURNED_ACTION = "myrmidon.task_pr_sync.returned";
+export const TASK_PR_SYNC_CONFLICT_ACTION = "myrmidon.task_pr_sync.conflict";
 
 /** A resolved PR fact plus the bookkeeping the sweep needs but the policy does not. */
 export interface TaskPrSyncResolvedPr extends TaskPrSyncPrFact {
@@ -118,6 +121,14 @@ export function buildReturnComment(input: {
 }): string {
   const refs = input.prRefs.length > 0 ? input.prRefs.join(", ") : "the delivering pull request";
   return `Delivery pending: PR ${refs} was closed without merging; task returned to the assignee at ${input.at.toISOString()}.`;
+}
+
+/** The comment written when returning a task due to merge conflict. */
+export function buildConflictComment(input: {
+  prRefs: string[];
+}): string {
+  const refs = input.prRefs.length > 0 ? input.prRefs.join(", ") : "the delivering pull request";
+  return `PR ${refs}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
 }
 
 export interface TaskPrSyncSweepDeps {
@@ -219,6 +230,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
   const now = deps.now ?? (() => new Date());
   let lastRunAt = 0;
   let inFlight = false;
+  let cursor: { updatedAt: Date; id: string } | null = null;
   let workProductsPromise: Promise<ReturnType<
     typeof import("../../services/work-products.js").workProductService
   >> | null = null;
@@ -263,6 +275,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         repo: repo ?? (reference ? `${reference.owner}/${reference.repo}` : null),
         number: number ?? reference?.number ?? null,
         mergedSha: details?.headSha ?? null,
+        mergeable: details?.mergeable ?? null,
         recordedSha: readLastMergedSha(product),
         recordedUpdatedAt: product.updatedAt,
       });
@@ -442,6 +455,93 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     return true;
   }
 
+  async function returnIssueOnConflict(
+    issue: { id: string; companyId: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "return_conflict" }>,
+    prFacts: TaskPrSyncResolvedPr[],
+    at: Date,
+  ): Promise<boolean> {
+    const body = buildConflictComment({ prRefs: decision.conflictPrRefs });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const returned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (locked.status !== "in_review" || locked.workMode !== "standard") return false;
+
+      const state = parseIssueExecutionState(locked.executionState);
+      if (state && (state.status !== "pending" || state.currentStageType !== "review")) return false;
+      const executor = state?.returnAssignee;
+      if (executor && executor.type !== "agent") return false;
+
+      let executorId = executor?.agentId ?? null;
+      if (!executorId) {
+        const [productRow] = await tx
+          .select({ createdByRunId: issueWorkProducts.createdByRunId })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.issueId, locked.id), eq(issueWorkProducts.type, "pull_request")))
+          .limit(1);
+        if (productRow?.createdByRunId) {
+          const [run] = await tx
+            .select({ agentId: heartbeatRuns.agentId })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, productRow.createdByRunId))
+            .limit(1);
+          if (run?.agentId) executorId = run.agentId;
+        }
+      }
+      if (!executorId) executorId = locked.assigneeAgentId;
+      if (!executorId) return false;
+
+      const svc = services.issueService(txDb);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+      await tx.update(issues).set({
+        status: "in_progress",
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        assigneeAgentId: executorId,
+        assigneeUserId: null,
+        ...(state ? {
+          executionState: {
+            ...state,
+            status: "changes_requested",
+            reviewRequest: null,
+            lastDecisionOutcome: "changes_requested",
+          },
+        } : {}),
+        updatedAt: at,
+      }).where(and(eq(issues.id, locked.id), eq(issues.companyId, issue.companyId)));
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_CONFLICT_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          previousStatus: locked.status,
+          status: "in_progress",
+          prRefs: decision.conflictPrRefs,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!returned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
   return {
     /** Runs one pass. Options exist for tests; production reads settings and the clock. */
     sweep: async (opts?: {
@@ -450,6 +550,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       /** Bypass the interval gate (tests call the pass directly). */
       force?: boolean;
       batchMax?: number;
+      cursor?: { updatedAt: Date; id: string } | null;
     }): Promise<TaskPrSyncSweepResult> => {
       const settings = opts?.settings ?? readTaskPrSyncSettings(deps.env ?? process.env);
       if (!settings.enabled) return { ...EMPTY_RESULT, skippedPass: true };
@@ -464,24 +565,71 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       inFlight = true;
       const result: TaskPrSyncSweepResult = { ...EMPTY_RESULT };
       try {
+        if (opts?.cursor !== undefined) {
+          cursor = opts.cursor;
+        }
         const batchMax = Math.max(1, opts?.batchMax ?? settings.batchMax);
-        const candidates = await deps.db
-          .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
-          .from(issues)
-          .innerJoin(
-            issueWorkProducts,
-            and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
-          )
-          .where(inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]))
-          .orderBy(asc(issues.updatedAt))
-          .limit(batchMax);
-        const issueIds = candidates.map((row) => row.id);
+
+        async function fetchCandidates(
+          cursorAfter: { updatedAt: Date; id: string } | null,
+          limit: number,
+          excludeIds: string[] = [],
+        ) {
+          if (limit <= 0) return [];
+          const conditions = [
+            inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]),
+          ];
+          if (cursorAfter) {
+            conditions.push(
+              or(
+                gt(issues.updatedAt, cursorAfter.updatedAt),
+                and(eq(issues.updatedAt, cursorAfter.updatedAt), gt(issues.id, cursorAfter.id)),
+              )!,
+            );
+          }
+          if (excludeIds.length > 0) {
+            conditions.push(notInArray(issues.id, excludeIds));
+          }
+          return deps.db
+            .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
+            .from(issues)
+            .innerJoin(
+              issueWorkProducts,
+              and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
+            )
+            .where(and(...conditions))
+            .orderBy(asc(issues.updatedAt), asc(issues.id))
+            .limit(limit);
+        }
+
+        let candidates = await fetchCandidates(cursor, batchMax);
+        if (candidates.length < batchMax && cursor !== null) {
+          const wrapCandidates = await fetchCandidates(
+            null,
+            batchMax - candidates.length,
+            candidates.map((c) => c.id),
+          );
+          candidates = [...candidates, ...wrapCandidates];
+        }
+
+        if (candidates.length > 0) {
+          const last = candidates[candidates.length - 1]!;
+          cursor = { updatedAt: last.updatedAt, id: last.id };
+        } else {
+          cursor = null;
+        }
+
+        const issueIds = [...new Set(candidates.map((row) => row.id))];
         if (issueIds.length === 0) {
           lastRunAt = at.getTime();
           return result;
         }
 
-        const issueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const rawIssueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const issueMap = new Map(rawIssueRows.map((row) => [row.id, row]));
+        const issueRows = issueIds
+          .map((id) => issueMap.get(id))
+          .filter((row): row is typeof issues.$inferSelect => row !== undefined);
         const productRows = await deps.db
           .select()
           .from(issueWorkProducts)
@@ -546,6 +694,17 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               continue;
             }
 
+            if (decision.kind === "return_conflict") {
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const returned = await returnIssueOnConflict(issue, decision, prFacts, at);
+              if (returned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
             // settle_done: dedup by the merge sha already recorded on the products.
             const merged = prFacts.filter((pr) => pr.state === "merged");
             const alreadyRecorded =
@@ -576,6 +735,10 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       } finally {
         inFlight = false;
       }
+    },
+    getCursor: () => (cursor ? { ...cursor } : null),
+    resetCursor: () => {
+      cursor = null;
     },
   };
 }

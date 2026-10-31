@@ -13,9 +13,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
-import { UI2_ROUTE_TABLE } from "../routes";
+import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
-import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
@@ -57,11 +56,29 @@ describe("myrmidon(UI2) route table integration", () => {
     ]);
   });
 
+  it("preserves full Secrets screen under UI2 without shadowing by a placeholder route", () => {
+    // Under UI2, the secrets section must NOT be shadowed by UI2_ROUTE_TABLE placeholders,
+    // allowing boardRoutes to serve the full Secrets screen with both instance secret references
+    // and standard secret management tabs.
+    const secretsUi2Route = UI2_ROUTE_TABLE.find((entry) => entry.path === "company/settings/secrets");
+    expect(secretsUi2Route).toBeUndefined();
+
+    const secretsSection = UI2_SETTINGS_SECTIONS.find((section) => section.key === "secrets");
+    expect(secretsSection?.path).toBe("/company/settings/secrets");
+  });
+
   it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
     const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
     for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
       expect(items.find((item) => item.to === to)?.requires).toBe("knowledge");
     }
+  });
+
+  it("includes mobile launcher-only visibility and dynamic height behavior", () => {
+    const phone = readFileSync(fileURLToPath(new URL("../shell/Ui2PhoneNav.tsx", import.meta.url)), "utf8");
+    expect(phone).toContain("const hasPlugins = pluginSlots.length > 0 || launchers.length > 0");
+    expect(phone).toContain("ResizeObserver");
+    expect(phone).toContain("useUi2I18n");
   });
 
   it("keeps the agents and servers routes reachable from both desktop and phone navigation", () => {

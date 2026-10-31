@@ -127,6 +127,12 @@ describe("swarm claim settings", () => {
 });
 
 describe("swarm active task ceiling", () => {
+  it("defaults the automatic assignment cap to two tasks per agent", () => {
+    expect(DEFAULT_SWARM_MAX_ACTIVE_TASKS).toBe(2);
+    expect(swarmActiveTaskLimitReached(1, { maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS })).toBe(false);
+    expect(swarmActiveTaskLimitReached(2, { maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS })).toBe(true);
+  });
+
   it("is reached at the ceiling and off when the setting is null", () => {
     expect(swarmActiveTaskLimitReached(2, { maxActiveTasks: 3 })).toBe(false);
     expect(swarmActiveTaskLimitReached(3, { maxActiveTasks: 3 })).toBe(true);

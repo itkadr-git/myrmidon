@@ -42,6 +42,7 @@ function record(overrides: Partial<AlertRecoveryRecord> = {}): AlertRecoveryReco
     firstFiredAt: "2026-10-07T04:00:00.000Z",
     lastFiredAt: "2026-10-07T04:00:00.000Z",
     resolvedAt: null,
+    heldAt: null,
     closedAt: null,
     ...overrides,
   };

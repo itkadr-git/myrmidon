@@ -112,6 +112,7 @@ import {
   validateBotKey,
   type DevbuildSettings,
 } from "./template.js";
+import { containerOomObservation, type ContainerOomObservation } from "./container-oom.js";
 import { buildUstarArchive, parseUstarArchive, type UstarEntry, type UstarReadEntry } from "./ustar.js";
 
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
@@ -143,6 +144,9 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const HELPER_WAIT_TIMEOUT_MS = 120_000;
 const HELPER_MEMORY_BYTES = 128 * 1024 * 1024;
 const HELPER_PIDS_LIMIT = 64;
+
+const PRIMARY_AGENT_CONTAINER_PREFIX = "myrmidon-bot-";
+const PRIMARY_AGENT_CONTAINER_NAME_RE = /^myrmidon-bot-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const DEFAULT_TEMPLATE_CONTEXT_TTL_MS = 60_000;
 const HERMES_MOUNT = BOT_VOLUME_MOUNTS.find((mount) => mount.hostSuffix === "hermes")!;
@@ -218,6 +222,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
 
 /** Test hooks; production code passes none. */
 export interface DockerDriverOptions {
+  recordOom?: (botKey: string, observation: ContainerOomObservation) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   startHealthTimeoutMs?: number;
   healthPollIntervalMs?: number;
@@ -840,7 +845,7 @@ interface DockerInspect {
   /** Image id the container runs (sha256:…). */
   Image: string;
   Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
-  State?: { Status?: string; ExitCode?: number; Health?: { Status?: string } };
+  State?: { Status?: string; ExitCode?: number; OOMKilled?: boolean; FinishedAt?: string; Health?: { Status?: string } };
   HostConfig?: { Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string; Binds?: string[] };
 }
 
@@ -993,6 +998,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   const skillDirs = new Set<string>();
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") {
       for (const line of entry.content.toString("utf8").split("\n")) {
         const name = line.split(":")[0]?.trim();
@@ -1007,6 +1013,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   }
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") continue;
     const segments = entry.path.split("/").filter((segment) => segment.length > 0);
     if (segments.length < 3 || segments[0] !== "skills") continue;
@@ -1292,6 +1299,7 @@ export function dockerBotContainerDriver(
    *  first's in-flight request instead of doubling it. Failures are shared
    *  too — the entry is dropped either way once settled. */
   const inspectInFlight = new Map<string, Promise<DockerInspect | null>>();
+  const recordedOomEventKeys = new Set<string>();
 
   async function inspectByName(name: string): Promise<DockerInspect | null> {
     const pending = inspectInFlight.get(name);
@@ -1300,7 +1308,22 @@ export function dockerBotContainerDriver(
       const res = await requestWithRateLimitRetry({ method: "GET", path: `/containers/${nameSegment(name)}/json` });
       if (res.status === 404) return null;
       if (res.status >= 400) throw describeFailure(`docker inspect ${name}`, res);
-      return JSON.parse(res.body.toString("utf8")) as DockerInspect;
+      const info = JSON.parse(res.body.toString("utf8")) as DockerInspect;
+      const observation = containerOomObservation(info);
+      // Only the primary agent container, never helpers or replacement containers.
+      if (observation && options.recordOom && PRIMARY_AGENT_CONTAINER_NAME_RE.test(name)) {
+        const eventKey = `${observation.containerId}:${observation.occurredAt}`;
+        if (!recordedOomEventKeys.has(eventKey)) {
+          await options.recordOom(name.slice(PRIMARY_AGENT_CONTAINER_PREFIX.length), observation)
+            .then(() => {
+              recordedOomEventKeys.add(eventKey);
+            })
+            .catch((err) => {
+              logger.warn({ err, containerId: info.Id }, "failed to persist container OOM observation");
+            });
+        }
+      }
+      return info;
     })();
     inspectInFlight.set(name, read);
     try {
@@ -1517,7 +1540,7 @@ export function dockerBotContainerDriver(
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's own skills
    * (hermes/skills/ — the container's ~/.hermes/skills) as (directory name,
    * files), for the reconcile pass's back-import into the company catalog.
-   * The board's own delivery (hermes/skills-board/) is NOT part of the
+   * The board's own delivery (hermes/skills/paperclip-managed/) is NOT part of the
    * result: it is the profile's managed directory, and reading it back would
    * re-import the catalog's own copy. Works on a live container (the Docker
    * archive API does not need exec); a stopped or missing container yields

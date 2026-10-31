@@ -745,19 +745,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-      expect(action).toMatchObject({
-        ownerType: "board",
-        ownerAgentId: null,
-        previousOwnerAgentId: coderId,
-        returnOwnerAgentId: coderId,
-        evidence: expect.objectContaining({
-          routingPolicy: "board_escalation_no_takeover_v1",
-        }),
-        wakePolicy: expect.objectContaining({
-          type: "board_escalation",
-          preservesSourceAssignee: true,
-        }),
-      });
+      if (errorCode === "adapter_failed" && explicitCause === "successful_run_missing_state") {
+        expect(action).toBeUndefined();
+        expect(sourceIssue.status).toBe("in_progress");
+      } else {
+        expect(action).toMatchObject({
+          ownerType: "board",
+          ownerAgentId: null,
+          previousOwnerAgentId: coderId,
+          returnOwnerAgentId: coderId,
+          evidence: expect.objectContaining({
+            routingPolicy: "board_escalation_no_takeover_v1",
+          }),
+          wakePolicy: expect.objectContaining({
+            type: "board_escalation",
+            preservesSourceAssignee: true,
+          }),
+        });
+      }
       // myrmidon(L4): a succeeded run with `successful_run_missing_state` is
       // the auto-policy's scope (stranded-autopolicy.ts). With the seeded
       // coder having zero prior attempts today, it first tries one more
@@ -980,6 +985,90 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
       expect(actions).toHaveLength(0);
+    });
+
+    it("keeps a no-PR issue in progress with one wake while the retry budget remains", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      // Start with no prior tagged retries and recover once; replay is covered separately.
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: await succeededRun({ companyId, agentId: coderId }),
+        recoveryCause: "successful_run_missing_state",
+      });
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_continuation_needed",
+      }));
+      expect(updated?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
+    it("keeps a no-PR issue in progress with one wake when a replay reaches the daily cap", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await seedStrandedAutoPolicyRetryRun({ companyId, agentId: coderId, issueId: sourceIssue.id });
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+      const input = {
+        issue: sourceIssue,
+        previousStatus: "in_progress" as const,
+        latestRun,
+        recoveryCause: "successful_run_missing_state" as const,
+        rerouteToSharedQueue: true,
+      };
+
+      await recovery.escalateStrandedAssignedIssue(input);
+      const replay = await recovery.escalateStrandedAssignedIssue(input);
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+        reason: "issue_continuation_needed",
+      }));
+      expect(replay?.status).toBe("in_progress");
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.blockerMetadata).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
+    it("blocks for the senior agent only after the corrective handoff is exhausted", async () => {
+      const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "successful_run_missing_state",
+        rerouteToSharedQueue: true,
+        successfulRunHandoffEvidence: {
+          sourceRunId: randomUUID(),
+          correctiveRunId: latestRun.id,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      });
+
+      expect(updated?.status).toBe("blocked");
+      expect(updated?.assigneeAgentId).toBe(coderId);
+      expect(updated?.blockerMetadata).toMatchObject({ owner: { agentId: managerId } });
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
+        reason: "issue_unblock_requested",
+      }));
     });
 
     it("hands the issue to the direct manager once the daily retry cap is exhausted, end to end", async () => {
