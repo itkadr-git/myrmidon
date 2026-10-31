@@ -214,7 +214,7 @@ describe("bank resolution", () => {
       getAgent: (id) => Promise.resolve(agents.get(id) ?? null),
       config,
     });
-    assert.deepEqual(resolution, { bankId: "adm", source: "agent-card", agentName: "ops-agent" });
+    assert.deepEqual(resolution, { bankId: "adm", source: "agent-card", agentName: "ops-agent", agentRole: "engineer" });
   });
 
   it("falls back to the config map when the card has no bank", async () => {
@@ -224,7 +224,7 @@ describe("bank resolution", () => {
       getAgent: (id) => Promise.resolve(agents.get(id) ?? null),
       config,
     });
-    assert.deepEqual(resolution, { bankId: "fleet-work", source: "config-map", agentName: "work-agent" });
+    assert.deepEqual(resolution, { bankId: "fleet-work", source: "config-map", agentName: "work-agent", agentRole: "engineer" });
   });
 
   it("returns null (closed) when the agent is in neither source", async () => {
