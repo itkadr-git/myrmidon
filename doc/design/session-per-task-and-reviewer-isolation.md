@@ -160,9 +160,10 @@ The contracts and isolation guarantees are verified by the unit test suite in:
 
 ## 7. Implementation Roadmap (1.7 Subtasks)
 
-| Subtask | Estimate | Description |
-|---|---|---|
-| **1.7 WAKE-9A** | 1.5 h | Enforce strict `session-per-task` in `server/src/services/heartbeat.ts` and `packages/adapters/hermes`, preventing unscoped fallbacks and cross-task context leakage. |
-| **1.7 WAKE-9B** | 1.5 h | Implement minimal `ReviewerInputFixture` renderer in `packages/adapter-utils/src/server-utils.ts` and enforce the Zod `reviewVerdictSchema` on review completions. |
+| Subtask | Issue | Estimate | Description |
+|---|---|---|---|
+| **1.7 WAKE-9** (This PR #2064) | OPE-9501 | 2 h | **Design-only**: architecture specification, shared data contracts (`@myrmidon/shared`), and contract verification test suite. |
+| **1.7 WAKE-9A** | OPE-10333 | 1.5 h | **Runtime task session isolation**: enforce strict `session-per-task` in `server/src/services/heartbeat.ts` and `packages/adapters/hermes`, preventing unscoped fallbacks and cross-task context leakage. |
+| **1.7 WAKE-9B** | OPE-10334 | 1.5 h | **Reviewer runtime containment**: implement minimal `ReviewerInputFixture` renderer in `packages/adapter-utils/src/server-utils.ts` and enforce Zod `reviewVerdictSchema` with prompt injection quarantine on review completions. |
 
 ---
