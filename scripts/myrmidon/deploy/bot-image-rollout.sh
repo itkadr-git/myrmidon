@@ -122,6 +122,7 @@
 # WARNING and the --retry-deferred command above); 1 = DEGRADED failure —
 # failed > 0 or a card/container mismatch (see the verification table above).
 set -euo pipefail
+unset BASH_ENV ENV
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
