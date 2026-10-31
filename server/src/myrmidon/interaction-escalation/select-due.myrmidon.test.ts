@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   interactionEscalations,
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
   });
 
   afterEach(async () => {
+    await db.delete(agentWakeupRequests);
     await db.delete(interactionEscalations);
     await db.delete(issueThreadInteractions);
     await db.delete(issues);
