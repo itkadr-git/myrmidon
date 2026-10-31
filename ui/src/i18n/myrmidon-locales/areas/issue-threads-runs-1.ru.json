@@ -282,7 +282,8 @@
         "externalObjectStatus": "Статус внешнего объекта",
         "visibility": "Видимость",
         "liveRunsOnly": "Только активные прогоны",
-        "hideRoutineRuns": "Скрыть рутинные прогоны"
+        "hideRoutineRuns": "Скрыть рутинные прогоны",
+        "olderThan30Days": "Старше 30 дней"
       },
       "issue-link-quicklook": {
         "loadFailed": "Не удалось загрузить предпросмотр задачи."

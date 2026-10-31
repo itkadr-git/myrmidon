@@ -20,6 +20,7 @@ from egress_proxy.config import (
     MODE_ENV,
     POLICY_FILE_ENV,
     POLICY_URL_ENV,
+    TUNNEL_IDLE_ENV,
     load_bots,
     load_config,
 )
@@ -36,6 +37,7 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(config.policy_url, "")
         self.assertEqual(config.policy_file, "")
         self.assertEqual(config.policy_refresh_sec, 30)
+        self.assertIsNone(config.tunnel_idle_sec)
 
     def test_refuses_a_mode_it_does_not_implement(self) -> None:
         for mode in ("block", "off", "deny"):
@@ -76,6 +78,25 @@ class LoadConfigTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ConfigError):
                     load_config({"EGRESS_PROXY_PORT": bad})
+
+    def test_tunnels_have_no_idle_limit_unless_asked_for(self) -> None:
+        for raw in ("", "   ", "0", "0.0", " 0 "):
+            with self.subTest(raw=raw):
+                self.assertIsNone(load_config({TUNNEL_IDLE_ENV: raw}).tunnel_idle_sec)
+
+    def test_reads_the_tunnel_idle_limit_as_seconds(self) -> None:
+        for raw, expected in (("30", 30), (" 90 ", 90), ("1", 1), ("2.5", 2.5), ("86400", 86400)):
+            with self.subTest(raw=raw):
+                self.assertEqual(load_config({TUNNEL_IDLE_ENV: raw}).tunnel_idle_sec, expected)
+
+    def test_refuses_a_tunnel_idle_limit_it_cannot_honour(self) -> None:
+        # 0 means "no limit", so anything between 0 and 1 is a mistake, not a
+        # request for a very short one.
+        for bad in ("0.5", "-1", "86401", "99999999999999999999", "1e400", "ten", "1,5", "nan", "inf", "-inf"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigError) as raised:
+                    load_config({TUNNEL_IDLE_ENV: bad})
+                self.assertIn(TUNNEL_IDLE_ENV, str(raised.exception))
 
 
 class LoadBotsTest(unittest.TestCase):
