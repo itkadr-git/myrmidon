@@ -95,7 +95,13 @@ describe("withHookTimeout: a bounded await for integration hooks", () => {
 });
 
 describeEmbeddedPostgres("maintenance leave-always: hooks never pin a `leaving` window", () => {
+  let previousJwtSecret: string | undefined;
+
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-leave-always-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -116,6 +122,11 @@ describeEmbeddedPostgres("maintenance leave-always: hooks never pin a `leaving` 
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   async function seedAgent(scopeSuffix: string) {
