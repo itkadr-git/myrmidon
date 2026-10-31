@@ -152,6 +152,8 @@ export const knowledgeRevisions = pgTable(
     status: text("status").$type<KnowledgeRevisionStatus>().notNull().default("draft"),
     lang: text("lang").$type<KnowledgeRevisionLang>().notNull().default("en"),
     translationOf: uuid("translation_of").references((): AnyPgColumn => knowledgeRevisions.id, { onDelete: "set null" }),
+    title: text("title"),
+    summary: text("summary"),
     content: text("content").notNull(),
     /** What changed, free text — shown in the revision diff (K-4 UI). */
     changeSummary: text("change_summary"),
