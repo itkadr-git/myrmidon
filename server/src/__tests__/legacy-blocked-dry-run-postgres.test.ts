@@ -176,17 +176,17 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
       {
         companyId,
         issueId: eligibleDepId,
-        body: "Execution is blocked by upstream task OPE-500",
+        body: "Execution is blocked by OPE-500",
       },
       {
         companyId,
         issueId: eligibleRecId,
-        body: "Initiating recovery retry after process termination",
+        body: "Recovery task is required after process termination",
       },
       {
         companyId,
         issueId: eligibleDecisionId,
-        body: "Awaiting need decision from product manager before moving forward",
+        body: "Awaiting owner decision before moving forward",
       },
     ]);
 
