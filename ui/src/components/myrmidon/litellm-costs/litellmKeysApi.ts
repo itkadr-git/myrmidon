@@ -16,9 +16,18 @@ export interface GatewayFallbackCycle {
   described: string;
 }
 
+export interface GatewayFallbackModelInfo {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+  isFree?: boolean;
+}
+
 export interface GatewayFallbackReport {
   chains: Array<{ model: string; targets: string[] }>;
   cycles: GatewayFallbackCycle[];
+  models?: GatewayFallbackModelInfo[];
   error?: string;
 }
 
@@ -32,6 +41,8 @@ const base = (companyId: string) => `/myrmidon/companies/${encodeURIComponent(co
 export const litellmKeysApi = {
   keys: (companyId: string) => api.get<AgentGatewayKeyView[]>(`${base(companyId)}/keys`),
   fallbacks: (companyId: string) => api.get<GatewayFallbackReport>(`${base(companyId)}/fallbacks`),
+  updateFallbacks: (companyId: string, chains: Array<{ model: string; targets: string[] }>) =>
+    api.put<GatewayFallbackReport>(`${base(companyId)}/fallbacks`, { chains }),
   create: (companyId: string, agentId: string) =>
     api.post<AgentGatewayKeyView & { value: string }>(
       `${base(companyId)}/keys/${encodeURIComponent(agentId)}`,
