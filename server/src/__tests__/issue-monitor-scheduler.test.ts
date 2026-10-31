@@ -304,6 +304,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       issueId,
       type: "pull_request",
       provider: "github",
+      title: "PR #123",
+      status: "open",
       metadata: {
         repository: "paperclipai/paperclip",
         number: 123,
