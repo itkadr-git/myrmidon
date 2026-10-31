@@ -337,6 +337,31 @@ describe("issueThreadInteractionService", () => {
     expect(state.interactionUpdates).toHaveLength(0);
   });
 
+  it("returns issue_closed as the expiration reason for terminal listed interactions", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const pending = {
+      id: "interaction-list-pending",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [] },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"),
+      updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow: pending });
+    // listForIssue performs one interaction query and one status query.
+    state.db.select = vi.fn(() => {
+      const select = createSelectChain([pending]);
+      return select;
+    });
+    const listed = await issueThreadInteractionService(state.db as never).listForIssue(pending.issueId);
+    expect(listed[0]).toMatchObject({ status: "expired", result: { outcome: "issue_closed", expirationReason: "issue_closed" } });
+  });
+
   it("expires pending interactions when the issue is terminal", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {

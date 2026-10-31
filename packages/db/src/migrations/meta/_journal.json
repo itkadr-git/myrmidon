@@ -2545,10 +2545,17 @@
       "breakpoints": true
     },
     {
-      "idx": 428,
+      "idx": 426,
       "version": "7",
       "when": 1793323805001,
       "tag": "0428_activity_log_company_action_continuation_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 427,
+      "version": "7",
+      "when": 1793468000000,
+      "tag": "0429_expire_pending_interactions_on_closed_issues",
       "breakpoints": true
     }
   ]
