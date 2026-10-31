@@ -16,7 +16,9 @@
 import type { Db } from "@myrmidon/db";
 import {
   countBotLspModes,
+  DEFAULT_BOT_CONTAINER_MEMORY_MB,
   effectiveBotLspSettings,
+  maxTsServerMemoryMb,
   resolveBotLsp,
   type BotLspAgentMode,
   type BotLspModeCounts,
@@ -24,6 +26,7 @@ import {
   type BotLspSettingsPatch,
   type EffectiveBotLspSettings,
 } from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 
@@ -34,6 +37,8 @@ export interface BotLspView {
   /** The bots and the mode each one resolves to right now. */
   agents: BotLspAgentMode[];
   counts: BotLspModeCounts;
+  /** Warnings when stored settings conflict with current container limits. */
+  warnings?: string[];
 }
 
 export interface BotLspActor {
@@ -68,6 +73,8 @@ export interface BotLspServiceDeps {
   logActivity(entry: BotLspAuditEntry): Promise<unknown>;
   /** The container bots whose mode the view reports. Read-only. */
   listBots(): Promise<BotLspAgentCard[]>;
+  /** Configured container memory (MB) for active containers; null means no active container. */
+  listContainerMemoryMb(): Promise<Array<number | null>>;
 }
 
 export interface BotLspService {
@@ -114,8 +121,14 @@ export function mergeBotLspSettings(before: BotLspSettings, patch: BotLspSetting
   return next as BotLspSettings;
 }
 
+// Keep tsserver below 40% of the smallest configured bot container.
+export const BOT_LSP_CONTAINER_RESERVE_RATIO = 0.6;
+
+export { maxTsServerMemoryMb };
+
 export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}): BotLspService {
   const deps: BotLspServiceDeps = {
+    listContainerMemoryMb: async () => [],
     settings: instanceSettingsService(db),
     listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
@@ -126,18 +139,34 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
   };
 
   async function view(settings: BotLspSettings): Promise<BotLspView> {
-    const bots = await deps.listBots();
+    const [bots, limits] = await Promise.all([
+      deps.listBots(),
+      deps.listContainerMemoryMb(),
+    ]);
     // The same resolution the profile compiler applies, so the view shows
     // what each bot actually runs with.
     const agents: BotLspAgentMode[] = bots.map((bot) => {
       const resolved = resolveBotLsp(bot.role, bot.adapterConfig, settings);
       return { id: bot.id, name: bot.name, role: bot.role, mode: resolved.mode, source: resolved.source };
     });
+    const effective = effectiveBotLspSettings(settings);
+    const applicable = limits.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+    const warnings: string[] = [];
+    if (applicable.length > 0) {
+      const minimum = Math.min(...applicable);
+      const cap = maxTsServerMemoryMb(minimum);
+      if (effective.tsserverMemoryMb > cap) {
+        warnings.push(
+          `Configured tsserverMemoryMb (${effective.tsserverMemoryMb} MB) exceeds 40% cap of active bot container (${minimum} MB limit, max ${cap} MB); runtime profiles safely clamp to ${cap} MB`,
+        );
+      }
+    }
     return {
       settings,
-      effective: effectiveBotLspSettings(settings),
+      effective,
       agents,
       counts: countBotLspModes(agents),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 
@@ -152,6 +181,18 @@ export function botLspService(db: Db, overrides: Partial<BotLspServiceDeps> = {}
         const general = await deps.settings.getGeneral();
         const before = asStored(general.botLsp);
         const next = mergeBotLspSettings(before, patch);
+        if (next.tsserverMemoryMb !== undefined) {
+          const limits = await deps.listContainerMemoryMb();
+          const applicable = limits.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+          const limitToValidateAgainst = applicable.length > 0 ? Math.min(...applicable) : DEFAULT_BOT_CONTAINER_MEMORY_MB;
+          const maxAllowed = maxTsServerMemoryMb(limitToValidateAgainst);
+          if (next.tsserverMemoryMb > maxAllowed) {
+            const reason = applicable.length > 0
+              ? `tsserverMemoryMb must not exceed 40% of the smallest configured active bot container (${maxAllowed} MB)`
+              : `tsserverMemoryMb must not exceed 40% of default bot container (${maxAllowed} MB) when no active containers exist`;
+            throw badRequest(reason);
+          }
+        }
         const changedKeys = FIELDS.filter(
           (key) => JSON.stringify(before[key] ?? null) !== JSON.stringify(next[key] ?? null),
         );
