@@ -226,6 +226,59 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.commentBody).toContain("Задача возвращена автору");
   });
 
+  it("skips guard-return for a code task already in review", () => {
+    const agentMap = new Map<string, AgentSummary>([
+      [engineerAgent.id, engineerAgent],
+      [reviewerAgent.id, reviewerAgent],
+    ]);
+
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-review",
+      identifier: "OPE-9474",
+      title: "Review an open PR",
+      companyId: "comp-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgent.id,
+      assigneeRole: reviewerAgent.role,
+      projectId: "proj-1",
+      casteKey: "engineer",
+      labels: [],
+      executionState: { status: "in_progress" },
+      prWorkProducts: [{ id: "pr-review", type: "pull_request", status: "open", creatorAgentId: engineerAgent.id }],
+      comments: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    expect(decideGuardReturn(candidate, agentMap).action).toBe("skip");
+  });
+
+  it("returns an in-review task only after changes are requested", () => {
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-changes",
+      identifier: "OPE-9475",
+      title: "Apply review changes",
+      companyId: "comp-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgent.id,
+      assigneeRole: reviewerAgent.role,
+      projectId: "proj-1",
+      casteKey: "engineer",
+      labels: [],
+      executionState: { status: "changes_requested", returnAssignee: { type: "agent", agentId: engineerAgent.id } },
+      prWorkProducts: [],
+      comments: [{ id: "changes", body: "REQUEST CHANGES: fix the test", authorType: "agent", createdAt: new Date() }],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const agentMap = new Map<string, AgentSummary>([
+      [engineerAgent.id, engineerAgent],
+      [reviewerAgent.id, reviewerAgent],
+    ]);
+    expect(decideGuardReturn(candidate, agentMap).action).toBe("return");
+  });
+
   it("skips return when task is already assigned to an engineer", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],
@@ -261,7 +314,7 @@ describe("1.6.6 GUARD-RETURN: sweeper execution", () => {
       identifier: "OPE-9900",
       title: "Refactor database queries",
       companyId: "company-test",
-      status: "in_review",
+      status: "in_progress",
       assigneeAgentId: "agent-reviewer",
       projectId: "proj-100",
       casteKey: "engineer",

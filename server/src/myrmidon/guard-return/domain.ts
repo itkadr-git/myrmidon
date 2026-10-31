@@ -317,6 +317,18 @@ export function decideGuardReturn(
     return { action: "skip", reason: `Status ${candidate.status} is not in_progress or in_review` };
   }
 
+  // in_review means the issue is in the review workflow: the review participant is
+  // intentionally a non-coding role, so a plain in_review wait is normal review, not
+  // a stranded task. Bouncing it here would defeat the review stage and caused
+  // repeated guard-return status flips (OPE-9474). Return it only when a reviewer
+  // verdict already demands engineer work (changes_requested).
+  if (candidate.status === "in_review") {
+    const verdictPending = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
+    if (!verdictPending) {
+      return { action: "skip", reason: "in_review without changes_requested verdict: awaiting review" };
+    }
+  }
+
   // Check if current assignee is a non-coding role
   if (!isNoncodingRole(candidate.assigneeRole)) {
     return { action: "skip", reason: `Assignee role ${candidate.assigneeRole} is not a non-coding role` };
