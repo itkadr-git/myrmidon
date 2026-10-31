@@ -9,6 +9,14 @@
 // Base scope carried over from the 1.2 localization branch (core screens),
 // plus the 2.0 shell/navigation and the Settings → Language screen.
 export const en = {
+  // myrmidon(OPE-9382): interface version switch in the UI2 account menu (Ui2AccountMenu.tsx).
+  uiSwitch: {
+    label: "Interface",
+    new: "New",
+    legacy: "Previous",
+    instanceDefault: "Follow instance setting",
+    switchTo: "Switch interface version",
+  },
   nav: {
     newTask: "New Task",
     search: "Search",
@@ -396,6 +404,13 @@ export const en = {
 };
 
 export type Ui2Catalog = {
+  uiSwitch: {
+    label: string;
+    new: string;
+    legacy: string;
+    instanceDefault: string;
+    switchTo: string;
+  };
   nav: {
     newTask: string;
     search: string;
