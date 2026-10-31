@@ -2542,6 +2542,10 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -3060,3 +3064,4 @@ export * from "./locale-upload.js";
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.
 export * from "./myrmidon-vendor-name.js";
+
