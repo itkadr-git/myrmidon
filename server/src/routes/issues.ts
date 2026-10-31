@@ -13714,6 +13714,19 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (req.actor.type === "agent") {
+        throw forbidden(
+          `Board access required. Решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+          {
+            hint: `решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+            decisionEndpoint: `PATCH /api/issues/${id}`,
+            actions: {
+              approve: { status: "done", commentRequired: true },
+              request_changes: { status: "in_progress", commentRequired: true },
+            },
+          },
+        );
+      }
       assertBoard(req);
 
       if (req.actor.source !== "local_implicit") {
