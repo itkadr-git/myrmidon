@@ -739,6 +739,7 @@ import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/
 // myrmidon(WAKE-10.2 / OPE-9657): low-priority wake event accumulation & digest
 import {
   classifyEventPriority,
+  EVENT_PRIORITY_BY_TYPE,
   isDigestAccumulatedPriority,
   getSharedEventDigestService,
 } from "../myrmidon/event-digest/index.js";
@@ -29130,8 +29131,19 @@ export function heartbeatService(
     // in the agent's event digest without triggering a wake run.
     if (!opts.manualUserWake) {
       const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason ?? "heartbeat";
+      const normalizedReason = effectiveReason.trim().toLowerCase();
+      const isExplicitlyClassified =
+        Object.prototype.hasOwnProperty.call(EVENT_PRIORITY_BY_TYPE, normalizedReason) ||
+        normalizedReason.startsWith("progress.") ||
+        normalizedReason.startsWith("metric.") ||
+        normalizedReason.startsWith("heartbeat.") ||
+        normalizedReason.startsWith("log.");
       const priority = classifyEventPriority(effectiveReason);
-      if (isDigestAccumulatedPriority(priority)) {
+      if (
+        isExplicitlyClassified &&
+        isDigestAccumulatedPriority(priority) &&
+        normalizedReason !== "heartbeat_timer"
+      ) {
         getSharedEventDigestService().recordEvent({
           agentId,
           issueId,
