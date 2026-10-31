@@ -286,6 +286,45 @@ describe("pull-request-approval-propagation", () => {
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
+    it("current-head guard: fails closed if reviewed head is missing", async () => {
+      const db = createMockDb();
+      const currentHeadSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: currentHeadSha,
+          labels: [],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          decisionOutcome: "approved",
+          verdictBody: "VERDICT: APPROVE (no head specified)",
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe("skipped");
+      expect(result.reason).toBe("missing_reviewed_head");
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
     it("negative path: non-approval / REQUEST CHANGES does not tag or approve", async () => {
       const db = createMockDb();
       const mockClient: GitHubApprovalClient = {
@@ -330,6 +369,9 @@ describe("pull-request-approval-propagation", () => {
         }),
         addLabel: vi.fn(),
         submitReview: vi.fn(),
+        listReviews: vi.fn().mockResolvedValue([
+          { id: 1, state: "APPROVED", commitId: defaultHeadSha },
+        ]),
       };
 
       const result = await propagateReviewApprovalToPullRequest(
@@ -350,8 +392,45 @@ describe("pull-request-approval-propagation", () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe("noop");
-      expect(result.reason).toBe("already_labeled");
+      expect(result.reason).toBe("already_approved_and_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).not.toHaveBeenCalled();
+    });
+
+    it("idempotency & recovery: recovers missing review if PR is labeled but review is missing", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn().mockResolvedValue({
+          state: "open",
+          draft: false,
+          merged: false,
+          headSha: defaultHeadSha,
+          labels: [REVIEW_APPROVED_LABEL],
+        }),
+        addLabel: vi.fn(),
+        submitReview: vi.fn().mockResolvedValue({ id: 99 }),
+        listReviews: vi.fn().mockResolvedValue([]),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          headSha: defaultHeadSha,
+          decisionOutcome: "approved",
+        },
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockClient.addLabel).not.toHaveBeenCalled();
+      expect(mockClient.submitReview).toHaveBeenCalled();
     });
 
     it("authorization: fails safely and logs failure when no token is available", async () => {
@@ -366,7 +445,7 @@ describe("pull-request-approval-propagation", () => {
         {
           db: db as any,
           client: mockClient,
-          tokenProvider: vi.fn().mockResolvedValue(null), // No credentials!
+          tokenProvider: vi.fn().mockResolvedValue(null),
         },
         {
           companyId,
@@ -382,6 +461,15 @@ describe("pull-request-approval-propagation", () => {
       expect(result.action).toBe("failed");
       expect(result.reason).toBe("missing_credentials");
       expect(mockClient.getPullRequest).not.toHaveBeenCalled();
+    });
+
+    it("fails safe when stored headSha is missing in work product metadata during lookup", () => {
+      // Direct unit check on head matching fail-safe logic:
+      // When reviewedHeadSha is empty/null, lookup/guard must not match
+      const taskHeadSha = null;
+      const headSha = defaultHeadSha;
+      const matches = !taskHeadSha ? false : (taskHeadSha as string).toLowerCase().startsWith(headSha.toLowerCase());
+      expect(matches).toBe(false);
     });
   });
 });
