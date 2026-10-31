@@ -11,12 +11,16 @@
 // the two cannot disagree about what "the top of the queue" is.
 
 import {
+  checkCapacity,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
   orderSwarmQueueCandidates,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
+  type CapacityCandidate,
+  type CapacityMetrics,
+  type CapacityPolicy,
   type PheromoneDynamicsSettings,
   type SwarmClaimLease,
   type SwarmClaimSettings,
@@ -24,6 +28,7 @@ import {
 } from "@myrmidon/shared";
 
 export {
+  checkCapacity,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
   orderSwarmQueueCandidates,
@@ -31,7 +36,7 @@ export {
   swarmLeaseExpiresAt,
   swarmPriorityRank,
 };
-export type { SwarmClaimLease, SwarmQueueCandidate };
+export type { CapacityCandidate, CapacityMetrics, CapacityPolicy, SwarmClaimLease, SwarmQueueCandidate };
 
 /**
  * The live lease of one task, or null. A task may not have two live claims: the
@@ -107,6 +112,8 @@ export function nextQueueTaskForAgent(input: {
     /** 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design §2.3). */
     pheromoneDynamics?: PheromoneDynamicsSettings;
   };
+  capacityPolicy?: CapacityPolicy;
+  activeCounts?: Pick<CapacityMetrics, "activeByProject" | "activeByCaste">;
   now?: Date;
 }): SwarmQueueCandidate | null {
   if (!input.settings.enabled) return null;
@@ -118,7 +125,21 @@ export function nextQueueTaskForAgent(input: {
     dynamics: input.settings.pheromoneDynamics,
     now: input.now,
   });
-  return queue[0] ?? null;
+  if (!input.capacityPolicy) {
+    return queue[0] ?? null;
+  }
+  for (const candidate of queue) {
+    const candidateWithScope = candidate as SwarmQueueCandidate & CapacityCandidate;
+    const decision = checkCapacity(
+      input.activeCounts ?? { activeByProject: {}, activeByCaste: {} },
+      candidateWithScope,
+      input.capacityPolicy,
+    );
+    if (decision.allowed) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 /** A claim the store should write; the expiry is already stamped. */

@@ -286,6 +286,7 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  blockerGraphRootsResponseSchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -3679,6 +3680,25 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/blocker-graph/roots",
+  tags: ["issues"],
+  summary: "Get root blocker issues sorted by dependent fanout",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(blockerGraphRootsResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
@@ -5121,6 +5141,20 @@ registry.registerPath({
   summary: "Get budget overview",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/budgets/export",
+  tags: ["costs"],
+  summary: "Export budget report in CSV or JSON",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      format: z.enum(["csv", "json"]).default("json"),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

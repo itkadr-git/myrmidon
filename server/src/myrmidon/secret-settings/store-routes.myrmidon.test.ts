@@ -10,7 +10,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
 import { companies, companySecrets, companySecretBindings, activityLog, createDb, toolApplications, toolConnections, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -46,14 +46,14 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
   let firstSecretId!: string;
   let secondSecretId!: string;
 
-  function appFor(actor: Record<string, unknown>) {
+  function appFor(actor: Record<string, unknown>, routeRegistry = registry) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = actor as never;
       next();
     });
-    app.use("/api", instanceSecretSettingsRoutes(db, registry, env));
+    app.use("/api", instanceSecretSettingsRoutes(db, routeRegistry, env));
     app.use(errorHandler);
     return app;
   }
@@ -211,7 +211,7 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     }
   });
 
-  it("migrate reports a failed second row but keeps earlier successful audit and leaves no orphan", async () => {
+  it("HTTP apply persists real audits before rolling back a failed second row", async () => {
     const first = registry.get(NAME)!;
     const second = { ...first, name: "test.cloud.second", envOverride: "TEST_CLOUD_SECOND_SECRET" };
     const third = { ...first, name: "test.cloud.third", envOverride: "TEST_CLOUD_THIRD_SECRET" };
@@ -220,31 +220,53 @@ describeEmbeddedPostgres("instance secret settings: routes and store on the real
     env[ENV_NAME] = ENV_VALUE;
     env[second.envOverride] = "second-value";
     env[third.envOverride] = "third-value";
-    const svc = createInstanceSecretSettingService(db, localRegistry, env);
-    const audited: string[] = [];
+
+    // Fail only the second real audit insert, after the first row was committed.
+    await db.execute(sql`CREATE FUNCTION reject_second_migration_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.action = 'instance.secret_setting.migrated'
+           AND NEW.entity_type = 'instance_secret_setting'
+           AND NEW.entity_id = 'test.cloud.second' THEN
+          RAISE EXCEPTION 'injected audit insert failure';
+        END IF;
+        RETURN NEW;
+      END
+    $$`);
+    await db.execute(sql`CREATE TRIGGER reject_second_migration_audit BEFORE INSERT ON activity_log
+      FOR EACH ROW EXECUTE FUNCTION reject_second_migration_audit()`);
+
     try {
-      const rows = await svc.migrate({
-        apply: true,
-        companyId,
-        onBound: async (name) => {
-          audited.push(name);
-          if (name === second.name) throw new Error("audit failure");
-        },
-      });
-      expect(JSON.stringify(rows)).not.toContain("second-value");
-      expect([...audited].sort()).toEqual([first.name, second.name, third.name].sort());
-      expect(rows.rows.map((row) => [row.name, row.outcome]).sort()).toEqual(
+      const response = await request(appFor({
+        type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [], memberships: [],
+      }, localRegistry)).post("/api/instance/secret-settings/migrate").send({ apply: true, companyId });
+
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(response.body)).not.toContain("second-value");
+      expect(response.body.rows.map((row: { name: string; outcome: string }) => [row.name, row.outcome]).sort()).toEqual(
         [[first.name, "bound"], [second.name, "error"], [third.name, "bound"]].sort(),
       );
-      expect(rows.rows.find((row) => row.name === second.name)).toMatchObject({ errorCode: "migration_failed" });
+      expect(response.body.rows.find((row: { name: string }) => row.name === second.name)).toMatchObject({ errorCode: "migration_failed" });
+
+      const audits = await db.select({ entityId: activityLog.entityId, action: activityLog.action, details: activityLog.details })
+        .from(activityLog).where(eq(activityLog.action, "instance.secret_setting.migrated"));
+      expect(audits.map((row) => row.entityId).sort()).toEqual([first.name, third.name].sort());
+      expect(audits.every((row) => Object.hasOwn(row.details ?? {}, "settingName") && Object.hasOwn(row.details ?? {}, "secretId"))).toBe(true);
+      const svc = createInstanceSecretSettingService(db, localRegistry, env);
+      expect((await svc.status(first.name)).ref).not.toBeNull();
       expect((await svc.status(second.name)).ref).toBeNull();
-            expect((await svc.status(first.name)).ref).not.toBeNull();
       expect((await svc.status(third.name)).ref).not.toBeNull();
       const names = await db.select({ name: companySecrets.name }).from(companySecrets);
       expect(names.map((row) => row.name)).not.toContain("instance-setting.test.cloud.second");
     } finally {
+      await db.execute(sql`DROP TRIGGER reject_second_migration_audit ON activity_log`);
+      await db.execute(sql`DROP FUNCTION reject_second_migration_audit()`);
+      const svc = createInstanceSecretSettingService(db, localRegistry, env);
       await svc.clearRef(first.name);
       await svc.clearRef(third.name);
+      await db.delete(activityLog).where(and(
+        eq(activityLog.action, "instance.secret_setting.migrated"),
+        inArray(activityLog.entityId, [first.name, second.name, third.name]),
+      ));
       await db.delete(companySecrets).where(like(companySecrets.name, "instance-setting.%"));
       for (const key of [ENV_NAME, second.envOverride, third.envOverride]) {
         const value = previousEnv.get(key);

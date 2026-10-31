@@ -39,12 +39,24 @@ export interface ScentQueuePorts {
   fetch?: typeof fetch;
   /** Test hook: replace the secret store lookup. */
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
+  /** Test hook: replace general instance settings lookup. */
+  getGeneral?: (db: Db) => Promise<unknown>;
+  /** Test hook: provide the company caste directory without querying the database. */
+  listCastes?: (db: Db, companyId: string) => Promise<Array<{ key: string }>>;
+  /** Test hook: supply the service's markup backlog to status without Drizzle queries. */
+  listMarkupQueue?: (
+    db: Db,
+    companyId: string,
+    limit: number,
+  ) => Promise<{ issueIds: string[]; agentIds: string[]; totalPending: number }>;
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
+  /** Test hook: observe queue diagnostics without coupling to the logger module. */
+  logActivity?: (db: Db, entry: Parameters<typeof logActivity>[1]) => Promise<unknown>;
 }
 
-async function defaultResolveSecret(
+export async function resolveScentSecret(
   db: Db,
   companyId: string,
   secretName: string,
@@ -62,8 +74,9 @@ async function defaultResolveSecret(
 }
 
 async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): Promise<void> {
-  const settingsSvc = instanceSettingsService(db);
-  const general = await settingsSvc.getGeneral();
+  const general = ports.getGeneral
+    ? await ports.getGeneral(db)
+    : await instanceSettingsService(db).getGeneral();
   const settings = readScentSettings(
     (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
@@ -72,10 +85,38 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
 
   const env = process.env;
   const baseUrl = env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
-  const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
-  const resolve = ports.resolveSecret ?? defaultResolveSecret;
+  const secretName =
+    settings.apiKeySecretName?.trim() ||
+    env[SCENT_KEY_SECRET_ENV]?.trim() ||
+    "MYRMIDON_EVALS_API_KEY";
+  const resolve = ports.resolveSecret ?? resolveScentSecret;
   const apiKey = await resolve(db, companyId, secretName);
-  if (!baseUrl || !apiKey) return; // contour not configured — nothing to do
+  if (!baseUrl || !apiKey) {
+    // OPE-7190: a parked queue must not be silent. Without this entry the
+    // acceptance SQL (activity_log by action) cannot distinguish "classifier
+    // off" from "classifier broken" — the exact blindness that hid the 1.6.5
+    // contour gap for a day. Throttled to one entry per company per hour.
+    const seen = await db.execute(sql`
+      select count(*)::int as n
+      from activity_log
+      where action = 'swarm.scent_contour_unconfigured'
+        and company_id = ${companyId}
+        and created_at > now() - interval '1 hour'
+    `);
+    const recent = Number((seen as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+    if (recent === 0) {
+      await (ports.logActivity ?? logActivity)(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "swarm.scent_contour_unconfigured",
+        entityType: "company",
+        entityId: companyId,
+        details: { baseUrlConfigured: Boolean(baseUrl), keyConfigured: Boolean(apiKey) },
+      }).catch(() => undefined);
+    }
+    return;
+  }
 
   const castes = await createCasteStore({ db }).listCastes(companyId);
   const casteKeys = castes.map((c: { key: string }) => c.key);

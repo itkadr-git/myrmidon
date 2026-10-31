@@ -71,7 +71,7 @@ import {
 function recordSwarmPass(result: SwarmClaimSweepResult, failure: string | null): void {
   const detail = {
     idleRoles: result.idleRoles,
-    idleFreeAgents: result.idleFreeAgents,
+    idleUnmatchedTasks: result.idleUnmatchedTasks,
     idleWoken: result.idleWoken,
     idleSkippedReason: result.idleSkippedReason,
   };
@@ -125,8 +125,8 @@ export interface SwarmClaimSweepResult {
   idleClaimLost: number;
   /** Roles with a non-empty ready queue the idle pass examined. */
   idleRoles: number;
-  /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
-  idleFreeAgents: number;
+  /** Ready tasks left without an available agent in this pass. */
+  idleUnmatchedTasks: number;
   /**
    * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): roles that have ready tasks queued
    * but no agent at all — a configuration gap (a `role:<key>` label naming a
@@ -190,7 +190,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleClaimed: 0,
         idleClaimLost: 0,
         idleRoles: 0,
-        idleFreeAgents: 0,
+        idleUnmatchedTasks: 0,
         idleUnstaffedRoles: 0,
         idleSkippedReason: null,
       };
@@ -385,7 +385,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         result.idleRoles += matched.companies;
         // Ready tasks no free agent of their caste was found for — the number
         // an operator watches while the fleet is saturated.
-        result.idleFreeAgents += matched.unmatched;
+        result.idleUnmatchedTasks += matched.unmatched;
         if (matched.claimed > 0) {
           logger.warn(
             {

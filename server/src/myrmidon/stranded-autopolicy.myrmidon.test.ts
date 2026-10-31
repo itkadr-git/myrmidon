@@ -97,6 +97,30 @@ describe("decideStrandedAutoPolicy", () => {
     expect(secondAttempt).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
   });
 
+  it("retries before escalation even with a workflow or an ADM target", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 1,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      hasExecutionWorkflow: true,
+      targetIsAdm: true,
+    })).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
+  });
+
+  it("blocks with the senior owner after the successful handoff budget is exhausted", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      successfulRunHandoffExhausted: true,
+    })).toEqual({
+      kind: "disposition_blocked",
+      ownerAgentId: "lead-1",
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+    });
+  });
+
   it("hands off to the manager once the cap is reached and a manager exists", () => {
     const decision = decideStrandedAutoPolicy({
       attemptsInWindow: 2,
@@ -270,6 +294,12 @@ describe("issueHasExistingExecutionWorkflow", () => {
   it("is false for an issue with no policy and no state at all", () => {
     expect(issueHasExistingExecutionWorkflow({})).toBe(false);
     expect(issueHasExistingExecutionWorkflow({ executionPolicy: null, executionState: null })).toBe(false);
+  });
+
+  it("treats an open pull request work product with active status as an existing execution workflow", () => {
+    // Paperclip's linked GitHub PR work product remains `active` while the PR is open.
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: true })).toBe(true);
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: false })).toBe(false);
   });
 
   it("is true when an execution policy already has configured stages, even before any stage has started", () => {
@@ -673,6 +703,25 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toEqual({ kind: "vendor_default", ...exhausted });
   });
 
+  it("successful-run disposition exhaustion never falls through to board", () => {
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: null,
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "vendor_default", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: "adm-1",
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
   it("retries still come first and a paused assignee keeps the old behaviour", () => {
     expect(
       decideStrandedAutoPolicy({
@@ -698,6 +747,15 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
       escalationPolicy: "stranded_disposition_chain_v1",
     });
     expect(patch.unblockDescriptor.owner).toEqual({ agentId: "adm-1" });
+    expect(patch.unblockDescriptor.reasonRef).toEqual({
+      kind: "event",
+      eventKey: "stranded.disposition:issue-1",
+    });
+    expect(patch.blockerMetadata).toMatchObject({
+      blockReason: "recovery",
+      owner: { agentId: "adm-1" },
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
     expect(patch.unblockDescriptor.action).toContain("final status");
     expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
   });

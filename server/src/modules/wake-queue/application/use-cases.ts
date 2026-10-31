@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -34,6 +35,7 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+import { shouldSkipContinuation } from "../../../myrmidon/swarm-claim/requires-engineer.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -352,6 +354,16 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
+    if (shouldSkipContinuation({ agentRole: deferredAgent.role, issueRole: issue.issueRole })) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred continuation skipped because agent and issue roles differ",
+        now: input.now,
+      });
+      continue;
+    }
+
     const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;
     return promoted;
@@ -416,6 +428,27 @@ async function promoteDeferredWake(
       now: input.now,
     });
     return null;
+  }
+
+  if (workingCandidate.wakeReason === "issue_continuation_needed" || workingCandidate.reason === "issue_continuation_needed") {
+    const claimed = await ports.transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({
+        issueId: issue.id,
+        event: "issue_continuation_needed",
+        head: readNonEmptyString(workingCandidate.deferredContextSeed.continuationHead) ?? workingCandidate.id,
+      }),
+    });
+    if (claimed === "deduped") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred execution wake continuation already claimed",
+        now: input.now,
+      });
+      return null;
+    }
   }
 
   // Claim before reopening. A reopen write and its post-commit effect must
@@ -763,6 +796,15 @@ async function runReleaseRecoveryTail(
         wakeReason: recoveryReason,
       },
     );
+  }
+
+  if (recoveryReason === "issue_continuation_needed") {
+    const claimed = await transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({ issueId: issue.id, event: "issue_continuation_needed", head: run.id }),
+    });
+    if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   const queuedRun = await transaction.queueImmediateRecoveryRun({

@@ -93,7 +93,12 @@ function createFakeIssues() {
       return "applied";
     },
   };
-  return { tasks, port, created: () => [...tasks.values()] };
+  return {
+    tasks,
+    port,
+    created: () => [...tasks.values()],
+    closed: () => [...tasks.values()].filter((t) => t.status === "done"),
+  };
 }
 
 function createMemoryStore(initial?: Partial<AlertRecoverySettings>) {
@@ -110,6 +115,9 @@ function createMemoryStore(initial?: Partial<AlertRecoverySettings>) {
       companyId ? records.filter((record) => record.companyId === companyId) : records.slice(),
     writeRecords: async (companyId, next) => {
       records = [...records.filter((record) => record.companyId !== companyId), ...next];
+    },
+    markWakeDispatched: async (identity, dispatchedAt) => {
+      records = records.map((record) => record.identity === identity ? { ...record, heldAt: dispatchedAt } : record);
     },
   };
   return {
@@ -138,6 +146,108 @@ function harness(initial?: Partial<AlertRecoverySettings>) {
     },
   };
 }
+
+describe("alert recovery dispatch safety", () => {
+  it("recovery after 5 minutes with N=15 yields zero runs (alarm recovered at 5 minutes creates zero agent runs)", async () => {
+    let clock = new Date("2026-10-07T04:00:00.000Z");
+    const memory = createMemoryStore({ holdMinutes: 15 });
+    let status = "todo";
+    let dispatches = 0;
+    const agentRuns: Array<{ issueId: string; runAt: Date }> = [];
+    const issues = createFakeIssues();
+    const service = createAlertRecoveryService({
+      store: memory.store,
+      issues: {
+        ...issues.port,
+        getIssueStatus: async () => status,
+        isSystemRecoveryClosed: async () => status === "done",
+        dispatchAlertWake: async () => {
+          dispatches += 1;
+          agentRuns.push({ issueId: "issue-1", runAt: clock });
+          status = "in_progress";
+        },
+      },
+      now: () => clock,
+    });
+
+    // T=0: alert fires, issue created, hold is 15 minutes (N=15)
+    await service.ingest(firing({ happenedAt: "2026-10-07T04:00:00.000Z" }));
+    expect(issues.created()).toHaveLength(1);
+    expect(dispatches).toBe(0);
+    expect(agentRuns).toHaveLength(0);
+
+    // T=5 minutes: alert recovers
+    clock = new Date("2026-10-07T04:05:00.000Z");
+    const resolved = await service.ingest(
+      firing({ status: "resolved", happenedAt: "2026-10-07T04:05:00.000Z" }),
+    );
+    expect(resolved.kind).toBe("await-close");
+
+    // T=15m sweep: hold from initial firing passed, but alert is in await-close; no dispatch
+    clock = new Date("2026-10-07T04:15:00.000Z");
+    await service.sweep();
+    expect(dispatches).toBe(0);
+    expect(agentRuns).toHaveLength(0);
+
+    // T=20m1s sweep: 15m hold from recovery has elapsed; sweep closes task
+    clock = new Date("2026-10-07T04:20:01.000Z");
+    await service.sweep();
+    const [closedTask] = issues.closed();
+    expect(closedTask).toBeDefined();
+    expect(closedTask?.status).toBe("done");
+    status = "done";
+
+    // Zero agent dispatches and zero agent run records
+    expect(dispatches).toBe(0);
+    expect(agentRuns).toHaveLength(0);
+  });
+
+  it("does not dispatch an open Zabbix task before hold or after it is recovery-closed", async () => {
+    let clock = new Date("2026-10-07T04:00:00.000Z");
+    const memory = createMemoryStore({ holdMinutes: 15 });
+    let status = "todo";
+    let dispatches = 0;
+    const issues = createFakeIssues();
+    const service = createAlertRecoveryService({
+      store: memory.store,
+      issues: {
+        ...issues.port,
+        getIssueStatus: async () => status,
+        isSystemRecoveryClosed: async () => true,
+        dispatchAlertWake: async () => { dispatches += 1; },
+      },
+      now: () => clock,
+    });
+    await service.ingest(firing());
+    clock = new Date("2026-10-07T04:20:00.000Z");
+    status = "todo";
+    await service.sweep();
+    expect(dispatches).toBe(0);
+  });
+
+  it("dispatches a still-firing task once the hold expires", async () => {
+    let clock = new Date("2026-10-07T04:00:00.000Z");
+    const memory = createMemoryStore({ holdMinutes: 15 });
+    let status = "todo";
+    let dispatched = 0;
+    const issues = createFakeIssues();
+    const service = createAlertRecoveryService({
+      store: memory.store,
+      issues: {
+        ...issues.port,
+        getIssueStatus: async () => status,
+        isSystemRecoveryClosed: async () => false,
+        dispatchAlertWake: async () => { dispatched += 1; status = "in_progress"; },
+      },
+      now: () => clock,
+    });
+    await service.ingest(firing());
+    await service.sweep();
+    clock = new Date("2026-10-07T04:15:00.000Z");
+    await service.sweep();
+    expect(dispatched).toBe(1);
+  });
+});
 
 describe("alert recovery lifecycle", () => {
   it("turns an alarm into one task of the owner role with the runbook steps", async () => {
@@ -183,6 +293,18 @@ describe("alert recovery lifecycle", () => {
     const [record] = memory.records();
     expect(record.firedCount).toBe(2);
     expect(record.state).toBe("open");
+  });
+
+  it("does not assign or wake when an alert resolves before the hold expires", async () => {
+    const { service, issues, memory, at } = harness();
+    await service.ingest(firing({ happenedAt: "2026-10-07T04:00:00.000Z" }));
+    at("2026-10-07T04:05:00.000Z");
+    await service.ingest(firing({ status: "resolved", happenedAt: "2026-10-07T04:05:00.000Z" }));
+    at("2026-10-07T04:15:01.000Z");
+    const result = await service.sweep();
+    expect(result.closed).toHaveLength(1);
+    expect(issues.created()[0].status).toBe("done");
+    expect(memory.records()[0].heldAt).toBeNull();
   });
 
   it("closes the task by itself once the alarm has stayed resolved for the hold", async () => {
@@ -243,8 +365,6 @@ describe("alert recovery lifecycle", () => {
     at("2026-10-07T04:18:01.000Z");
     await service.sweep();
 
-    // Well past the thirty minute window: the closed record is pruned and the
-    // alarm opens a task of its own.
     at("2026-10-07T05:20:00.000Z");
     const fresh = await service.ingest(firing({ happenedAt: "2026-10-07T05:20:00.000Z" }));
 

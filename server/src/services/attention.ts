@@ -88,6 +88,7 @@ import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admissi
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
 import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
@@ -3062,7 +3063,8 @@ async function buildAttentionFeedSnapshot(
       // /issues/:id/execution-hold/confirm-continue: the person attests the
       // failed run left no external action, the hold is superseded and the
       // assignee is woken explicitly.
-      for (const card of await listExecutionHoldCards(db, companyId)) {
+      const executionHoldCards = await listExecutionHoldCards(db, companyId);
+      for (const card of executionHoldCards) {
         add(createItem({
           companyId,
           sourceKind: "replay_blocked",
@@ -3109,6 +3111,44 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(OPE-7707): company-level visibility alarm when tasks are held by replay=blocked
+      if (executionHoldCards.length > 0) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "company",
+            id: `execution-holds-aggregate:${companyId}`,
+            companyId,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
+            identifier: null,
+            status: "active",
+            href: `/${prefix}/company/settings`,
+            metadata: {
+              heldCount: executionHoldCards.length,
+            },
+          },
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
+          ),
+          inlineResolvable: false,
+          entryRule: "at least one issue is held by execution recovery replay=blocked",
+          exitRule: "no issues are held by execution recovery replay=blocked",
+          dedupKey: `execution-holds-aggregate:${companyId}`,
+          severity: executionHoldCards.length >= 5 ? "critical" : "high",
+          activityAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: `${executionHoldCards.length} open issues are currently excluded from swarm pickup by execution recovery holds.`,
             images: [],
           },
         }));
@@ -3902,7 +3942,7 @@ async function buildAttentionFeedSnapshot(
       // operator desk (the Features page holds the detail). The signals come
       // from the process-level clock the health pass feeds (features/
       // attention.ts); the card disappears when the feature is healthy again.
-      for (const feature of readFeatureAttentionSignals()) {
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
@@ -3935,6 +3975,32 @@ async function buildAttentionFeedSnapshot(
             summaryExcerpt: excerpt(feature.whyNow),
             images: [],
           },
+        }));
+      }
+
+      // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
+      // the existing attention runtime. Recovery removes the card automatically.
+      for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
+        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
+            title: signal.title, identifier: null, status: "warning",
+            href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
+          exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
+          dedupKey: signal.dedupKey, severity: "medium",
+          activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },
         }));
       }
 

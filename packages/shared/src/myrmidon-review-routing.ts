@@ -226,6 +226,7 @@ export function normalizeReviewRoutingSettings(raw: unknown): ReviewRoutingSetti
 /** Activity actions the routing writes (one per event, on the issue). */
 export const REVIEW_ROUTING_ASSIGNED_ACTION = "issue.review_routing.assigned";
 export const REVIEW_ROUTING_REASSIGNED_ACTION = "issue.review_routing.reassigned";
+export const REVIEW_ROUTING_WAKE_ACTION = "issue.review_routing.wake_requested";
 /** The PR lane created a review task for a green, verdict-less PR head. */
 export const REVIEW_ROUTING_PR_TASK_CREATED_ACTION = "issue.review_routing.pr_task_created";
 /** The PR lane created a merge-steward task for an approved green PR head. */
