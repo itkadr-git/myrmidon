@@ -5,14 +5,20 @@
 // owner is active in (portal or Telegram), or null when no channel is recent
 // enough. The rail and the phone header label themselves from it, including
 // human-readable relative freshness of the last activity.
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useContext, useMemo } from "react";
+import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
 import {
   type OwnerActiveChannelView,
   type OwnerChannel,
   OWNER_CHANNELS,
 } from "@myrmidon/shared";
 import { api } from "@/api/client";
+
+let detachedClient: QueryClient | null = null;
+function getDetachedClient(): QueryClient {
+  detachedClient ??= new QueryClient();
+  return detachedClient;
+}
 
 export const ownerActiveChannelQueryKey = ["myrmidon", "owner-active-channel"] as const;
 
@@ -30,14 +36,19 @@ export interface Ui2OwnerActiveChannel {
 export const OWNER_ACTIVE_CHANNEL_POLL_MS = 30_000;
 
 export function useOwnerActiveChannel(): Ui2OwnerActiveChannel {
-  const query = useQuery({
-    // A stable array identity: an inline literal would re-subscribe the
-    // polling query on every render (react-query identity rule).
-    queryKey: ownerActiveChannelQueryKey,
-    queryFn: () => ownerActiveChannelApi.get(),
-    refetchInterval: OWNER_ACTIVE_CHANNEL_POLL_MS,
-    staleTime: OWNER_ACTIVE_CHANNEL_POLL_MS,
-  });
+  const contextClient = useContext(QueryClientContext);
+  const query = useQuery(
+    {
+      // A stable array identity: an inline literal would re-subscribe the
+      // polling query on every render (react-query identity rule).
+      queryKey: ownerActiveChannelQueryKey,
+      queryFn: () => ownerActiveChannelApi.get(),
+      enabled: contextClient != null,
+      refetchInterval: OWNER_ACTIVE_CHANNEL_POLL_MS,
+      staleTime: OWNER_ACTIVE_CHANNEL_POLL_MS,
+    },
+    contextClient ?? getDetachedClient(),
+  );
 
   const data = query.data;
   const channel = data?.channel ?? null;

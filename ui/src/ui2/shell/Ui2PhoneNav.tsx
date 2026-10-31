@@ -203,9 +203,9 @@ export function Ui2PhoneTabBar() {
         })}
       </nav>
       {hasPlugins ? (
-        <section aria-label={tUi2("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
+        <section aria-label={t("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
           <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "2px 4px 6px" }}>
-            {tUi2("ui2.nav.group.plugins")}
+            {t("ui2.nav.group.plugins")}
           </div>
           {pluginSlots.map((slot) => (
             <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
