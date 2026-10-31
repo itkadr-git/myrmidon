@@ -28,6 +28,12 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // Guard stops are terminal for the current run, but must NOT enter
+  // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
+  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
+      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+    return false;
+  }
   // Maintenance interruption explicitly means retry, including after the
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;

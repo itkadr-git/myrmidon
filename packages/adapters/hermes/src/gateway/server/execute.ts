@@ -123,6 +123,10 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  /** Raw tool args are ephemeral and only passed to RunGuard's hash-only signature. */
+  guardToolArguments: Map<string, unknown[]>;
+  guardModelTurnObserved: boolean;
+  guardPendingToolCalls: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -640,6 +644,11 @@ function buildRunBody(
   const model = nonEmpty(ctx.config.model);
   const provider = nonEmpty(ctx.config.provider);
   const modelOptions = buildModelOptions(ctx.config);
+  const fallbackModels = provider ? readGatewayFallbackModels(ctx.config) : [];
+  const modelAttemptId = nonEmpty(ctx.config.modelAttemptId);
+  const fallbackModelEntries = fallbackModels
+    .map((fallbackModel) => ({ provider, model: fallbackModel }))
+    .filter((entry): entry is { provider: string; model: string } => Boolean(entry.provider));
   // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
   // Assigned after the payloadTemplate spread so a card cannot forge a
   // capability: only the env the server itself wrote into runtimeConfig.env
@@ -665,6 +674,8 @@ function buildRunBody(
     ...(model ? { model } : {}),
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
+    ...(fallbackModelEntries.length ? { fallback_model: fallbackModelEntries } : {}),
+    ...(modelAttemptId ? { model_attempt_id: modelAttemptId } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
@@ -826,6 +837,9 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    guardToolArguments: new Map(),
+    guardModelTurnObserved: false,
+    guardPendingToolCalls: 0,
   };
 }
 
@@ -880,7 +894,19 @@ function toolNameFromEvent(record: Record<string, unknown> | null): string {
 
 function toolPreviewFromEvent(record: Record<string, unknown> | null, redactText: TextRedactor): string {
   const preview = nonEmpty(record?.preview) ?? nonEmpty(record?.detail) ?? "";
-  return preview ? redactText(preview) : "";
+  if (!preview) return "";
+
+  // Tool arguments may contain arbitrary secrets; redact structured values by
+  // key before rendering the preview into persistent run logs.
+  try {
+    const parsed: unknown = JSON.parse(preview);
+    if (parsed !== null && typeof parsed === "object") {
+      return redactText(JSON.stringify(redactForLog(parsed, [], 0, redactText)));
+    }
+  } catch {
+    // Keep non-JSON previews, while still applying the text redactor below.
+  }
+  return redactText(preview);
 }
 
 function toolDurationSeconds(record: Record<string, unknown> | null): number | null {
@@ -931,6 +957,77 @@ function pushToolPreview(state: ExecutionState, name: string, preview: string): 
 function popToolPreview(state: ExecutionState, name: string): string {
   const queue = state.toolPreviews.get(name);
   return queue?.shift() ?? "";
+}
+
+function pushGuardToolArguments(state: ExecutionState, name: string, args: unknown): void {
+  const queue = state.guardToolArguments.get(name);
+  if (queue) queue.push(args);
+  else state.guardToolArguments.set(name, [args]);
+}
+
+function popGuardToolArguments(state: ExecutionState, name: string): unknown {
+  const queue = state.guardToolArguments.get(name);
+  if (!queue) return undefined;
+  const args = queue.shift();
+  if (queue.length === 0) state.guardToolArguments.delete(name);
+  return args;
+}
+
+async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+  if (!ctx.runGuard || state.guardModelTurnObserved) return;
+  state.guardModelTurnObserved = true;
+  const decision = ctx.runGuard.modelCall();
+  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+}
+
+async function observeRunGuardEvent(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  eventName: string | null;
+  record: Record<string, unknown> | null;
+}): Promise<void> {
+  const { ctx, state, eventName, record } = input;
+  const guard = ctx.runGuard;
+  if (!guard) return;
+  if (eventName === "tool.started") {
+    state.guardPendingToolCalls += 1;
+    if (state.guardPendingToolCalls === 1) {
+      guard.pauseIdle();
+    }
+    await observeModelTurn(ctx, state);
+    const name = toolNameFromEvent(record);
+    const args = record?.input ?? record?.arguments ?? record?.preview;
+    if (args !== undefined) pushGuardToolArguments(state, name, args);
+    guard.event();
+    return;
+  }
+  if (eventName === "tool.completed") {
+    state.guardPendingToolCalls = Math.max(0, state.guardPendingToolCalls - 1);
+    if (state.guardPendingToolCalls === 0) {
+      guard.resumeIdle();
+    }
+    const name = toolNameFromEvent(record);
+    const args = popGuardToolArguments(state, name);
+    const decision = toolHasError(record)
+      ? guard.toolFailure(name, args)
+      : guard.toolSuccess();
+    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
+    return;
+  }
+  if (
+    (eventName === "message.delta" ||
+      eventName === "reasoning.available" ||
+      eventName === "content" ||
+      eventName === "model.request" ||
+      eventName === "model.started" ||
+      eventName === "llm.request" ||
+      eventName === "llm.started") &&
+    state.guardPendingToolCalls === 0
+  ) {
+    await observeModelTurn(ctx, state);
+  }
+  guard.event();
 }
 
 /** `  [tool] <name> <preview>` — real hermes chat prints this per agent/display.py's
@@ -1136,6 +1233,7 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
+  await observeRunGuardEvent({ ctx, state, eventName, record });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -1484,6 +1582,41 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Parse explicit fallback models in the card's models.fallbacks field. */
+export function readGatewayFallbackModels(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const config = value as Record<string, unknown>;
+  const models = config.models;
+  const nested = typeof models === "object" && models !== null && !Array.isArray(models)
+    ? (models as Record<string, unknown>).fallbacks
+    : undefined;
+  const fallbacks = Array.isArray(config.fallbacks) ? config.fallbacks : nested;
+  if (!Array.isArray(fallbacks)) return [];
+  return fallbacks.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1501,6 +1634,8 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
+  modelAttemptId?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1509,7 +1644,13 @@ export function mapFinalResultForTest(input: {
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
-  const mapped = terminalResultCode(input.terminal.status);
+  const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  const providerErrorAsContent = Boolean(
+    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+  );
+  const mapped = providerErrorAsContent
+    ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
+    : terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const payloadCallIds = parseGatewayCallIds(payload);
@@ -1519,7 +1660,9 @@ export function mapFinalResultForTest(input: {
   const modelCallCount = explicitCallCount ?? metadataCallCount;
   const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    ? redactText(providerErrorAsContent
+      ? "Provider returned an overload or quota error as successful response content"
+      : extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
   // myrmidon(RECOVERY-HERMES-GATEWAY): see the signature constant above — a
   // failed turn whose message carries the upstream-connection signature is
@@ -1531,9 +1674,12 @@ export function mapFinalResultForTest(input: {
   // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
-    errorMessage !== null &&
-    errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+    providerErrorAsContent
       ? "transient_upstream"
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+        ? "transient_upstream"
       : mapped.errorCode === "hermes_gateway_run_failed" &&
           errorMessage !== null &&
           errorMessage
@@ -1544,6 +1690,9 @@ export function mapFinalResultForTest(input: {
             classifyInputOverflow(errorMessage)
           ? "input_overflow"
           : null;
+  if (providerErrorAsContent) {
+    console.warn("provider_error_as_content", { model: extractModel(payload) ?? input.configuredModel ?? "unknown" });
+  }
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1562,7 +1711,7 @@ export function mapFinalResultForTest(input: {
     // the owner when the run has no separate final message, so it must carry the
     // complete answer. A 2,000-character cut here reached Telegram as a
     // silently truncated reply; length is handled downstream by splitting.
-    ...(output ? { summary: output } : {}),
+    ...(output && !providerErrorAsContent ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -1579,8 +1728,8 @@ export function mapFinalResultForTest(input: {
       // under the standard `result` key the comment builder reads, while the
       // top-level `summary` stays a bounded copy for run lists/journals. The
       // `output` key is kept for existing gateway-specific consumers.
-      result: output ?? "",
-      output: output ?? "",
+      result: providerErrorAsContent ? "" : output ?? "",
+      output: providerErrorAsContent ? "" : output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
       modelCallCount: modelCallCount,
@@ -1590,6 +1739,7 @@ export function mapFinalResultForTest(input: {
       litellmRequestIds: payloadCallIds.litellmRequestIds,
       litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
 }
@@ -1912,6 +2062,7 @@ function isUnambiguousCreateNonStart(err: unknown): boolean {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const fallbackModels = readGatewayFallbackModels(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return {
@@ -1982,7 +2133,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually reaches this adapter). ctx.runId is unique per attempt, so a
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
-  const idempotencyKey = ctx.runId;
+  const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
@@ -2588,8 +2739,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
-    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
-    // used when the gateway's terminal payload names none.
+    modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
@@ -2633,5 +2783,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  const isProviderError =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+      finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+
+  const shouldTryFallback =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    fallbackModels.length > 0;
+
+  if (shouldTryFallback) {
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+    );
+    const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+    const fallbackResult = await execute({
+      ...ctx,
+      runId: fallbackAttemptId,
+      config: {
+        ...ctx.config,
+        model: fallbackModels[0],
+        models: { fallbacks: fallbackModels.slice(1) },
+        modelAttemptId: fallbackAttemptId,
+      },
+      onDispatch: undefined,
+      onExternalRunId: undefined,
+      onMeta: undefined,
+    });
+    if (fallbackResult.exitCode === 0) return fallbackResult;
+    if (isProviderError) {
+      return {
+        ...finalResult,
+        summary: undefined,
+        resultJson: {
+          ...finalResult.resultJson,
+          result: "",
+          output: "",
+          provider_error_as_content: true,
+        },
+      };
+    }
+    return fallbackResult;
+  }
+
+  if (isProviderError) {
+    return {
+      ...finalResult,
+      summary: undefined,
+      resultJson: {
+        ...finalResult.resultJson,
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+      },
+    };
+  }
+
   return finalResult;
 }
