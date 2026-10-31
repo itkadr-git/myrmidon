@@ -1,3 +1,4 @@
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
@@ -25,6 +26,7 @@ import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnfo
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
+import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
@@ -52,8 +54,6 @@ import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 // widening keeps the page typechecking before that merge too; it is purely additive
 // and has no runtime effect.
 type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
-
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
@@ -169,6 +169,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
+      <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}

@@ -99,7 +99,12 @@ export function createDbAlertDedupStore(db: Db): AlertDedupStore {
     async get(companyId, source, key) {
       const registry = await readRegistry(db);
       const entry = registry[alertIdentity({ source, key })];
-      return entry && entry.companyId === companyId ? entry : null;
+      if (entry && entry.companyId === companyId) return entry;
+      if (source === "zabbix") {
+        const legacy = registry[alertIdentity({ source, key: `event:${key}` })];
+        return legacy && legacy.companyId === companyId ? legacy : null;
+      }
+      return null;
     },
     async upsert(companyId, source, key, issue) {
       return mutateRegistry(db, (current) => {
