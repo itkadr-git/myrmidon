@@ -470,7 +470,9 @@ async function syncCardAfterReconcile(
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion, options);
+    const { changedKeys } = options !== undefined
+      ? await syncCard(agentId, botKey, appliedApiServerKeyVersion, options)
+      : await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
