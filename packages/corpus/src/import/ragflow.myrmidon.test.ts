@@ -301,8 +301,8 @@ describe("RAGFlow corpus import", () => {
       baseUrl: "https://ragflow.example/",
       apiKey: "test-key",
       pageSize: 1,
-      async *listDatasets() {
-        yield { id: "ds-empty", name: "Empty Dataset", document_count: 1, chunk_count: 0 };
+      async listDatasets() {
+        return [{ id: "ds-empty", name: "Empty Dataset", document_count: 1, chunk_count: 0 }];
       },
       async *listDocuments() {
         yield { id: "doc-empty", name: "empty.pdf", run: "PENDING", chunk_count: 0 };
@@ -322,7 +322,7 @@ describe("RAGFlow corpus import", () => {
     expect(summary.datasets).toBe(1);
     expect(summary.documents).toBe(1);
     expect(summary.chunks).toBe(0);
-    expect(summary.embeddedChunks).toBe(0);
+    expect(summary.embedded).toBe(0);
   });
 
   it("safely resumes import by reusing existing matching embeddings without re-embedding", async () => {
@@ -334,7 +334,7 @@ describe("RAGFlow corpus import", () => {
     };
 
     const importOptions = {
-      source,
+      source: fixtureSource(),
       target: memory.target,
       companyId: "aaaaaaaa-0000-0000-0000-000000000001",
       embeddingDimensions: 4,
@@ -344,14 +344,14 @@ describe("RAGFlow corpus import", () => {
     // First run: embeds all chunks
     const firstSummary = await importRagflowCorpus(importOptions);
     expect(firstSummary.chunks).toBe(4);
-    expect(firstSummary.embeddedChunks).toBe(4);
+    expect(firstSummary.embedded).toBe(4);
     expect(embedCallCount).toBe(4);
 
     // Second run: resumes, reuses all valid matching embeddings, embeds 0 chunks
     embedCallCount = 0;
     const secondSummary = await importRagflowCorpus(importOptions);
     expect(secondSummary.chunks).toBe(4);
-    expect(secondSummary.embeddedChunks).toBe(0);
+    expect(secondSummary.embedded).toBe(0);
     expect(embedCallCount).toBe(0);
   });
 });

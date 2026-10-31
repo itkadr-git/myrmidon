@@ -84,16 +84,18 @@ export type CorpusImportChunk = {
   metadata: Record<string, unknown>;
 };
 
+export type ChunkState = {
+  content: string;
+  embedding: number[] | null;
+  embeddingModel: string | null;
+  embeddingDimensions: number | null;
+  embeddingContentHash: string | null;
+};
+
 export type CorpusImportTarget = {
   upsertDataset(dataset: CorpusImportDataset): Promise<void>;
   upsertDocument(document: CorpusImportDocument): Promise<void>;
-  getChunkStates(companyId: string, ids: string[]): Promise<Map<string, {
-    content: string;
-    embedding: number[] | null;
-    embeddingModel: string | null;
-    embeddingDimensions: number | null;
-    embeddingContentHash: string | null;
-  }>>;
+  getChunkStates(companyId: string, ids: string[]): Promise<Map<string, ChunkState>>;
   upsertChunks(chunks: CorpusImportChunk[]): Promise<void>;
   markDocumentReady(companyId: string, documentId: string): Promise<void>;
 };

@@ -105,10 +105,7 @@ export async function dryRunRagflowImport(options: RagflowDryRunOptions): Promis
   const report = () => options.onProgress?.({ ...progress });
   report();
 
-  const datasets: Array<{ id: string; name: string; description?: string | null; document_count?: number; doc_num?: number; chunk_count?: number; chunk_num?: number }> = [];
-  for await (const dataset of options.source.listDatasets()) {
-    datasets.push(dataset);
-  }
+  const datasets = await options.source.listDatasets();
 
   const documentsByDataset = new Map<string, RagflowDocument[]>();
   const expectedChunksByDocument = new Map<string, number>();

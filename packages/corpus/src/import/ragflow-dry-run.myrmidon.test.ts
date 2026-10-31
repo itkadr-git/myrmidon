@@ -28,9 +28,7 @@ function makeMockSource(params: {
     baseUrl: "https://ragflow.mock",
     apiKey: "mock-key",
     pageSize: 10,
-    async *listDatasets() {
-      for (const d of params.datasets) yield d;
-    },
+    async listDatasets() { return params.datasets; },
     async *listDocuments(datasetId: string) {
       for (const doc of params.documents.get(datasetId) ?? []) yield doc;
     },
