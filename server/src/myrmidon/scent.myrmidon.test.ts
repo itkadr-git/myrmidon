@@ -51,7 +51,6 @@ import {
 } from "./scent/gateway.js";
 import { scentMetrics } from "./scent/metrics.js";
 import { checkScentHealth } from "./scent/health.js";
-import { myrmidonScentRoutes } from "./scent/routes.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
 import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
