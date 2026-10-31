@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { boardApiKeys, userBlocks, createDb, companies } from "@myrmidon/db";
 import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
-import { actorMiddleware } from "../middleware/actor.js";
+import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { usersAdminRoutes } from "../myrmidon/users-admin-a/routes.js";
 import { usersRoutes } from "../routes/users.js";
