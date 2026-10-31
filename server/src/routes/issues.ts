@@ -80,6 +80,7 @@ import type { Db } from "@myrmidon/db";
 import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
+import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import {
   companies,
   activityLog,
@@ -9434,10 +9435,52 @@ export function issueRoutes(
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
+      ciResult: null as unknown,
+      pullRequestsCi: [] as unknown[],
     };
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const prs = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      response.pullRequestsCi = prs;
+      response.ciResult = prs[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, response),
     );
+  });
+
+  router.get("/issues/:id/ci-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const pullRequests = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      return res.json({
+        issueId: issue.id,
+        pullRequests,
+        primaryCiResult: pullRequests[0] ?? null,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
   });
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {

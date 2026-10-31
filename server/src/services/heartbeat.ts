@@ -71,6 +71,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
+import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -8160,7 +8161,24 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  let ciResult: PullRequestCiResult | null = null;
+  let pullRequestsCi: PullRequestCiResult[] = [];
+  if (issueId) {
+    try {
+      const ciResolver = createPullRequestCiResolver(input.db);
+      pullRequestsCi = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(input.companyId, issueId),
+        [],
+      );
+      ciResult = pullRequestsCi[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
+  }
+
   const payload = {
+    ciResult,
+    pullRequestsCi,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
     // The canonical envelope is `contextSnapshot.executionContinuation`;
@@ -8633,6 +8651,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier: string | null;
     title: string;
+    status?: string | null;
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
@@ -8685,6 +8704,11 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   externalChatProvider?: string | null;
   nativeRunner?: boolean;
+  wakePayload?: {
+    ciResult?: PullRequestCiResult | null;
+    pullRequestsCi?: PullRequestCiResult[] | null;
+    [key: string]: unknown;
+  } | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -8878,6 +8902,54 @@ export function buildPaperclipTaskMarkdown(input: {
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
         fenceTaskText(input.taskPlan.body.trim()),
       );
+    }
+    const wakePayload = input.wakePayload;
+    const prsCi = (
+      Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
+        ? wakePayload.pullRequestsCi
+        : wakePayload?.ciResult
+          ? [wakePayload.ciResult]
+          : []
+    ) as PullRequestCiResult[];
+
+    if (prsCi.length > 0) {
+      lines.push("", "Pull Request CI Status (board-verified on exact head SHA):");
+      for (const ci of prsCi) {
+        lines.push(
+          `- Repository: ${ci.repository} (PR #${ci.pullNumber})`,
+          `  - Head SHA: ${ci.headSha ?? "unknown"}`,
+          `  - CI Result: ${ci.conclusion.toUpperCase()} (${ci.summary})`,
+          `  - Authoritative: ${ci.authoritative ? "true" : "false"}`,
+          `  - Status: ${ci.status}`,
+          `  - Checked at: ${ci.checkedAt}`,
+        );
+        if (ci.completedAt) {
+          lines.push(`  - Completed at: ${ci.completedAt}`);
+        }
+        if (ci.failedJobs && ci.failedJobs.length > 0) {
+          lines.push("  - Failed jobs:");
+          for (const job of ci.failedJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
+        }
+      }
+
+      const allAuthoritative = prsCi.every((ci) => ci.authoritative);
+      if (issue.status === "in_review") {
+        lines.push(
+          "",
+          "Reviewer directive:",
+          allAuthoritative
+            ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
+            : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
+        );
+      } else {
+        lines.push(
+          "",
+          "CI directive:",
+          "The board automatically tracks CI on the exact head SHA of the PR. Do not call `gh pr checks`.",
+        );
+      }
     }
   }
   if (ancestors.length > 0) {
@@ -22980,6 +23052,7 @@ export function heartbeatService(
               id: issueRef.id,
               identifier: issueRef.identifier,
               title: issueRef.title,
+              status: issueRef.status,
               workMode: issueRef.workMode,
               conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
@@ -22991,6 +23064,7 @@ export function heartbeatService(
         attachmentOmissions: paperclipWakePayload?.attachmentOmissions,
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
+        wakePayload: paperclipWakePayload,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
