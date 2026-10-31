@@ -432,19 +432,27 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
   console.log(
     `\n[test:run] serialized shard ${shardIndex + 1}/${shardCount} running ${shardTests.length} of ${routeTests.length} suites`,
   );
-
-  for (const routeTest of shardTests) {
-    runVitest(
-      [
-        "--project",
-        "@myrmidon/server",
-        routeTest.repoPath,
-        "--pool=forks",
-        "--isolate",
-      ],
-      routeTest.repoPath,
-    );
+  if (shardTests.length === 0) {
+    return;
   }
+
+  // Run all shard files in a single Vitest invocation with sequential execution
+  // (--no-file-parallelism, --maxWorkers=1) and isolated worker processes (--pool=forks, --isolate).
+  // Running sequentially in one process allows Vitest to cache and reuse module transforms
+  // across test files, eliminating redundant compilation of large shared server dependency
+  // graphs (~42% of execution time) while preserving the process isolation and serial
+  // Postgres lifecycle required by route/authz tests.
+  runVitest(
+    [
+      "--project",
+      "@myrmidon/server",
+      ...serializedServerVitestArgs,
+      "--pool=forks",
+      "--isolate",
+      ...shardTests.map((routeTest) => routeTest.repoPath),
+    ],
+    `serialized shard ${shardIndex + 1}/${shardCount}`,
+  );
 }
 
 // Every server test file vitest can collect: `src/**/*.test.ts` and
