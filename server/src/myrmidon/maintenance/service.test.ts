@@ -36,8 +36,13 @@ const ADMIN = { actorType: "user", actorId: "admin-user" };
 describeEmbeddedPostgres("maintenance service and API", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-service-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -67,6 +72,11 @@ describeEmbeddedPostgres("maintenance service and API", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   function service(now?: () => Date) {

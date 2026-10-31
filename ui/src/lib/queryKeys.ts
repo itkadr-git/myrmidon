@@ -114,8 +114,20 @@ export const queryKeys = {
       ] as const,
   },
   audit: {
-    runs: (companyId: string, agentId?: string | null) =>
-      ["audit", companyId, "runs", agentId ?? "__all"] as const,
+    runs: (
+      companyId: string,
+      agentId?: string | null,
+      wakeReason?: string | null,
+      hasResult?: boolean | null,
+    ) =>
+      [
+        "audit",
+        companyId,
+        "runs",
+        agentId ?? "__all",
+        wakeReason ?? "__all",
+        hasResult ? "with-result" : "all",
+      ] as const,
     agentActions: (
       companyId: string,
       filters: {
@@ -627,6 +639,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    taskDrain: ["instance", "task-drain"] as const,
   },
   health: ["health"] as const,
   cloud: {

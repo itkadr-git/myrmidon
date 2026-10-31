@@ -88,6 +88,15 @@ export interface FeaturePorts {
   budget: {
     stats(since: Date): Promise<{ activePolicies: number; openIncidents: number; incidentsSince: number }>;
   };
+  scent: {
+    stats(since: Date): Promise<{ total: number; failed: number }>;
+    isModelInGateway(model: string): Promise<boolean>;
+    hasSecret(secretName: string): Promise<boolean>;
+    baseUrl(): string | null;
+  };
+  executionHolds: {
+    stats(): Promise<{ count: number; oldestAt: Date | null }>;
+  };
   lsp: { modeCounts(general: Record<string, unknown>): Promise<{ total: number; limited: number; full: number; off: number }> };
   runtime: {
     runAdmission(): RunAdmissionState;

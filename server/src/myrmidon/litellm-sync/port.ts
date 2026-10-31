@@ -21,6 +21,12 @@ export interface LitellmSyncPort {
     baseUrl: string | null;
     /** The name of the secret that holds the credential (not the value itself). */
     credentialSecretName: string;
+    /** Priority order of the channel within the model group. */
+    order?: number;
+    /** Routing weight for load balancing. */
+    weight?: number;
+    /** Whether the channel is disabled. */
+    disabled?: boolean;
     /** Additional LiteLLM-specific configuration. */
     additionalConfig?: Record<string, unknown>;
   }): Promise<void>;
@@ -41,6 +47,12 @@ export interface LitellmSyncPort {
     providerType: string;
     baseUrl: string | null;
     credentialSecretName: string;
+    /** Priority order of the channel within the model group. */
+    order?: number;
+    /** Routing weight for load balancing. */
+    weight?: number;
+    /** Whether the channel is disabled. */
+    disabled?: boolean;
     additionalConfig?: Record<string, unknown>;
   }): Promise<void>;
 
