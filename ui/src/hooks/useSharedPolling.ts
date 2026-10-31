@@ -9,6 +9,8 @@ import { filterLocalInboxArchivedQueryData } from "../lib/inboxArchiveCache";
 import { isUnauthorizedError } from "../lib/auth-session-recovery";
 
 type RefetchInterval = number | false;
+type SharedIntervalQuery = { state: { error: unknown } };
+type CoordinatedRefetchInterval = RefetchInterval | ((query: SharedIntervalQuery) => RefetchInterval);
 
 export interface SharedPollingQueryOptions {
   companyId: string | null | undefined;
@@ -28,7 +30,7 @@ export interface SharedPollingQueryOptions {
 export interface SharedPollingQueryState<TData> {
   isLeader: boolean;
   enabled: boolean;
-  refetchInterval: RefetchInterval;
+  refetchInterval: CoordinatedRefetchInterval;
   publish: (data: TData | undefined, dataUpdatedAt: number) => void;
 }
 
@@ -133,12 +135,12 @@ export function useSharedPollingQuery<TData>({
 
   const isLeader = !leaderOnly || snapshot.isLeader;
   const queryEnabled = enabled && (!leaderOnly || snapshot.isLeader);
-  const coordinatedInterval = useMemo(() => {
+  const coordinatedInterval: CoordinatedRefetchInterval = useMemo(() => {
     if (leaderOnly && !snapshot.isLeader) return false;
     if (refetchInterval === false) return false;
-    return (query: { state: { error: unknown } }) => {
+    return (query: SharedIntervalQuery): RefetchInterval => {
       if (isUnauthorizedError(query?.state?.error)) return false;
-      return typeof refetchInterval === "function" ? (refetchInterval as any)(query) : refetchInterval;
+      return refetchInterval;
     };
   }, [leaderOnly, snapshot.isLeader, refetchInterval]);
 
