@@ -5,6 +5,7 @@ import {
   fetchCommitCheckRuns,
   summarizeCheckRuns,
   createPullRequestCiResolver,
+  withCiResolveDeadline,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
 import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
@@ -628,5 +629,62 @@ describe("createPullRequestCiResolver", () => {
     expect(markdown).toContain(
       "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
     );
+  });
+
+  it("handles fetch network failure or timeout as non-authoritative unavailable without throwing", async () => {
+    const mockDb = { select: vi.fn() };
+    const mockFetch = vi.fn().mockRejectedValue(new Error("fetch timeout / abort"));
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      prResolver: async () => ({
+        headSha: "head-sha-123",
+        headRef: "bot/test",
+      }),
+      tokenProvider: async () => "token-123",
+    });
+
+    const result = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.conclusion).toBe("unavailable");
+    expect(result.authoritative).toBe(false);
+    expect(result.summary).toContain("checks unavailable");
+  });
+
+  it("handles tokenProvider failure as non-authoritative unavailable without throwing", async () => {
+    const mockDb = { select: vi.fn() };
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      prResolver: async () => ({
+        headSha: "head-sha-123",
+        headRef: "bot/test",
+      }),
+      tokenProvider: async () => {
+        throw new Error("vault inaccessible");
+      },
+    });
+
+    const result = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.conclusion).toBe("unavailable");
+    expect(result.authoritative).toBe(false);
+    expect(result.summary).toContain("token provider error");
+  });
+
+  it("withCiResolveDeadline returns fallback when resolution exceeds deadline", async () => {
+    const slowPromise = new Promise<string[]>((resolve) => {
+      setTimeout(() => resolve(["result"]), 100);
+    });
+
+    const result = await withCiResolveDeadline(slowPromise, ["fallback"], 10);
+    expect(result).toEqual(["fallback"]);
   });
 });

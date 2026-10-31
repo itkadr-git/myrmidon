@@ -373,11 +373,34 @@ interface CacheEntry {
 
 const ciCache = new Map<string, CacheEntry>();
 
+export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
+
+export async function withCiResolveDeadline<T>(
+  promise: Promise<T>,
+  fallback: T,
+  timeoutMs = 12_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function createPullRequestCiResolver(
   db: Db,
   options: PullRequestCiResolverOptions = {},
 ): PullRequestCiResolver {
-  const fetchImpl = options.fetch ?? fetch;
+  const rawFetch = options.fetch ?? fetch;
+  const fetchImpl: FetchLike = (input, init) => {
+    const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+    return rawFetch(input, { ...init, signal });
+  };
   const secretNames = options.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   const tokenProvider =
     options.tokenProvider ??
@@ -403,7 +426,15 @@ export function createPullRequestCiResolver(
         number: referenceInput.number,
       };
       const repoKey = `${reference.owner}/${reference.repo}`;
-      const prDetails = await prResolver(companyId, reference);
+      let prDetails: { headSha: string | null; headRef: string | null; access?: "denied"; state?: string } = {
+        headSha: null,
+        headRef: null,
+      };
+      try {
+        prDetails = await prResolver(companyId, reference);
+      } catch {
+        // Fallback or unavailable if prResolver throws
+      }
       let headSha = prDetails.headSha;
       let headRef = prDetails.headRef;
 
@@ -517,14 +548,57 @@ export function createPullRequestCiResolver(
         return cached.result;
       }
 
-      const token = await tokenProvider(companyId, repoKey);
-      const runs = await fetchCommitCheckRuns(
-        reference.owner,
-        reference.repo,
-        headSha,
-        token,
-        fetchImpl,
-      );
+      let token: string | null = null;
+      try {
+        token = await tokenProvider(companyId, repoKey);
+      } catch (err) {
+        return {
+          repository: repoKey,
+          pullNumber: reference.number,
+          headSha,
+          headRef,
+          status: "unavailable",
+          conclusion: "unavailable",
+          summary: `checks unavailable (token provider error: ${err instanceof Error ? err.message : "unknown"})`,
+          authoritative: false,
+          checkedAt: new Date().toISOString(),
+          completedAt: null,
+          totalRuns: 0,
+          successfulRuns: 0,
+          failedRuns: 0,
+          failedJobs: [],
+          runs: [],
+        };
+      }
+
+      let runs: GitHubCheckRunItem[] = [];
+      try {
+        runs = await fetchCommitCheckRuns(
+          reference.owner,
+          reference.repo,
+          headSha,
+          token,
+          fetchImpl,
+        );
+      } catch (err) {
+        return {
+          repository: repoKey,
+          pullNumber: reference.number,
+          headSha,
+          headRef,
+          status: "unavailable",
+          conclusion: "unavailable",
+          summary: `checks unavailable (${err instanceof Error ? err.message : "error"})`,
+          authoritative: false,
+          checkedAt: new Date().toISOString(),
+          completedAt: null,
+          totalRuns: 0,
+          successfulRuns: 0,
+          failedRuns: 0,
+          failedJobs: [],
+          runs: [],
+        };
+      }
       const summary = summarizeCheckRuns(runs, {
         headSha,
         repository: repoKey,
@@ -662,8 +736,28 @@ export function createPullRequestCiResolver(
 
       const results: PullRequestCiResult[] = [];
       for (const reference of references.values()) {
-        const result = await this.resolveForPullRequest(companyId, reference);
-        results.push(result);
+        try {
+          const result = await this.resolveForPullRequest(companyId, reference);
+          results.push(result);
+        } catch (err) {
+          results.push({
+            repository: `${reference.owner}/${reference.repo}`,
+            pullNumber: reference.number,
+            headSha: null,
+            headRef: null,
+            status: "unavailable",
+            conclusion: "unavailable",
+            summary: `checks unavailable (${err instanceof Error ? err.message : "error"})`,
+            authoritative: false,
+            checkedAt: new Date().toISOString(),
+            completedAt: null,
+            totalRuns: 0,
+            successfulRuns: 0,
+            failedRuns: 0,
+            failedJobs: [],
+            runs: [],
+          });
+        }
       }
       return results;
     },

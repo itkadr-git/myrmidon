@@ -71,7 +71,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
-import { createPullRequestCiResolver, type PullRequestCiResult } from "./github-pull-request-ci.js";
+import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -8133,7 +8133,10 @@ export async function buildPaperclipWakePayload(input: {
   if (issueId) {
     try {
       const ciResolver = createPullRequestCiResolver(input.db);
-      pullRequestsCi = await ciResolver.resolveForIssue(input.companyId, issueId);
+      pullRequestsCi = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(input.companyId, issueId),
+        [],
+      );
       ciResult = pullRequestsCi[0] ?? null;
     } catch {
       // Non-blocking fallback

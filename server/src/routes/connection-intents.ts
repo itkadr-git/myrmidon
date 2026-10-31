@@ -21,6 +21,8 @@ import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 
+export const REPOSITORY_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
   return /^Bearer\s+/i.test(value) ? value.replace(/^Bearer\s+/i, "").trim() : "";
@@ -126,14 +128,27 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       if (name === "pull_request_ci_status") {
         const args = (params.arguments && typeof params.arguments === "object"
           ? params.arguments
-          : {}) as { repository?: string; pullNumber?: number };
+          : {}) as { repository?: unknown; pullNumber?: unknown };
         const ciResolver = createPullRequestCiResolver(db);
 
-        if (args.repository && typeof args.pullNumber === "number") {
-          const [owner, repo] = args.repository.split("/");
-          if (!owner || !repo) {
-            throw new Error(`Invalid repository format: ${args.repository}. Expected 'owner/repo'.`);
+        if (args.repository !== undefined || args.pullNumber !== undefined) {
+          if (
+            typeof args.repository !== "string" ||
+            !REPOSITORY_REGEX.test(args.repository) ||
+            typeof args.pullNumber !== "number" ||
+            !Number.isInteger(args.pullNumber) ||
+            args.pullNumber <= 0
+          ) {
+            res.json({
+              jsonrpc: "2.0",
+              id,
+              result: resultContent({
+                error: "Invalid repository or pullNumber format. Expected repository as 'owner/repo' and pullNumber as a positive integer.",
+              }),
+            });
+            return;
           }
+          const [owner, repo] = args.repository.split("/");
           const result = await ciResolver.resolveForPullRequest(claims.company_id, {
             owner,
             repo,
@@ -202,13 +217,24 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   });
   router.post("/runtime-tools/ci/status", async (req, res) => {
     const claims = runtimeClaims(req);
+    await service.validate(claims);
     const ciResolver = createPullRequestCiResolver(db);
-    const repository = typeof req.body?.repository === "string" ? req.body.repository : null;
-    const pullNumber = typeof req.body?.pullNumber === "number" ? req.body.pullNumber : null;
+    const repository = req.body?.repository;
+    const pullNumber = req.body?.pullNumber;
 
-    if (repository && pullNumber) {
+    if (repository !== undefined || pullNumber !== undefined) {
+      if (
+        typeof repository !== "string" ||
+        !REPOSITORY_REGEX.test(repository) ||
+        typeof pullNumber !== "number" ||
+        !Number.isInteger(pullNumber) ||
+        pullNumber <= 0
+      ) {
+        return res.status(400).json({
+          error: "Invalid repository or pullNumber format. Expected repository as 'owner/repo' and pullNumber as a positive integer.",
+        });
+      }
       const [owner, repo] = repository.split("/");
-      if (!owner || !repo) return res.status(400).json({ error: "Invalid repository format" });
       const result = await ciResolver.resolveForPullRequest(claims.company_id, {
         owner,
         repo,

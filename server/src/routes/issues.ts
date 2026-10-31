@@ -74,7 +74,7 @@ import type { Db } from "@myrmidon/db";
 import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
-import { createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
+import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import {
   companies,
   activityLog,
@@ -9205,7 +9205,10 @@ export function issueRoutes(
     };
     try {
       const ciResolver = createPullRequestCiResolver(db);
-      const prs = await ciResolver.resolveForIssue(issue.companyId, issue.id);
+      const prs = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
       response.pullRequestsCi = prs;
       response.ciResult = prs[0] ?? null;
     } catch {
@@ -9229,7 +9232,10 @@ export function issueRoutes(
 
     try {
       const ciResolver = createPullRequestCiResolver(db);
-      const pullRequests = await ciResolver.resolveForIssue(issue.companyId, issue.id);
+      const pullRequests = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
       return res.json({
         issueId: issue.id,
         pullRequests,
