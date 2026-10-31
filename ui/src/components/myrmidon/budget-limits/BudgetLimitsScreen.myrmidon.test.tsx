@@ -160,6 +160,25 @@ describe("BudgetLimitsScreenView — the limit tree", () => {
     expect(byTestId("myrmidon-budget-limits-loading")).not.toBeNull();
     expect(container.querySelector("[data-testid='budget-limits-tree']")).toBeNull();
   });
+
+  it("renders warning indicators when usage is approaching limit (80% and 95%)", () => {
+    const nearLimit95 = limit({ level: "caste", ref: "designer", amountCents: 10_000 });
+    const nearLimit80 = limit({ level: "issue", ref: ISSUE_ID, amountCents: 10_000 });
+    render({
+      limits: [COMPANY, nearLimit95, nearLimit80],
+      usage: [
+        usage(COMPANY, 1000, false),
+        usage(nearLimit95, 9600, false),
+        usage(nearLimit80, 8500, false),
+      ],
+    });
+
+    const casteSpend = byTestId("budget-limits-spent-caste:designer").textContent ?? "";
+    expect(casteSpend).toContain("Approaching limit (95%)");
+
+    const issueSpend = byTestId(`budget-limits-spent-issue:${ISSUE_ID}`).textContent ?? "";
+    expect(issueSpend).toContain("Approaching limit (80%)");
+  });
 });
 
 describe("BudgetLimitsScreenView — in-place editing", () => {

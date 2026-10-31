@@ -101,16 +101,21 @@ function fakeSettings(initial: Record<string, unknown> = {}) {
 // store is touched.
 function appFor(
   actor: unknown,
-  options: { env?: Record<string, string>; settings?: ReturnType<typeof fakeSettings> } = {},
+  options: {
+    env?: Record<string, string>;
+    settings?: ReturnType<typeof fakeSettings>;
+    store?: FakeStore;
+    computeUsage?: (
+      companyId: string,
+      level: any,
+      ref: string,
+      period: any,
+    ) => Promise<{ spentCents: number; events: number }>;
+  } = {},
 ) {
-  const store = fakeStore();
+  const store = options.store ?? fakeStore();
   const settings = options.settings ?? fakeSettings();
-  void store;
   void settings;
-  // The real router builds createBudgetLimitStore({ db }) — a fake db whose
-  // select chain returns nothing is enough for access-rule tests, but for
-  // read/write paths we need the store; patch via the routes' deps instead.
-  // The routes only use db for the store + activity log; a thrown log is fine.
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -121,6 +126,8 @@ function appFor(
     "/api",
     budgetLimitsRoutes({} as unknown as Db, {
       env: (options.env ?? {}) as NodeJS.ProcessEnv,
+      store: store as any,
+      computeUsage: options.computeUsage,
     }),
   );
   app.use(errorHandler);
@@ -176,5 +183,79 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
       .put(`${base}/limits/caste/engineer`)
       .send({ amountCents: -5 })
       .expect(400);
+  });
+
+  describe("usage with warning thresholds (80% and 95%)", () => {
+    it("rejects invalid threshold and invalid level query parameters with 400", async () => {
+      const { app } = appFor(boardActor);
+      await request(app).get(`${base}/usage?threshold=50`).expect(400);
+      await request(app).get(`${base}/usage?threshold=not-a-number`).expect(400);
+      await request(app).get(`${base}/usage?level=invalid-level`).expect(400);
+    });
+
+    it("evaluates warningThreshold and filters by threshold parameter", async () => {
+      const store = fakeStore();
+      await store.upsert({
+        companyId: "company-a",
+        level: "nest",
+        ref: "company",
+        amountCents: 10_000,
+        period: "calendar_month_utc",
+        mode: "hard",
+        isActive: true,
+      });
+      await store.upsert({
+        companyId: "company-a",
+        level: "caste",
+        ref: "engineer",
+        amountCents: 10_000,
+        period: "calendar_month_utc",
+        mode: "hard",
+        isActive: true,
+      });
+      await store.upsert({
+        companyId: "company-a",
+        level: "foraging",
+        ref: "foraging",
+        amountCents: 10_000,
+        period: "calendar_month_utc",
+        mode: "hard",
+        isActive: true,
+      });
+
+      const { app } = appFor(boardActor, {
+        store,
+        computeUsage: async (_cid, level) => {
+          if (level === "nest") return { spentCents: 5_000, events: 2 }; // 50% -> null
+          if (level === "caste") return { spentCents: 8_500, events: 5 }; // 85% -> 80
+          if (level === "foraging") return { spentCents: 9_600, events: 8 }; // 96% -> 95
+          return { spentCents: 0, events: 0 };
+        },
+      });
+
+      // All rows without threshold filter
+      const resAll = await request(app).get(`${base}/usage`).expect(200);
+      expect(resAll.body.usage).toHaveLength(3);
+      const nestRow = resAll.body.usage.find((r: any) => r.level === "nest");
+      const casteRow = resAll.body.usage.find((r: any) => r.level === "caste");
+      const foragingRow = resAll.body.usage.find((r: any) => r.level === "foraging");
+
+      expect(nestRow.spentCents).toBe(5_000);
+      expect(nestRow.warningThreshold).toBeNull();
+      expect(casteRow.spentCents).toBe(8_500);
+      expect(casteRow.warningThreshold).toBe(80);
+      expect(foragingRow.spentCents).toBe(9_600);
+      expect(foragingRow.warningThreshold).toBe(95);
+
+      // Filter by threshold=80: should return caste (80) and foraging (95)
+      const res80 = await request(app).get(`${base}/usage?threshold=80`).expect(200);
+      expect(res80.body.usage).toHaveLength(2);
+      expect(res80.body.usage.map((r: any) => r.level)).toEqual(["caste", "foraging"]);
+
+      // Filter by threshold=95: should return foraging (95) only
+      const res95 = await request(app).get(`${base}/usage?threshold=95`).expect(200);
+      expect(res95.body.usage).toHaveLength(1);
+      expect(res95.body.usage[0].level).toBe("foraging");
+    });
   });
 });

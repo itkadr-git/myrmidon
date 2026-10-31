@@ -1613,6 +1613,8 @@
     "inactive": "Switched off",
     "noLimit": "No limit",
     "overLimit": "Over the limit",
+    "warning80": "Approaching limit (80%)",
+    "warning95": "Approaching limit (95%)",
     "percentUsed": "{{percent}}% used",
     "amountPlaceholder": "0.00",
     "amountRequired": "Enter an amount.",
