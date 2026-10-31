@@ -22,12 +22,17 @@ type ScopedInteractionPrincipal = {
 
 export type PendingCard = {
   id: string;
+  companyId?: string | null;
   issueIdentifier: string | null;
   kind: string;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   addresseeAgentId: string | null;
   addresseeUserId: string | null;
+  addresseeQueue?: string | null;
+  routeType?: string | null;
+  timeoutAt?: Date | string | null;
+  escalationLevel?: number | null;
   requestedResolverPolicy: string;
   effectiveResolverPolicy: string;
   payload: Record<string, unknown>;
@@ -103,10 +108,14 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
   escalationChain?: Array<{ recipient: string; afterMinutes: number | null }>;
 } {
   const policy = card.effectiveResolverPolicy;
-  if (card.addresseeAgentId || card.addresseeUserId) {
+  if (card.addresseeAgentId || card.addresseeUserId || card.addresseeQueue) {
     return {
       ...card,
-      proposedRecipient: card.addresseeAgentId ? `agent:${card.addresseeAgentId}` : `user:${card.addresseeUserId}`,
+      proposedRecipient: card.addresseeAgentId
+        ? `agent:${card.addresseeAgentId}`
+        : card.addresseeUserId
+          ? `user:${card.addresseeUserId}`
+          : `queue:${card.addresseeQueue}`,
     };
   }
 
@@ -254,12 +263,17 @@ export async function loadReport(databaseUrl: string): Promise<ReaddressResult[]
     return await db.transaction(async (tx) => {
       const result = await tx.execute(sql`
         SELECT i.id,
+               i.company_id AS "companyId",
                issues.identifier AS "issueIdentifier",
                i.kind,
                i.created_by_agent_id AS "createdByAgentId",
                i.created_by_user_id AS "createdByUserId",
                i.addressee_agent_id AS "addresseeAgentId",
                i.addressee_user_id AS "addresseeUserId",
+               i.addressee_queue AS "addresseeQueue",
+               i.route_type AS "routeType",
+               i.timeout_at AS "timeoutAt",
+               i.escalation_level AS "escalationLevel",
                i.requested_resolver_policy AS "requestedResolverPolicy",
                i.effective_resolver_policy AS "effectiveResolverPolicy",
                i.payload,
@@ -292,6 +306,7 @@ export async function loadReport(databaseUrl: string): Promise<ReaddressResult[]
         WHERE i.status = 'pending'
           AND i.addressee_agent_id IS NULL
           AND i.addressee_user_id IS NULL
+          AND i.addressee_queue IS NULL
         ORDER BY i.created_at, i.id
       `);
       return (result as unknown as PendingCard[]).map((row) => resolveAddresslessCard(row));
