@@ -82,7 +82,8 @@ describe("capacity policy replay simulator (OPE-9200 / 1.6.6 P2.12)", () => {
     // Policy mechanics: Capacity limits produce recorded rejections
     expect(afterPolicy.metrics.claimRejections.total).toBeGreaterThan(0);
     expect(
-      afterPolicy.metrics.claimRejections.byReason.project_limit_reached ?? 0
+      (afterPolicy.metrics.claimRejections.byReason.project_limit ?? 0) +
+        (afterPolicy.metrics.claimRejections.byReason.caste_limit ?? 0)
     ).toBeGreaterThan(0);
 
     // Output formatting verification

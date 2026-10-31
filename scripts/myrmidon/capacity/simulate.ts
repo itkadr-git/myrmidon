@@ -9,7 +9,7 @@ import {
   compareCapacityPolicyReplay,
   formatReplayReport,
   loadSnapshotFixture,
-} from "../../server/src/myrmidon/capacity/capacity-simulator.js";
+} from "../../../server/src/myrmidon/capacity/capacity-simulator.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);

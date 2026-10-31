@@ -20,6 +20,7 @@ import {
   type CapacityPolicy,
   type CapacityPolicyContext,
   type SwarmQueueCandidate,
+  type CapacityCandidate,
 } from "@myrmidon/shared";
 import {
   type CapacityPolicySnapshot,
@@ -37,11 +38,30 @@ export const DEFAULT_1_6_6_FIXTURE_PATH = resolve(
   "../swarm-claim/__fixtures__/capacity-policy-snapshot-1.6.6.json"
 );
 
+export const DEFAULT_SIMULATION_CAPACITY_POLICY: CapacityPolicy = {
+  enabled: true,
+  fairness: { perProjectMaxShare: 0.5 },
+  aging: { halfLifeMin: 60, maxBoost: 1 },
+  limits: { perProjectActive: 8, perCasteActive: 12 },
+  starvation: { afterMin: 45, promoteBy: 1 },
+};
+
 export interface ReplaySimulatorAgent {
   id: string;
   casteKey?: string | null;
   projectIds: string[];
   maxConcurrency?: number;
+}
+
+export interface ReplayCandidate extends SwarmQueueCandidate, CapacityCandidate {
+  issueId: string;
+  identifier?: string | null;
+  priority: string | null;
+  pheromoneStrength?: number | null;
+  queuedAt: Date | number | string | null;
+  createdAt?: Date | string | number;
+  projectId?: string | null;
+  casteId?: string | null;
 }
 
 export interface ReplayStepSnapshot {
@@ -212,7 +232,7 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
   const snapshot = options.snapshot ?? loadSnapshotFixture(options.snapshotPath);
   const maxSteps = options.maxSteps ?? 30;
   const taskDuration = Math.max(1, options.taskDurationSteps ?? 2);
-  const policy: CapacityPolicy = options.policy ?? { ...DEFAULT_CAPACITY_POLICY };
+  const policy: CapacityPolicy = options.policy ?? { ...DEFAULT_SIMULATION_CAPACITY_POLICY };
   const policyEnabled = policy.enabled;
 
   // Build immutable relations map
@@ -296,7 +316,7 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
     let totalOpenIssues = 0;
     let activeIssuesCount = 0;
     let completedIssuesCount = 0;
-    const readyCandidates: SwarmQueueCandidate[] = [];
+    const readyCandidates: ReplayCandidate[] = [];
 
     for (const issue of issues) {
       if (issue.status === "done" || issue.status === "cancelled") {
@@ -309,13 +329,14 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
         if (isIssueReadyForClaim(issue, relationsByBlocked, issuesById)) {
           readyIssuesCount++;
           readyCandidates.push({
-            id: issue.id,
+            issueId: issue.id,
             identifier: issue.identifier,
             priority: issue.priority,
             pheromoneStrength: issue.pheromoneStrength ?? 0,
+            queuedAt: issue.createdAt,
             createdAt: issue.createdAt,
-            projectId: issue.projectId ?? undefined,
-            casteKey: issue.casteKey ?? undefined,
+            projectId: issue.projectId ?? null,
+            casteId: issue.casteKey ?? null,
           });
         }
       }
@@ -324,37 +345,42 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
     const readinessRatio = totalOpenIssues > 0 ? readyIssuesCount / totalOpenIssues : 0;
     readinessRatioByStep.push(readinessRatio);
 
-    // 3. Collect active issues for policy context
-    const activeIssuesContext = issues
-      .filter((i) => i.status === "in_progress" || i.status === "in_review")
-      .map((i) => ({
-        id: i.id,
-        projectId: i.projectId,
-        casteKey: i.casteKey,
-        status: i.status,
-        assigneeAgentId: i.assigneeAgentId,
-      }));
+    // 3. Collect active counts for policy context
+    const activeByProject: Record<string, number> = {};
+    const activeByCaste: Record<string, number> = {};
+    for (const issue of issues) {
+      if (issue.status === "in_progress" || issue.status === "in_review") {
+        if (issue.projectId) {
+          activeByProject[issue.projectId] = (activeByProject[issue.projectId] || 0) + 1;
+        }
+        if (issue.casteKey) {
+          activeByCaste[issue.casteKey] = (activeByCaste[issue.casteKey] || 0) + 1;
+        }
+      }
+    }
 
     const ctx: CapacityPolicyContext = {
-      activeIssues: activeIssuesContext,
       now: nowIso,
+      activeByProject,
+      activeByCaste,
     };
 
     // 4. Order queue candidates with the policy composer
-    const { ordered, rejections } = orderCandidatesWithPolicy(readyCandidates, ctx, policy);
+    const { ordered, rejected } = orderCandidatesWithPolicy(readyCandidates, ctx, policy);
 
     let stepRejectionsCount = 0;
-    for (const r of rejections) {
+    for (const r of rejected) {
       stepRejectionsCount++;
       totalClaimRejections++;
       claimRejectionsByReason[r.reason] = (claimRejectionsByReason[r.reason] || 0) + 1;
     }
 
     // Track starvation promotions when policy is enabled
-    if (policy.enabled && policy.starvation.enabled) {
+    if (policy.enabled) {
       for (const candidate of ordered) {
-        const ageMin = Math.max(0, (simulatedTimeMs - new Date(candidate.createdAt).getTime()) / 60000);
-        if (ageMin >= policy.starvation.afterMinutes) {
+        const createdAtMs = candidate.createdAt != null ? new Date(candidate.createdAt).getTime() : 0;
+        const ageMin = Math.max(0, (simulatedTimeMs - createdAtMs) / 60000);
+        if (ageMin >= policy.starvation.afterMin) {
           starvationPromotions++;
         }
       }
@@ -369,11 +395,11 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
 
       // Find highest eligible candidate from ordered queue that agent can take
       const candidate = ordered.find(
-        (c) => !claimedInStep.has(c.id) && (!c.projectId || agent.projectIds.has(c.projectId))
+        (c) => !claimedInStep.has(c.issueId) && (!c.projectId || agent.projectIds.has(c.projectId))
       );
       if (!candidate) continue;
 
-      const issue = issuesById.get(candidate.id);
+      const issue = issuesById.get(candidate.issueId);
       if (!issue) continue;
 
       // Validate claim invariants
@@ -385,11 +411,11 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
       }
 
       // Commit claim
-      claimedInStep.add(candidate.id);
+      claimedInStep.add(candidate.issueId);
       issue.status = "in_progress";
       issue.assigneeAgentId = agent.id;
       issue.remainingWorkSteps = taskDuration;
-      agent.activeTaskId = candidate.id;
+      agent.activeTaskId = candidate.issueId;
 
       stepClaimsCount++;
       totalClaims++;
@@ -455,7 +481,7 @@ export function runCapacityReplaySimulation(options: ReplaySimulatorOptions = {}
  * comparing readiness ratio, claim integrity, and starvation metrics.
  */
 export function compareCapacityPolicyReplay(options: ReplaySimulatorOptions = {}): ReplayComparisonResult {
-  const basePolicy = options.policy ?? DEFAULT_CAPACITY_POLICY;
+  const basePolicy = options.policy ?? DEFAULT_SIMULATION_CAPACITY_POLICY;
 
   const beforeResult = runCapacityReplaySimulation({
     ...options,
