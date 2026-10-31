@@ -11,6 +11,7 @@ import { botDiskFeature } from "./definitions/bot-disk.js";
 import { botLspFeature } from "./definitions/bot-lsp.js";
 import { budgetEnforcementFeature } from "./definitions/budget-enforcement.js";
 import { chatHoldsFeature } from "./definitions/chat-holds.js";
+import { executionHoldsFeature } from "./definitions/execution-holds.js";
 import { costAttributionFeature } from "./definitions/cost-attribution.js";
 import { hostDiskFeature } from "./definitions/host-disk.js";
 import { modelFallbackFeature } from "./definitions/model-fallback.js";
@@ -32,6 +33,7 @@ export const FEATURE_REGISTRY: readonly FeatureDefinition[] = [
   costAttributionFeature,
   telegramDmStatusFeature,
   chatHoldsFeature,
+  executionHoldsFeature,
   budgetEnforcementFeature,
   pluginEntitlementsFeature,
   hostDiskFeature,
