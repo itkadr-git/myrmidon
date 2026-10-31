@@ -287,7 +287,8 @@ export async function readCloneIdleTtlSecForRole(db: Db, role: string | null | u
   return config.enabled ? Math.max(1, Math.round(config.idleTtlMs / 1000)) : 0;
 }
 
-export { botHasGitAlternates } from "./bot-disk-alternates.js";
+import { botHasGitAlternates } from "./bot-disk-alternates.js";
+export { botHasGitAlternates };
 
 /** Same for the driver, which knows the bot key (= agent id) and not the role. */
 export async function readBotCacheLayoutForBot(

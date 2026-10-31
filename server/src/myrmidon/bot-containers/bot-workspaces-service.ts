@@ -203,7 +203,6 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
 
         workspaces.push({
           key,
-          id: row.id,
           ...(repo ? { repo } : {}),
           state: verdict.state,
           since: sinceDate.toISOString(),
