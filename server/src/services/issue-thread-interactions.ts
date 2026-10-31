@@ -3395,7 +3395,18 @@ export function issueThreadInteractionService(
         );
       }
 
-      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+      const [issueRoutingRow] = await db
+        .select({ conversationAgentId: issues.conversationAgentId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        );
+      const isConversationIssue = Boolean(issueRoutingRow?.conversationAgentId);
+
+      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId && !isConversationIssue) {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
