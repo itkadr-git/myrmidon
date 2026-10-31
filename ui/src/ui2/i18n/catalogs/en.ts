@@ -332,6 +332,13 @@ export const en = {
       },
       owner: "Owner",
       ownerChannel: "Web",
+      shell: {
+        activeChannel: {
+          web: "Active · Web",
+          telegram: "Active · Telegram",
+          none: "Active · not seen recently",
+        },
+      },
       nests: {
         all: "All nests",
       },
@@ -712,6 +719,13 @@ export type Ui2Catalog = {
       },
     owner: string;
     ownerChannel: string;
+    shell: {
+      activeChannel: {
+        web: string;
+        telegram: string;
+        none: string;
+      };
+    };
     nests: {
       all: string;
     },

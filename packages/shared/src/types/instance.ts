@@ -43,6 +43,7 @@ import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-da
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
+import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 // myrmidon(F16): the issue-list agent defaults shape stored in the general row.
 import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
@@ -498,6 +499,8 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementPublicKey?: string;
+  /** Owner active-channel inactivity threshold. */
+  ownerActiveChannel?: OwnerActiveChannelSettings;
 }
 
 

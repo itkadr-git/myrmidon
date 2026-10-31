@@ -327,6 +327,13 @@ export const ru: Ui2Catalog = {
       },
       owner: "Владелец",
       ownerChannel: "Веб",
+      shell: {
+        activeChannel: {
+          web: "Активен · Веб",
+          telegram: "Активен · Telegram",
+          none: "Давно не появлялся",
+        },
+      },
       nests: {
         all: "Все гнёзда",
       },

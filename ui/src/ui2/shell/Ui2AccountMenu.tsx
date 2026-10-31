@@ -29,6 +29,7 @@ import { QueryClientContext, useQuery } from "@tanstack/react-query";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
+import { useOwnerActiveChannel, formatOwnerActiveChannelLabel } from "../useOwnerActiveChannel.js";
 
 interface Ui2AccountMenuProps {
   compact?: boolean;
@@ -55,6 +56,7 @@ function Ui2AccountMenuPresentational({
   const { selectedCompany } = useCompany();
   const { language, setLanguage } = useAppLanguage();
   const { override, setOverride } = useMyrmidonUi2PersonalOverride();
+  const activeChannel = useOwnerActiveChannel();
 
   const handleSignOut = () => {
     setOpen(false);
@@ -139,8 +141,11 @@ function Ui2AccountMenuPresentational({
         >
           {selectedCompany?.name ?? t("ui2.owner")}
         </span>
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.ownerChannel")}
+        <span
+          style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}
+          data-testid="ui2-owner-active-channel"
+        >
+          {formatOwnerActiveChannelLabel(activeChannel, t, { locale: language })}
         </span>
       </div>
       <ChevronDown style={{ width: 12, height: 12, color: "var(--myr-ink-muted)", flexShrink: 0 }} />
@@ -190,7 +195,7 @@ function Ui2AccountMenuPresentational({
             {selectedCompany?.name ?? t("ui2.owner")}
           </span>
           <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-            {t("ui2.ownerChannel")}
+            {formatOwnerActiveChannelLabel(activeChannel, t, { locale: language })}
           </span>
         </div>
 
