@@ -3063,7 +3063,8 @@ async function buildAttentionFeedSnapshot(
       // /issues/:id/execution-hold/confirm-continue: the person attests the
       // failed run left no external action, the hold is superseded and the
       // assignee is woken explicitly.
-      for (const card of await listExecutionHoldCards(db, companyId)) {
+      const executionHoldCards = await listExecutionHoldCards(db, companyId);
+      for (const card of executionHoldCards) {
         add(createItem({
           companyId,
           sourceKind: "replay_blocked",
@@ -3110,6 +3111,44 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(OPE-7707): company-level visibility alarm when tasks are held by replay=blocked
+      if (executionHoldCards.length > 0) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "company",
+            id: `execution-holds-aggregate:${companyId}`,
+            companyId,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
+            identifier: null,
+            status: "active",
+            href: `/${prefix}/company/settings`,
+            metadata: {
+              heldCount: executionHoldCards.length,
+            },
+          },
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
+          ),
+          inlineResolvable: false,
+          entryRule: "at least one issue is held by execution recovery replay=blocked",
+          exitRule: "no issues are held by execution recovery replay=blocked",
+          dedupKey: `execution-holds-aggregate:${companyId}`,
+          severity: executionHoldCards.length >= 5 ? "critical" : "high",
+          activityAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: `${executionHoldCards.length} open issues are currently excluded from swarm pickup by execution recovery holds.`,
             images: [],
           },
         }));

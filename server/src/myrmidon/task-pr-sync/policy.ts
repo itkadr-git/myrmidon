@@ -35,6 +35,8 @@ export interface TaskPrSyncPrFact {
   number: number | null;
   /** Head (post-merge) sha the resolver reported; the settle-comment dedup marker. `null` when unknown. */
   mergedSha: string | null;
+  /** Mergeability state reported by GitHub or external provider. */
+  mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
 }
 
 export interface TaskPrSyncFacts {
@@ -56,6 +58,7 @@ export type TaskPrSyncNoopReason =
 export type TaskPrSyncDecision =
   | { kind: "settle_done"; mergedSha: string | null; prRefs: string[] }
   | { kind: "return_to_assignee"; closedPrRefs: string[] }
+  | { kind: "return_conflict"; conflictPrRefs: string[] }
   | { kind: "noop"; reason: TaskPrSyncNoopReason };
 
 /** Terminal statuses the sweep must never rewrite. */
@@ -134,6 +137,15 @@ export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
 
   const active = facts.prs.filter((pr) => pr.state !== "superseded");
   if (active.length === 0) return noop("no_pr_products");
+
+  if (facts.issueStatus === "in_review") {
+    const conflicting = active.filter(
+      (pr) => (pr.state === "open" || pr.state === "draft") && pr.mergeable === "CONFLICTING",
+    );
+    if (conflicting.length > 0) {
+      return { kind: "return_conflict", conflictPrRefs: conflicting.map(taskPrReference) };
+    }
+  }
 
   if (active.some((pr) => pr.state === "open" || pr.state === "draft")) return noop("pr_still_open");
   if (active.some((pr) => pr.state === "unknown")) return noop("pr_state_unknown");

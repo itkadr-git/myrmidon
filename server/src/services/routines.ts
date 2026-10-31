@@ -17,6 +17,7 @@ import {
   heartbeatRuns,
   issueInboxArchives,
   issues,
+  issueRelations,
   pluginManagedResources,
   plugins,
   projects,
@@ -1871,7 +1872,33 @@ export function routineService(
             dispatchFingerprint,
           }));
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          let coalescingIssue = activeIssue;
+          if (input.routine.concurrencyPolicy === "coalesce_if_active" && activeIssue.status === "blocked") {
+            const openBlocker = await txDb.select({ id: issueRelations.issueId })
+              .from(issueRelations)
+              .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
+              .where(and(
+                eq(issueRelations.companyId, input.routine.companyId),
+                eq(issueRelations.relatedIssueId, activeIssue.id),
+                eq(issueRelations.type, "blocks"),
+                not(inArray(issues.status, ["done", "cancelled"])),
+                visibleIssueCondition(),
+              )).limit(1);
+            if (openBlocker.length === 0) {
+              const reopened = await issueSvc.update(activeIssue.id, { status: "todo", companyGuard: input.routine.companyId }, txDb);
+              if (!reopened) throw new Error("Failed to reopen blocked routine execution");
+              coalescingIssue = reopened;
+              await queueIssueAssignmentWakeup({
+                heartbeat, issue: reopened, reason: "issue_assigned", mutation: "update",
+                contextSource: "routine.dispatch", requestedByActorType: "system", rethrowOnError: true,
+              });
+            }
+            // A genuinely blocked execution retains the unique index key. Do
+            // not coalesce silently or create a duplicate that will fail on claim.
+          }
+          const status = input.routine.concurrencyPolicy === "skip_if_active" ||
+            !["todo", "in_progress", "in_review"].includes(coalescingIssue.status)
+            ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,

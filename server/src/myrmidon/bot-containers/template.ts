@@ -894,12 +894,17 @@ export function mountRootSegment(mount: BotVolumeMount): string {
  * Directories (as profile paths) that the profile compiler owns outright: on
  * every apply their whole content is replaced by exactly what the new profile
  * carries under them — including nothing at all — instead of being merged file
- * by file. "hermes/skills-board" is the compiler's copy of the card's skills
- * (Hermes reads the whole directory through `skills.external_dirs`), so a skill
- * removed from the card must disappear from it; a per-file merge never removes
- * anything. The bot's own skills live elsewhere under hermes/ and are untouched.
+ * by file. "hermes/skills/paperclip-managed" is the compiler's copy of the card's
+ * skills, delivered directly into Hermes's run-scoped skills directory so
+ * updates take effect on the next run without a container restart.
+ * "hermes/skills-board" is kept for backwards compatibility / cleanup of legacy
+ * profile mounts. The bot's own skills live elsewhere under hermes/skills/ and
+ * are untouched.
  */
-export const BOT_MANAGED_DIRS: readonly string[] = ["hermes/skills-board"];
+export const BOT_MANAGED_DIRS: readonly string[] = [
+  "hermes/skills/paperclip-managed",
+  "hermes/skills-board",
+];
 
 /** True when a profile path is a managed directory itself or lies under one. */
 export function isUnderManagedDir(profilePath: string): boolean {
