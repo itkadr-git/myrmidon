@@ -512,7 +512,7 @@ export async function seedPaperclip(options = {}) {
 
   // 6. Create >= 200 Issues (205 total) with Russian text and >= 3 with title_needs_generation
   console.log("[seed-paperclip] Seeding 205 issues with Russian text and title_needs_generation...");
-  const issueStatuses = ["todo", "in_progress", "done", "in_review", "backlog"];
+  const issueStatuses = ["todo", "in_progress", "done", "in_review"];
   const issuePriorities = ["low", "medium", "high", "urgent"];
 
   const issueTopics = [

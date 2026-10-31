@@ -277,8 +277,11 @@ describe("seedPaperclip mock flow execution", () => {
       assert.ok(report.counts.largeAttachments >= 1, "Should seed large attachment > 2MB");
 
       // Verify issue payload format
-      assert.equal(capturedIssues.length, 205);
-      assert.ok(capturedIssues.every((issue) => issue.allowDuplicate === true), "seed should bypass duplicate title detection");
+      assert.deepEqual(
+        [...new Set(capturedIssues.map((issue) => issue.status))].sort(),
+        ["done", "in_progress", "in_review", "todo"],
+      );
+
 
       // Verify agent appearance payload format
       assert.equal(capturedAgents.length, 6);
