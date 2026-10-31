@@ -18,7 +18,7 @@ it imports nothing RAGFlow-related and builds without any external service.
   - `BlobStore` — raw document bytes;
   - `DocumentParser` — HTTP client port of the external parse service;
   - `Embedder` — OpenAI-compatible embeddings endpoint (the company gateway;
-    default model `dashscope-text-embedding-v4`, 1024 dimensions).
+    default model `hindsight-embed-bge-m3`, 1024 dimensions).
 - `src/postgres/` — PostgreSQL implementations of `CorpusStore`, `WorkQueue`
   and the module settings store. This is the only layer with SQL dialect
   operators (`vector`, `tsvector`, `FOR UPDATE SKIP LOCKED`, ...).
@@ -37,6 +37,36 @@ Tables (all additive, migration `0390_corpus_module` in `@myrmidon/db`):
 | `corpus_settings` | Per-company module settings (feature flag, default URLs, models) |
 
 All queries are company-scoped: every read/write takes `companyId`.
+
+## RAGFlow corpus import
+
+The `scripts/myrmidon/ragflow-corpus-import.ts` CLI copies already-parsed
+RAGFlow dataset, document, and chunk records into `corpus_*`; it calls only
+RAGFlow's read endpoints and never re-runs parsing. Chunk text and positions are
+retained, with stable IDs and conflict-safe upserts so a failed run can resume.
+Chunks without a matching stored vector are embedded through LiteLLM in
+configurable batches and parallel requests. Progress and the final elapsed
+milliseconds are JSON lines on stdout.
+
+Run it with `pnpm --filter @myrmidon/server corpus:import:ragflow` after
+setting `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `DATABASE_URL`,
+`CORPUS_COMPANY_ID`, `LITELLM_BASE_URL`, and `LITELLM_API_KEY`. Select the pilot
+with `CORPUS_EMBEDDING_MODEL` (default `hindsight-embed-bge-m3`); corpus
+storage currently requires 1024 dimensions. Before writing or embedding, the
+importer compares listed datasets/documents/chunks against RAGFlow's source
+counts (using a streaming chunk-count preflight when source totals are absent).
+`CORPUS_CHUNK_COUNT_TOLERANCE` defaults to 1% for the source-vs-import check.
+`CORPUS_IMPORT_BATCH_SIZE` and `CORPUS_IMPORT_CONCURRENCY` tune embedding
+batch size/concurrency.
+
+Progress and final JSON lines report `embedded` (new embedding requests) and
+`reused` (already valid vectors) separately, plus the elapsed milliseconds.
+
+The importer stores the authenticated RAGFlow document-record API URL as
+`source_uri`; it does not retrieve or copy original file bytes, and it does not
+invent a content hash. The fixture test covers chunk/position transfer,
+idempotent resume, concurrent embeddings, pagination, count mismatches, and
+vector checks.
 
 ## Parse pipeline
 

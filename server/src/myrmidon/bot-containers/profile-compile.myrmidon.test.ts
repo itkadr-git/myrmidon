@@ -117,6 +117,37 @@ function fileContent(profile: CompiledProfile, path: string): string {
 }
 
 describe("myrmidon(W2a) createBotProfileCompile", () => {
+  it("compiles a card pinned to a fleet host with site-specific endpoints", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "site-a" } };
+    const compile = createBotProfileCompile(board.ports, {
+      env: INSTANCE_ENV,
+      fleetHostForAgent: async () => ({
+        name: "site-a",
+        url: "https://fleet.example.com",
+        tokenSecret: "site-token",
+        hindsightUrl: "https://site.example.com/hindsight",
+        llmBaseUrl: "https://site.example.com/llm/v1",
+        boardExtraHost: "board.example.com",
+        volumeRoot: "/srv/site-bots",
+        network: "site-network",
+        imageAllowlist: ["registry.example.com/bots/*"],
+        mcpEndpoints: [],
+      }),
+    });
+    const profile = await compile("agent-a", "agent-a");
+    expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
+    expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+  });
+
+  it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "missing-site" } };
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV, fleetHostForAgent: async () => null });
+    await expect(compile("agent-a", "agent-a")).rejects.toThrow("not registered");
+    expect(board.calls).not.toContain("ensureApiServerKey");
+  });
+
   it("compiles a card into the profile files, credentials in .env only", async () => {
     const board = fakeBoard();
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
@@ -1279,11 +1310,18 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
 describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language servers", () => {
   it("compiles the limited mode for a coding role and off for another", async () => {
     const board = fakeBoard();
-    board.agent.current = agentRecord({ role: "engineer" });
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const engineer = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
     expect(fileContent(engineer, "hermes/config.yaml")).toContain('useSyntaxServer: "never"');
+    expect(fileContent(engineer, "hermes/config.yaml")).toContain("maxTsServerMemory: 409");
 
-    board.agent.current = agentRecord({ role: "general" });
+    board.agent.current = agentRecord({
+      role: "general",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const general = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
     expect(fileContent(general, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
   });
@@ -1295,7 +1333,10 @@ describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language server
         return policy;
       },
     });
-    board.agent.current = agentRecord({ role: "dev-lead" });
+    board.agent.current = agentRecord({
+      role: "dev-lead",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
     const before = await compile("agent-a", "agent-a");
     expect(fileContent(before, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
@@ -1303,7 +1344,25 @@ describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language server
     policy = { codingRoles: ["dev-lead"] };
     const after = await compile("agent-a", "agent-a");
     expect(fileContent(after, "hermes/config.yaml")).toContain("idle_timeout: 120");
+    expect(fileContent(after, "hermes/config.yaml")).toContain("maxTsServerMemory: 409");
     expect(after.restartHash).not.toBe(before.restartHash);
+  });
+
+  it("safely turns language servers off when container memory is unknown or insufficient", async () => {
+    const board = fakeBoard();
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: false } },
+    });
+    const unknownMem = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(unknownMem, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
+
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 512 } },
+    });
+    const insufficientMem = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(insufficientMem, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
   });
 });
 

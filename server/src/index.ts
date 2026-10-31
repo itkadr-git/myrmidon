@@ -8,6 +8,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { getActiveFleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -62,6 +63,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { startBrowserBridge } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 import {
   PROCESS_ROLE_ENV,
+  primaryListenReusesPort, // myrmidon(OPE-10011)
   processRole,
   type ProcessRoleProfile,
 } from "./services/process-role.js"; // myrmidon(PROCS-1.1)
@@ -177,6 +179,7 @@ import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.
 import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import { startRootFanoutAlertSweep } from "./myrmidon/monitoring/alerts/root-fanout.js"; // myrmidon(OPE-9165)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
@@ -200,6 +203,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
@@ -853,6 +857,14 @@ async function startServerWithDatabaseTeardown(
   // single↔split and emergency-single transitions. The shutdown path closes
   // it; the supervisor's own handle keeps the same server alive in between.
   let publicListener: HttpServer | null = null;
+  // myrmidon(OPE-10011): settles once the startup listener is bound — and so
+  // once `app` exists. The supervisor's first apply runs before createApp
+  // (startProcessesSettings below); its openPublicListener waits on this
+  // instead of reaching `app` in the temporal dead zone.
+  let markStartupListenerReady: () => void = () => undefined;
+  const startupListenerReady = new Promise<void>((resolveReady) => {
+    markStartupListenerReady = resolveReady;
+  });
   let liveEventsClients: ReadonlySet<{ close(code?: number, reason?: string): void }> = new Set();
   function toSupervisorListener(server: HttpServer): SupervisorListenerHandle & { server: HttpServer } {
     return {
@@ -1164,6 +1176,7 @@ async function startServerWithDatabaseTeardown(
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
         openPublicListener: async () => {
+          await startupListenerReady; // myrmidon(OPE-10011): no `app` before this
           if (publicListener?.listening) return toSupervisorListener(publicListener);
           const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
           // reusePort: the api children may still hold :3100 when the worker
@@ -1223,6 +1236,7 @@ async function startServerWithDatabaseTeardown(
   await startProcessesSettings(db as any, processSupervisor);
   configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
+    fleetClientManager: getActiveFleetClientManager,
     uiMode,
     serverPort: listenPort,
     // myrmidon(PROCS-1.1): an api process serves the board surface and nothing
@@ -1365,13 +1379,15 @@ async function startServerWithDatabaseTeardown(
     const onBound = () => {
       server.off("error", onError);
       logger.info(
-        `Server listener bound on ${primaryListenHost}:${listenPort}${roleListen.reusePort ? " (reusePort)" : ""}; startup recovery in progress`,
+        `Server listener bound on ${primaryListenHost}:${listenPort}${primaryListenReusesPort(processRoleProfile) ? " (reusePort)" : ""}; startup recovery in progress`,
       );
       resolveListen();
     };
     // myrmidon(PROCS-1.1): a reusable-port listener joins its siblings on the
     // same port instead of taking the next free one.
-    if (roleListen.reusePort) {
+    // myrmidon(OPE-10011): the worker's listener too — Linux shares a port only
+    // when EVERY socket on it, the first one included, sets SO_REUSEPORT.
+    if (primaryListenReusesPort(processRoleProfile)) {
       server.listen({ port: listenPort, host: primaryListenHost, reusePort: true }, onBound);
     } else {
       server.listen(listenPort, primaryListenHost, onBound);
@@ -1437,6 +1453,14 @@ async function startServerWithDatabaseTeardown(
     // first apply (startProcessesSettings above ran before createApp — the
     // fork+ready+drain cycle) closes it as soon as the children are ready.
     publicListener = server;
+    // myrmidon(OPE-10011): hand it to the supervisor — without this a stored
+    // split never closed it and the worker kept sharing :3100 with the children.
+    markStartupListenerReady();
+    if (processSupervisor) {
+      void processSupervisor.adoptPublicListener(toSupervisorListener(server)).catch((err) => {
+        logger.error({ err }, "myrmidon(OPE-10011): supervisor could not adopt the worker startup listener");
+      });
+    }
   }
 
   /**
@@ -1863,6 +1887,11 @@ async function startServerWithDatabaseTeardown(
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
   const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  // myrmidon(BOARD-JANITOR): daily board cleanup (08:00 Irkutsk / on demand)
+  const scheduleBoardJanitorSweep = createBoardJanitorScheduler({
+    db: db as any,
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(STALE-BLOCK): the periodic watchdog that lifts dead blocked
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
@@ -2296,6 +2325,7 @@ async function startServerWithDatabaseTeardown(
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
     startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+    startRootFanoutAlertSweep(db); // myrmidon(OPE-9165): collect blocker roots every minute
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
@@ -2601,6 +2631,7 @@ async function startServerWithDatabaseTeardown(
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
+        scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
@@ -2813,6 +2844,7 @@ async function startServerWithDatabaseTeardown(
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
+      scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
       scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
