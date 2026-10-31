@@ -15,6 +15,7 @@ import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { StoredRunPriority } from "../myrmidon-run-priority.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
 import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
+import type { ModelApiPricingSettings } from "../myrmidon-model-api-pricing.js";
 // myrmidon(1.6.5-DBC1): the datastore-care block type (see validators/instance.ts)
 import type { DatastoreCareRetentionSettings } from "../myrmidon-datastore-care.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
@@ -266,6 +267,8 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   corpus?: StoredCorpusSettings;
+  /** Operator-maintained API list prices for subscription-backed token estimates. */
+  modelApiPricing?: ModelApiPricingSettings;
   /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and

@@ -2,7 +2,7 @@
 //
 // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401/OPE-5906): the reverse
 // direction of the skills pipeline. The compiler delivers a card's catalog
-// skills into the container at hermes/skills-board/ (a managed directory the
+// skills into the container at hermes/skills/paperclip-managed/ (a managed directory the
 // profile owns outright, template.ts BOT_MANAGED_DIRS). The bot's OWN skills
 // — the ones it created itself at runtime — live at hermes/skills/
 // (the container's ~/.hermes/skills), on the bot's volume, which a recreate
@@ -26,7 +26,7 @@
 // The read-back is deliberately not part of the compiled profile: the
 // profile is the board -> bot direction, and this module never feeds the
 // bot's own skills back into the same bot's profile. A skill the board
-// delivered (skills-board/) and the bot copied or edited under hermes/skills/
+// delivered (skills/paperclip-managed/) and the bot copied or edited under hermes/skills/
 // is imported as the company's own copy — from the catalog's point of view
 // it is a new local skill, which is exactly what "the bot changed it" means.
 //
@@ -42,8 +42,8 @@ import { createHash } from "node:crypto";
 export const BOT_SKILL_BACKIMPORT_ENV = "MYRMIDON_BOT_SKILL_BACKIMPORT";
 
 /** Profile path of the bot's own skills directory (template.ts mountRootSegment
- *  of the hermes mount). The board's own delivery lives in the sibling
- *  `hermes/skills-board`, which the profile owns — never read back. */
+ *  of the hermes mount). The board's own delivery lives in the subfolder
+ *  `hermes/skills/paperclip-managed`, which the profile owns — never read back. */
 export const BOT_SKILLS_PROFILE_DIR = "hermes/skills";
 
 export function isBotSkillBackimportEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

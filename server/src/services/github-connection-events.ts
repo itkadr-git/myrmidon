@@ -3,6 +3,7 @@ import {
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
+  heartbeatRuns,
   issueWorkProducts,
   issueComments,
   issues,
@@ -110,11 +111,18 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     senderLogin: boundedString(payload.senderLogin, 100),
   };
   if (event.event === "pull_request") {
+    const rawMergeable = payload.mergeable ?? payload.mergeableState ?? payload.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : boundedString(rawMergeable, 40);
     return compact({
       ...base,
       number: positiveInteger(payload.number),
       url: githubUrl(payload.url),
       state: boundedString(payload.state, 40),
+      mergeable,
       merged: payload.merged === true,
       mergedAt: isoDate(payload.mergedAt),
       updatedAt: isoDate(payload.updatedAt),
@@ -222,6 +230,7 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       number,
       state,
       merged,
+      ...(stringValue(payload.mergeable) ? { mergeable: stringValue(payload.mergeable) } : {}),
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
@@ -459,6 +468,114 @@ export function githubConnectionEventService(
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    }
+
+    const isConflicting = (
+      stringValue(event.payload.mergeable) === "CONFLICTING" ||
+      event.payload.mergeable === false ||
+      stringValue(event.payload.mergeableState) === "CONFLICTING" ||
+      stringValue(event.payload.mergeable_state) === "dirty" ||
+      snapshot.data.mergeable === "CONFLICTING"
+    );
+
+    if (isConflicting && snapshot.state !== "closed" && !snapshot.merged) {
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+
+      if (matching) {
+        let transitioned = false;
+        let returnedAssigneeId: string | null = null;
+        const publications: ActivityPublication[] = [];
+        await database.transaction(async (tx) => {
+          const [current] = await tx.select().from(issues).where(and(
+            eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+          )).for("update");
+          if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+          const state = parseIssueExecutionState(current.executionState);
+          if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+          const executor = state?.returnAssignee;
+          if (executor && executor.type !== "agent") return;
+          let executorId = executor?.agentId ?? null;
+          if (!executorId && matching.product.createdByRunId) {
+            const [run] = await tx.select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, matching.product.createdByRunId))
+              .limit(1);
+            if (run?.agentId) executorId = run.agentId;
+          }
+          if (!executorId) executorId = current.assigneeAgentId;
+          if (!executorId) return;
+
+          const commentBody = `PR ${snapshot.owner}/${snapshot.repo}#${snapshot.number}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
+          await tx.update(issues).set({
+            status: "in_progress",
+            statusVersion: sql`${issues.statusVersion} + 1`,
+            assigneeAgentId: executorId,
+            assigneeUserId: null,
+            ...(state ? { executionState: {
+              ...state, status: "changes_requested", reviewRequest: null,
+              lastDecisionOutcome: "changes_requested",
+            } } : {}),
+            updatedAt: appliedAt,
+          }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+          await tx.insert(issueComments).values({
+            companyId, issueId: current.id, authorType: "system", body: commentBody,
+          });
+          await logActivity(tx as unknown as Db, {
+            companyId, actorType: "system", actorId: "system:github-conflict",
+            action: "issue.merge_conflict", entityType: "issue", entityId: current.id,
+            details: { previousStatus: "in_review", status: "in_progress", mergeable: "CONFLICTING",
+              repository: snapshot.repository, pullRequestNumber: snapshot.number, deliveryId: event.id },
+          }, publications);
+          transitioned = true;
+          returnedAssigneeId = executorId;
+        });
+        if (transitioned) {
+          for (const publication of publications) {
+            try { publishActivity(publication); }
+            catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
+          }
+          if (options.assignmentWakeup && returnedAssigneeId) {
+            await options.assignmentWakeup(returnedAssigneeId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "pr_merge_conflict",
+              payload: {
+                issueId: matching.issue.id,
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+                mergeable: "CONFLICTING",
+                event: event.event,
+                deliveryId: event.id,
+              },
+              idempotencyKey: `pr_merge_conflict:${snapshot.repository}#${snapshot.number}:${matching.issue.id}`,
+              requestedByActorType: "system",
+              requestedByActorId: "system:github-conflict",
+              contextSnapshot: {
+                issueId: matching.issue.id,
+                source: "github_pr_conflict",
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+              },
+            });
+          }
+        }
+      }
     }
   }
 
