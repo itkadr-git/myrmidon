@@ -15061,7 +15061,7 @@ export function issueRoutes(
               issueUpdateData.blockerMetadata = null;
               issueUpdateData.unblockDescriptor = null;
             }
-            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            const lockedDecisionId = lockedTransition.decision ? (decisionId ?? randomUUID()) : null;
             if (lockedDecisionId) {
               const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
               if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -15252,17 +15252,19 @@ export function issueRoutes(
               );
             }
 
-            if (decision && decisionId) {
+            const effectiveDecision = lockedTransition.decision ?? decision;
+            const effectiveDecisionId = lockedDecisionId ?? decisionId;
+            if (effectiveDecision && effectiveDecisionId) {
               await tx.insert(issueExecutionDecisions).values({
-                id: decisionId,
+                id: effectiveDecisionId,
                 companyId: updated.companyId,
                 issueId: updated.id,
-                stageId: decision.stageId,
-                stageType: decision.stageType,
+                stageId: effectiveDecision.stageId,
+                stageType: effectiveDecision.stageType,
                 actorAgentId: actor.agentId ?? null,
                 actorUserId: actor.actorType === "user" ? actor.actorId : null,
-                outcome: decision.outcome,
-                body: decision.body,
+                outcome: effectiveDecision.outcome,
+                body: effectiveDecision.body,
                 createdByRunId: actor.runId ?? null,
               });
             }
