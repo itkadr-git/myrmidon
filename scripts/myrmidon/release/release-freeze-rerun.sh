@@ -14,7 +14,7 @@
 # code is 0 unless the gate state itself cannot be decided.
 #
 # Environment:
-#   GITHUB_REPOSITORY  owner/repo (the workflow sets it)
+#   GITHUB_REPOSITORY  owner/repo (the workflow sets it; defaults to repo origin)
 #   GITHUB_TOKEN       actions:write + pull-requests:read + issues:read
 #   RELEASE_FREEZE_CHECK  the gate script (tests substitute a stub)
 #   RERUN_WINDOW_DAYS  how far back failed gate runs are looked at (default 3)
@@ -25,11 +25,46 @@ set -euo pipefail
 
 log() { printf '[release-freeze-rerun] %s\n' "$*" >&2; }
 
+dry_run=0
+for arg in "${@:-}"; do
+  case "$arg" in
+    --dry-run)
+      dry_run=1
+      ;;
+    -h|--help)
+      printf 'Usage: %s [--dry-run]\n' "${0##*/}"
+      printf 'Re-runs failed release freeze gate workflow runs for current heads of open PRs.\n'
+      exit 0
+      ;;
+  esac
+done
+
 command -v gh >/dev/null 2>&1 || { log "ERROR: gh is not installed"; exit 1; }
-repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
+repo="${GITHUB_REPOSITORY:-}"
+if [[ -z "$repo" ]]; then
+  repo="$(git remote get-url origin 2>/dev/null | sed -E 's#.*github.com[:/]([^/]+/[^/.]+)(\.git)?#\1#' || true)"
+fi
+repo="${repo:-itkadr-git/myrmidon}"
+export GITHUB_REPOSITORY="$repo"
+
 export GH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [[ -z "$GH_TOKEN" ]] && command -v gh >/dev/null 2>&1; then
+  GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+  export GH_TOKEN
+fi
 [[ -n "$GH_TOKEN" ]] || { log "ERROR: GITHUB_TOKEN is not set"; exit 1; }
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export GITHUB_TOKEN="${GITHUB_TOKEN:-$GH_TOKEN}"
+
+source="${BASH_SOURCE[0]}"
+while [[ -L "$source" ]]; do
+  target="$(readlink "$source")"
+  if [[ "$target" == /* ]]; then
+    source="$target"
+  else
+    source="$(dirname "$source")/$target"
+  fi
+done
+here="$(cd "$(dirname "$source")" && pwd)"
 check="${RELEASE_FREEZE_CHECK:-$here/release-freeze.sh}"
 workflow="myrmidon-release-freeze.yml"
 window_days="${RERUN_WINDOW_DAYS:-3}"
@@ -60,7 +95,10 @@ while read -r run_id sha; do
   [[ -n "${pr_of_head[$sha]:-}" ]] || continue            # a stale head or a closed PR
   [[ -z "${seen[$sha]:-}" ]] || continue                   # newest failed run per head only
   seen["$sha"]=1
-  if gh run rerun "$run_id" --failed --repo "$repo" >/dev/null 2>&1; then
+  if [[ "$dry_run" -eq 1 ]]; then
+    log "[dry-run] would re-run the gate run $run_id of PR #${pr_of_head[$sha]} (${sha:0:12})"
+    rerun=$((rerun + 1))
+  elif gh run rerun "$run_id" --failed --repo "$repo" >/dev/null 2>&1; then
     log "re-ran the gate run $run_id of PR #${pr_of_head[$sha]} (${sha:0:12})"
     rerun=$((rerun + 1))
   else
@@ -69,4 +107,8 @@ while read -r run_id sha; do
   fi
 done <<<"$failed"
 
-log "re-ran $rerun gate run(s), $skipped could not be re-run"
+if [[ "$dry_run" -eq 1 ]]; then
+  log "[dry-run] would re-run $rerun gate run(s), $skipped could not be re-run"
+else
+  log "re-ran $rerun gate run(s), $skipped could not be re-run"
+fi

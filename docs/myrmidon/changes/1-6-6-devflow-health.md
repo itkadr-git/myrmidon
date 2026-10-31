@@ -6,6 +6,9 @@
   - `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS`: idle engineer alert threshold in milliseconds.
   - `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS`: review queue age alert threshold in milliseconds.
   - `MYRMIDON_DEVFLOW_RED_CI_MS`: red CI alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS`: legacy alias for stale marker alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_AUTO_MERGE_MS`: legacy alias for stalled merge alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS`: legacy alias for stalled router alert threshold in milliseconds.
 
 ## changelog-ru
 
@@ -15,3 +18,6 @@
   - `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS`: порог оповещения о простое инженера в миллисекундах.
   - `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS`: порог возраста очереди ревью в миллисекундах.
   - `MYRMIDON_DEVFLOW_RED_CI_MS`: порог оповещения о красном CI в миллисекундах.
+  - `MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS`: устаревший псевдоним порога устаревания маркера в миллисекундах.
+  - `MYRMIDON_DEVFLOW_AUTO_MERGE_MS`: устаревший псевдоним порога зависания автослияния в миллисекундах.
+  - `MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS`: устаревший псевдоним порога зависания роутера в миллисекундах.

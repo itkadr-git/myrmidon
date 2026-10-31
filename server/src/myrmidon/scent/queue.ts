@@ -42,6 +42,14 @@ export interface ScentQueuePorts {
   resolveSecret?: (db: Db, companyId: string, secretName: string) => Promise<string | null>;
   /** Test hook: replace general instance settings lookup. */
   getGeneral?: (db: Db) => Promise<unknown>;
+  /** Test hook: provide the company caste directory without querying the database. */
+  listCastes?: (db: Db, companyId: string) => Promise<Array<{ key: string }>>;
+  /** Test hook: supply the service's markup backlog to status without Drizzle queries. */
+  listMarkupQueue?: (
+    db: Db,
+    companyId: string,
+    limit: number,
+  ) => Promise<{ issueIds: string[]; agentIds: string[]; totalPending: number }>;
   /** Test hook: replace the company listing (the queue is per-company). */
   listCompanyIds?: () => Promise<string[]>;
   now?: () => number;
@@ -58,7 +66,7 @@ export interface ScentQueuePorts {
   }>;
 }
 
-async function defaultResolveSecret(
+export async function resolveScentSecret(
   db: Db,
   companyId: string,
   secretName: string,
@@ -87,8 +95,11 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
 
   const env = process.env;
   const baseUrl = env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
-  const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
-  const resolve = ports.resolveSecret ?? defaultResolveSecret;
+  const secretName =
+    settings.apiKeySecretName?.trim() ||
+    env[SCENT_KEY_SECRET_ENV]?.trim() ||
+    "MYRMIDON_EVALS_API_KEY";
+  const resolve = ports.resolveSecret ?? resolveScentSecret;
   const apiKey = await resolve(db, companyId, secretName);
   if (!baseUrl || !apiKey) {
     // OPE-7190: a parked queue must not be silent. Without this entry the

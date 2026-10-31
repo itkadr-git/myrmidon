@@ -45,10 +45,11 @@ function makeSandbox({ gateOpen = true, pulls = [], failedRuns = [], rerunFails 
   return { dir, bin };
 }
 
-function run(sandbox) {
-  const result = spawnSync("bash", [SCRIPT], {
+function run(sandbox, extraArgs = []) {
+  const result = spawnSync("bash", [SCRIPT, ...extraArgs], {
     env: {
       ...process.env,
+      BASH_ENV: "",
       SANDBOX: sandbox.dir,
       PATH: `${sandbox.bin}:${process.env.PATH}`,
       GITHUB_REPOSITORY: REPO,
@@ -116,6 +117,28 @@ describe("release-freeze-rerun.sh (fake gh)", () => {
     const { result, reruns } = run(makeSandbox({ pulls: [[A, 101]], failedRuns: [] }));
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(reruns, []);
+  });
+
+  it("supports --dry-run without issuing any rerun mutations", () => {
+    const { result, reruns } = run(
+      makeSandbox({
+        pulls: [[A, 101]],
+        failedRuns: [["9001", A]],
+      }),
+      ["--dry-run"],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(reruns, []);
+    assert.match(result.stderr, /\[dry-run\] would re-run the gate run 9001/);
+  });
+
+  it("provides root and scripts freeze-rerun.sh symlinks", () => {
+    const rootSymlink = path.join(HERE, "../../../freeze-rerun.sh");
+    assert.equal(fs.existsSync(rootSymlink), true);
+    assert.equal(fs.realpathSync(rootSymlink), fs.realpathSync(SCRIPT));
+    const scriptsSymlink = path.join(HERE, "freeze-rerun.sh");
+    assert.equal(fs.existsSync(scriptsSymlink), true);
+    assert.equal(fs.realpathSync(scriptsSymlink), fs.realpathSync(SCRIPT));
   });
 });
 
