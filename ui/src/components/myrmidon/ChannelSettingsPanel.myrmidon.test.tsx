@@ -32,6 +32,14 @@ const VIEW: ChannelSettingsView = {
   chatCrossChannelTotalChars: resolved(4000),
   chatCrossChannelLookbackHours: resolved(168),
   chatReconcileIntervalMs: resolved(null),
+  telegramPoolChatGptEnabled: resolved(false),
+  telegramPoolChatGptChatId: resolved(""),
+  telegramPoolChatGptModel: resolved("balanced"),
+  telegramPoolChatGptBotToken: resolved(""),
+  telegramPoolGeminiEnabled: resolved(false),
+  telegramPoolGeminiChatId: resolved(""),
+  telegramPoolGeminiModel: resolved("gemini-2.0-flash"),
+  telegramPoolGeminiBotToken: resolved(""),
   telegramApiBaseUrl: resolved("https://api.telegram.org", {
     source: "env",
     default: null,
@@ -102,6 +110,14 @@ const DRAFT = {
   chatCrossChannelTotalChars: "4000",
   chatCrossChannelLookbackHours: "168",
   chatReconcileIntervalMs: "",
+  telegramPoolChatGptEnabled: false,
+  telegramPoolChatGptChatId: "",
+  telegramPoolChatGptModel: "balanced",
+  telegramPoolChatGptBotToken: "",
+  telegramPoolGeminiEnabled: false,
+  telegramPoolGeminiChatId: "",
+  telegramPoolGeminiModel: "gemini-2.0-flash",
+  telegramPoolGeminiBotToken: "",
 };
 
 describe("parseChannelSettingsDraft", () => {
@@ -111,6 +127,29 @@ describe("parseChannelSettingsDraft", () => {
     expect(patch.chatReconcileIntervalMs).toBeNull();
     expect(patch.telegramFileLimitBytes).toBe(50331648);
     expect(patch.telegramDmConversations).toBe("");
+  });
+
+  it("parses and trims telegram pool bridge settings", () => {
+    const { patch, errors } = parseChannelSettingsDraft({
+      ...DRAFT,
+      telegramPoolChatGptEnabled: true,
+      telegramPoolChatGptChatId: "  12345  ",
+      telegramPoolChatGptModel: "  gpt-4o  ",
+      telegramPoolChatGptBotToken: "  secret:my-token  ",
+      telegramPoolGeminiEnabled: true,
+      telegramPoolGeminiChatId: "  67890  ",
+      telegramPoolGeminiModel: "  gemini-2.5-pro  ",
+      telegramPoolGeminiBotToken: "  ********  ",
+    });
+    expect(errors).toEqual({});
+    expect(patch.telegramPoolChatGptEnabled).toBe(true);
+    expect(patch.telegramPoolChatGptChatId).toBe("12345");
+    expect(patch.telegramPoolChatGptModel).toBe("gpt-4o");
+    expect(patch.telegramPoolChatGptBotToken).toBe("secret:my-token");
+    expect(patch.telegramPoolGeminiEnabled).toBe(true);
+    expect(patch.telegramPoolGeminiChatId).toBe("67890");
+    expect(patch.telegramPoolGeminiModel).toBe("gemini-2.5-pro");
+    expect(patch.telegramPoolGeminiBotToken).toBeUndefined();
   });
 
   it("allows 0 as the documented off-state of the counters", () => {

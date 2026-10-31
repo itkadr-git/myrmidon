@@ -55,7 +55,7 @@ function parseNonNegative(raw: string): { value?: number; error?: string } {
  * and the cross-channel numbers allow 0 (the documented "off" state); the
  * reconcile interval accepts an empty field as null ("today's pace").
  */
-export function parseChannelSettingsDraft(draft: {
+export interface ChannelSettingsDraft {
   telegramDmConversations: string;
   telegramSplitMaxParts: string;
   telegramFileLimitBytes: string;
@@ -65,7 +65,17 @@ export function parseChannelSettingsDraft(draft: {
   chatCrossChannelTotalChars: string;
   chatCrossChannelLookbackHours: string;
   chatReconcileIntervalMs: string;
-}): DraftParse {
+  telegramPoolChatGptEnabled?: boolean;
+  telegramPoolChatGptChatId?: string;
+  telegramPoolChatGptModel?: string;
+  telegramPoolChatGptBotToken?: string;
+  telegramPoolGeminiEnabled?: boolean;
+  telegramPoolGeminiChatId?: string;
+  telegramPoolGeminiModel?: string;
+  telegramPoolGeminiBotToken?: string;
+}
+
+export function parseChannelSettingsDraft(draft: ChannelSettingsDraft): DraftParse {
   const errors: Partial<Record<string, string>> = {};
   const patch: ChannelSettingsPatch = {
     telegramDmConversations: draft.telegramDmConversations.trim(),
@@ -103,15 +113,27 @@ export function parseChannelSettingsDraft(draft: {
     }
   }
 
-  patch.telegramPoolChatGptEnabled = draft.telegramPoolChatGptEnabled;
-  patch.telegramPoolChatGptChatId = draft.telegramPoolChatGptChatId.trim();
-  patch.telegramPoolChatGptModel = draft.telegramPoolChatGptModel.trim();
+  if (draft.telegramPoolChatGptEnabled !== undefined) {
+    patch.telegramPoolChatGptEnabled = draft.telegramPoolChatGptEnabled;
+  }
+  if (draft.telegramPoolChatGptChatId !== undefined) {
+    patch.telegramPoolChatGptChatId = draft.telegramPoolChatGptChatId.trim();
+  }
+  if (draft.telegramPoolChatGptModel !== undefined) {
+    patch.telegramPoolChatGptModel = draft.telegramPoolChatGptModel.trim();
+  }
   if (draft.telegramPoolChatGptBotToken && draft.telegramPoolChatGptBotToken !== "********") {
     patch.telegramPoolChatGptBotToken = draft.telegramPoolChatGptBotToken.trim();
   }
-  patch.telegramPoolGeminiEnabled = draft.telegramPoolGeminiEnabled;
-  patch.telegramPoolGeminiChatId = draft.telegramPoolGeminiChatId.trim();
-  patch.telegramPoolGeminiModel = draft.telegramPoolGeminiModel.trim();
+  if (draft.telegramPoolGeminiEnabled !== undefined) {
+    patch.telegramPoolGeminiEnabled = draft.telegramPoolGeminiEnabled;
+  }
+  if (draft.telegramPoolGeminiChatId !== undefined) {
+    patch.telegramPoolGeminiChatId = draft.telegramPoolGeminiChatId.trim();
+  }
+  if (draft.telegramPoolGeminiModel !== undefined) {
+    patch.telegramPoolGeminiModel = draft.telegramPoolGeminiModel.trim();
+  }
   if (draft.telegramPoolGeminiBotToken && draft.telegramPoolGeminiBotToken !== "********") {
     patch.telegramPoolGeminiBotToken = draft.telegramPoolGeminiBotToken.trim();
   }
