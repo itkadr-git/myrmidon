@@ -165,6 +165,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
         { recipient: { serviceQueue: "operators" }, afterMinutes: 15 },
       ],
       payload: {
+        version: 1,
         questions: [
           {
             id: "q1",
@@ -182,7 +183,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
   it("флаг off - тик ничего не делает", async () => {
     await seedSetup();
     const cardData = makeCard();
-    await db.insert(issueThreadInteractions).values(cardData);
+    await db.insert(issueThreadInteractions).values(cardData as any);
 
     const sweep = createInteractionEscalationSweep({
       db,
@@ -217,7 +218,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
       timeoutAt: new Date(Date.now() + 3600_000),
     });
 
-    await db.insert(issueThreadInteractions).values([card1, card2, card3, notDueCard]);
+    await db.insert(issueThreadInteractions).values([card1, card2, card3, notDueCard] as any);
 
     const sweep = createInteractionEscalationSweep({
       db,
@@ -257,7 +258,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
   it("два конкурентных тика не дают двух шагов на одну карточку", async () => {
     await seedSetup();
     const cardData = makeCard();
-    await db.insert(issueThreadInteractions).values(cardData);
+    await db.insert(issueThreadInteractions).values(cardData as any);
 
     const sweep1 = createInteractionEscalationSweep({
       db,
@@ -300,7 +301,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
   it("настройка интервала ограничивает частоту запусков", async () => {
     await seedSetup();
     const cardData = makeCard();
-    await db.insert(issueThreadInteractions).values(cardData);
+    await db.insert(issueThreadInteractions).values(cardData as any);
 
     let currentTime = Date.now();
     const sweep = createInteractionEscalationSweep({
