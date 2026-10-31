@@ -60,6 +60,7 @@ const ALLOWLIST = {
   "legal attribution": [
     "Copyright (c) 2025 Paperclip",
     "Based on Paperclip",
+    "Base: Paperclip",
     "Paperclip AI", // vendor company name in license/provenance lines
     "Paperclip (MIT)",
   ],
