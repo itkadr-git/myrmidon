@@ -40,7 +40,7 @@ function fakeBoard(script = []) {
   return { fetchImpl, calls };
 }
 
-function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings } = {}) {
+function rig({ desired, plan, rules, inventory, executor, gatherParts, board = fakeBoard(), settings, hygiene, repack } = {}) {
   const logs = [];
   const states = [];
   const executed = [];
@@ -79,6 +79,8 @@ function rig({ desired, plan, rules, inventory, executor, gatherParts, board = f
     botKey: "bot-001",
     imageGeneration: "myr-v1.6.5-rc.5",
     settings,
+    hygiene,
+    repack,
   });
   return { loop, logs, states, executed, board };
 }
@@ -571,5 +573,53 @@ describe("botd entry", () => {
     const text = fs.readFileSync(entry, "utf8");
     assert.ok(/desiredClient\s*\?\s*desiredClient\.poll\(\)/.test(text), "the entry must poll desired-state via the loop");
     assert.ok(!/desiredClient\.start\(/.test(text), "the entry must not start the client's own 60 s timer");
+  });
+});
+
+describe("botd loop: cache hygiene and pressure triggers (1.6.6 OPE-10039)", () => {
+  it("invokes hygiene on every pass with current desired state and pressure", async () => {
+    let hygieneCalled = 0;
+    let receivedPressure = null;
+    const r = rig({
+      hygiene: async ({ pressure }) => {
+        hygieneCalled++;
+        receivedPressure = pressure;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(hygieneCalled, 1);
+    assert.equal(receivedPressure, "none");
+  });
+
+  it("schedules an out-of-turn pass (10 s) when pressure is soft or hard", async () => {
+    const r = rig({
+      plan: () => ({ actions: [], held: [], pressure: "soft" }),
+    });
+    await r.loop.runOnce();
+    assert.equal(r.loop.getLastDelayMs(), 10_000);
+  });
+
+  it("onPressure triggers an immediate out-of-turn pass under pressure", async () => {
+    let passes = 0;
+    const r = rig({
+      hygiene: async () => {
+        passes++;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(passes, 1);
+    await r.loop.onPressure("hard");
+    assert.equal(passes, 2);
+  });
+
+  it("invokes repack hook on every pass when provided", async () => {
+    let repackCalled = 0;
+    const r = rig({
+      repack: async () => {
+        repackCalled++;
+      },
+    });
+    await r.loop.runOnce();
+    assert.equal(repackCalled, 1);
   });
 });

@@ -84,6 +84,7 @@ export function createLoop(deps) {
   let failedStreak = 0;
   // the board's nextReportSec after the first accepted report; null until then
   let nextReportSec = null;
+  let lastPressure = "none";
   let lastDelayMs = clamp(intervalMs);
 
   const emptyGather = { inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: {} };
@@ -98,6 +99,10 @@ export function createLoop(deps) {
    * polls desired-state or sends a disk report more often than the cadence.
    */
   function computeDelayMs() {
+    if (lastPressure === "soft" || lastPressure === "hard") {
+      // Under disk pressure, schedule an out-of-turn pass sooner rather than waiting normal cadence
+      return clamp(10_000);
+    }
     const cadenceMs = nextReportSec != null ? clamp(nextReportSec * 1000) : null;
     if (failedStreak > 0) {
       const k = Math.min(failedStreak - 1, EXP_STRETCH);
@@ -213,6 +218,7 @@ export function createLoop(deps) {
         actions = Array.isArray(planned?.actions) ? planned.actions : [];
         held = Array.isArray(planned?.held) ? planned.held : [];
         plannedOut = { actions, held, pressure: planned?.pressure ?? "none" };
+        lastPressure = plannedOut.pressure ?? desired?.state?.pressure?.level ?? "none";
       } catch (err) {
         log(`botd loop: rules failed: ${errMessage(err)}`);
         results.push({
@@ -242,6 +248,20 @@ export function createLoop(deps) {
             await deps.retention({ startedAt, desired: desiredOk ? desired.state : null });
           } catch (err) {
             log(`botd loop: archive retention failed: ${errMessage(err)}`);
+          }
+        }
+        if (typeof deps.hygiene === "function") {
+          try {
+            await deps.hygiene({ startedAt, desired: desired.state, pressure: plannedOut?.pressure ?? desired.state?.pressure?.level ?? "none" });
+          } catch (err) {
+            log(`botd loop: hygiene failed: ${errMessage(err)}`);
+          }
+        }
+        if (typeof deps.repack === "function") {
+          try {
+            await deps.repack({ startedAt });
+          } catch (err) {
+            log(`botd loop: git-base repack failed: ${errMessage(err)}`);
           }
         }
         // the pass summary: what the cycle actually touched. Silent when the pass
@@ -374,5 +394,17 @@ export function createLoop(deps) {
     return running ?? Promise.resolve();
   }
 
-  return { runOnce, trigger, start, stop, getLastDelayMs: () => lastDelayMs };
+  function onPressure(level) {
+    if (level === "soft" || level === "hard") {
+      lastPressure = level;
+      log(`botd loop: disk pressure (${level}), triggering out-of-turn pass`);
+      if (timer) {
+        clearTimer(timer);
+        timer = null;
+      }
+      return trigger().finally(schedule);
+    }
+  }
+
+  return { runOnce, trigger, start, stop, onPressure, getLastDelayMs: () => lastDelayMs };
 }
