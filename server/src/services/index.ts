@@ -8,7 +8,14 @@ export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./com
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry.
 export { companyBaseSkillService, type CompanyBaseSkillActor } from "./company-base-skills.js";
 export { folderService } from "./folders.js";
-export { agentService, deduplicateAgentName } from "./agents.js";
+export {
+  agentService,
+  deduplicateAgentName,
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents.js";
 export {
   builtInAgentService,
   deriveBuiltInAgentStatus,

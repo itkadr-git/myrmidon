@@ -281,6 +281,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,

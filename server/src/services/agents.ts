@@ -2,6 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
+import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 import type { Db } from "@myrmidon/db";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
@@ -31,6 +37,7 @@ import {
   type AgentApiKeyScope,
   // myrmidon(PERF-DIET-G): the slim list row of GET /companies/:id/agents
   type AgentListItem,
+  type AgentListFilters,
 } from "@myrmidon/shared";
 import {
   normalizePaperclipRunnerAdapterConfig,
@@ -128,6 +135,13 @@ interface ClaudeLoginContext {
   applyExistingWithoutClaim?: boolean;
   inheritedFromAgentId?: string | null;
 }
+
+export {
+  normalizeAgentListFilters,
+  filterAgentListItems,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
@@ -470,7 +484,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
 
   async function listAgentSummaries(
     companyId: string,
-    options?: { includeTerminated?: boolean },
+    options?: { includeTerminated?: boolean; filters?: AgentListFilters },
   ): Promise<AgentListItem[]> {
     const conditions = [eq(agents.companyId, companyId)];
     if (!options?.includeTerminated) {
@@ -487,7 +501,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     const projectIdsByAgent = await listAgentProjectIds(db, companyId);
     // Field-by-field on purpose: the projection is the contract, so a column
     // added to AgentListItem must be added here too (or the build breaks).
-    return hydrated.map((row) => ({
+    const items = hydrated.map((row) => ({
       id: row.id,
       companyId: row.companyId,
       name: row.name,
@@ -518,6 +532,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
+    return options?.filters ? filterAgentListItems(items, options.filters) : items;
   }
 
   async function listCompanyAgentRows(companyId: string) {
@@ -554,6 +569,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
   async function listSummariesVersionKey(
     companyId: string,
     actorShape: string = "all",
+    filters?: AgentListFilters | NormalizedAgentListFilters | string | null,
   ): Promise<string> {
     const { start } = currentUtcMonthWindow();
     const [agg] = await db
@@ -576,16 +592,35 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           gte(costEvents.occurredAt, start),
         ),
       );
-    return versionKeyEtag("agents-list", [
+
+    let filterKey: string | null = null;
+    if (typeof filters === "string") {
+      filterKey = filters;
+    } else if (filters) {
+      const normalized = "statuses" in filters
+        ? (filters as NormalizedAgentListFilters)
+        : normalizeAgentListFilters(filters as AgentListFilters);
+      if (normalized) {
+        filterKey = JSON.stringify(normalized);
+      }
+    }
+
+    const parts: Array<string | number | boolean | null | undefined> = [
       companyId,
       actorShape,
+    ];
+    if (filterKey) {
+      parts.push(filterKey);
+    }
+    parts.push(
       agg?.rowCount ?? 0,
       agg?.maxUpdatedAt ?? null,
       agg?.maxStatus ?? null,
       spendAgg?.spendSum ?? "0",
       spendAgg?.spendRowCount ?? 0,
       start.toISOString().slice(0, 10),
-    ]);
+    );
+    return versionKeyEtag("agents-list", parts);
   }
 
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
