@@ -141,9 +141,6 @@ describe("Replication Health Service", () => {
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: false }];
       }
-      if (sqlText.includes("pg_current_wal_lsn")) {
-        return [{ current_wal_lsn: "0/5000100" }];
-      }
       if (sqlText.includes("pg_stat_replication")) {
         return [
           {
@@ -162,6 +159,9 @@ describe("Replication Health Service", () => {
             byte_lag: 0,
           },
         ];
+      }
+      if (sqlText.includes("pg_current_wal_lsn")) {
+        return [{ current_wal_lsn: "0/5000100" }];
       }
       return [];
     });
@@ -184,9 +184,6 @@ describe("Replication Health Service", () => {
       const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: false }];
-      }
-      if (sqlText.includes("pg_current_wal_lsn")) {
-        return [{ current_wal_lsn: "0/1000" }];
       }
       if (sqlText.includes("pg_stat_replication")) {
         return [];
@@ -226,9 +223,6 @@ describe("GET /health/replication route", () => {
         if (sqlText.includes("pg_is_in_recovery")) {
           return [{ in_recovery: false }];
         }
-        if (sqlText.includes("pg_current_wal_lsn")) {
-          return [{ current_wal_lsn: "0/5000000" }];
-        }
         if (sqlText.includes("pg_stat_replication")) {
           return [
             {
@@ -262,9 +256,6 @@ describe("GET /health/replication route", () => {
         const sqlText = getSqlText(query);
         if (sqlText.includes("pg_is_in_recovery")) {
           return [{ in_recovery: false }];
-        }
-        if (sqlText.includes("pg_current_wal_lsn")) {
-          return [{ current_wal_lsn: "0/5000000" }];
         }
         if (sqlText.includes("pg_stat_replication")) {
           return [
