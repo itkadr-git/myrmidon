@@ -75,6 +75,30 @@ describe("parseShadowSearchCall", () => {
     expect(parseShadowSearchCall({ query: "only a query" })).toEqual({ dataset: null, query: "only a query" });
   });
 
+  it("reads the dataset_ids array of the retrieval tool: the first usable id", () => {
+    expect(parseShadowSearchCall({ question: "pricing terms", dataset_ids: ["a1b2c3d4", "e5f6a7b8"] })).toEqual({
+      dataset: "a1b2c3d4",
+      query: "pricing terms",
+    });
+    expect(parseShadowSearchCall({ query: "q", datasetIds: ["  a1b2c3d4  "] })).toEqual({
+      dataset: "a1b2c3d4",
+      query: "q",
+    });
+    expect(parseShadowSearchCall({ query: "q", dataset_ids: ["", "   ", 7, "e5f6a7b8"] })).toEqual({
+      dataset: "e5f6a7b8",
+      query: "q",
+    });
+  });
+
+  it("has no dataset when dataset_ids holds nothing usable, and a single-value key wins over it", () => {
+    expect(parseShadowSearchCall({ query: "q", dataset_ids: [] })).toEqual({ dataset: null, query: "q" });
+    expect(parseShadowSearchCall({ query: "q", dataset_ids: ["", null, 7] })).toEqual({ dataset: null, query: "q" });
+    expect(parseShadowSearchCall({ query: "q", dataset: "kb-7", dataset_ids: ["a1b2c3d4"] })).toEqual({
+      dataset: "kb-7",
+      query: "q",
+    });
+  });
+
   it("returns null without a usable query text", () => {
     expect(parseShadowSearchCall(null)).toBeNull();
     expect(parseShadowSearchCall("string")).toBeNull();
@@ -152,6 +176,34 @@ describe("createCorpusShadowRunner", () => {
       moduleError: null,
     });
     expect(typeof row.moduleLatencyMs).toBe("number");
+  });
+
+  it("flag on: a ragflow_retrieval call reaches the module leg with its first dataset id", async () => {
+    const search = { search: vi.fn(async () => [{ chunkId: "m1" }]) };
+    const { runner, rows } = makeRunner({ enabled: true, search });
+    maybeRecordShadowSearchCall({
+      runner,
+      companyId: "company-1",
+      tool: { name: "mcp.ragflow-1:ragflow_retrieval", upstreamToolName: "ragflow_retrieval" },
+      execution: { transport: "mcp_remote" },
+      result: { content: [] },
+      parameters: { question: "q", dataset_ids: ["a1b2c3d4", "e5f6a7b8"] },
+      botId: "bot-1",
+      latencyMs: 8,
+    });
+    await runner.settle();
+    expect(search.search).toHaveBeenCalledWith({
+      companyId: "company-1",
+      dataset: "a1b2c3d4",
+      text: "q",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!).toMatchObject({
+      dataset: "a1b2c3d4",
+      query: "q",
+      moduleChunkIds: ["m1"],
+      moduleError: null,
+    });
   });
 
   it("module error: recorded in module_error only, row still written, nothing rethrown", async () => {

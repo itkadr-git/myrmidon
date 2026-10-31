@@ -39,7 +39,9 @@ export type ShadowSearchCallPlan = {
   query: string;
 };
 
-const DATASET_KEYS = ["dataset", "dataset_name", "dataset_id", "kb", "knowledge_base"];
+// `dataset_ids` is the argument of the live `ragflow_retrieval` tool: an array of RAGFlow
+// dataset ids, of which the shadow leg follows the first one.
+const DATASET_KEYS = ["dataset", "dataset_name", "dataset_id", "kb", "knowledge_base", "dataset_ids", "datasetIds"];
 const QUERY_KEYS = ["query", "question", "text"];
 
 function recordOf(value: unknown): Record<string, unknown> | null {
