@@ -6,7 +6,12 @@ divergence-section: DM-PROGRESS: живые шаги в сообщении ст�
 
 ### Gate the vendor name in the built interface and the server answers (REBRAND-F)
 
-- The rebrand keeps the vendor name only in the LICENSE, the third-party notices and the "based on ... (MIT)" line of About. The new gate `scripts/myrmidon/vendor-name/check-vendor-name.mjs` scans the built UI bundle (`ui/dist`) and the recorded response bodies of the main endpoints and counts the visible vendor name; identifier spellings (`@paperclipai/*`, `PAPERCLIP_*`, API paths, storage keys, headers) are reported but not gated for one release. Modes: `ratchet` (the visible count may not grow above the baseline) and `strict` (no occurrence outside the exceptions); CI fails a build that adds a new visible mention. Mode and baseline are editable on Instance -> General without a restart; `MYRMIDON_VENDOR_NAME_CHECK_MODE` / `_BASELINE` remain forced overrides.
+- The rebrand keeps the vendor name only in the LICENSE, the third-party notices and the "based on ... (MIT)" line of About. The new gate `scripts/myrmidon/vendor-name/check-vendor-name.mjs` scans the built UI bundle (`ui/dist`) and the recorded response bodies of the main endpoints and counts the visible vendor name; identifier spellings (`@paperclipai/*`, `PAPERCLIP_*`, API paths, storage keys, headers) are reported but not gated for one release. Modes: `ratchet` (the visible count may not grow above the baseline) and `strict` (no occurrence outside the exceptions); CI fails a build that adds a new visible mention. Mode and baseline are editable on Instance -> General without a restart; `MYRMIDON_VENDOR_NAME_CHECK_MODE` / `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` remain forced overrides (both are documented in docs/myrmidon/SETTINGS.md rows below).
+
+## settings
+
+| `MYRMIDON_VENDOR_NAME_CHECK_MODE` | unset — the policy file decides | Forced override of the vendor-name gate mode (`ratchet` or `strict`) |
+| `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` | unset — the policy file decides | Forced override of the visible vendor-name baseline |
 
 ## changelog-ru
 

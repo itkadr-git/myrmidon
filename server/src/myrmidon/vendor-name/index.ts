@@ -5,7 +5,7 @@
 // the repository script — there is no startup apply step and no in-process
 // cache, so nothing else needs wiring here.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { vendorNameCheckRoutes } from "./routes.js";
 import { vendorNameCheckService } from "./service.js";
 

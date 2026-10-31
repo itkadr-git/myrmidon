@@ -19,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { VendorNameCheckMode, VendorNameCheckSettingSource } from "@paperclipai/shared";
+import type { VendorNameCheckMode, VendorNameCheckSettingSource } from "@myrmidon/shared";
 
 /** Repository-relative paths of the gate and its policy. */
 export const VENDOR_NAME_CHECK_SCRIPT = "scripts/myrmidon/vendor-name/check-vendor-name.mjs";

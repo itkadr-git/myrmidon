@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ScanSearch } from "lucide-react";
-import type { VendorNameCheckMode, VendorNameCheckPatch } from "@paperclipai/shared";
+import type { VendorNameCheckMode, VendorNameCheckPatch } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RadioCardGroup } from "@/components/ui/radio-card";

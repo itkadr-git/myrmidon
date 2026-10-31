@@ -13,7 +13,7 @@
 // RUNTIME-LIMITS and BUDGET-CONFIG-B use) so two overlapping requests cannot
 // commit their rows in one order and audit them in the other.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   mergeVendorNameCheckSettings,
   normalizeVendorNameCheckSettings,
@@ -21,7 +21,7 @@ import {
   type ResolvedVendorNameCheckSettings,
   type VendorNameCheckPatch,
   type VendorNameCheckSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { scanVendorName, type VendorNameScanResult } from "./scan.js";
 

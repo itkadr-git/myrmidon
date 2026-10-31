@@ -17,7 +17,7 @@ import {
   resolveVendorNameCheckSettings,
   type ResolvedVendorNameCheckSettings,
   type VendorNameCheckSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export {
   VENDOR_NAME_CHECK_BASELINE_ENV,

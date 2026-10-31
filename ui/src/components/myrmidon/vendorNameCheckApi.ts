@@ -8,7 +8,7 @@
 // The read also answers the gate's own question about this build: how many
 // times the vendor's name appears in the built interface bundle and in the
 // recorded response snapshots.
-import type { VendorNameCheckMode, VendorNameCheckPatch, VendorNameCheckSettingSource } from "@paperclipai/shared";
+import type { VendorNameCheckMode, VendorNameCheckPatch, VendorNameCheckSettingSource } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface VendorNameCheckView {

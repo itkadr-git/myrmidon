@@ -232,7 +232,7 @@ jobs:
         run: |
           set -euo pipefail
           snapshots="$RUNNER_TEMP/vendor-name-snapshots"
-          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$snapshots"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$snapshots"
           node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots --snapshots "$snapshots"
           node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
 
