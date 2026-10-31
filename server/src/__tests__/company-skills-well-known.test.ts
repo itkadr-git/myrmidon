@@ -250,6 +250,66 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     expect(result.skills[0]!.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
+  it("resolves a relative kie-models.tar.gz through discovery and import against the index directory", async () => {
+    const archive = buildTarGz([{ path: "SKILL.md", content: DEMO_SKILL_MD }]);
+    const digest = `sha256:${sha256Hex(archive)}`;
+    const fetchMock = stubFetch([
+      {
+        match: INDEX_URL,
+        respond: () => jsonResponse(indexPayload({ name: "kie-models", description: "KIE models skill", url: "kie-models.tar.gz", digest })),
+      },
+      { match: `${WELL_KNOWN_DIR}/kie-models.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
+    ]);
+
+    const discovered = await svc.discoverSkills(companyId, ORIGIN);
+    expect(discovered.skills[0]!.url).toBe(`${WELL_KNOWN_DIR}/kie-models.tar.gz`);
+
+    const result = await svc.importFromSource(companyId, ORIGIN, { skillName: "kie-models" });
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]!.slug).toBe("kie-models");
+
+    const requested = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(requested).toContain(`${WELL_KNOWN_DIR}/kie-models.tar.gz`);
+    expect(requested).not.toContain(`${ORIGIN}/kie-models.tar.gz`);
+  });
+
+  it("imports a root-relative archive URL from the origin root through the service", async () => {
+    const archive = buildTarGz([{ path: "SKILL.md", content: DEMO_SKILL_MD }]);
+    const digest = `sha256:${sha256Hex(archive)}`;
+    const fetchMock = stubFetch([
+      {
+        match: INDEX_URL,
+        respond: () => jsonResponse(indexPayload({ name: "root-abs-skill", description: "Root-relative archive", url: "/abs/path.tar.gz", digest })),
+      },
+      { match: `${ORIGIN}/abs/path.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
+    ]);
+
+    const result = await svc.importFromSource(companyId, ORIGIN, { skillName: "root-abs-skill" });
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]!.slug).toBe("root-abs-skill");
+
+    const requested = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(requested).toContain(`${ORIGIN}/abs/path.tar.gz`);
+  });
+
+  it("rejects a foreign-origin archive URL through discovery and import", async () => {
+    stubFetch([
+      {
+        match: INDEX_URL,
+        respond: () => jsonResponse(indexPayload({ name: "foreign-skill", description: "Foreign archive", url: "https://evil.com/kie-models.tar.gz" })),
+      },
+    ]);
+
+    await expect(svc.discoverSkills(companyId, ORIGIN)).rejects.toMatchObject({
+      status: 422,
+      details: { code: "skill_source_validation_failed" },
+    });
+    await expect(svc.importFromSource(companyId, ORIGIN, { skillName: "foreign-skill" })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "skill_source_validation_failed" },
+    });
+  });
+
   it("rejects discovery of non well-known sources with a clear 422", async () => {
     stubFetch([]);
     await expect(svc.discoverSkills(companyId, "https://github.com/acme/repo")).rejects.toMatchObject({
