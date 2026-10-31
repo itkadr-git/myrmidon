@@ -587,7 +587,7 @@ export type BotDiskSettingsPatch = z.infer<typeof patchBotDiskSettingsSchema>;
 
 export interface ResolvedBotDiskSettings {
   settings: BotDiskSettings;
-  sources: Record<BotDiskSettingKey, BotDiskSettingSource>;
+  sources: Partial<Record<BotDiskSettingKey | (typeof BOT_DISK_WORKSPACE_LIFECYCLE_KEYS)[number], BotDiskSettingSource>>;
 }
 
 function parseEnabledEnv(raw: string | undefined): boolean | null {
