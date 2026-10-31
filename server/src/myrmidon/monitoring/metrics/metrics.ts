@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -67,6 +67,15 @@ import {
   collectLegacyBlockedMetrics, legacyBlockedReadPort, renderLegacyBlockedMetrics,
   type LegacyBlockedMetrics, type LegacyBlockedReadPort,
 } from "./legacy-blocked.js";
+import {
+  recoveryFactoryMetrics as processRecoveryMetrics,
+  ISSUE_RECOVERY_ACTION_KINDS,
+  type IssueRecoveryActionKind,
+  type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort,
+  recoveryFactoryMetricsState,
+  snapshotRecoveryFactoryMetrics,
+} from "@myrmidon/shared";
+import { issueRecoveryActions } from "@myrmidon/db";
 import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
@@ -141,6 +150,11 @@ export const METRIC_FAMILIES = [
   "swarm_lease_recovered_total",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_recovery_created_total",
+  "myrmidon_recovery_deduped_total",
+  "myrmidon_recovery_success_total",
+  "myrmidon_recovery_age_seconds",
+  "myrmidon_recovery_addressless_active",
   "myrmidon_scrape_errors",
   // Process-local continuation claims; continuation keys are not labels.
   "myrmidon_continuation_created_total",
@@ -191,6 +205,8 @@ export const METRIC_FAMILIES = [
   // flag off the table stays empty and the families render HELP/TYPE only.
   "myrmidon_corpus_shadow_ragflow_latency_seconds",
   "myrmidon_corpus_shadow_module_latency_seconds",
+  // OPE-9476: runs failed before model emitted output
+  "myrmidon_agent_failed_before_model_total",
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
@@ -248,13 +264,14 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
   }
 }
 export interface MetricsSnapshotFields {
+  legacyBlocked?: LegacyBlockedMetrics | null;
   interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
-  legacyBlocked?: LegacyBlockedMetrics | null;
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  runsQueuedByReason?: Array<{ reason: string; count: number }>;
   /** Queued runs older than 30 minutes. */
   runsQueuedOver30m: number;
   /** Failed runs, all time. */
@@ -277,6 +294,11 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryAgeSeconds?: Array<{ kind: IssueRecoveryActionKind; seconds: number }> | null;
+  recoveryAddresslessActive?: number;
   /**
    * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
    * source (no DB). null renders HELP/TYPE with no samples — the families
@@ -336,6 +358,9 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+
+  /** OPE-9476: runs that failed before the model emitted output, per agentId. */
+  failedBeforeModel?: Record<string, number> | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -359,6 +384,17 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // ---------------------------------------------------------------------------
 // Port: where the numbers come from
 // ---------------------------------------------------------------------------
+
+export function recoveryPortSnapshot(port: RecoveryFactoryMetricsPort) {
+  const state = recoveryFactoryMetricsState(port);
+  if (port === processRecoveryMetrics) return snapshotRecoveryFactoryMetrics();
+  return {
+    created: new Map(state.created),
+    deduped: new Map(state.deduped),
+    succeeded: new Map(state.succeeded),
+    ages: new Map(state.ages),
+  };
+}
 
 export interface MetricsCollectorDeps {
   legacyBlocked?: LegacyBlockedReadPort;
@@ -411,7 +447,11 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
+  recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 
+  /** OPE-9476: where failed-before-model counters come from; tests inject a fake. */
+  failedBeforeModel?: (() => Record<string, number>) | null;
   /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
   capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
@@ -422,6 +462,7 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   queued: number;
   queuedOver30m: number;
   failedTotal: number;
+  queuedByReason?: Array<{ reason: string; count: number }>;
 }> {
   // Keep the established grouped-by-status query: the global aggregate form
   // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
@@ -438,6 +479,27 @@ async function readRunCounters(db: Db, now: Date): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
+  let queuedByReason: Array<{ reason: string; count: number }> = [];
+  if (queued > 0) {
+    try {
+      const reasonRows = await db
+        .select({
+          reason: sql<string>`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`,
+          total: count(),
+        })
+        .from(heartbeatRuns)
+        .where(
+          sql`${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry')`,
+        )
+        .groupBy(sql`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`);
+      queuedByReason = reasonRows.map((r) => ({
+        reason: String(r.reason),
+        count: Number(r.total),
+      }));
+    } catch {
+      // Best effort fallback
+    }
+  }
   const [staleQueuedRow] = await db
     .select({ total: count() })
     .from(heartbeatRuns)
@@ -452,7 +514,35 @@ async function readRunCounters(db: Db, now: Date): Promise<{
     queued,
     queuedOver30m: Number(staleQueuedRow?.total ?? 0),
     failedTotal,
+    queuedByReason,
   };
+}
+
+/** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
+export async function readAgentFailedBeforeModel(
+  db: Db,
+): Promise<Record<string, number>> {
+  try {
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        total: count(),
+      })
+      .from(heartbeatRuns)
+      .where(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = true`,
+      )
+      .groupBy(heartbeatRuns.agentId);
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      if (row.agentId) {
+        result[row.agentId] = Number(row.total);
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -804,11 +894,49 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as FleetSiteMetricsSample | null,
   );
 
+  const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
+  const recoveryCounters = recoveryPortSnapshot(recoveryPort);
+  const recoveryRows = await guarded(
+    "myrmidon_recovery_age_seconds|myrmidon_recovery_addressless_active",
+    async () => {
+      const active = await deps.db
+        .select({ kind: issueRecoveryActions.kind, createdAt: issueRecoveryActions.createdAt })
+        .from(issueRecoveryActions)
+        .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      const ages = new Map<IssueRecoveryActionKind, number>();
+      for (const [kind, seconds] of recoveryCounters.ages) {
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+      }
+      for (const row of active) {
+        const kind = row.kind as IssueRecoveryActionKind;
+        const seconds = Math.max(0, (now.getTime() - row.createdAt.getTime()) / 1000);
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+        recoveryPort.age(kind, seconds);
+      }
+      const addressless = await deps.db
+        .select({ total: count() })
+        .from(issueRecoveryActions)
+        .where(and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          isNotNull(issueRecoveryActions.dedupeKey),
+          isNull(issueRecoveryActions.ownerAgentId),
+          isNull(issueRecoveryActions.ownerUserId),
+          isNull(issueRecoveryActions.ownerQueue)
+        ));
+      return {
+        age: [...ages].map(([kind, seconds]) => ({ kind, seconds })),
+        addressless: Number(addressless[0]?.total ?? 0),
+      };
+    },
+    { age: [] as Array<{ kind: IssueRecoveryActionKind; seconds: number }>, addressless: 0 },
+  );
+
   return {
     fields: {
       blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedByReason: runCounters.queuedByReason,
       runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
@@ -826,6 +954,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      recoveryCreatedTotal: new Map(recoveryCounters.created),
+      recoveryDedupedTotal: new Map(recoveryCounters.deduped),
+      recoverySuccessTotal: new Map(recoveryCounters.succeeded),
+      recoveryAgeSeconds: recoveryRows.age,
+      recoveryAddresslessActive: recoveryRows.addressless,
       process: processSample,
       lanes: laneSample,
 
@@ -838,6 +971,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       legacyBlocked,
       fleetSites,
+      failedBeforeModel: await guarded(
+        "myrmidon_agent_failed_before_model_total",
+        () =>
+          Promise.resolve().then(() =>
+            deps.failedBeforeModel
+              ? deps.failedBeforeModel()
+              : readAgentFailedBeforeModel(deps.db),
+          ),
+        null as Record<string, number> | null,
+      ),
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
@@ -936,7 +1079,8 @@ export function escapeLabelValue(value: string): string {
 
 /** Renders a floating-point sample value the way the format prints them. */
 export function formatSampleValue(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+  const num = Number(value ?? 0);
+  return Number.isInteger(num) ? String(num) : String(Number(num.toFixed(6)));
 }
 
 function familyBlock(
@@ -1018,7 +1162,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_queued",
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
-      [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+      snapshot.runsQueuedByReason && snapshot.runsQueuedByReason.length > 0
+        ? [
+            `myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`,
+            ...snapshot.runsQueuedByReason.map(
+              (entry) =>
+                `myrmidon_runs_queued{${R},reason="${escapeLabelValue(entry.reason)}"} ${formatSampleValue(entry.count)}`,
+            ),
+          ]
+        : [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
     ),
   );
   blocks.push(
@@ -1108,7 +1260,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_review_tasks_without_reviewer",
       "Issues in review without an assigned reviewer participant.",
       "gauge",
-      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer ?? 0)}`],
     ),
   );
   blocks.push(
@@ -1116,7 +1268,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_blocked_tasks_without_assignee",
       "Blocked issues without an assignee.",
       "gauge",
-      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee ?? 0)}`],
     ),
   );
   blocks.push(
@@ -1159,6 +1311,32 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
     ),
   );
+  const recoveryCounterFamily = (
+    name: string,
+    help: string,
+    values: Map<IssueRecoveryActionKind, number> | null | undefined,
+  ) => blocks.push(familyBlock(
+    name,
+    help,
+    "counter",
+    values ? [...values.entries()].map(([kind, count]) => `${name}{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(count)}`) : [],
+  ));
+  recoveryCounterFamily("myrmidon_recovery_created_total", "Recovery actions created by kind, cumulative since process start.", snapshot.recoveryCreatedTotal);
+  recoveryCounterFamily("myrmidon_recovery_deduped_total", "Recovery action requests deduplicated by kind, cumulative since process start.", snapshot.recoveryDedupedTotal);
+  recoveryCounterFamily("myrmidon_recovery_success_total", "Recovery actions successfully completed by kind, cumulative since process start.", snapshot.recoverySuccessTotal);
+  blocks.push(familyBlock(
+    "myrmidon_recovery_age_seconds",
+    "Maximum age of active recovery actions by kind.",
+    "gauge",
+    snapshot.recoveryAgeSeconds ? snapshot.recoveryAgeSeconds.map(({ kind, seconds }) => `myrmidon_recovery_age_seconds{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(seconds)}`) : [],
+  ));
+  blocks.push(familyBlock(
+    "myrmidon_recovery_addressless_active",
+    "Active recovery actions with a dedupe key and no owner.",
+    "gauge",
+    snapshot.recoveryAddresslessActive === undefined ? [] : [`myrmidon_recovery_addressless_active{${R}} ${formatSampleValue(snapshot.recoveryAddresslessActive)}`],
+  ));
+
   blocks.push(
     familyBlock(
       "myrmidon_scrape_errors",
@@ -1444,6 +1622,21 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Failover moves of bots off a lost remote site by result, cumulative since boot.",
       "counter",
       fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+  );
+
+  const failedBeforeModelSamples = Object.entries(snapshot.failedBeforeModel ?? {}).map(
+    ([agentId, count]) =>
+      `myrmidon_agent_failed_before_model_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_agent_failed_before_model_total",
+      "Heartbeat runs that failed before the model response started.",
+      "counter",
+      failedBeforeModelSamples.length > 0
+        ? failedBeforeModelSamples
+        : [`myrmidon_agent_failed_before_model_total{${R}} 0`],
     ),
   );
 
