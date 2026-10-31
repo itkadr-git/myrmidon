@@ -2,15 +2,18 @@
 // window concerns the current company. Informational only: changes happen in
 // Instance settings → General → Maintenance.
 //
-// 1.6.1 MAINTENANCE-BANNER: however many windows are open (one per agent in a
-// batch update, plus instance/company/department ones), the banner stays a
-// single plaque. The plaque carries the aggregate state (on / draining /
-// ending), the total window count and the "ends by" bound; the details list
-// inside stays one line per kind of window. Agent ids are never rendered in
-// the collapsed plaque — only counts.
+// 1.6.6 (OPE-9742): Banner distinguishes scope.
+// When maintenance is scoped to an agent or project (e.g. updating a single bot container),
+// instead of the general red banner, display a discrete scoped status row linking to the agent.
+// Board-wide maintenance (instance or company) continues to display the full red banner.
 import { useQuery } from "@tanstack/react-query";
 import { Wrench } from "lucide-react";
+import { Link, useInRouterContext } from "react-router-dom";
+import type { AgentListItem } from "@myrmidon/shared";
 import { useTranslation } from "@/i18n";
+import { agentsApi } from "../../api/agents";
+import { queryKeys } from "../../lib/queryKeys";
+import { agentUrl } from "../../lib/utils";
 import {
   maintenanceApi,
   maintenanceQueryKey,
@@ -104,18 +107,102 @@ function rowIds(row: MaintenanceRow): string | null {
   return row.scopeType === "agent" ? row.ids.join(", ") : null;
 }
 
+function resolveAgent(
+  agentRef: string,
+  agents?: AgentListItem[] | null,
+): { name: string; href: string } {
+  const matched = agents?.find(
+    (a) => a.id === agentRef || a.name === agentRef || a.urlKey === agentRef,
+  );
+  if (matched) {
+    return {
+      name: matched.name,
+      href: agentUrl(matched),
+    };
+  }
+  return {
+    name: agentRef,
+    href: `/agents/${agentRef}`,
+  };
+}
+
+function AgentLink({ href, children }: { href: string; children: React.ReactNode }) {
+  const inRouter = useInRouterContext();
+  if (inRouter) {
+    return (
+      <Link to={href} className="font-medium text-foreground underline hover:opacity-80">
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} className="font-medium text-foreground underline hover:opacity-80">
+      {children}
+    </a>
+  );
+}
+
 export function MaintenanceBannerView({
   status,
   companyId,
+  agents,
 }: {
   status: MaintenanceStatus | null | undefined;
   companyId: string | null;
+  agents?: AgentListItem[] | null;
 }) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const formatWhen = (value: string) => new Date(value).toLocaleString(locale);
   const windows = windowsForCompany(status, companyId);
   if (windows.length === 0) return null;
+
+  const hasBoardWideWindow = windows.some(
+    (w) => w.scope.type === "instance" || w.scope.type === "company",
+  );
+
+  if (!hasBoardWideWindow) {
+    const agentWindows = windows.filter((w) => w.scope.type === "agent");
+    const deptWindows = windows.filter((w) => w.scope.type === "department");
+
+    let scopedContent: React.ReactNode;
+
+    if (agentWindows.length === 1 && deptWindows.length === 0) {
+      const w = agentWindows[0];
+      const agentRef = w.scope.id ?? w.id;
+      const { name: agentName, href: agentHref } = resolveAgent(agentRef, agents);
+      const isContainer = /container/i.test(w.reason);
+      const prefixKey = isContainer
+        ? "maintenanceBanner.scopedBotContainerPrefix"
+        : "maintenanceBanner.scopedBotGeneralPrefix";
+
+      scopedContent = (
+        <span>
+          {t(prefixKey)}
+          <AgentLink href={agentHref}>{agentName}</AgentLink>
+          {t("maintenanceBanner.scopedRestOfBoardWorking")}
+        </span>
+      );
+    } else if (agentWindows.length > 1 && deptWindows.length === 0) {
+      const allContainer = agentWindows.every((w) => /container/i.test(w.reason));
+      const pluralKey = allContainer
+        ? "maintenanceBanner.scopedBotContainersPlural"
+        : "maintenanceBanner.scopedBotsGeneralPlural";
+      scopedContent = <span>{t(pluralKey, { count: agentWindows.length })}</span>;
+    } else {
+      scopedContent = <span>{t("maintenanceBanner.scopedDepartment")}</span>;
+    }
+
+    return (
+      <div
+        role="status"
+        data-testid="myrmidon-maintenance-scoped-banner"
+        className="border-b border-border/40 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+      >
+        <p data-testid="myrmidon-maintenance-scoped-text">{scopedContent}</p>
+      </div>
+    );
+  }
 
   const stateLabel = (window: { state: MaintenanceWindowView["state"]; runningRuns: number; drainTimedOut: boolean }) => {
     if (window.state === "entering") {
@@ -132,14 +219,14 @@ export function MaintenanceBannerView({
     <div
       role="status"
       data-testid="myrmidon-maintenance-banner"
-      className="border-b border-amber-300/60 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100"
+      className="border-b border-red-300/70 bg-red-50 text-red-950 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100"
     >
       <div className="px-3 py-2 text-sm">
         <details data-testid="myrmidon-maintenance-details">
           <summary className="cursor-pointer list-none">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-(--tracking-caps)">
-                <Wrench className="h-3.5 w-3.5 shrink-0" />
+                <Wrench className="h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-400" />
                 <span>{t("maintenanceBanner.title")}</span>
               </div>
               <p data-testid="myrmidon-maintenance-summary">
@@ -190,5 +277,10 @@ export function MaintenanceBanner({ companyId }: { companyId: string | null }) {
     refetchInterval: 30_000,
     retry: false,
   });
-  return <MaintenanceBannerView status={data} companyId={companyId} />;
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId ?? ""),
+    queryFn: () => agentsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+  return <MaintenanceBannerView status={data} companyId={companyId} agents={agents} />;
 }

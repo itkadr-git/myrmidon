@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -104,6 +104,7 @@ export const METRIC_FAMILIES = [
   "blocked_missing_fields_total",
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
+  "myrmidon_runs_queued_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
@@ -171,6 +172,13 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
+
+  // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
+  "myrmidon_readiness_ratio",
+  "myrmidon_queue_age_seconds",
+  "myrmidon_project_share",
+  "myrmidon_starvation_total",
+  "myrmidon_claim_rejection_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -180,12 +188,51 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 // ---------------------------------------------------------------------------
 
 /** The per-family values one scrape reads (the selfcheck probe shares them). */
+export const CLAIM_REJECTION_REASONS = [
+  "capacity_limit", "project_scope", "caste_scope", "assignment_conflict",
+  "dependency_blocked", "interaction_pending", "already_claimed", "not_ready", "other",
+] as const;
+
+export interface CapacityDashboardMetricsSnapshot {
+  readonly readinessRatio: number | null;
+  readonly queueAgeSeconds: number | null;
+  readonly projectShare: ReadonlyArray<{ readonly project: string; readonly share: number }> | null;
+  readonly starvationTotal: number | null;
+  readonly claimRejectionTotal: Readonly<Record<(typeof CLAIM_REJECTION_REASONS)[number], number>> | null;
+}
+
+export type CapacityDashboardMetricsProvider = () =>
+  | Promise<CapacityDashboardMetricsSnapshot | null>
+  | CapacityDashboardMetricsSnapshot
+  | null;
+
+function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnapshot): void {
+  const gauge = (key: "readinessRatio" | "queueAgeSeconds", value: number | null, max: number) => {
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > max)) throw new Error(`invalid capacity metric: ${key}`);
+  };
+  gauge("readinessRatio", snapshot.readinessRatio, 1);
+  gauge("queueAgeSeconds", snapshot.queueAgeSeconds, Number.MAX_VALUE);
+  if (snapshot.starvationTotal !== null && (!Number.isSafeInteger(snapshot.starvationTotal) || snapshot.starvationTotal < 0)) throw new Error("invalid capacity metric: starvationTotal");
+  if (snapshot.projectShare !== null) {
+    const seen = new Set<string>();
+    for (const row of snapshot.projectShare) {
+      if (!row.project || seen.has(row.project) || !Number.isFinite(row.share) || row.share < 0 || row.share > 1) throw new Error("invalid capacity metric: projectShare");
+      seen.add(row.project);
+    }
+  }
+  if (snapshot.claimRejectionTotal !== null) for (const reason of CLAIM_REJECTION_REASONS) {
+    const value = snapshot.claimRejectionTotal[reason];
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid capacity metric: claimRejectionTotal.${reason}`);
+  }
+}
 export interface MetricsSnapshotFields {
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  /** Queued runs older than 30 minutes. */
+  runsQueuedOver30m: number;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -252,6 +299,7 @@ export interface MetricsSnapshotFields {
    */
   fleetSites?: FleetSiteMetricsSample | null;
   blockerRoots?: BlockerRootMetrics | null;
+  capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
   /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
@@ -341,19 +389,21 @@ export interface MetricsCollectorDeps {
 
   /** OPE-9476: where failed-before-model counters come from; tests inject a fake. */
   failedBeforeModel?: (() => Record<string, number>) | null;
+  /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
+  capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
 
-/** Reads the run counters — one grouped query, whole instance. */
-async function readRunCounters(db: Db): Promise<{
+/** Reads the run counters for the whole instance. */
+async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
+  queuedOver30m: number;
   failedTotal: number;
 }> {
+  // Keep the established grouped-by-status query: the global aggregate form
+  // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
   const rows = await db
-    .select({
-      status: heartbeatRuns.status,
-      total: count(),
-    })
+    .select({ status: heartbeatRuns.status, total: count() })
     .from(heartbeatRuns)
     .groupBy(heartbeatRuns.status);
   let active = 0;
@@ -365,7 +415,21 @@ async function readRunCounters(db: Db): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
-  return { active, queued, failedTotal };
+  const [staleQueuedRow] = await db
+    .select({ total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "queued"),
+        lt(heartbeatRuns.createdAt, new Date(now.getTime() - 30 * 60 * 1000)),
+      ),
+    );
+  return {
+    active,
+    queued,
+    queuedOver30m: Number(staleQueuedRow?.total ?? 0),
+    failedTotal,
+  };
 }
 
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
@@ -613,12 +677,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     [] as NonNullable<MetricsSnapshotFields["blocked"]>,
   );
 
-  // The run counters answer three families with one grouped query; a failure
-  // names all three in the selfcheck output.
+  // The run counters answer four families with one aggregate query; a failure
+  // names those families in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
-    () => readRunCounters(deps.db),
-    { active: 0, queued: 0, failedTotal: 0 },
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db, now),
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
@@ -737,6 +801,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
@@ -777,6 +842,15 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
         null as BlockerRootMetrics | null,
+      ),
+      capacityDashboard: await guarded(
+        "myrmidon_readiness_ratio|myrmidon_queue_age_seconds|myrmidon_project_share|myrmidon_starvation_total|myrmidon_claim_rejection_total",
+        async () => {
+          const value = deps.capacityDashboard ? await deps.capacityDashboard() : null;
+          if (value !== null) validateCapacityDashboardMetrics(value);
+          return value;
+        },
+        null as CapacityDashboardMetricsSnapshot | null,
       ),
     },
     errors,
@@ -942,6 +1016,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
       [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_queued_over_30m",
+      "Queued heartbeat runs older than 30 minutes.",
+      "gauge",
+      [`myrmidon_runs_queued_over_30m{${R}} ${formatSampleValue(snapshot.runsQueuedOver30m)}`],
     ),
   );
   blocks.push(
@@ -1308,6 +1390,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     "gauge",
     scratch ? scratch.remainingBytes : null,
   );
+
+  // Provider-only contract. Null fields intentionally render no samples.
+  const capacity = snapshot.capacityDashboard ?? null;
+  blocks.push(familyBlock("myrmidon_readiness_ratio", "Ready eligible open issues divided by all open issues in one company snapshot.", "gauge", capacity?.readinessRatio == null ? [] : [`myrmidon_readiness_ratio{${R}} ${formatSampleValue(capacity.readinessRatio)}`]));
+  blocks.push(familyBlock("myrmidon_queue_age_seconds", "Maximum continuous ready-episode age among currently eligible issues.", "gauge", capacity?.queueAgeSeconds == null ? [] : [`myrmidon_queue_age_seconds{${R}} ${formatSampleValue(capacity.queueAgeSeconds)}`]));
+  blocks.push(familyBlock("myrmidon_project_share", "Share of active claim/run slots by project in the company snapshot.", "gauge", capacity?.projectShare == null ? [] : capacity.projectShare.map((row) => `myrmidon_project_share{${R},project="${escapeLabelValue(row.project)}"} ${formatSampleValue(row.share)}`)));
+  blocks.push(familyBlock("myrmidon_starvation_total", "Ready episodes crossing the starvation threshold since producer start.", "counter", capacity?.starvationTotal == null ? [] : [`myrmidon_starvation_total{${R}} ${formatSampleValue(capacity.starvationTotal)}`]));
+  const rejectionTotals = capacity?.claimRejectionTotal ?? null;
+  blocks.push(familyBlock("myrmidon_claim_rejection_total", "Authoritatively rejected claim attempts since producer start by closed reason.", "counter", rejectionTotals === null ? [] : CLAIM_REJECTION_REASONS.map((reason) => `myrmidon_claim_rejection_total{${R},reason="${reason}"} ${formatSampleValue(rejectionTotals[reason])}`)));
 
   // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites. A site renders from its first probe on;
   // every move result renders at zero too.

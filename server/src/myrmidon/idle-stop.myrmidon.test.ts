@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IdleStopService, type IdleStopConfig, type IdleStopLogger } from './idle-stop.js';
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
+import { fleetRoutingDriver } from './bot-containers/fleetd-routing.js';
 import { heartbeatRuns, agents, botApplyJobs, instanceSettings } from '@myrmidon/db';
 
 vi.mock('@myrmidon/db', () => ({
@@ -687,6 +688,101 @@ describe('IdleStopService', () => {
       const state = await idleStopService.readRuntimeState('b');
 
       expect(state.lastStoppedAt).toBeNull();
+    });
+  });
+
+  // myrmidon(IDLE-STOP): on the board the service gets `getBotContainerRuntime().driver`, which is
+  // the fleet-routing driver (startup.ts), not the docker driver. The router did not forward
+  // `stopIdle`, so on the live board every stop failed with "idle-stop route is not supported by
+  // this driver" and the idle containers kept their memory. These tests run the service over the
+  // real router.
+  describe('over the fleet-routing driver', () => {
+    const botKey = '550e8400-e29b-41d4-a716-446655440000';
+
+    function routedDrivers(cardHost: string | null, opts: { siteHasStopIdle?: boolean } = {}) {
+      const running: BotContainerStatus[] = [{ botKey, state: 'running' }];
+      const local = {
+        status: vi.fn(), start: vi.fn(), stop: vi.fn(), restart: vi.fn(), create: vi.fn(), recreate: vi.fn(),
+        writeProfile: vi.fn(), templateDrift: vi.fn(),
+        list: vi.fn().mockResolvedValue(cardHost === null ? running : []),
+        stopIdle: vi.fn().mockResolvedValue(undefined),
+      };
+      const site = {
+        ...local,
+        status: vi.fn(), start: vi.fn(), stop: vi.fn(),
+        list: vi.fn().mockResolvedValue(cardHost === null ? [] : running),
+        stopIdle: opts.siteHasStopIdle === false ? undefined : vi.fn().mockResolvedValue(undefined),
+      };
+      const routed = fleetRoutingDriver(
+        { local: local as any, fleet: new Map([['host-a', site as any]]) },
+        () => ({ adapterConfig: cardHost === null ? { container: { enabled: true } } : { container: { enabled: true, host: cardHost } } }),
+      );
+      return { local, site, routed };
+    }
+
+    /** The board data of one bot that has been idle for 400 s (afterSec is 300). */
+    function mockIdleBot() {
+      mockListBotKeys(mockDb, [botKey]);
+      let runsQueryCount = 0;
+      const thenable = (rows: unknown[]) => vi.fn().mockImplementation((resolve: any) => resolve(rows));
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) };
+          if (table === agents) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([{ id: botKey }]) }) }) };
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) }; // no active runs
+            const oldDate = new Date(Date.now() - 400000);
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ then: thenable([{ finishedAt: oldDate, startedAt: oldDate }]) }),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) };
+        }),
+      }));
+    }
+
+    it('stops an idle local container through the router instead of logging "not supported"', async () => {
+      const { local, site, routed } = routedDrivers(null);
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+
+      expect(local.stopIdle).toHaveBeenCalledTimes(1);
+      expect(local.stopIdle).toHaveBeenCalledWith(botKey);
+      expect(local.stop).not.toHaveBeenCalled();
+      expect(site.stopIdle).not.toHaveBeenCalled();
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    it('stops an idle container of a bot placed on a site through that site\'s driver', async () => {
+      const { local, site, routed } = routedDrivers('host-a');
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+
+      expect(site.stopIdle).toHaveBeenCalledWith(botKey);
+      expect(local.stopIdle).not.toHaveBeenCalled();
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    it('a site driver that cannot idle-stop still gets the clear error, and no plain stop is done in its place', async () => {
+      const { site, routed } = routedDrivers('host-a', { siteHasStopIdle: false });
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+
+      expect(site.stop).not.toHaveBeenCalled();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        `Failed to stop container for bot ${botKey} [idle-stop route is not supported by this driver]`,
+      );
     });
   });
 });

@@ -26,6 +26,7 @@ export type PullRequestMergeDetails = {
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
+  mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -117,6 +118,12 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
     const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
       ? statusKey
       : undefined;
+    const rawMergeable = data?.mergeable ?? data?.mergeableState ?? data?.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : typeof rawMergeable === "string" ? rawMergeable : null;
     return {
       state: statusKey === "merged" || data?.merged === true
         ? "merged"
@@ -131,6 +138,7 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
       additions: typeof data?.additions === "number" ? data.additions : null,
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
+      mergeable,
     };
   };
 }

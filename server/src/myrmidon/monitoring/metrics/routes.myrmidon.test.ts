@@ -320,6 +320,7 @@ describe("metrics endpoint routes", () => {
       role: "all",
       runsActive: 0,
       runsQueued: 0,
+      runsQueuedOver30m: 0,
       runsFailedTotal: 0,
       runsFailedWindow: 0,
       runDurationSecondsP50: null,
