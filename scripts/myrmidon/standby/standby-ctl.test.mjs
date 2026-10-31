@@ -128,11 +128,12 @@ test("parseReplicationStatus parses standard and error psql outputs", () => {
   assert.equal(empty.role, "unknown");
 });
 
-test("generateStandbyConfig includes required streaming parameters and credentials", () => {
+test("generateStandbyConfig includes required streaming parameters and credentials via passfile", () => {
   const cfg = generateStandbyConfig("board");
   assert.match(cfg, /primary_conninfo = 'host=(?:10\.10\.100\.1|primary\.internal)/);
   assert.match(cfg, /primary_slot_name = 'standby_board_slot'/);
-  assert.match(cfg, /password=standby_secret/);
+  assert.match(cfg, /passfile=/);
+  assert.doesNotMatch(cfg, /password=/);
   assert.match(cfg, /hot_standby = 'on'/);
   assert.match(cfg, /restore_command = /);
   assert.match(cfg, /archive_cleanup_command = /);
@@ -283,6 +284,7 @@ test("setupStandby fails if WAL receiver stream is not active (walReceivers === 
     writeFileSync: () => {},
     existsSync: () => false,
     readFileSync: () => "",
+    chmodSync: () => {},
     rmSync: () => {},
   };
 
@@ -293,7 +295,11 @@ test("setupStandby fails if WAL receiver stream is not active (walReceivers === 
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = setupStandby(
+    "board",
+    { replicatorPassword: "test_secret" },
+    { runner: mockRunner, fsOps: mockFs }
+  );
   assert.equal(res.success, false);
   assert.equal(res.inRecovery, true);
   assert.equal(res.walReceivers, 0);
@@ -450,4 +456,122 @@ test("runCli commands output structured JSON and return correct exit codes", () 
   // rehearse real execution -> exit 0
   const codeRehearse = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(codeRehearse, 0);
+});
+
+test("setupStandby uses credential path, sets PGPASSFILE env on basebackup, and omits password from config", () => {
+  const executedCmds = [];
+  const fsWrites = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: (file, content) => fsWrites.push({ file, content }),
+    existsSync: (p) => p === "/etc/standby/pgpass" || true,
+    readdirSync: () => [],
+    readFileSync: () => "primary.internal:5432:*:myr_replicator:secret123\n",
+    chmodSync: () => {},
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args, opts) => {
+    executedCmds.push({ cmd, args, env: opts?.env });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby(
+    "board",
+    { credentialPath: "/etc/standby/pgpass" },
+    { runner: mockRunner, fsOps: mockFs }
+  );
+
+  assert.equal(res.success, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.walReceivers, 1);
+
+  // Verify pg_basebackup was invoked with PGPASSFILE pointing to credential path
+  const basebackupCall = executedCmds.find((c) => c.cmd === "pg_basebackup");
+  assert.ok(basebackupCall);
+  assert.equal(basebackupCall.env?.PGPASSFILE, "/etc/standby/pgpass");
+
+  // Verify container .pgpass was written into dataDir
+  assert.ok(fsWrites.some((f) => f.file.endsWith(".pgpass")));
+
+  // Verify postgresql.auto.conf uses passfile and does not embed raw password
+  const autoConf = fsWrites.find((f) => f.file.endsWith("postgresql.auto.conf"));
+  assert.ok(autoConf);
+  assert.match(autoConf.content, /passfile=/);
+  assert.doesNotMatch(autoConf.content, /password=/);
+});
+
+test("executeRehearsal fails closed if promotion verification fails (in_recovery is true)", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        // Promotion verification fails: node is still in recovery ('t')
+        return { exitCode: 0, stdout: "t\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.equal(res.promoted, false);
+  assert.match(res.error, /Promotion verification failed/);
+
+  // CLI exit code must be 1 (non-zero)
+  const cliCode = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(cliCode, 1);
+});
+
+test("executeRehearsal fails closed if smoke test fails for database", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        const dbIdx = args.indexOf("-d");
+        const db = dbIdx !== -1 ? args[dbIdx + 1] : "";
+        if (db === "myrmidon_hindsight") {
+          // Smoke test fails for hindsight DB
+          return { exitCode: 1, stdout: "", stderr: "psql: error: connection failed" };
+        }
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.equal(res.promoted, true);
+  assert.equal(res.smokeTestPassed, false);
+  assert.match(res.error, /Smoke test failed for database 'myrmidon_hindsight'/);
+
+  // CLI exit code must be 1 (non-zero)
+  const cliCode = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(cliCode, 1);
 });
