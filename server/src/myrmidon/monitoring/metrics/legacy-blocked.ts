@@ -31,14 +31,29 @@ export interface LegacyBlockedMetrics {
 export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
   return {
     async readJournal() {
-      const exists = await db.execute<{ present: boolean }>(
-        sql`select to_regclass('legacy_blocked_import') is not null as present`,
-      );
-      // Before L5 is deployed there are no imports; do not break existing scrapes.
-      if (!exists[0]?.present) return [];
-      const rows = await db.execute<{
-        company_id: string; import_key: string; issue_id: string; class: string;
-        result_issue_id: string | null; created_at: Date | string;
+      if (!db || typeof (db as any).execute !== "function") {
+        return [];
+      }
+      try {
+        const existsResult = await db.execute<{ present: boolean }>(
+          sql`select to_regclass('legacy_blocked_import') is not null as present`,
+        );
+        const existsRows = Array.isArray(existsResult)
+          ? existsResult
+          : ((existsResult as any)?.rows ?? []);
+        // Before L5 is deployed there are no imports; do not break existing scrapes.
+        if (!existsRows[0]?.present) return [];
+      } catch {
+        return [];
+      }
+
+      const rowsResult = await db.execute<{
+        company_id: string;
+        import_key: string;
+        issue_id: string;
+        class: string;
+        result_issue_id: string | null;
+        created_at: Date | string;
         source_created_at: Date | string | null;
       }>(sql`select
           l.company_id,
@@ -51,6 +66,11 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         from legacy_blocked_import l
         left join issues i on i.id = l.issue_id and i.company_id = l.company_id
         order by l.created_at, l.company_id, l.import_key`);
+
+      const rows = Array.isArray(rowsResult)
+        ? rowsResult
+        : ((rowsResult as any)?.rows ?? []);
+
       return rows.map((row) => ({
         companyId: row.company_id,
         report: {

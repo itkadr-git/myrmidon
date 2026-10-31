@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectLegacyBlockedMetrics, renderLegacyBlockedMetrics, type LegacyBlockedJournalRow } from "../myrmidon/monitoring/metrics/legacy-blocked.js";
+import { collectLegacyBlockedMetrics, renderLegacyBlockedMetrics, legacyBlockedReadPort, type LegacyBlockedJournalRow } from "../myrmidon/monitoring/metrics/legacy-blocked.js";
 
 const now = new Date("2026-10-27T12:00:00Z");
 function row(key: string, cls: LegacyBlockedJournalRow["report"]["class"], result: string | null, age: number): LegacyBlockedJournalRow {
@@ -70,5 +70,10 @@ describe("legacy blocked metrics projection", () => {
   it("does not fabricate successful zero samples on read failure", async () => {
     await expect(collectLegacyBlockedMetrics({ readJournal: async () => { throw new Error("L5 unavailable"); } }, now)).rejects.toThrow("L5 unavailable");
     expect(renderLegacyBlockedMetrics(null, "api")).not.toMatch(/^legacy_blocked_/m);
+  });
+
+  it("legacyBlockedReadPort handles mock DB without execute gracefully", async () => {
+    const port = legacyBlockedReadPort({ select: () => {} } as never);
+    expect(await port.readJournal()).toEqual([]);
   });
 });
