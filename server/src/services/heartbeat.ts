@@ -440,6 +440,11 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
+  classifyEmptyRun,
+  evaluateCompletionGate,
+  checkAndHandleEmptyRunEscalation,
+} from "./empty-run.js";
+import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -13892,6 +13897,80 @@ export function heartbeatService(
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
+
+    // 1.7 AGENT-RUNTIME: гейт завершения прогона и эскалация холостых прогонов (OPE-10066)
+    const initialStatus =
+      typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
+        ? String((context.issue as any).status)
+        : null;
+
+    const hasProgressEvidence =
+      Boolean(detectedProgressSummary) ||
+      run.livenessState === "progress" ||
+      run.livenessState === "completed" ||
+      run.livenessState === "advanced";
+
+    const blockerReason =
+      issue?.status === "blocked"
+        ? (typeof (issue as any)?.blockerMetadata === "object" && (issue as any)?.blockerMetadata !== null
+            ? ((issue as any).blockerMetadata.blockReason ?? (issue as any).blockerMetadata.reason ?? null)
+            : null)
+        : null;
+
+    const isRepeatedToolFailure = Boolean(run.error?.includes("Repeated tool failure"));
+
+    const emptyClassification = classifyEmptyRun({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    const gateResult = evaluateCompletionGate({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      const escalation = await checkAndHandleEmptyRunEscalation(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+        runId: run.id,
+        classification: emptyClassification,
+        gateResult,
+      });
+
+      if (escalation.escalated || !escalation.shouldRewake) {
+        if (isSuccessfulRunHandoffValidPathSkip(decision)) {
+          await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            agentId: run.agentId,
+            runId: run.id,
+            skipReason: decision.reason,
+          });
+        }
+        return;
+      }
+    }
 
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
       await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
