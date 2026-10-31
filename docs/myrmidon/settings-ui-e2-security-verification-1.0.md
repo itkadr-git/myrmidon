@@ -1,7 +1,7 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.0 (source review; verification incomplete)
-Reviewed base: origin/main `892786e0d96d329162c4e18a5b57b77793fce5f4` (2026-10-31)
+Version: 1.1 (source review; verification incomplete)
+Reviewed base: origin/main `2a6af3f0f9ba71b5e7ecca354d0834cf511d56aa` (2026-10-31); branch synchronized with current main in merge commit `cc247b73a8755937ee8316414b7bba47f6c88a17`
 Scope: repository source and automated-test inventory only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
@@ -10,7 +10,7 @@ Relevant route tests: `server/src/myrmidon/secret-settings/store-routes.myrmidon
 
 Attempted command through the repository devbuild wrapper:
 `devbuild 'node scripts/run-vitest-stable.mjs --mode serialized --no-bail'`
-Result: wrapper selected 197 serialized suites, then test execution failed: `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "vitest" not found` (exit 254). No tests passed in this attempt. `gh run list` was also attempted for main CI but GitHub returned HTTP 403 installation API rate limit; no CI outcome was obtained.
+Result: wrapper selected 197 serialized suites, then test execution failed: `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "vitest" not found` (exit 254). No tests passed in this attempt. The subsequent PR CI failure was unrelated to this note: INV-13 flagged migration gaps 0426/0427 on the pre-merge branch; those gaps are grandfathered in the baseline on current main and the branch has been synchronized with that main. `gh run list` was also attempted for main CI but GitHub returned HTTP 403 installation API rate limit; no CI outcome was obtained.
 
 Earlier invocation attempts (`devbuild` with pnpm workspace filtering and direct `pnpm exec vitest`) did not execute the intended tests; they returned pnpm help/no matching project or missing Vitest. Those are failed attempts, not test results.
 
