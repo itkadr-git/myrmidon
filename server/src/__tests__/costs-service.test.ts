@@ -1188,8 +1188,6 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const summaryDay1 = await costs.summary(companyId, undefined, day1);
     expect(summaryDay1.forecastCents).toBeNull();
   });
-});
-
 
   it("aggregates daily costs with zero-filled gaps and matching summary spend", async () => {
     const companyId = randomUUID();
