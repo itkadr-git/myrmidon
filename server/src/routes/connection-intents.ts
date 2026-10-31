@@ -2,7 +2,7 @@ import { connectionIntentDeliveryService } from "../services/connection-intent-d
 import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, agentWakeupRequests } from "@myrmidon/db";
+import { heartbeatRuns, issues } from "@myrmidon/db";
 import { createPullRequestCiResolver } from "../services/github-pull-request-ci.js";
 import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
@@ -144,17 +144,17 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         }
 
         const [run] = await db
-          .select({ nativeIssueId: heartbeatRuns.nativeIssueId, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          .select({ nativeIssueId: heartbeatRuns.nativeIssueId, contextSnapshot: heartbeatRuns.contextSnapshot })
           .from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
 
-        let issueId = run?.nativeIssueId;
-        if (!issueId && run?.wakeupRequestId) {
-          const [wake] = await db
-            .select({ issueId: agentWakeupRequests.issueId })
-            .from(agentWakeupRequests)
-            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
-          issueId = wake?.issueId ?? null;
+        let issueId = run?.nativeIssueId ?? ((run?.contextSnapshot as any)?.issueId as string | undefined) ?? null;
+        if (!issueId) {
+          const [iss] = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.companyId, claims.company_id), eq(issues.executionRunId, claims.run_id)));
+          issueId = iss?.id ?? null;
         }
 
         if (!issueId) {
@@ -218,17 +218,17 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     }
 
     const [run] = await db
-      .select({ nativeIssueId: heartbeatRuns.nativeIssueId, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .select({ nativeIssueId: heartbeatRuns.nativeIssueId, contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id)));
 
-    let issueId = run?.nativeIssueId;
-    if (!issueId && run?.wakeupRequestId) {
-      const [wake] = await db
-        .select({ issueId: agentWakeupRequests.issueId })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
-      issueId = wake?.issueId ?? null;
+    let issueId = run?.nativeIssueId ?? ((run?.contextSnapshot as any)?.issueId as string | undefined) ?? null;
+    if (!issueId) {
+      const [iss] = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, claims.company_id), eq(issues.executionRunId, claims.run_id)));
+      issueId = iss?.id ?? null;
     }
 
     if (!issueId) {

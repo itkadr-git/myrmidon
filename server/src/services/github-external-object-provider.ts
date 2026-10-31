@@ -16,7 +16,7 @@ import type {
   ExternalObjectResolveResult,
 } from "./external-objects.js";
 
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;

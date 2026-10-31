@@ -412,6 +412,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const ciResult = await resolver.resolveForPullRequest("company-1", {
+      host: "github.com",
       owner: "itkadr-git",
       repo: "myrmidon-deploy",
       number: 124,
@@ -429,6 +430,7 @@ describe("createPullRequestCiResolver", () => {
 
     // Call again to verify cache hit
     const cachedResult = await resolver.resolveForPullRequest("company-1", {
+      host: "github.com",
       owner: "itkadr-git",
       repo: "myrmidon-deploy",
       number: 124,
@@ -447,6 +449,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const res = await resolver.resolveForPullRequest("company-1", {
+      host: "github.com",
       owner: "itkadr-git",
       repo: "myrmidon-deploy",
       number: 57,

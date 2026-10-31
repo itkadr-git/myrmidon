@@ -358,7 +358,7 @@ export interface PullRequestCiResolverOptions {
 export interface PullRequestCiResolver {
   resolveForPullRequest(
     companyId: string,
-    reference: GitHubPullRequestReference,
+    reference: GitHubPullRequestReference | { host?: "github.com"; owner: string; repo: string; number: number },
   ): Promise<PullRequestCiResult>;
   resolveForIssue(companyId: string, issueId: string): Promise<PullRequestCiResult[]>;
 }
@@ -394,8 +394,14 @@ export function createPullRequestCiResolver(
   return {
     async resolveForPullRequest(
       companyId: string,
-      reference: GitHubPullRequestReference,
+      referenceInput: GitHubPullRequestReference | { host?: "github.com"; owner: string; repo: string; number: number },
     ): Promise<PullRequestCiResult> {
+      const reference: GitHubPullRequestReference = {
+        host: referenceInput.host ?? "github.com",
+        owner: referenceInput.owner,
+        repo: referenceInput.repo,
+        number: referenceInput.number,
+      };
       const repoKey = `${reference.owner}/${reference.repo}`;
       const prDetails = await prResolver(companyId, reference);
       let headSha = prDetails.headSha;
@@ -564,7 +570,6 @@ export function createPullRequestCiResolver(
           and(
             eq(issueWorkProducts.companyId, companyId),
             eq(issueWorkProducts.issueId, issueId),
-            isNull(issueWorkProducts.deletedAt),
           ),
         );
 
@@ -623,7 +628,7 @@ export function createPullRequestCiResolver(
       const childIssues = await db
         .select({ id: issues.id, description: issues.description, title: issues.title })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.parentId, issueId), isNull(issues.deletedAt)));
+        .where(and(eq(issues.companyId, companyId), eq(issues.parentId, issueId)));
 
       for (const child of childIssues) {
         for (const ref of extractGitHubPullRequestReferences([child.description, child.title])) {
@@ -636,7 +641,6 @@ export function createPullRequestCiResolver(
             and(
               eq(issueWorkProducts.companyId, companyId),
               eq(issueWorkProducts.issueId, child.id),
-              isNull(issueWorkProducts.deletedAt),
             ),
           );
         for (const cp of childProducts) {
