@@ -69,6 +69,7 @@ const inboxCategoryOptions = (): ReadonlyArray<[InboxCategoryFilter, string]> =>
   ["everything", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.everything")],
   ["issues_i_touched", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.issuesITouched")],
   ["join_requests", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.joinRequests")],
+  ["knowledge", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.knowledge")],
   ["approvals", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.approvals")],
   ["failed_runs", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.failedRuns")],
   ["alerts", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.alerts")],

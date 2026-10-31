@@ -10,6 +10,7 @@ import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { knowledgeApi } from "../api/knowledge";
 import {
   filterLocalInboxArchivedIssues,
   useLocalInboxArchiveIssueIds,
@@ -258,12 +259,18 @@ export function useInboxBadge(companyId: string | null | undefined) {
     refetchOnWindowFocus: false,
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
+  const { data: knowledgeSuggestions = [] } = useQuery({
+    queryKey: ["knowledge-suggestions", companyId],
+    queryFn: () => knowledgeApi.listSuggestions(companyId!),
+    enabled: Boolean(companyId),
+  });
 
   return useMemo(
     () =>
       computeInboxBadgeData({
         approvals,
         joinRequests,
+        knowledgeSuggestions,
         dashboard,
         heartbeatRuns,
         mineIssues,
@@ -271,6 +278,6 @@ export function useInboxBadge(companyId: string | null | undefined) {
         dismissedAtByKey,
         currentUserId,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
+    [approvals, joinRequests, knowledgeSuggestions, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
   );
 }

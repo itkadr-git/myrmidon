@@ -151,15 +151,29 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   }
 
   function actorOf(req: Request) {
-    const info = getActorInfo(req);
+    if (typeof getActorInfo === "function") {
+      try {
+        const info = getActorInfo(req);
+        if (info) {
+          return {
+            actorType: (info.actorType === "agent" ? "agent" : info.actorType === "user" ? "user" : "system") as
+              | "agent"
+              | "user"
+              | "system",
+            actorId: info.actorId,
+            agentId: info.actorType === "agent" ? (info.agentId ?? null) : null,
+            label: `${info.actorType}:${info.actorId ?? "unknown"}`,
+          };
+        }
+      } catch {
+        // fallback
+      }
+    }
     return {
-      actorType: (info.actorType === "agent" ? "agent" : info.actorType === "user" ? "user" : "system") as
-        | "agent"
-        | "user"
-        | "system",
-      actorId: info.actorId,
-      agentId: info.actorType === "agent" ? (info.agentId ?? null) : null,
-      label: `${info.actorType}:${info.actorId ?? "unknown"}`,
+      actorType: (req.actor?.type === "agent" ? "agent" : "user") as "agent" | "user",
+      actorId: (req.actor?.type === "agent" ? req.actor.agentId : req.actor?.userId) ?? "board",
+      agentId: req.actor?.type === "agent" ? (req.actor.agentId ?? null) : null,
+      label: `${req.actor?.type ?? "user"}:${req.actor?.userId ?? "board"}`,
     };
   }
 
@@ -400,16 +414,73 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_list");
     const mod = deps.moduleFor(companyId);
-    const status =
-      typeof req.query.status === "string" && ["pending", "accepted", "declined", "all"].includes(req.query.status)
-        ? (req.query.status as "pending" | "accepted" | "declined" | "all")
-        : undefined;
+    const rawStatus = typeof req.query.status === "string" ? req.query.status : "pending";
+    if (!["pending", "accepted", "declined", "all"].includes(rawStatus)) {
+      res.status(400).json({ error: "invalid status" });
+      return;
+    }
+    const status = rawStatus as "pending" | "accepted" | "declined" | "all";
     try {
       res.json({ suggestions: await mod.listSuggestions(status) });
     } catch (err) {
       throw toHttpError(err);
     }
   });
+
+  router.patch(
+    "/myrmidon/companies/:companyId/knowledge/suggestions/:suggestionId",
+    async (req: Request, res: Response) => {
+      const companyId = companyOf(req);
+      await assertKnowledgeToolAccess(req, "knowledge_propose");
+      const mod = deps.moduleFor(companyId);
+      const actor = actorOf(req);
+      try {
+        const suggestion = await mod.editSuggestion(
+          { actorType: actor.actorType, actorId: actor.actorId },
+          {
+            suggestionId: req.params.suggestionId as string,
+            body: typeof req.body?.body === "string" ? req.body.body : "",
+            rationale: typeof req.body?.rationale === "string" ? req.body.rationale : null,
+          },
+        );
+        res.json({ suggestion });
+      } catch (err) {
+        throw toHttpError(err);
+      }
+    },
+  );
+
+  router.post(
+    "/myrmidon/companies/:companyId/knowledge/suggestions/:suggestionId/decision",
+    async (req: Request, res: Response) => {
+      const companyId = companyOf(req);
+      await assertKnowledgeToolAccess(req, "knowledge_propose");
+      const decision = req.body?.decision;
+      if (decision !== "accepted" && decision !== "declined") {
+        res.status(400).json({ error: "decision must be accepted or declined" });
+        return;
+      }
+      if (req.body?.reason !== undefined && typeof req.body.reason !== "string") {
+        res.status(400).json({ error: "reason must be a string" });
+        return;
+      }
+      const mod = deps.moduleFor(companyId);
+      const actor = actorOf(req);
+      try {
+        const suggestion = await mod.decideSuggestion(
+          { actorType: actor.actorType, actorId: actor.actorId },
+          {
+            suggestionId: req.params.suggestionId as string,
+            decision,
+            reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
+          },
+        );
+        res.json({ suggestion });
+      } catch (err) {
+        throw toHttpError(err);
+      }
+    },
+  );
 
   router.get("/myrmidon/companies/:companyId/knowledge/export", async (req: Request, res: Response) => {
     const companyId = companyOf(req);

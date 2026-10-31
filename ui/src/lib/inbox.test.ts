@@ -2,6 +2,7 @@
 // @vitest-environment node
 
 import { beforeEach, describe, expect, it } from "vitest";
+import type { KnowledgeSuggestion } from "../api/knowledge";
 import type {
   Approval,
   DashboardSummary,
@@ -341,6 +342,7 @@ describe("inbox helpers", () => {
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
+      knowledgeSuggestions: 0,
       mineIssues: 1,
       alerts: 1,
     });
@@ -363,6 +365,7 @@ describe("inbox helpers", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 0,
+      knowledgeSuggestions: 0,
       mineIssues: 0,
       alerts: 0,
     });
@@ -525,7 +528,8 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
-        return `run:${item.run.id}`;
+        if (item.kind === "failed_run") return `run:${item.run.id}`;
+        return `knowledge:${item.suggestion.id}`;
       }),
     ).toEqual([
       "issue:1",
@@ -568,13 +572,30 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
-        return `run:${item.run.id}`;
+        if (item.kind === "failed_run") return `run:${item.run.id}`;
+        return `knowledge:${item.suggestion.id}`;
       }),
     ).toEqual([
       "issue:1",
       "join:join-1",
       "approval:approval-oldest",
     ]);
+  });
+
+  it("mixes knowledge suggestions into the inbox feed", () => {
+    const suggestion: KnowledgeSuggestion = {
+      id: "suggestion-1",
+      targetItemId: null,
+      body: "Use the review queue",
+      rationale: "Keeps decisions auditable",
+      sourceKind: "lesson",
+      sourceRef: "lesson-1",
+      status: "pending",
+      createdAt: "2026-03-11T06:00:00.000Z",
+    };
+    const items = getInboxWorkItems({ issues: [], approvals: [], knowledgeSuggestions: [suggestion] });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "knowledge", suggestion });
   });
 
   it("skips hidden groups when building keyboard navigation entries", () => {
