@@ -125,7 +125,8 @@ import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index
 import { myrmidonUsersAdminRoutes } from "./myrmidon/users-admin-a/index.js"; // myrmidon(OPE-8985)
 import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
 import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
-
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold API.
+import { myrmidonOwnerActiveChannelRoutes } from "./myrmidon/owner-active-channel/index.js";
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
@@ -1191,6 +1192,7 @@ export async function createApp(
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
   api.use(myrmidonUsersAdminRoutes(db, { authPublicBaseUrl: opts.authPublicBaseUrl })); // myrmidon(OPE-8985): users admin + public password-set
   api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
+  api.use(myrmidonOwnerActiveChannelRoutes(db)); // myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
