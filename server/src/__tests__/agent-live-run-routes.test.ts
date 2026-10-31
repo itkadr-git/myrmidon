@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -308,8 +308,13 @@ async function requestApp(
 }
 
 describe("agent live run routes", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
@@ -322,6 +327,10 @@ describe("agent live run routes", () => {
     vi.doUnmock("../myrmidon/idle-pickup.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
     registerModuleMocks();
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js");
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     // myrmidon(WAKE-BIND): default — the agent has no ready task, so an
     // issue-less manual wake is refused unless a test seeds a ready task.
