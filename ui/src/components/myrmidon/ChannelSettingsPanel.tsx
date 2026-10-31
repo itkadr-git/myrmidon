@@ -122,8 +122,9 @@ export function parseChannelSettingsDraft(draft: ChannelSettingsDraft): DraftPar
   if (draft.telegramPoolChatGptModel !== undefined) {
     patch.telegramPoolChatGptModel = draft.telegramPoolChatGptModel.trim();
   }
-  if (draft.telegramPoolChatGptBotToken && draft.telegramPoolChatGptBotToken !== "********") {
-    patch.telegramPoolChatGptBotToken = draft.telegramPoolChatGptBotToken.trim();
+  const chatGptToken = draft.telegramPoolChatGptBotToken?.trim();
+  if (chatGptToken && chatGptToken !== "********") {
+    patch.telegramPoolChatGptBotToken = chatGptToken;
   }
   if (draft.telegramPoolGeminiEnabled !== undefined) {
     patch.telegramPoolGeminiEnabled = draft.telegramPoolGeminiEnabled;
@@ -134,8 +135,9 @@ export function parseChannelSettingsDraft(draft: ChannelSettingsDraft): DraftPar
   if (draft.telegramPoolGeminiModel !== undefined) {
     patch.telegramPoolGeminiModel = draft.telegramPoolGeminiModel.trim();
   }
-  if (draft.telegramPoolGeminiBotToken && draft.telegramPoolGeminiBotToken !== "********") {
-    patch.telegramPoolGeminiBotToken = draft.telegramPoolGeminiBotToken.trim();
+  const geminiToken = draft.telegramPoolGeminiBotToken?.trim();
+  if (geminiToken && geminiToken !== "********") {
+    patch.telegramPoolGeminiBotToken = geminiToken;
   }
 
   return { patch, errors };
@@ -393,13 +395,13 @@ export function ChannelSettingsPanelView({
         ))}
 
         <div className="space-y-4 md:col-span-2 border-t pt-4" data-testid="channel-settings-telegram-pool-bridges">
-          <h3 className="text-sm font-semibold">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
+          <h3 className="text-sm font-semibold">{t("area.settings-integrations.channel-settings-panel.telegramPoolBridgesTitle")}</h3>
           <div className="grid gap-4 md:grid-cols-2">
             {/* ChatGPT Bridge */}
             <div className="space-y-3 p-3 border rounded-md">
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
-                  <Label htmlFor="channel-settings-telegramPoolChatGptEnabled">ChatGPT Pool Bridge</Label>
+                  <Label htmlFor="channel-settings-telegramPoolChatGptEnabled">{t("area.settings-integrations.channel-settings-panel.telegramPoolChatGptBridge")}</Label>
                   <p className="text-xs text-muted-foreground">
                     <span data-testid="channel-settings-source-telegramPoolChatGptEnabled">
                       {sourceLabel(view, "telegramPoolChatGptEnabled")}
@@ -418,10 +420,10 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolChatGptChatId">Allowed Chat ID</Label>
+                <Label htmlFor="channel-settings-telegramPoolChatGptChatId">{t("area.settings-integrations.channel-settings-panel.telegramPoolAllowedChatId")}</Label>
                 <Input
                   id="channel-settings-telegramPoolChatGptChatId"
-                  placeholder="e.g. 123456789"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolAllowedChatIdPlaceholder")}
                   value={numbers.telegramPoolChatGptChatId}
                   onChange={(e) => setField("telegramPoolChatGptChatId", e.target.value)}
                   disabled={view.telegramPoolChatGptChatId?.overridden}
@@ -437,10 +439,10 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolChatGptModel">Model</Label>
+                <Label htmlFor="channel-settings-telegramPoolChatGptModel">{t("area.settings-integrations.channel-settings-panel.telegramPoolModel")}</Label>
                 <Input
                   id="channel-settings-telegramPoolChatGptModel"
-                  placeholder="balanced"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolChatGptModelPlaceholder")}
                   value={numbers.telegramPoolChatGptModel}
                   onChange={(e) => setField("telegramPoolChatGptModel", e.target.value)}
                   disabled={view.telegramPoolChatGptModel?.overridden}
@@ -456,11 +458,11 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolChatGptBotToken">Bot Token / Secret Ref</Label>
+                <Label htmlFor="channel-settings-telegramPoolChatGptBotToken">{t("area.settings-integrations.channel-settings-panel.telegramPoolBotToken")}</Label>
                 <Input
                   id="channel-settings-telegramPoolChatGptBotToken"
                   type="password"
-                  placeholder="Bot token or secret:name"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolBotTokenPlaceholder")}
                   value={numbers.telegramPoolChatGptBotToken}
                   onChange={(e) => setField("telegramPoolChatGptBotToken", e.target.value)}
                   disabled={view.telegramPoolChatGptBotToken?.overridden}
@@ -480,7 +482,7 @@ export function ChannelSettingsPanelView({
             <div className="space-y-3 p-3 border rounded-md">
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-1">
-                  <Label htmlFor="channel-settings-telegramPoolGeminiEnabled">Gemini Pool Bridge</Label>
+                  <Label htmlFor="channel-settings-telegramPoolGeminiEnabled">{t("area.settings-integrations.channel-settings-panel.telegramPoolGeminiBridge")}</Label>
                   <p className="text-xs text-muted-foreground">
                     <span data-testid="channel-settings-source-telegramPoolGeminiEnabled">
                       {sourceLabel(view, "telegramPoolGeminiEnabled")}
@@ -499,10 +501,10 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolGeminiChatId">Allowed Chat ID</Label>
+                <Label htmlFor="channel-settings-telegramPoolGeminiChatId">{t("area.settings-integrations.channel-settings-panel.telegramPoolAllowedChatId")}</Label>
                 <Input
                   id="channel-settings-telegramPoolGeminiChatId"
-                  placeholder="e.g. 123456789"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolAllowedChatIdPlaceholder")}
                   value={numbers.telegramPoolGeminiChatId}
                   onChange={(e) => setField("telegramPoolGeminiChatId", e.target.value)}
                   disabled={view.telegramPoolGeminiChatId?.overridden}
@@ -518,10 +520,10 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolGeminiModel">Model</Label>
+                <Label htmlFor="channel-settings-telegramPoolGeminiModel">{t("area.settings-integrations.channel-settings-panel.telegramPoolModel")}</Label>
                 <Input
                   id="channel-settings-telegramPoolGeminiModel"
-                  placeholder="gemini-2.0-flash"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolGeminiModelPlaceholder")}
                   value={numbers.telegramPoolGeminiModel}
                   onChange={(e) => setField("telegramPoolGeminiModel", e.target.value)}
                   disabled={view.telegramPoolGeminiModel?.overridden}
@@ -537,11 +539,11 @@ export function ChannelSettingsPanelView({
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="channel-settings-telegramPoolGeminiBotToken">Bot Token / Secret Ref</Label>
+                <Label htmlFor="channel-settings-telegramPoolGeminiBotToken">{t("area.settings-integrations.channel-settings-panel.telegramPoolBotToken")}</Label>
                 <Input
                   id="channel-settings-telegramPoolGeminiBotToken"
                   type="password"
-                  placeholder="Bot token or secret:name"
+                  placeholder={t("area.settings-integrations.channel-settings-panel.telegramPoolBotTokenPlaceholder")}
                   value={numbers.telegramPoolGeminiBotToken}
                   onChange={(e) => setField("telegramPoolGeminiBotToken", e.target.value)}
                   disabled={view.telegramPoolGeminiBotToken?.overridden}
