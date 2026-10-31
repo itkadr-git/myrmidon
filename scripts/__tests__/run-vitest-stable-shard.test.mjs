@@ -174,7 +174,7 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   );
 });
 
-test("the measured chat integration cohort does not share a general-server shard", () => {
+test("the measured chat integration cohort runs on exactly one balanced general-server shard", () => {
   const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
   const durations = loadShardDurations(durationsManifest);
   assert.ok(
@@ -202,10 +202,13 @@ test("the measured chat integration cohort does not share a general-server shard
     1,
     "the full chat cohort must run exactly once",
   );
-  assert.deepEqual(
-    chatShards[0].files,
-    [chatSuite],
-    "its measured cost must reserve one existing shard without other suites",
+  // The chat cohort was once heavy enough (645 s of a 2177 s manifest) to need a
+  // shard of its own. With the whole lane measured it is ~7 of ~90 minutes, so
+  // it is balanced like any other suite instead of being isolated.
+  const totals = shards.map((shard) => shard.totalWeight);
+  assert.ok(
+    Math.max(...totals) / Math.min(...totals) <= 1.1,
+    `the shard holding the chat cohort must not be heavier than the rest: ${totals.join(", ")}`,
   );
   assert.deepEqual(
     shards.flatMap((shard) => shard.files).sort(),
