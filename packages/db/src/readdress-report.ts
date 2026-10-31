@@ -195,7 +195,11 @@ export function resolveAddresslessCard<T extends AddresslessCardInput>(card: T):
       : typeof rawRecipient.serviceQueue === "string" && rawRecipient.serviceQueue ? { serviceQueue: rawRecipient.serviceQueue }
       : null)
     : null;
-  const serviceQueue = typeof rawRouting.serviceQueue === "string" ? rawRouting.serviceQueue : null;
+  const serviceQueue = typeof rawRouting.serviceQueue === "string"
+    ? rawRouting.serviceQueue
+    : participantRoles.length === 0 && fallbackQueue
+      ? fallbackQueue
+      : null;
   const stepDelayMinutes = typeof effectivePolicy?.stepDelayMinutes === "number" && Number.isFinite(effectivePolicy.stepDelayMinutes)
     ? effectivePolicy.stepDelayMinutes
     : null;
