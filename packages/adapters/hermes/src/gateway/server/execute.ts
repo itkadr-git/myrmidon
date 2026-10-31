@@ -640,6 +640,11 @@ function buildRunBody(
   const model = nonEmpty(ctx.config.model);
   const provider = nonEmpty(ctx.config.provider);
   const modelOptions = buildModelOptions(ctx.config);
+  const fallbackModels = provider ? readGatewayFallbackModels(ctx.config) : [];
+  const modelAttemptId = nonEmpty(ctx.config.modelAttemptId);
+  const fallbackModelEntries = fallbackModels
+    .map((fallbackModel) => ({ provider, model: fallbackModel }))
+    .filter((entry): entry is { provider: string; model: string } => Boolean(entry.provider));
   // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
   // Assigned after the payloadTemplate spread so a card cannot forge a
   // capability: only the env the server itself wrote into runtimeConfig.env
@@ -665,6 +670,8 @@ function buildRunBody(
     ...(model ? { model } : {}),
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
+    ...(fallbackModelEntries.length ? { fallback_model: fallbackModelEntries } : {}),
+    ...(modelAttemptId ? { model_attempt_id: modelAttemptId } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
@@ -1336,6 +1343,88 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   };
 }
 
+function parseGatewayCallIds(value: unknown): {
+  gatewayCallIds: string[];
+  gatewayCallIdsTruncated: boolean;
+  litellmRequestIds: string[];
+  litellmRequestIdsTruncated: boolean;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      gatewayCallIds: [], gatewayCallIdsTruncated: false,
+      litellmRequestIds: [], litellmRequestIdsTruncated: false,
+    };
+  }
+  const usage = asRecord(record.usage);
+  const gatewayCallIds = new Set<string>();
+  const litellmRequestIds = new Set<string>();
+  const addIds = (target: Set<string>, candidate: unknown) => {
+    for (const raw of Array.isArray(candidate) ? candidate : [candidate]) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (id.length > 0 && id.length <= 256) target.add(id);
+    }
+  };
+  for (const source of [record, usage]) {
+    if (!source) continue;
+    addIds(gatewayCallIds, source.gateway_call_ids);
+    addIds(gatewayCallIds, source.gatewayCallIds);
+    addIds(litellmRequestIds, source.litellm_request_ids);
+    addIds(litellmRequestIds, source.litellmRequestIds);
+    for (const candidate of [source.model_call_ids, source.call_ids, source.model_call_id, source.call_id]) {
+      addIds(gatewayCallIds, candidate);
+    }
+  }
+  const gatewayCallIdsTruncated = gatewayCallIds.size > 500;
+  const litellmRequestIdsTruncated = litellmRequestIds.size > 500;
+  return {
+    gatewayCallIds: [...gatewayCallIds].slice(0, 500),
+    gatewayCallIdsTruncated,
+    litellmRequestIds: [...litellmRequestIds].slice(0, 500),
+    litellmRequestIdsTruncated,
+  };
+}
+
+function parseModelCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  const readCount = (candidate: unknown): number | null => {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    return Number.isSafeInteger(count) && count >= 0 ? Math.min(count, 100_000) : null;
+  };
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  const nested = asRecord(record?.model_calls) ?? asRecord(usage?.model_calls);
+  for (const candidate of [nested?.count, nested?.total]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  return null;
+}
+
+function parseOutputCallCount(outputChunks: string[]): number | null {
+  let count = 0;
+  for (const chunk of outputChunks) {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (/^\s*(?:┊\s*)?🔧\s*Calling\s+/.test(line)) count += 1;
+    }
+  }
+  return count > 0 ? Math.min(count, 100_000) : null;
+}
+
+function parseGatewayCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isSafeInteger(count) && count >= 0) return Math.min(count, 100_000);
+  }
+  return null;
+}
+
 function parseCostUsd(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record?.cost_usd ?? record?.costUsd ?? asRecord(record?.usage)?.cost_usd ?? asRecord(record?.usage)?.costUsd;
@@ -1402,6 +1491,41 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Parse explicit fallback models in the card's models.fallbacks field. */
+export function readGatewayFallbackModels(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const config = value as Record<string, unknown>;
+  const models = config.models;
+  const nested = typeof models === "object" && models !== null && !Array.isArray(models)
+    ? (models as Record<string, unknown>).fallbacks
+    : undefined;
+  const fallbacks = Array.isArray(config.fallbacks) ? config.fallbacks : nested;
+  if (!Array.isArray(fallbacks)) return [];
+  return fallbacks.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1419,6 +1543,8 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
+  modelAttemptId?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1427,11 +1553,25 @@ export function mapFinalResultForTest(input: {
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
-  const mapped = terminalResultCode(input.terminal.status);
+  const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  const providerErrorAsContent = Boolean(
+    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+  );
+  const mapped = providerErrorAsContent
+    ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
+    : terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const payloadCallIds = parseGatewayCallIds(payload);
+  const gatewayModelCallCount = parseGatewayCallCount(payload);
+  const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
+  const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
+  const modelCallCount = explicitCallCount ?? metadataCallCount;
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    ? redactText(providerErrorAsContent
+      ? "Provider returned an overload or quota error as successful response content"
+      : extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
   // myrmidon(RECOVERY-HERMES-GATEWAY): see the signature constant above — a
   // failed turn whose message carries the upstream-connection signature is
@@ -1443,9 +1583,12 @@ export function mapFinalResultForTest(input: {
   // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
-    errorMessage !== null &&
-    errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+    providerErrorAsContent
       ? "transient_upstream"
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+        ? "transient_upstream"
       : mapped.errorCode === "hermes_gateway_run_failed" &&
           errorMessage !== null &&
           errorMessage
@@ -1456,6 +1599,9 @@ export function mapFinalResultForTest(input: {
             classifyInputOverflow(errorMessage)
           ? "input_overflow"
           : null;
+  if (providerErrorAsContent) {
+    console.warn("provider_error_as_content", { model: extractModel(payload) ?? input.configuredModel ?? "unknown" });
+  }
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1474,7 +1620,7 @@ export function mapFinalResultForTest(input: {
     // the owner when the run has no separate final message, so it must carry the
     // complete answer. A 2,000-character cut here reached Telegram as a
     // silently truncated reply; length is handled downstream by splitting.
-    ...(output ? { summary: output } : {}),
+    ...(output && !providerErrorAsContent ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -1491,11 +1637,18 @@ export function mapFinalResultForTest(input: {
       // under the standard `result` key the comment builder reads, while the
       // top-level `summary` stays a bounded copy for run lists/journals. The
       // `output` key is kept for existing gateway-specific consumers.
-      result: output ?? "",
-      output: output ?? "",
+      result: providerErrorAsContent ? "" : output ?? "",
+      output: providerErrorAsContent ? "" : output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      modelCallCount: modelCallCount,
+      modelCallCountSource,
+      gatewayCallIds: payloadCallIds.gatewayCallIds,
+      gatewayCallIdsTruncated: payloadCallIds.gatewayCallIdsTruncated,
+      litellmRequestIds: payloadCallIds.litellmRequestIds,
+      litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
 }
@@ -1818,6 +1971,7 @@ function isUnambiguousCreateNonStart(err: unknown): boolean {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const fallbackModels = readGatewayFallbackModels(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return {
@@ -1888,7 +2042,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually reaches this adapter). ctx.runId is unique per attempt, so a
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
-  const idempotencyKey = ctx.runId;
+  const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
@@ -2494,8 +2648,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
-    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
-    // used when the gateway's terminal payload names none.
+    modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
@@ -2539,5 +2692,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  const isProviderError =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+      finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+
+  const shouldTryFallback =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    fallbackModels.length > 0;
+
+  if (shouldTryFallback) {
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+    );
+    const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+    const fallbackResult = await execute({
+      ...ctx,
+      runId: fallbackAttemptId,
+      config: {
+        ...ctx.config,
+        model: fallbackModels[0],
+        models: { fallbacks: fallbackModels.slice(1) },
+        modelAttemptId: fallbackAttemptId,
+      },
+      onDispatch: undefined,
+      onExternalRunId: undefined,
+      onMeta: undefined,
+    });
+    if (fallbackResult.exitCode === 0) return fallbackResult;
+    if (isProviderError) {
+      return {
+        ...finalResult,
+        summary: undefined,
+        resultJson: {
+          ...finalResult.resultJson,
+          result: "",
+          output: "",
+          provider_error_as_content: true,
+        },
+      };
+    }
+    return fallbackResult;
+  }
+
+  if (isProviderError) {
+    return {
+      ...finalResult,
+      summary: undefined,
+      resultJson: {
+        ...finalResult.resultJson,
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+      },
+    };
+  }
+
   return finalResult;
 }

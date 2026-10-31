@@ -1,5 +1,10 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+// myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
+import {
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
+} from "../myrmidon/review-stage-recovery/policy.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -47,6 +52,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 // replay" hold; see docs/myrmidon/DIVERGENCE.md "L2".
 import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gate.js";
 import { userCommentMentionsWokenAgent } from "../myrmidon/settled-holds/mention-wake.js";
+import { clearSettledReplayHoldsOnAuthoritativeRunSuccess } from "../myrmidon/settled-holds/clear.js";
 // myrmidon(L2, round 1 fix): supersede the bypassed hold atomically with the
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
@@ -99,6 +105,7 @@ import {
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { processRole } from "./process-role.js"; // myrmidon(OPE-10011): role default of `executesRuns`
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
@@ -383,6 +390,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
+  refreshRunTelemetrySnapshot,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
@@ -403,6 +411,7 @@ import {
   isExternalChatPresentationContext,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
+  deliverHeartbeatRunResponseComment,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
   type RunPresentationDecision,
@@ -600,7 +609,6 @@ import {
 } from "./recovery/service.js";
 import {
   createRunDispatch,
-  type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
@@ -612,6 +620,9 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  createCancelStaleQueuedRun,
+  type RunDispatch,
+  type PostCommitEffect,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -754,9 +765,13 @@ import {
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
+import { pickupNextReview } from "../myrmidon/review-routing/pickup.js";
+import { issueHasNoExecutionHold } from "../myrmidon/settled-holds/ready-predicate.js";
+import { buildReviewRoutingWakeContext } from "../myrmidon/review-routing/policy.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
 // myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
 // release path below hands the freed agent to it (design §3.5).
+import { tryDevReviewContinuationOnRelease, devProcessProjectIds } from "../myrmidon/review-continuation.js";
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
@@ -1355,6 +1370,7 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "hermes_transient_upstream" ||
     run.errorCode === "codex_harness_crash" ||
     run.errorCode === "continuation_source_context_missing" ||
     run.errorCode === "controller_lease_lost" ||
@@ -3591,6 +3607,7 @@ const heartbeatRunListColumns = {
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   sessionIdBefore: heartbeatRuns.sessionIdBefore,
   sessionIdAfter: heartbeatRuns.sessionIdAfter,
   logStore: heartbeatRuns.logStore,
@@ -3712,6 +3729,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
           ${heartbeatRuns.resultJson} -> 'cost_usd',
           ${heartbeatRuns.resultJson} -> 'costUsd'
         ),
+        'runTelemetry', ${heartbeatRuns.resultJson} -> 'runTelemetry',
         'truncated', true,
         'truncationReason', 'oversized_result_json',
         'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
@@ -3724,6 +3742,7 @@ const heartbeatRunSafeColumns = {
   ...getTableColumns(heartbeatRuns),
   processGroupId: heartbeatRunProcessGroupIdColumn,
   resultJson: heartbeatRunSafeResultJsonColumn,
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
 } as const;
 
 const heartbeatRunSqlAsciiSafeColumns = {
@@ -3731,6 +3750,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
   processGroupId: heartbeatRunProcessGroupIdColumn,
   error: sql<string | null>`NULL`.as("error"),
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
+  runTelemetry: sql<Record<string, unknown> | null>`${heartbeatRuns.resultJson} -> 'runTelemetry'`.as("runTelemetry"),
   stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
@@ -3897,6 +3917,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 export interface WakeupOptions {
+  /** Revision timestamp observed when the wake event was admitted. */
+  eventRevision?: string | null;
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -9435,6 +9457,82 @@ export function postWorkspaceReadyComment(input: {
   );
 }
 
+type HeartbeatResponseCommentWriter = {
+  addComment: (
+    issueId: string,
+    body: string,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+    options?: { authorizationReason?: string | null } & Record<string, unknown>,
+  ) => Promise<unknown>;
+};
+
+export async function finalizeHeartbeatRunResponseComment(input: {
+  db?: any;
+  issuesSvc: HeartbeatResponseCommentWriter;
+  agentId: string;
+  runId: string;
+  companyId: string;
+  issueId: string | null;
+  resolved: ReturnType<typeof resolveHeartbeatRunResponse>;
+  skipRunIssueComment?: boolean;
+  issueRef?: { identifier?: string | null; title?: string | null } | null;
+}) {
+  return await deliverHeartbeatRunResponseComment({
+    resolved: input.resolved,
+    issueId: input.issueId,
+    skipRunIssueComment: input.skipRunIssueComment,
+    addComment: async (text) => {
+      if (input.db) {
+        await guardrailsOnRunOutput({
+          db: input.db,
+          companyId: input.companyId,
+          runId: input.runId,
+          issueId: input.issueId!,
+          text,
+        }).catch(() => null);
+      }
+      const presentationAuthorizationReason = input.db
+        ? await resolveChatRunPresentationAuthorizationReason(input.db, {
+            companyId: input.companyId,
+            issueId: input.issueId!,
+            runId: input.runId,
+          })
+        : null;
+      const comment = await input.issuesSvc.addComment(
+        input.issueId!,
+        text,
+        { agentId: input.agentId, runId: input.runId },
+        { authorizationReason: presentationAuthorizationReason },
+      );
+      if (input.db) {
+        await logActivity(input.db, {
+          companyId: input.companyId,
+          actorType: "agent",
+          actorId: input.agentId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: input.issueId!,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: input.issueId!,
+          details: {
+            commentId: (comment as { id?: string } | null | undefined)?.id,
+            bodySnippet: (
+              (comment as { body?: string } | null | undefined)?.body ?? ""
+            ).slice(0, 120),
+            identifier: input.issueRef?.identifier ?? null,
+            issueTitle: input.issueRef?.title ?? null,
+            authorizationReason: presentationAuthorizationReason,
+            source: "run_presentation_resolver",
+            presentationSource: input.resolved.decision.chosenSource,
+          },
+        }).catch(() => null);
+      }
+      return comment;
+    },
+  });
+}
+
 function isTruthyRuntimeEnvValue(value: string | undefined) {
   return value === "true" || value === "1" || value === "yes" || value === "on";
 }
@@ -9657,10 +9755,16 @@ export function heartbeatService(
           effect.previousStatus !== effect.status
         ) {
           clearHeartbeatRunRuntimeStatus(effect.runId);
-          void emitAgentTaskRunById(db, {
-            runId: effect.runId,
-            companyId: effect.companyId,
-          });
+          void (async () => {
+            await refreshRunTelemetrySnapshot(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+            await emitAgentTaskRunById(db, {
+              runId: effect.runId,
+              companyId: effect.companyId,
+            });
+          })();
         }
       }
     }
@@ -11661,22 +11765,31 @@ export function heartbeatService(
     const isProviderQuotaReviewMonitor =
       monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       Boolean(reviewParticipantAgentId);
-    const targetAgentId = isProviderQuotaReviewMonitor
+    // myrmidon(OPE-10045): the review waited for CI on the PR head; the wake
+    // goes to the stage participant as a review-recovery run, so a run that
+    // again ends without a decision goes back through the bounded recovery.
+    const isReviewCiWaitMonitor =
+      monitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+      Boolean(reviewParticipantAgentId);
+    const isReviewRecoveryMonitor =
+      isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
+    const targetAgentId = isReviewRecoveryMonitor
       ? reviewParticipantAgentId
       : claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
-    const wakeReason = isProviderQuotaReviewMonitor
+    const wakeReason = isReviewRecoveryMonitor
       ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
       : input.wakeReason;
-    const reviewRecoveryContext = isProviderQuotaReviewMonitor
+    const reviewRecoveryContext = isReviewRecoveryMonitor
       ? {
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
-          reviewRecoveryInstruction:
-            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+          reviewRecoveryInstruction: isReviewCiWaitMonitor
+            ? REVIEW_CI_WAIT_RECOVERY_INSTRUCTION
+            : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
         }
       : {};
 
@@ -11774,7 +11887,7 @@ export function heartbeatService(
           requestedByActorId: input.actorId,
           contextSnapshot: {
             issueId: claimed.id,
-            source: isProviderQuotaReviewMonitor
+            source: isReviewRecoveryMonitor
               ? "issue.execution_review_recovery"
               : "issue.monitor",
             wakeReason,
@@ -13439,6 +13552,7 @@ export function heartbeatService(
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
+
     if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
     if (
       readNonEmptyString(context.goalControlRequestId) ||
@@ -13470,6 +13584,16 @@ export function heartbeatService(
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+
+    try {
+      await clearSettledReplayHoldsOnAuthoritativeRunSuccess(
+        db,
+        run,
+        issue,
+      );
+    } catch (err) {
+      logger.warn({ err, issueId, runId: run.id }, "failed to clear settled replay holds on successful run");
+    }
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
           issueId: issue.id,
@@ -18773,9 +18897,82 @@ export function heartbeatService(
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
+    let woken = 0;
+    const handled = await pickupNextReview({
+      serialize: async (work) => {
+        const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.executionRunId),
+          sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+          sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+        )).limit(1);
+        if (!candidateExists) return false;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
+          return work();
+        });
+      },
+      hasWorkInFlight: async () => {
+        const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        )).limit(1);
+        if (live) return true;
+        const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        )).limit(1);
+        return Boolean(pending);
+      },
+      candidates: () => db.select({
+        id: issues.id, updatedAt: issues.updatedAt, executionState: issues.executionState,
+      }).from(issues).where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.status, "in_review"),
+        isNull(issues.executionRunId),
+        issueHasNoExecutionHold(db),
+        sql`not exists (
+          select 1
+          from issue_relations ir
+            join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
+          where ir.company_id = ${issues.companyId}
+            and ir.related_issue_id = ${issues.id}
+            and ir.type = 'blocks'
+            and ${blockerOpenSql('blocker.status')}
+        )`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+      )),
+      wake: async (candidate) => {
+        if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
+        const result = await enqueueWakeup(agent.id, {
+          source: "automation", triggerDetail: "system", reason: "execution_review_requested",
+          requestedByActorType: "system", requestedByActorId: "review_pickup",
+          idempotencyKey: `review-pickup:${candidate.id}:${parseObject(candidate.executionState).currentStageId ?? "review"}`,
+          contextSnapshot: {
+            issueId: candidate.id, taskKey: candidate.id, source: "review_pickup",
+            executionStage: { ...buildReviewRoutingWakeContext(parseObject(candidate.executionState)) },
+          },
+        });
+        if (result) woken += 1;
+        return result;
+      },
+    }, { excludeIssueId });
+    return { handled, woken };
+  }
+
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
@@ -20608,8 +20805,31 @@ export function heartbeatService(
     error: (fields: Record<string, unknown>, message: string) => logger.error(fields, message),
   };
   const runStartDispatcher = createRunStartDispatcher({
-    listQueuedAgents: (options) => listAgentsWithQueuedRunsAndNoRunningRun(db, options),
+    listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
     startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
+    listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
+      const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
+      return staleRuns;
+    },
+    createCancelStaleQueuedRun: async (run, staleAfterMs) => {
+      const outcome = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id, companyId: run.companyId, expectedStatus: "queued",
+        staleAfterMs, now: new Date(),
+      });
+      if (outcome.outcome !== "cancelled") return false;
+      applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
+      return true;
+    },
+    wakeAgent: async (agentId, companyId) => {
+      await enqueueWakeup(agentId, {
+        source: "automation",
+        reason: "queued_run_stale_timeout",
+        payload: { companyId },
+        contextSnapshot: { taskId: "system:queued-run-stale-timeout" },
+      });
+    },
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),
     // The role gate of T1.1 and the bus publish of the `notify` mode.
@@ -20636,8 +20856,14 @@ export function heartbeatService(
   // The worker-side listener of the `notify` mode: a process that executes runs
   // subscribes to `run_queued` and starts locally; every bus (re-)listen runs
   // the resweep dogon. An api process never subscribes.
+  // myrmidon(OPE-10011): absent `executesRuns` follows THIS process's role
+  // (T1.1). Only the heartbeat index.ts builds passes it; the ~30 others that
+  // routes and services build did not, so in an api child each of them armed
+  // its own resweep, which then dispatched and admitted runs in the api process.
+  const roleExecutesRuns =
+    options.executesRuns ?? processRole(runtimeEnv as NodeJS.ProcessEnv).executesRuns;
   const runQueuedBusListener =
-    options.processBus && (options.executesRuns ?? true)
+    options.processBus && roleExecutesRuns
       ? createRunQueuedBusListener(options.processBus, {
           startNextQueuedRunForAgent: (agentId) => startNextQueuedRunForAgent(agentId),
           sweepQueuedWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
@@ -20650,7 +20876,7 @@ export function heartbeatService(
   // under a test runner and switchable with MYRMIDON_QUEUED_RESWEEP=0 — see
   // queuedResweepArmDecision.
   const queuedResweepArming = queuedResweepArmDecision(runtimeEnv, {
-    runsBackground: options.executesRuns ?? true,
+    runsBackground: roleExecutesRuns,
   });
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
@@ -20965,10 +21191,7 @@ export function heartbeatService(
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(
-      billedCostUsd,
-      billingType,
-    );
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage =
       inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
@@ -21549,9 +21772,19 @@ export function heartbeatService(
     if (!tx || typeof tx.insert !== "function") {
       return { created: false };
     }
+    let resolvedCompanyId = companyId;
+    if (!resolvedCompanyId && typeof tx.select === "function") {
+      try {
+        const agent = await tx.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+        resolvedCompanyId = agent?.companyId;
+      } catch {
+        // Ignore unsupported mock transaction queries.
+      }
+    }
+    if (!resolvedCompanyId) return { created: false };
     const source = opts.source ?? "on_demand";
     const reason = opts.reason ?? null;
-    const payload = opts.payload ? { ...opts.payload } : null;
+    let payload = opts.payload ? { ...opts.payload } : null;
     if (payload) {
       delete payload.queuedCommentInterrupt;
       delete payload.manualUserWake;
@@ -21563,34 +21796,52 @@ export function heartbeatService(
       readNonEmptyString(payload?.taskId);
     const key = opts.idempotencyKey ??
       `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
-    let resolvedCompanyId = companyId;
-    if (!resolvedCompanyId && typeof tx.select === "function") {
+    if (typeof tx.select === "function") {
       try {
         const agent = await tx
-          .select()
+          .select({ id: agents.id, companyId: agents.companyId })
           .from(agents)
           .where(eq(agents.id, agentId))
           .then((rows) => rows[0] ?? null);
-        resolvedCompanyId = agent?.companyId;
+        if (!agent) {
+          return { created: false, skippedMissingAgent: true };
+        }
+        resolvedCompanyId = agent.companyId ?? resolvedCompanyId;
       } catch {
         // Query failed on mock tx
       }
     }
-    if (!resolvedCompanyId) {
-      return { created: false };
+    if (resolvedIssueId && !payload?.eventRevision) {
+      const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
+        .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))
+        .then((rows) => rows[0]?.updatedAt?.toISOString() ?? null)
+        .catch(() => null);
+      if (eventRevision) {
+        payload = { ...(payload ?? {}), eventRevision };
+        contextSnapshot.eventRevision = eventRevision;
+      }
     }
-    await tx.insert(agentWakeupRequests).values({
+    const request: typeof agentWakeupRequests.$inferInsert = {
       companyId: resolvedCompanyId,
       agentId,
       source,
       triggerDetail: opts.triggerDetail ?? null,
       reason,
-      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      payload: resolvedIssueId
+        ? {
+            ...(payload ?? {}),
+            issueId: resolvedIssueId,
+            ...(Object.keys(contextSnapshot).length > 0
+              ? { contextSnapshot }
+              : {}),
+          }
+        : payload,
       status: "queued",
       requestedByActorType: opts.requestedByActorType ?? null,
       requestedByActorId: opts.requestedByActorId ?? null,
       idempotencyKey: key,
-    });
+    };
+    await tx.insert(agentWakeupRequests).values(request);
     return { created: true };
   }
 
@@ -27035,82 +27286,19 @@ export function heartbeatService(
                 externalChatPresentationAuthorization ===
                   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
             });
+            const delivery = await finalizeHeartbeatRunResponseComment({
+              db,
+              issuesSvc,
+              agentId: agent.id,
+              runId: livenessRun.id,
+              companyId: livenessRun.companyId,
+              issueId,
+              resolved,
+              skipRunIssueComment,
+              issueRef,
+            });
             let presentationDecision: RunPresentationDecision =
-              resolved.decision;
-
-            if (
-              issueId &&
-              !skipRunIssueComment &&
-              presentationDecision.commentAction === "create" &&
-              resolved.text
-            ) {
-              // myrmidon(1.6-GRD): flag-only output scan of the final run text
-              // before it becomes the visible issue comment; never blocks,
-              // never masks here — the event journal records the hits.
-              await guardrailsOnRunOutput({
-                db,
-                companyId: livenessRun.companyId,
-                runId: livenessRun.id,
-                issueId,
-                text: resolved.text,
-              }).catch(() => null);
-              // The presentation resolver exposes only the final assistant
-              // surface selected from completed final messages or accepted
-              // semantic results. For an exactly bound external-chat run,
-              // authorize that narrow presentation as the provider reply;
-              // ordinary internal runs retain the private default.
-              const presentationAuthorizationReason =
-                await resolveChatRunPresentationAuthorizationReason(db, {
-                  companyId: livenessRun.companyId,
-                  issueId,
-                  runId: livenessRun.id,
-                });
-              const comment = await issuesSvc.addComment(
-                issueId,
-                resolved.text,
-                { agentId: agent.id, runId: livenessRun.id },
-                { authorizationReason: presentationAuthorizationReason },
-              );
-              presentationDecision = {
-                ...presentationDecision,
-                commentId: comment.id,
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  "resolved_response_materialized",
-                ],
-              };
-              await logActivity(db, {
-                companyId: livenessRun.companyId,
-                actorType: "agent",
-                actorId: agent.id,
-                agentId: agent.id,
-                runId: livenessRun.id,
-                issueId,
-                action: "issue.comment_added",
-                entityType: "issue",
-                entityId: issueId,
-                details: {
-                  commentId: comment.id,
-                  bodySnippet: comment.body.slice(0, 120),
-                  identifier: issueRef?.identifier ?? null,
-                  issueTitle: issueRef?.title ?? null,
-                  authorizationReason: presentationAuthorizationReason,
-                  source: "run_presentation_resolver",
-                  presentationSource: presentationDecision.chosenSource,
-                },
-              });
-            } else if (presentationDecision.commentAction === "create") {
-              presentationDecision = {
-                ...presentationDecision,
-                commentAction: "none",
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  skipRunIssueComment
-                    ? "issue_comment_suppressed"
-                    : "run_has_no_issue",
-                ],
-              };
-            }
+              delivery.decision;
 
             await db
               .update(heartbeatRuns)
@@ -27362,6 +27550,12 @@ export function heartbeatService(
               "failed to auto-reset session after context window error",
             );
           }
+        }
+        if (finalizedRun) {
+          await refreshRunTelemetrySnapshot(db, {
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+          });
         }
       } catch (err) {
         if (err instanceof NativeControllerDetachedForRestartError) {
@@ -28270,12 +28464,42 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
+          const releasedSnapshot = parseObject(releasedRun.contextSnapshot);
+          const isReviewerRun =
+            releasedAgent?.role === "reviewer" ||
+            readNonEmptyString(releasedSnapshot.wakeReason) === "execution_review_requested" ||
+            readNonEmptyString(parseObject(releasedSnapshot.executionStage).stageType) === "review" ||
+            readNonEmptyString(releasedSnapshot.source) === "review_pickup";
+          // OPE-9676: participants in review are not issue assignees. Select
+          // their waiting review queue before the general development queues.
+          if (pickupAllowed && releasedAgent && isReviewerRun) {
+            const { handled: reviewHandled } = await pickupReviewForAgent(
+              { id: releasedRun.agentId, companyId: releasedRun.companyId }, releasedIssueId ?? undefined,
+            );
+            if (reviewHandled) return;
+          }
           // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
           // swarm on, the agent that just became free is paired by the board
           // itself — its own assigned ready task first, otherwise the top ready
           // task of its caste and nest. The idle-pickup wake below (the "go and
           // look for work" path OPE-6640 retires) is then not used at all.
-          const swarmFreed = await matchFreedAgent(
+          const devHandled = await tryDevReviewContinuationOnRelease({
+            db,
+            releasedRun,
+            currentRunId: run.id,
+            match: (agentId, scope) => matchFreedAgent({
+              db, settings: instanceSettings,
+              enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
+              castes: createCasteDirectoryReader(db),
+            }, agentId, { ...scope, pickupAllowed, wakeBudget: idleWakeBudget }),
+            enqueueWakeup,
+            logActivity,
+            enabledProjects: devProcessProjectIds(),
+          }).catch((err) => {
+            logger.warn({ err, runId: run.id }, "dev review continuation on release failed");
+            return false;
+          });
+          const swarmFreed = devHandled ? { enabled: true, pair: null } : await matchFreedAgent(
             {
               db,
               settings: instanceSettings,
@@ -28417,6 +28641,16 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    const comment = payload?.comment && typeof payload.comment === "object" && !Array.isArray(payload.comment)
+      ? payload.comment as Record<string, unknown>
+      : null;
+    const commentRevision = typeof comment?.createdAt === "string" ? comment.createdAt :
+      typeof comment?.created_at === "string" ? comment.created_at :
+      typeof payload?.timestamp === "string" ? payload.timestamp : null;
+    if (!payload?.eventRevision && commentRevision) payload = { ...(payload ?? {}), eventRevision: commentRevision };
+    if (!payload?.eventRevision && opts.eventRevision) payload = { ...(payload ?? {}), eventRevision: opts.eventRevision };
+    const eventRevision = readNonEmptyString(payload?.eventRevision);
+    if (eventRevision) enrichedContextSnapshot.eventRevision = eventRevision;
     // myrmidon(N4-WAKE-ISSUE-CONTEXT): a wake that names its task only in the
     // resolved context (contextSnapshot.issueId) must also carry the
     // identifier in the payload consumers read first: the agent's wake
