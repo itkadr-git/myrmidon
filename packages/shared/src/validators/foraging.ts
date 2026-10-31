@@ -1,4 +1,3 @@
-import { isIP } from "node:net";
 import { z } from "zod";
 
 export const FORAGING_ALLOWED_PROTOCOLS = ["http:", "https:"] as const;
@@ -16,6 +15,20 @@ export interface ForagingUrlValidationResult {
   url?: URL;
   error?: string;
   code?: ForagingValidationErrorCode;
+}
+
+/**
+ * Pure IPv4/IPv6 detector that avoids the node:net dependency: the shared
+ * package is typechecked by browser-side workspaces without node typings.
+ */
+export function looksLikeIpAddress(host: string): boolean {
+  if (host.startsWith("[") && host.endsWith("]")) return true;
+  if (parseIpv4Address(host)) return true;
+  return /^[0-9a-fA-F:]+:[0-9a-fA-F:]+$/.test(host) && host.includes(":");
+}
+
+export function isAllowedForagingProtocol(protocol: string): protocol is ForagingAllowedProtocol {
+  return (FORAGING_ALLOWED_PROTOCOLS as readonly string[]).includes(protocol);
 }
 
 export function parseIpv4Address(address: string): [number, number, number, number] | null {
@@ -86,9 +99,8 @@ export function isPrivateOrReservedIpv6(address: string): boolean {
 
 export function isPrivateOrBlockedIp(address: string): boolean {
   const normalized = normalizeIpAddress(address);
-  const version = isIP(normalized);
-  if (version === 4) return isPrivateOrReservedIpv4(normalized);
-  if (version === 6) return isPrivateOrReservedIpv6(normalized);
+  if (parseIpv4Address(normalized)) return isPrivateOrReservedIpv4(normalized);
+  if (looksLikeIpAddress(normalized)) return isPrivateOrReservedIpv6(normalized);
   return false;
 }
 

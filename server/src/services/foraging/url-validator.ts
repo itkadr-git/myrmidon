@@ -1,5 +1,4 @@
 import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import {
   FORAGING_ALLOWED_PROTOCOLS,
   type ForagingAllowedProtocol,
@@ -13,6 +12,7 @@ import {
   isBlockedHostOrIp,
   isHostnameAllowedByAllowlist,
   isPrivateOrBlockedIp,
+  looksLikeIpAddress,
   isPrivateOrReservedIpv4,
   isPrivateOrReservedIpv6,
   normalizeForagingAllowlistDomain,
@@ -36,6 +36,7 @@ export {
   isBlockedHostOrIp,
   isHostnameAllowedByAllowlist,
   isPrivateOrBlockedIp,
+  looksLikeIpAddress,
   isPrivateOrReservedIpv4,
   isPrivateOrReservedIpv6,
   normalizeForagingAllowlistDomain,
@@ -109,7 +110,7 @@ export async function validateForagingUrl(
   const rawHostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
 
   // If the host is already an IP literal, it has already been checked against private ranges in validateForagingUrlSync
-  if (isIP(rawHostname) !== 0 || options?.skipDnsResolution) {
+  if (looksLikeIpAddress(rawHostname) || options?.skipDnsResolution) {
     return { valid: true, url: parsed };
   }
 
