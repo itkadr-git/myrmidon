@@ -15,51 +15,21 @@
 //
 // The vendor's own task-thread bindings always win (see the call site in
 // services/chat-interaction-publications.ts); nothing here touches them.
-import { and, eq, inArray } from "drizzle-orm";
-import { chatConversations, chatEndpoints, issues } from "@myrmidon/db";
-import type { Db } from "@myrmidon/db";
-import { telegramConversationUserId } from "../agent-chat-bridge/identity.js";
+import {
+  telegramOwnerDeliveryBindings as telegramOwnerDeliveryBindingsU2,
+  resolveOwnerDecisionRecipient,
+  type OwnerDeliveryBinding,
+  type OwnerDeliveryDb,
+} from "../owner-delivery/telegram-owner-bindings.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { resolveOwnerActiveChannel } from "./store.js";
 import { readOwnerActiveChannelSettings } from "./settings.js";
+import type { Db } from "@myrmidon/db";
+import { issues } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
 
-/** Bindings the owner-delivery extension may hand back to the publication path. */
-export interface OwnerDeliveryBinding {
-  conversation: typeof chatConversations.$inferSelect;
-  endpoint: typeof chatEndpoints.$inferSelect;
-}
-
-type OwnerDeliveryDb = Pick<Db, "select">;
-
-/** The owner receiving the card, or null when there is none / the task is its own chat. */
-async function ownerUserIdForCard(
-  db: OwnerDeliveryDb,
-  input: { companyId: string; issueId: string },
-): Promise<string | null> {
-  const issueRow = await db
-    .select({
-      responsibleUserId: issues.responsibleUserId,
-      createdByUserId: issues.createdByUserId,
-      conversationAgentId: issues.conversationAgentId,
-      conversationUserId: issues.conversationUserId,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, input.companyId),
-        eq(issues.id, input.issueId),
-      ),
-    )
-    .then((rows) => (rows.length > 0 ? rows : []));
-  const issue = issueRow[0] ?? null;
-  if (!issue) return null;
-  // A task that already lives as an Agent Chat conversation (web or Telegram)
-  // has its own routing; never mirror its cards into another conversation.
-  if (issue.conversationAgentId && issue.conversationUserId) return null;
-  // The owner receiving the card: the responsible user when the task names
-  // one, otherwise its creator. A board user id, not an external identity.
-  return issue.responsibleUserId ?? issue.createdByUserId ?? null;
-}
+export type { OwnerDeliveryBinding };
+export { telegramOwnerDeliveryBindingsU2 };
 
 /**
  * myrmidon(1.7-ACTIVE-CHANNEL): the Telegram binding path from U2, gated by
@@ -79,8 +49,34 @@ export async function telegramOwnerDeliveryBindings(
     addresseeUserId?: string | null;
   },
 ): Promise<OwnerDeliveryBinding[]> {
-  if (!input.createdByAgentId) return [];
-  const ownerUserId = await ownerUserIdForCard(db, input);
+  // First run the standing U2 rules: if U2 says no bindings, nothing to deliver.
+  const bindings = await telegramOwnerDeliveryBindingsU2(db, input);
+  if (bindings.length === 0) return [];
+
+  // U2 found bindings. Find the recipient ownerUserId to check active-channel status.
+  const issueRows = await db
+    .select({
+      responsibleUserId: issues.responsibleUserId,
+      createdByUserId: issues.createdByUserId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.id, input.issueId),
+      ),
+    );
+  const issue = issueRows[0] ?? null;
+
+  const chosen = await resolveOwnerDecisionRecipient(db, {
+    companyId: input.companyId,
+    agentId: input.createdByAgentId!,
+    addresseeUserId: input.addresseeUserId,
+    responsibleUserId: issue?.responsibleUserId,
+    createdByUserId: issue?.createdByUserId,
+  });
+
+  const ownerUserId = chosen?.ownerUserId;
   if (ownerUserId) {
     let activeChannel: "web" | "telegram" | null = null;
     try {
@@ -97,97 +93,6 @@ export async function telegramOwnerDeliveryBindings(
     // report into Telegram while they are here.
     if (activeChannel === "web") return [];
   }
-  return telegramOwnerDeliveryBindingsU2(db, input);
-}
 
-/**
- * myrmidon(U2): find the standing Telegram DM conversation (X8b) between the
- * card's authoring agent and the task's owner, for Telegram endpoints whose
- * bot is that same agent. The rules mirror the vendor's own binding rules so a
- * card never speaks through another agent's endpoint:
- *
- * - the endpoint is Telegram, automatic publication mode, active/verifying;
- * - the endpoint's immutable assigned agent is the card's creator;
- * - the conversation is a live (active/waiting) DM standing conversation of
- *   the task's owner with that agent (`telegram:<boardUserId>` identity).
- *
- * Returns [] when nothing matches, so the caller degrades to vendor behavior.
- */
-export async function telegramOwnerDeliveryBindingsU2(
-  db: OwnerDeliveryDb,
-  input: {
-    companyId: string;
-    issueId: string;
-    createdByAgentId: string | null | undefined;
-    effectiveResolverPolicy?: string | null;
-    addresseeAgentId?: string | null;
-    addresseeUserId?: string | null;
-  },
-): Promise<OwnerDeliveryBinding[]> {
-  if (!input.createdByAgentId) return [];
-  const createdByAgentId = input.createdByAgentId;
-  const issueRow = await db
-    .select({
-      responsibleUserId: issues.responsibleUserId,
-      createdByUserId: issues.createdByUserId,
-      conversationAgentId: issues.conversationAgentId,
-      conversationUserId: issues.conversationUserId,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, input.companyId),
-        eq(issues.id, input.issueId),
-      ),
-    )
-    .then((rows) => (rows.length > 0 ? rows : []));
-  const issue = issueRow[0] ?? null;
-  if (!issue) return [];
-  // A task that already lives as an Agent Chat conversation (web or Telegram)
-  // has its own routing; never mirror its cards into another conversation.
-  if (issue.conversationAgentId && issue.conversationUserId) return [];
-
-  const ownerUserId = issue.responsibleUserId ?? issue.createdByUserId ?? null;
-  if (!ownerUserId) return [];
-
-  const rows = await db
-    .select({
-      conversation: chatConversations,
-      endpoint: chatEndpoints,
-      conversationIssue: issues,
-    })
-    .from(chatConversations)
-    .innerJoin(
-      chatEndpoints,
-      and(
-        eq(chatEndpoints.companyId, chatConversations.companyId),
-        eq(chatEndpoints.id, chatConversations.endpointId),
-      ),
-    )
-    .innerJoin(
-      issues,
-      and(
-        eq(issues.companyId, chatConversations.companyId),
-        eq(issues.id, chatConversations.issueId),
-      ),
-    )
-    .where(
-      and(
-        eq(chatConversations.companyId, input.companyId),
-        eq(
-          issues.conversationUserId,
-          telegramConversationUserId(ownerUserId),
-        ),
-        eq(issues.conversationAgentId, createdByAgentId),
-        inArray(chatConversations.state, ["active", "waiting"]),
-        inArray(chatEndpoints.status, ["active", "verifying"]),
-      ),
-    );
-  return rows.filter(
-    ({ conversation, endpoint }) =>
-      endpoint.provider === "telegram" &&
-      endpoint.publicationMode === "automatic" &&
-      endpoint.assignedAgentId === createdByAgentId &&
-      conversation.isDirectMessage === true,
-  );
+  return bindings;
 }
