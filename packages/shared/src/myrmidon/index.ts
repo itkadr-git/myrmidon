@@ -3,6 +3,7 @@
 // New contracts go here or in packages/shared/src/myrmidon/, sorted alphabetically.
 // Regenerate with: node scripts/generate-shared-exports.mjs
 
+export * from "../validators/audit.js";
 export * from "../blocker-graph.js";
 export * from "../continuation-key.js";
 export * from "../interaction-routing.js";
@@ -86,3 +87,4 @@ export * from "../myrmidon-ui2-i18n.js";
 export * from "../myrmidon-wip-limit.js";
 export * from "../myrmidon-workspace-hygiene.js";
 export * from "../recovery-factory.js";
+export * from "../validators/user-block.js";
