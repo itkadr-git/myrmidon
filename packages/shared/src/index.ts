@@ -3041,3 +3041,7 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
+export * from "./geo-check.js";
+
+
