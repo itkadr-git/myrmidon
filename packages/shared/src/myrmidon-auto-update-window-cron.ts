@@ -57,10 +57,21 @@ export interface MaintenanceWindowCronSuccess {
   nextRuns: MaintenanceWindowOccurrence[];
 }
 
+export type MaintenanceWindowCronErrorField =
+  | "cron"
+  | "durationMinutes"
+  | "timezone"
+  | "format"
+  | "minute"
+  | "hour"
+  | "dayOfMonth"
+  | "month"
+  | "dayOfWeek";
+
 export interface MaintenanceWindowCronFailure {
   valid: false;
   error: string;
-  field?: "cron" | "durationMinutes" | "timezone" | "minute" | "hour" | "dayOfMonth" | "month" | "dayOfWeek";
+  field?: MaintenanceWindowCronErrorField;
 }
 
 export type MaintenanceWindowCronValidationResult =
