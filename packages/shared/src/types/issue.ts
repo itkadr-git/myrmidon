@@ -234,6 +234,7 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -453,7 +454,9 @@ export type IssueReviewAttentionPathKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  // myrmidon(OPE-10045): the last stage was approved before the PR merged; the PR sync closes the task.
+  | "approved_pending_merge";
 
 export interface IssueReviewAttentionPath {
   kind: IssueReviewAttentionPathKind;
@@ -562,6 +565,7 @@ export interface IssueUnblockDescriptor {
   owner: IssueUnblockOwner;
   action: string;
   reasonRef?: IssueUnblockReasonRef;
+  reason?: string;
 }
 
 export interface IssueRecoveryAction {
@@ -872,6 +876,7 @@ export interface Issue {
   createdByAgentId: string | null;
   createdByUserId: string | null;
   responsibleUserId: string | null;
+  responsibleAgentId?: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;

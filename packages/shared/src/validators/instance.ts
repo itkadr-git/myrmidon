@@ -12,6 +12,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
+import { modelApiPricingSettingsSchema } from "../myrmidon-model-api-pricing.js"; // OPE-9499: operator-maintained API-equivalent prices
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
@@ -210,6 +211,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // automatically". Lenient: a hand-edited row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-model-menu.ts).
   modelMenu: storedModelMenuSettingsSchema,
+  // OPE-9499: API-equivalent price list for subscription-backed token usage.
+  modelApiPricing: modelApiPricingSettingsSchema.optional(),
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown

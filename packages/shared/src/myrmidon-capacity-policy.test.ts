@@ -1,13 +1,52 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CAPACITY_POLICY,
+  applyProjectFairness,
+  applyStarvationProtection,
   capacityPolicyPatchSchema,
   capacityPolicySchema,
+  checkCapacity,
   mergeCapacityPolicyPatch,
   scoreCandidate,
 } from "./myrmidon-capacity-policy.js";
 
 describe("capacity policy contract", () => {
+  it("caps a dominant project's share, skips missing IDs, and is deterministic", () => {
+    // 20 candidates with 90% (18/20) dominant tasks and 10% (2/20) unassigned tasks
+    const candidates = Array.from({ length: 20 }, (_, index) => ({
+      issueId: `issue-${String(index).padStart(2, "0")}`,
+      priority: "normal",
+      queuedAt: index,
+      projectId: index < 18 ? "dominant" : null,
+    }));
+    const policy = { ...DEFAULT_CAPACITY_POLICY, fairness: { perProjectMaxShare: 0.5 } };
+    const first = applyProjectFairness(candidates, policy);
+
+    // In the first 4 tasks, dominant share is exactly 2/4 (50% <= perProjectMaxShare)
+    expect(first.slice(0, 4).filter((item) => item.projectId === "dominant")).toHaveLength(2);
+    // In the first 2 tasks, dominant share is 1/2 (50% <= perProjectMaxShare)
+    expect(first.slice(0, 2).filter((item) => item.projectId === "dominant")).toHaveLength(1);
+    // Unassigned project tasks create no holes: all candidates are preserved
+    expect(first).toHaveLength(20);
+    expect(first.every((item) => candidates.some((c) => c.issueId === item.issueId))).toBe(true);
+    // Deterministic: multiple calls produce identical order
+    expect(first.map((item) => item.issueId)).toEqual(
+      applyProjectFairness(candidates, policy).map((item) => item.issueId),
+    );
+  });
+
+  it("handles empty and missing project identifiers without dropping items", () => {
+    const candidates = [
+      { issueId: "task-1", priority: "normal", queuedAt: 1, projectId: "" },
+      { issueId: "task-2", priority: "normal", queuedAt: 2, projectId: "   " },
+      { issueId: "task-3", priority: "normal", queuedAt: 3, projectId: null },
+      { issueId: "task-4", priority: "normal", queuedAt: 4, projectId: undefined },
+    ];
+    const policy = { ...DEFAULT_CAPACITY_POLICY, fairness: { perProjectMaxShare: 0.5 } };
+    const result = applyProjectFairness(candidates, policy);
+    expect(result.map((item) => item.issueId)).toEqual(["task-1", "task-2", "task-3", "task-4"]);
+  });
+
   it("defaults to disabled and supplies section defaults", () => {
     const parsed = capacityPolicySchema.parse({});
     expect(parsed).toEqual(DEFAULT_CAPACITY_POLICY);
@@ -37,6 +76,39 @@ describe("capacity policy contract", () => {
     });
   });
 
+  it("allows candidates below configured project and caste limits", () => {
+    const policy = mergeCapacityPolicyPatch(DEFAULT_CAPACITY_POLICY, {
+      limits: { perProjectActive: 2, perCasteActive: 3 },
+    });
+    expect(checkCapacity({
+      activeByProject: { projectA: 1 }, activeByCaste: { engineering: 2 },
+    }, { projectId: "projectA", casteId: "engineering" }, policy)).toEqual({
+      allowed: true, reason: "allowed",
+    });
+  });
+
+  it("reports which limit prevents admission", () => {
+    const policy = mergeCapacityPolicyPatch(DEFAULT_CAPACITY_POLICY, {
+      limits: { perProjectActive: 2, perCasteActive: 3 },
+    });
+    expect(checkCapacity({
+      activeByProject: { projectA: 2 }, activeByCaste: { engineering: 0 },
+    }, { projectId: "projectA", casteId: "engineering" }, policy)).toEqual({
+      allowed: false, reason: "project_limit",
+    });
+    expect(checkCapacity({
+      activeByProject: { projectA: 0 }, activeByCaste: { engineering: 3 },
+    }, { projectId: "projectA", casteId: "engineering" }, policy)).toEqual({
+      allowed: false, reason: "caste_limit",
+    });
+  });
+
+  it("treats null limits and unassigned candidates as unbounded", () => {
+    expect(checkCapacity({ activeByProject: {}, activeByCaste: {} }, {
+      projectId: null, casteId: null,
+    }, DEFAULT_CAPACITY_POLICY)).toEqual({ allowed: true, reason: "allowed" });
+  });
+
   it("scores priority bands above aging while keeping aging monotone and capped", () => {
     const now = Date.parse("2026-01-01T01:00:00Z");
     const candidate = (priority: string, ageMin: number) => ({ priority, createdAt: now - ageMin * 60_000 });
@@ -62,5 +134,16 @@ describe("capacity policy contract", () => {
     expect(t120).toBeGreaterThan(t60);
     expect(tAncient).toBeGreaterThanOrEqual(t120);
     expect(tAncient).toBeLessThanOrEqual(t0 + policy.aging.maxBoost);
+  });
+
+  it("promotes starving tasks across priority bands without indefinite skips", () => {
+    const now = Date.parse("2026-01-01T02:00:00Z");
+    const candidates = [
+      { priority: "low", createdAt: now - 90 * 60_000 },
+      { priority: "medium", createdAt: now - 10 * 60_000 },
+    ];
+    const policy = { ...DEFAULT_CAPACITY_POLICY, starvation: { afterMin: 60, promoteBy: 1 } };
+    const ordered = applyStarvationProtection(candidates, now, policy);
+    expect(ordered[0].priority).toBe("low");
   });
 });

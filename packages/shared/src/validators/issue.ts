@@ -839,6 +839,7 @@ const createIssueBaseSchema = z.object({
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   createdByUserId: z.string().optional().nullable(),
   responsibleUserId: z.string().optional().nullable(),
+  responsibleAgentId: z.string().guid().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema
     .optional()
@@ -884,38 +885,6 @@ function requireBlockedStatusForUnblockDescriptor(
       code: z.ZodIssueCode.custom,
       message: "unblockDescriptor requires blocked status",
       path: ["unblockDescriptor"],
-    });
-  }
-}
-
-// myrmidon(STALE-BLOCK): a PATCH that transitions an issue into blocked is
-// valid only if it carries a reason reference — a non-empty blockedByIssueIds
-// list or an unblockDescriptor with a reasonRef. The field itself stays
-// optional so pre-rollout blocked records remain valid.
-function requireReasonRefForBlockedTransition(
-  value: {
-    status?: unknown;
-    blockedByIssueIds?: unknown;
-    blockerMetadata?: unknown;
-    unblockDescriptor?: { reasonRef?: unknown } | null;
-  },
-  ctx: z.RefinementCtx,
-) {
-  if (value.status !== "blocked") return;
-  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
-  const hasBlockers =
-    Array.isArray(value.blockedByIssueIds) &&
-    value.blockedByIssueIds.length > 0;
-  const reasonRef = value.unblockDescriptor?.reasonRef;
-  const hasReasonRef =
-    reasonRef != null && typeof reasonRef === "object" &&
-    (reasonRef as { kind?: unknown }).kind !== undefined;
-  if (!hasBlockers && !hasReasonRef) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message:
-        "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
-      path: ["status"],
     });
   }
 }
@@ -1021,6 +990,7 @@ export const updateIssueShapeSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
@@ -1046,6 +1016,7 @@ export const updateIssueSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+    responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
@@ -1060,10 +1031,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
     blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
-    // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
-    // (issue | event | date) — enforced on PATCH via the refine below.
-  })
-  .superRefine(requireReasonRefForBlockedTransition);
+  });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<
