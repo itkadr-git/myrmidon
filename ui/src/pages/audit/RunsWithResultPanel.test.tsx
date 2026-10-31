@@ -95,7 +95,7 @@ vi.mock("@/components/ui/select", () => ({
   ),
   SelectValue: ({ placeholder }: { placeholder?: string }) => {
     const { value } = useContext(SelectMockContext);
-    return <span>{value ?? placeholder}</span>;
+    return <span>{value && value !== "__all" ? value : placeholder}</span>;
   },
   SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectItem: ({
@@ -293,8 +293,17 @@ describe("RunsWithResultPanel", () => {
     );
 
     expect(container.textContent).toContain("Database connection timed out");
-    const retryButton = container.querySelector("button");
+    const retryButton = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Try again"),
+    );
+    expect(retryButton).toBeDefined();
     expect(retryButton?.textContent).toContain("Try again");
+
+    expect(listRunsMock).toHaveBeenCalledTimes(1);
+    flushSync(() => {
+      retryButton?.click();
+    });
+    expect(listRunsMock).toHaveBeenCalledTimes(2);
   });
 
   it("allows changing selectors interactively to update the filtered result set, then clearing filters", async () => {
