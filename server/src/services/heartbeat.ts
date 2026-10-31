@@ -427,6 +427,13 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
+  classifyEmptyRun,
+  evaluateCompletionGate,
+  checkAndHandleEmptyRunEscalation,
+  recordEmptyRunEvent,
+  MAX_CONSECUTIVE_EMPTY_RUNS,
+} from "./empty-run.js";
+import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -13690,6 +13697,56 @@ export function heartbeatService(
       idempotentWakeExists: Boolean(existingWake),
     });
 
+    // 1.7 AGENT-RUNTIME: Гейт завершения прогона и эскалация повторов (OPE-10066)
+    const initialStatus =
+      typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
+        ? String((context.issue as any).status)
+        : null;
+
+    const emptyClassification = classifyEmptyRun({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      repeatedToolErrorDetails: run.error?.includes("Repeated tool failure") ? run.error : null,
+    });
+
+    const gateResult = evaluateCompletionGate({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      repeatedToolErrorDetails: run.error?.includes("Repeated tool failure") ? run.error : null,
+    });
+
+    if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      await recordEmptyRunEvent(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+        runId: run.id,
+        classification: emptyClassification,
+        gateResult,
+      });
+
+      const escalation = await checkAndHandleEmptyRunEscalation(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+        runId: run.id,
+        classification: emptyClassification,
+        gateResult,
+      });
+
+      if (escalation.escalated) {
+        return;
+      }
+    }
+
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
       await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
         companyId: issue.companyId,
@@ -18617,17 +18674,41 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     resultJson?: Record<string, unknown> | null,
   ) {
-    const classification = classifyRunLiveness(
-      await buildRunLivenessInput(run, resultJson),
-    );
+    const livenessInput = await buildRunLivenessInput(run, resultJson);
+    const classification = classifyRunLiveness(livenessInput);
+
+    const context = parseObject(run.contextSnapshot);
+    const initialIssueStatus =
+      typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
+        ? String((context.issue as any).status)
+        : null;
+
+    const emptyClassification = classifyEmptyRun({
+      runId: run.id,
+      issueId: run.nativeIssueId ?? run.contextIssueId ?? (context as any)?.issueId,
+      agentId: run.agentId,
+      statusBefore: initialIssueStatus,
+      statusAfter: livenessInput.issue?.status,
+      workProductsCreated: livenessInput.evidence.workProductsCreated,
+      documentRevisionsCreated: livenessInput.evidence.documentRevisionsCreated,
+      workspaceOperationsCreated: livenessInput.evidence.workspaceOperationsCreated,
+      livenessState: classification.livenessState,
+      repeatedToolErrorDetails: run.error?.includes("Repeated tool failure") ? run.error : null,
+    });
+
+    const livenessState = emptyClassification.isEmpty ? "empty_response" : classification.livenessState;
+    const livenessReason = emptyClassification.isEmpty
+      ? `Empty run (${emptyClassification.reason}): ${emptyClassification.description}`
+      : classification.livenessReason;
+
     return db
       .update(heartbeatRuns)
       .set({
-        livenessState: classification.livenessState,
-        livenessReason: classification.livenessReason,
+        livenessState,
+        livenessReason,
         continuationAttempt: classification.continuationAttempt,
-        lastUsefulActionAt: classification.lastUsefulActionAt,
-        nextAction: classification.nextAction,
+        lastUsefulActionAt: emptyClassification.isEmpty ? null : classification.lastUsefulActionAt,
+        nextAction: emptyClassification.isEmpty ? null : classification.nextAction,
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, run.id))

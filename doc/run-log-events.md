@@ -187,3 +187,53 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Development Efficiency (DEVEFF) Stop Condition Run-Log Events
+
+Paperclip writes `run.deveff.no_op` and `run.deveff.repeated_tool_error` events
+to the run log (`heartbeat_run_events`) to record development efficiency stop rules
+and classify unproductive execution cycles (empty runs). These events provide
+immutable local audit receipts and power the 14-day agent efficiency dashboard.
+They do not export data to OpenTelemetry or Paperclip Telemetry.
+
+### 1. No-Op Run-Log Event (`run.deveff.no_op`)
+
+Paperclip writes `run.deveff.no_op` when a heartbeat run concludes without producing
+any verifiable output or lifecycle transition (no code commits, pull requests,
+created or updated work products, document revisions, or issue status transitions).
+
+The event payload contains the following fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `rule` | string | Constant `"no_op"`. |
+| `reason` | string | Empty run classification reason (e.g. `no_changes_and_no_status_transition`, `empty_response`). |
+| `description` | string | Human-readable diagnosis of the empty run. |
+| `issueId` | string \| null | Target issue UUID when run was bound to an issue. |
+| `gateMet` | string | Completion gate disposition (`"none"`, `"commit_or_pr"`, `"status_change"`, `"explicit_blocker"`). |
+| `gatePassed` | boolean | Boolean indicating whether the completion gate passed. |
+| `gateReason` | string | Detailed explanation of completion gate evaluation. |
+
+### 2. Repeated Tool Error Stop Event (`run.deveff.repeated_tool_error`)
+
+Paperclip writes `run.deveff.repeated_tool_error` when an agent execution enters an
+unproductive failure loop by executing consecutive identical failing tool operations
+(e.g., repeating a failing `patch` or command 3 times consecutively). The runtime
+triggers an immediate stop condition, terminating the run to prevent wasted tokens
+and context pollution.
+
+The event payload contains the following fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `rule` | string | Constant `"repeated_tool_error"`. |
+| `reason` | string | Constant `"repeated_tool_errors"`. |
+| `description` | string | Human-readable explanation including tool name and error threshold. |
+| `issueId` | string \| null | Target issue UUID. |
+| `gateMet` | string | Completion gate disposition (`"none"`). |
+| `gatePassed` | boolean | Boolean (`false`). |
+| `gateReason` | string | Reason for stop rule trigger. |
+
+The event payload never contains credentials, raw invite tokens, or unsanitized
+output streams.
+

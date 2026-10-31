@@ -123,6 +123,12 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  consecutiveToolErrors: {
+    toolName: string;
+    count: number;
+    lastError: string;
+  } | null;
 };
 
 type TextRedactor = (value: string) => string;
@@ -826,6 +832,7 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    consecutiveToolErrors: null,
   };
 }
 
@@ -988,6 +995,28 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
+
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    if (toolHasError(record)) {
+      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").slice(0, 200);
+      if (state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name) {
+        state.consecutiveToolErrors.count++;
+        state.consecutiveToolErrors.lastError = errStr;
+      } else {
+        state.consecutiveToolErrors = { toolName: name, count: 1, lastError: errStr };
+      }
+
+      if (state.consecutiveToolErrors.count >= 3) {
+        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${state.consecutiveToolErrors.count} times consecutively.`;
+        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
+        markTerminal(state, {
+          status: "failed",
+          errorMessage: errorMsg,
+        });
+      }
+    } else {
+      state.consecutiveToolErrors = null;
+    }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));
     if (reasoning) await ctx.onLog("stdout", formatCompactReasoningLine(reasoning));
