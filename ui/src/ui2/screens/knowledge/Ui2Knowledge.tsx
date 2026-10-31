@@ -309,10 +309,12 @@ function RevisionsPanel({
   companyId,
   item,
   t,
+  basePath,
 }: {
   companyId: string;
   item: KnowledgeItemDetail;
   t: Translate;
+  basePath: string;
 }) {
   const revisions = useMemo(
     () => [...(item.revisions ?? [])].sort((left, right) => left.revision - right.revision),
@@ -384,6 +386,49 @@ function RevisionsPanel({
             <span className="ui2-knowledge-revision-by text-muted-foreground">{revision.by}</span>
             {revision.note ? (
               <span className="ui2-knowledge-revision-note text-muted-foreground">{revision.note}</span>
+            ) : null}
+            {(revision.sources ?? []).length > 0 ? (
+              <span className="ui2-knowledge-revision-sources flex items-center gap-1">
+                {(revision.sources ?? []).map((source, index) => {
+                  const link =
+                    source.kind === "page" && source.ref
+                      ? ({
+                          kind: "internal",
+                          to: knowledgeHref({ spaceKey: source.space ?? item.spaceKey, slug: source.ref, anchor: null }, basePath),
+                        } as const)
+                      : knowledgeSourceLink(source);
+                  const label = source.label ?? source.ref;
+                  if (!link) {
+                    return (
+                      <span
+                        key={`revision-source-${revision.revision}-${index}`}
+                        className="ui2-knowledge-revision-source text-muted-foreground"
+                      >
+                        {label}
+                      </span>
+                    );
+                  }
+                  return link.kind === "internal" ? (
+                    <Link
+                      key={`revision-source-${revision.revision}-${index}`}
+                      className="ui2-knowledge-revision-source-link text-primary underline underline-offset-2"
+                      to={link.to}
+                    >
+                      {label}
+                    </Link>
+                  ) : (
+                    <a
+                      key={`revision-source-${revision.revision}-${index}`}
+                      className="ui2-knowledge-revision-source-link text-primary underline underline-offset-2"
+                      href={link.href}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {label}
+                    </a>
+                  );
+                })}
+              </span>
             ) : null}
             {revision.revision < item.revision ? (
               <button
@@ -496,7 +541,7 @@ function KnowledgePagePane({
         basePath={basePath}
         t={t}
       />
-      <RevisionsPanel companyId={companyId} item={item} t={t} />
+      <RevisionsPanel companyId={companyId} item={item} t={t} basePath={basePath} />
     </div>
   );
 }

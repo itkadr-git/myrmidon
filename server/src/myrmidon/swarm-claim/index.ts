@@ -30,6 +30,7 @@ export * from "./ports.js";
 export * from "./events.js";
 export * from "./settings.js";
 export * from "./hooks.js";
+export * from "./effective-pheromone.js";
 export { swarmClaimRoutes };
 
 /** The sweeper runtime; index.ts ticks it on the scheduler. */

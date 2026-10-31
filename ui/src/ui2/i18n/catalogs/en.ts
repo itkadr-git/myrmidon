@@ -9,6 +9,14 @@
 // Base scope carried over from the 1.2 localization branch (core screens),
 // plus the 2.0 shell/navigation and the Settings → Language screen.
 export const en = {
+  // myrmidon(OPE-9382): interface version switch in the UI2 account menu (Ui2AccountMenu.tsx).
+  uiSwitch: {
+    label: "Interface",
+    new: "New",
+    legacy: "Previous",
+    instanceDefault: "Follow instance setting",
+    switchTo: "Switch interface version",
+  },
   nav: {
     newTask: "New Task",
     search: "Search",
@@ -364,6 +372,13 @@ export const en = {
       },
       owner: "Owner",
       ownerChannel: "Web",
+      shell: {
+        activeChannel: {
+          web: "Active · Web",
+          telegram: "Active · Telegram",
+          none: "Active · not seen recently",
+        },
+      },
       nests: {
         all: "All nests",
       },
@@ -409,6 +424,25 @@ export const en = {
           metrics: "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
           states: { running: "Running", stopped: "Stopped", unknown: "Unknown" },
         },
+        more: {
+          title: "More",
+          subtitle: "Additional sections and preferences.",
+          sections: {
+            navigation: "Navigation",
+            appearance: "Appearance",
+          },
+          theme: "Theme",
+          themeLight: "Light",
+          themeDark: "Dark",
+          themeSystem: "System",
+          links: {
+            swarm: "Swarm",
+            costs: "Costs",
+            quality: "Quality",
+            settings: "Settings",
+            agentCard: "Agent card",
+          },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
@@ -428,6 +462,13 @@ export const en = {
 };
 
 export type Ui2Catalog = {
+  uiSwitch: {
+    label: string;
+    new: string;
+    legacy: string;
+    instanceDefault: string;
+    switchTo: string;
+  };
   nav: {
     newTask: string;
     search: string;
@@ -776,6 +817,13 @@ export type Ui2Catalog = {
       },
     owner: string;
     ownerChannel: string;
+    shell: {
+      activeChannel: {
+        web: string;
+        telegram: string;
+        none: string;
+      };
+    };
     nests: {
       all: string;
     },
@@ -809,6 +857,25 @@ export type Ui2Catalog = {
       placeholderBody: string;
       placeholderLegacyLink: string;
       fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      more: {
+        title: string;
+        subtitle: string;
+        sections: {
+          navigation: string;
+          appearance: string;
+        };
+        theme: string;
+        themeLight: string;
+        themeDark: string;
+        themeSystem: string;
+        links: {
+          swarm: string;
+          costs: string;
+          quality: string;
+          settings: string;
+          agentCard: string;
+        };
+      };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

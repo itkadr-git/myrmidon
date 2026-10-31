@@ -804,6 +804,8 @@ import { tryDevReviewContinuationOnRelease, devProcessProjectIds } from "../myrm
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
+  invalidateFailedRunsCache,
+  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
@@ -898,7 +900,11 @@ import {
   appendOwnerViaBotBlock,
   buildOwnerViaBotPromptBlock,
 } from "../myrmidon/owner-delivery/owner-message.js";
-import { looksLikeOwnerExplainWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
+import {
+  looksLikeOwnerExplainWake,
+  looksLikePendingInteractionAddresseeWake,
+  PENDING_INTERACTION_WAKE_REASON,
+} from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {
@@ -1092,8 +1098,13 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
 export {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+  PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS,
 };
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
+const PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON =
+  "pending_interaction_process_loss_retry";
+const PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS = 2;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -2308,6 +2319,97 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
+}
+
+export function computeTransientRetryDelayMs(params: {
+  nextAttempt: number;
+  now?: Date;
+  transientRetryNotBeforeHint?: Date | null;
+  isCooldownOrQuota?: boolean;
+  runFinishedAt?: Date | null;
+  runStartedAt?: Date | null;
+}): number | null {
+  const {
+    nextAttempt,
+    now = new Date(),
+    transientRetryNotBeforeHint,
+    isCooldownOrQuota = false,
+    runFinishedAt,
+    runStartedAt,
+  } = params;
+
+  const hintDate =
+    typeof transientRetryNotBeforeHint === "string" || typeof transientRetryNotBeforeHint === "number"
+      ? new Date(transientRetryNotBeforeHint)
+      : transientRetryNotBeforeHint instanceof Date
+        ? transientRetryNotBeforeHint
+        : null;
+  const validHint = hintDate && !isNaN(hintDate.getTime()) ? hintDate : null;
+
+  const finishedDate =
+    typeof runFinishedAt === "string" || typeof runFinishedAt === "number"
+      ? new Date(runFinishedAt)
+      : runFinishedAt instanceof Date
+        ? runFinishedAt
+        : null;
+  const validFinished = finishedDate && !isNaN(finishedDate.getTime()) ? finishedDate : null;
+
+  const startedDate =
+    typeof runStartedAt === "string" || typeof runStartedAt === "number"
+      ? new Date(runStartedAt)
+      : runStartedAt instanceof Date
+        ? runStartedAt
+        : null;
+  const validStarted = startedDate && !isNaN(startedDate.getTime()) ? startedDate : null;
+
+  const nowDate =
+    typeof now === "string" || typeof now === "number"
+      ? new Date(now)
+      : now instanceof Date
+        ? now
+        : new Date();
+  const validNow = !isNaN(nowDate.getTime()) ? nowDate : new Date();
+
+  if (validHint) {
+    const remainingHintMs = Math.max(
+      0,
+      validHint.getTime() - validNow.getTime(),
+    );
+    if (isCooldownOrQuota) {
+      // Cooldown / provider quota: repeat no earlier than retry_after / cooldown,
+      // and exponentially for repeated failures. When the hint has already passed
+      // (remainingHintMs === 0), do not retry immediately (0 ms) — continue
+      // backing off exponentially based on the cooldown window duration.
+      const hintDurationMs = Math.max(
+        60_000,
+        validHint.getTime() -
+          (validFinished?.getTime() ??
+            validStarted?.getTime() ??
+            validNow.getTime()),
+      );
+      const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+      const expDelayMs = Math.min(
+        hintDurationMs * expFactor,
+        GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+      );
+      return Math.max(remainingHintMs, expDelayMs);
+    }
+    return Math.min(
+      remainingHintMs,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  if (isCooldownOrQuota) {
+    const baseDelayMs = 60_000;
+    const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+    return Math.min(
+      baseDelayMs * expFactor,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  return null;
 }
 
 async function resolveRunScopedMentionedSkillKeys(input: {
@@ -8428,6 +8530,7 @@ function decorateHeartbeatRunRuntimeStatus<
   currentToolName: string | null;
   lastAssistantSnippet: string | null;
   lastEventAt: Date | null;
+  queuedReason: string | null;
 } {
   if (isHeartbeatRunTerminalStatus(run.status)) {
     clearHeartbeatRunRuntimeStatus(run.id);
@@ -8448,6 +8551,10 @@ function decorateHeartbeatRunRuntimeStatus<
         })
       : null;
 
+  const context = run.contextSnapshot ? parseObject(run.contextSnapshot) : {};
+  const queuedReason =
+    run.status === "queued" && typeof context.waitReason === "string" ? context.waitReason : null;
+
   return {
     ...run,
     currentStatusMessage: currentStatus?.message ?? null,
@@ -8455,6 +8562,7 @@ function decorateHeartbeatRunRuntimeStatus<
     currentToolName: currentStatus?.currentToolName ?? null,
     lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
     lastEventAt: currentStatus?.lastEventAt ?? null,
+    queuedReason,
   };
 }
 
@@ -9597,14 +9705,19 @@ export async function finalizeHeartbeatRunResponseComment(input: {
     issueId: input.issueId,
     skipRunIssueComment: input.skipRunIssueComment,
     addComment: async (text) => {
+      let commentText = text;
       if (input.db) {
-        await guardrailsOnRunOutput({
+        const guardrailDecision = await guardrailsOnRunOutput({
           db: input.db,
           companyId: input.companyId,
           runId: input.runId,
           issueId: input.issueId!,
+          agentId: input.agentId,
           text,
         }).catch(() => null);
+        if (guardrailDecision?.text) {
+          commentText = guardrailDecision.text;
+        }
       }
       const presentationAuthorizationReason = input.db
         ? await resolveChatRunPresentationAuthorizationReason(input.db, {
@@ -9615,7 +9728,7 @@ export async function finalizeHeartbeatRunResponseComment(input: {
         : null;
       const comment = await input.issuesSvc.addComment(
         input.issueId!,
-        text,
+        commentText,
         { agentId: input.agentId, runId: input.runId },
         { authorizationReason: presentationAuthorizationReason },
       );
@@ -13135,6 +13248,15 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
+    invalidateLastRunRowsCache(updated.companyId);
+    if (
+      updated.status === "failed" ||
+      updated.status === "timed_out" ||
+      (updated.status as string) === "blocked" ||
+      (updated.status as string) === "needs_followup"
+    ) {
+      invalidateFailedRunsCache(updated.companyId);
+    }
     void emitAgentTaskRun(db, updated);
     void reportRunFailure(db, updated);
   }
@@ -15874,15 +15996,17 @@ export function heartbeatService(
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
     // gateway-busy budget above; the array would run out after two attempts.
-    const hintDelayMs = transientRetryNotBeforeHint
-      ? Math.min(
-          Math.max(
-            0,
-            transientRetryNotBeforeHint.getTime() - now.getTime(),
-          ),
-          GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
-        )
-      : null;
+    const isCooldownOrQuota =
+      readHeartbeatRunErrorFamily(run) === "provider_quota" ||
+      Boolean(parseObject(run.resultJson).cooldown);
+    const hintDelayMs = computeTransientRetryDelayMs({
+      nextAttempt,
+      now,
+      transientRetryNotBeforeHint,
+      isCooldownOrQuota,
+      runFinishedAt: run.finishedAt,
+      runStartedAt: run.startedAt,
+    });
     const computedBaseSchedule =
       opts?.delayMs != null || hintDelayMs != null
         ? nextAttempt <= maxAttempts
@@ -15967,6 +16091,7 @@ export function heartbeatService(
     // retry scheduler, not failure-reconciliation, owns its attempt budget.
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
+      retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {
@@ -16069,7 +16194,16 @@ export function heartbeatService(
               contextSnapshot.continuationPolicy,
             ),
           }
-        : {};
+        : retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
+          ? {
+              mutation: "interaction",
+              interactionId: readNonEmptyString(contextSnapshot.interactionId),
+              interactionKind: readNonEmptyString(
+                contextSnapshot.interactionKind,
+              ),
+              interactionStatus: "pending",
+            }
+          : {};
     const workspaceValidationRetryPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON &&
       isWorkspaceValidationFailedRun(run)
@@ -16179,7 +16313,8 @@ export function heartbeatService(
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
           retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON &&
-          retryReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+          retryReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON &&
+          retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
         ) {
           if (issueId)
             await tx.execute(
@@ -16226,13 +16361,15 @@ export function heartbeatService(
               head: `${retryReason}:${humanComment?.id ?? run.id}`,
             });
           } else {
-            // Taskless retries have no issue registry row; keep their old path.
             const prefix = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
               ? "max-turn-continuation" : "interaction-continuation";
             continuationRetryIdempotencyKey = `${prefix}:${run.companyId}:no-issue:${run.id}:${schedule.attempt}`;
           }
         }
-        if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+        if (
+          retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON ||
+          retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
+        ) {
           if (issueId) {
             await tx.execute(
               sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
@@ -16299,6 +16436,47 @@ export function heartbeatService(
               run: existingContinuation,
               reusedExisting: true,
             };
+          }
+        }
+
+        if (retryReason === PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON) {
+          const interactionId = readNonEmptyString(
+            contextSnapshot.interactionId,
+          );
+          if (interactionId) {
+            const [lockedInteraction] = await tx
+              .select({
+                id: issueThreadInteractions.id,
+                status: issueThreadInteractions.status,
+                addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+              })
+              .from(issueThreadInteractions)
+              .where(
+                and(
+                  eq(issueThreadInteractions.id, interactionId),
+                  eq(issueThreadInteractions.companyId, run.companyId),
+                ),
+              )
+              .for("update");
+
+            if (
+              !lockedInteraction ||
+              lockedInteraction.status !== "pending" ||
+              lockedInteraction.addresseeAgentId !== run.agentId
+            ) {
+              return {
+                outcome: "not_scheduled",
+                reason:
+                  "Scheduled pending interaction retry suppressed because interaction is no longer pending or addressee changed",
+                errorCode: "issue_terminal_status",
+                issueId,
+                details: {
+                  interactionId,
+                  status: lockedInteraction?.status,
+                  addresseeAgentId: lockedInteraction?.addresseeAgentId,
+                },
+              };
+            }
           }
         }
 
@@ -17084,6 +17262,60 @@ export function heartbeatService(
     });
   }
 
+  async function schedulePendingInteractionProcessLossRetryIfEligible(
+    run: Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "agentId"
+      | "status"
+      | "errorCode"
+      | "contextSnapshot"
+      | "scheduledRetryAttempt"
+      | "scheduledRetryReason"
+      | "runtimeMode"
+    >,
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">,
+  ) {
+    if (run.errorCode !== "process_lost") return null;
+    const context = parseObject(run.contextSnapshot);
+    if (!looksLikePendingInteractionAddresseeWake(context)) return null;
+    const interactionId = readNonEmptyString(context.interactionId);
+    if (!interactionId) return null;
+
+    const [interaction] = await db
+      .select({
+        id: issueThreadInteractions.id,
+        status: issueThreadInteractions.status,
+        addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, run.companyId),
+        ),
+      );
+
+    if (
+      !interaction ||
+      interaction.status !== "pending" ||
+      interaction.addresseeAgentId !== run.agentId
+    ) {
+      return null;
+    }
+
+    return scheduleBoundedRetryForRun(
+      run as typeof heartbeatRuns.$inferSelect,
+      agent as typeof agents.$inferSelect,
+      {
+        retryReason: PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON,
+        wakeReason: PENDING_INTERACTION_WAKE_REASON,
+        maxAttempts: PENDING_INTERACTION_PROCESS_LOSS_MAX_ATTEMPTS,
+      },
+    );
+  }
+
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
     const result = await runDispatch.promoteDueScheduledRetries({
@@ -17429,6 +17661,10 @@ export function heartbeatService(
       if (options.excludeRunId) {
         conditions.push(sql`${heartbeatRuns.id} <> ${options.excludeRunId}`);
       }
+      // OPE-9476: runs that failed before the model response started do not consume daily run cap
+      conditions.push(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+      );
       const [row] = await client
         .select({ total: sql<number>`count(*)::integer` })
         .from(heartbeatRuns)
@@ -20188,6 +20424,17 @@ export function heartbeatService(
             retryAgent,
           );
         retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
+        if (!retriedRun) {
+          const pendingScheduled =
+            await schedulePendingInteractionProcessLossRetryIfEligible(
+              finalizedRun,
+              retryAgent,
+            );
+          retriedRun =
+            pendingScheduled?.outcome === "scheduled"
+              ? pendingScheduled.run
+              : null;
+        }
       }
 
       if (!retriedRun) {
@@ -20198,7 +20445,7 @@ export function heartbeatService(
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
+        message: shouldRetry || retriedRun
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
           : baseMessage,
         payload: {
@@ -21216,7 +21463,11 @@ export function heartbeatService(
   });
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
-        sweep: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+        sweep: async () => {
+          const outcome = await runStartDispatcher.sweepQueuedWithoutRunning();
+          await resumeQueuedRuns();
+          return outcome;
+        },
         loadSettings: () => loadRunDispatchSettings(db),
         onError: (err) => logger.error({ err }, "queued run resweep pass failed"),
       })
@@ -22001,7 +22252,10 @@ export function heartbeatService(
               "queued heartbeat execution failed",
             );
           })
-          .finally(() => admission.finish());
+          .finally(() => {
+            admission.finish();
+            scheduleAdmissionResweep();
+          });
         // Register the in-flight execution so drainActiveRunExecutions() can await
         // it. executeRun resolves only after its finally block finishes flushing
         // run rows/events, so awaiting this promise guarantees the run's writes
@@ -27733,10 +27987,17 @@ export function heartbeatService(
             outcome === "failed" &&
             !legacyExecutionNeedsReconciliation(livenessRun)
           ) {
-            await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-              livenessRun,
-              agent,
-            );
+            const scheduled =
+              await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+                livenessRun,
+                agent,
+              );
+            if (!scheduled || scheduled.outcome !== "scheduled") {
+              await schedulePendingInteractionProcessLossRetryIfEligible(
+                livenessRun,
+                agent,
+              );
+            }
           }
           const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
             livenessRun,
@@ -28207,10 +28468,17 @@ export function heartbeatService(
           ) {
             await finalizeIssueCommentPolicy(livenessRun, agent);
           }
-          await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-            livenessRun,
-            agent,
-          );
+          const scheduled =
+            await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+              livenessRun,
+              agent,
+            );
+          if (!scheduled || scheduled.outcome !== "scheduled") {
+            await schedulePendingInteractionProcessLossRetryIfEligible(
+              livenessRun,
+              agent,
+            );
+          }
           await releaseIssueExecutionAndPromote(livenessRun, {
             // Native recovery owns the original heartbeat run through
             // exhaustion. Once its durable coordinator has classified a
@@ -28491,7 +28759,18 @@ export function heartbeatService(
               });
             await (setupTransient
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
-              : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
+              : scheduleInteractionContinuationInfrastructureRetryIfEligible(
+                  livenessRun,
+                  failedAgent,
+                ).then(async (res) => {
+                  if (!res || res.outcome !== "scheduled") {
+                    return schedulePendingInteractionProcessLossRetryIfEligible(
+                      livenessRun,
+                      failedAgent,
+                    );
+                  }
+                  return res;
+                })
             ).catch((retryError) => {
               logger.warn(
                 { err: retryError, runId: livenessRun.id },
