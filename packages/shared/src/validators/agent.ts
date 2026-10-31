@@ -10,6 +10,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { MAX_BUDGET_LIMIT_CENTS } from "../myrmidon-budget-limits.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -100,7 +101,7 @@ export const createAgentSchema = z.object({
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   defaultEnvironmentId: z.string().guid().optional().nullable(),
-  budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  budgetMonthlyCents: z.number().int().nonnegative().max(MAX_BUDGET_LIMIT_CENTS).optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   // The optional stored-session claim from a completed Claude login session. It
@@ -125,7 +126,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
   adapterConfig: adapterConfigSchema.optional(),
-  budgetMonthlyCents: z.number().int().nonnegative().optional(),
+  budgetMonthlyCents: z.number().int().nonnegative().max(MAX_BUDGET_LIMIT_CENTS).optional(),
 }).strict();
 
 export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;

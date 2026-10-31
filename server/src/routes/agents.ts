@@ -5785,6 +5785,19 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
 
+    if (patchData.budgetMonthlyCents !== undefined) {
+      await budgets.upsertPolicy(
+        agent.companyId,
+        {
+          scopeType: "agent",
+          scopeId: agent.id,
+          amount: patchData.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
+    }
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,

@@ -104,12 +104,15 @@ export function resolveBudgetLimitsSignalOnly(
   return { signalOnly: normalized.signalOnly, source: "default" };
 }
 
+/** Maximum amount a single limit row (or agent monthly budget) may be configured for ($10,000,000). */
+export const MAX_BUDGET_LIMIT_CENTS = 1_000_000_000;
+
 // --- limit rows ----------------------------------------------------------------
 
 /** Body of `PUT …/budget-limits/limits/:level/:ref` — the full limit row. */
 export const budgetLimitUpsertSchema = z
   .object({
-    amountCents: z.number().int().min(0).max(1_000_000_000),
+    amountCents: z.number().int().min(0).max(MAX_BUDGET_LIMIT_CENTS),
     period: z.enum(BUDGET_LIMIT_PERIODS).default("calendar_month_utc"),
     mode: z.enum(BUDGET_LIMIT_MODES).default("hard"),
     isActive: z.boolean().default(true),

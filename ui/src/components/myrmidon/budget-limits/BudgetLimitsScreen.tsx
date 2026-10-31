@@ -149,10 +149,13 @@ export function BudgetLimitsScreenView({
       setAddError(t(parsed.messageKey));
       return;
     }
-    setAddError(null);
-    if (!rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref)) {
-      setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
+    const alreadyExists = rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref);
+    if (alreadyExists) {
+      setAddError(t("budgetLimits.refAlreadyExists"));
+      return;
     }
+    setAddError(null);
+    setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
     setAddLevel(null);
     setAddProjectRef("");
     setAddFreeRef("");
