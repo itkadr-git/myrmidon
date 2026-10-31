@@ -23,6 +23,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     role: "all",
     runsActive: 2,
     runsQueued: 5,
+    runsQueuedOver30m: 1,
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     runDurationSecondsP50: 42.5,
@@ -176,6 +177,7 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text).toContain("# TYPE myrmidon_runs_active gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued gauge");
+    expect(text).toContain("# TYPE myrmidon_runs_queued_over_30m gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_total gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_window gauge");
     expect(text).toContain("# TYPE myrmidon_run_duration_seconds summary");
@@ -197,14 +199,16 @@ describe("prometheus exposition format", () => {
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
-    // continuation dedupe counters = 27, plus two review/blocked gauges = 29.
-    expect(sampleLines).toHaveLength(29);
+    // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
+    // plus queued >30m gauge = 30.
+    expect(sampleLines).toHaveLength(30);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
     expect(text).toContain("myrmidon_board_event_loop_utilization{role=\"all\"} 0.42");
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
+    expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
   });
 
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
@@ -223,6 +227,7 @@ describe("prometheus exposition format", () => {
       expect(line, `sample must carry role: ${line}`).toContain('role="worker"');
     }
     expect(text).toContain("myrmidon_runs_active{role=\"worker\"} 2");
+    expect(text).toContain('myrmidon_runs_queued_over_30m{role="worker"} 1');
     expect(text).toContain('myrmidon_board_db_queries_total{role="worker",lane="heartbeat_tick"} 5');
     // Metric names are untouched by the role label.
     expect(text).toContain("# HELP myrmidon_runs_active ");
