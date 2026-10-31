@@ -145,6 +145,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
 
   async function seedDeferredWake(issueId: string, extra: Partial<typeof agentWakeupRequests.$inferInsert> = {}) {
     const id = randomUUID();
+    const defaultTime = extra.requestedAt ?? longAgo();
     await db.insert(agentWakeupRequests).values({
       id,
       companyId,
@@ -153,9 +154,9 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
       reason: "issue_assigned",
       payload: { issueId },
       status: "deferred_issue_execution",
-      requestedAt: longAgo(),
-      createdAt: longAgo(),
-      updatedAt: longAgo(),
+      requestedAt: defaultTime,
+      createdAt: defaultTime,
+      updatedAt: defaultTime,
       ...extra,
     });
     return id;
@@ -182,7 +183,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
   it("expires deferred wakes older than thirty minutes and records the reason", async () => {
     const issueId = await seedIssue("todo");
     const expiredAt = new Date(Date.now() - 31 * 60_000);
-    const wakeId = await seedDeferredWake(issueId, { requestedAt: expiredAt, updatedAt: expiredAt });
+    const wakeId = await seedDeferredWake(issueId, { requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt });
     const result = await heartbeat.reconcileStrandedDeferredWakes();
     const row = await wakeRow(wakeId);
     expect(result.expired).toBe(1);
