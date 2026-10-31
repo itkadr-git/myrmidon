@@ -43,7 +43,7 @@ function harness() {
     next();
   });
   app.use(express.json());
-  app.use("/", fleetMoveRoutes({ service, botCompanyId }));
+  app.use("/", fleetMoveRoutes({ service, botCompanyId, getSiteLogs: vi.fn(async () => "") }));
   app.use(errorHandler);
   return { app, service, botCompanyId };
 }

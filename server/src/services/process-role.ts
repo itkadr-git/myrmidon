@@ -162,6 +162,19 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
 }
 
 /**
+ * myrmidon(OPE-10011): whether the primary listener opens with `reusePort`.
+ * The api role always does. The worker does too: its public listener shares
+ * the board port with the api children (split, drain back to single), and
+ * Linux lets sockets share a port only when EVERY one of them — the first one
+ * included — sets SO_REUSEPORT. Without it the children died with EADDRINUSE.
+ * The profile's `listen.reusePort` stays false for the worker: detect-port is
+ * kept out of that lane by role, not by this flag.
+ */
+export function primaryListenReusesPort(profile: Pick<ProcessRoleProfile, "role" | "listen">): boolean {
+  return profile.listen.reusePort || profile.role === "worker";
+}
+
+/**
  * The worker's loopback address: `MYRMIDON_WORKER_HOST` / `MYRMIDON_WORKER_PORT`
  * when the launch map (orchestrator, dev stand, test stand) writes them, else
  * 127.0.0.1:3101. The api side (`resolveSingletonProxyTarget`) reads the same
