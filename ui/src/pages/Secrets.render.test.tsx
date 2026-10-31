@@ -517,7 +517,7 @@ describe("Secrets page layout", () => {
     await waitForReact(() => container.querySelector('[data-testid="instance-secret-settings-panel"]') !== null);
 
     expect(container.querySelector('[data-testid="instance-secret-settings-panel"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="secret-setting-row-bot.disk.dockergate_token"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="secret-setting-bot.disk.dockergate_token"]')).not.toBeNull();
 
     await act(async () => {
       root.unmount();
