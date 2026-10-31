@@ -53,6 +53,8 @@ import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // 
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement modes stored in the same row.
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // myrmidon(F16): the issue-list agent defaults stored in the same general
@@ -97,6 +99,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
 import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
@@ -272,6 +276,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): the guardrail enforcement modes; absent means default (flag).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
@@ -349,6 +355,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bridge-language; absent means "use the environment force,
   // then English".
   bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

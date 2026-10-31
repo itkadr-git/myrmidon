@@ -7383,6 +7383,7 @@ function getActorIdentityPart(req: Request): string {
     // copy; a payload that differs from it is left untouched.
     const singleContinuationRun = {
       ...decoratedRun,
+      queuedReason: decoratedRun.queuedReason ?? null,
       contextSnapshot: withoutDuplicateExecutionContinuation(
         decoratedRun.contextSnapshot,
       ),

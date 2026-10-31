@@ -7,6 +7,13 @@
 import type { Ui2Catalog } from "./en";
 
 export const ru: Ui2Catalog = {
+  uiSwitch: {
+    label: "Интерфейс",
+    new: "Новая",
+    legacy: "Прежняя",
+    instanceDefault: "По настройке экземпляра",
+    switchTo: "Переключить версию интерфейса",
+  },
   nav: {
     newTask: "Новая задача",
     search: "Поиск",
@@ -359,6 +366,13 @@ export const ru: Ui2Catalog = {
       },
       owner: "Владелец",
       ownerChannel: "Веб",
+      shell: {
+        activeChannel: {
+          web: "Активен · Веб",
+          telegram: "Активен · Telegram",
+          none: "Давно не появлялся",
+        },
+      },
       nests: {
         all: "Все гнёзда",
       },
