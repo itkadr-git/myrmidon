@@ -104,8 +104,9 @@ describe("github operation credentials in-memory cache (OPE-9997)", () => {
     // 2nd call with identical parameters: cache hit!
     const second = await resolveGitHubOperationCredentials(dummyDb, baseInput);
     expect(second).toEqual(first);
-    // allowsGitHubCredentialExport and resolveManagedGitHubCredential are NOT called again
-    expect(allowsGitHubCredentialExport).toHaveBeenCalledTimes(1);
+    // The export policy is re-checked on every call (deny must take effect
+    // immediately), but the expensive credential resolution is NOT repeated.
+    expect(allowsGitHubCredentialExport).toHaveBeenCalledTimes(2);
     expect(resolveManagedGitHubCredential).toHaveBeenCalledTimes(1);
   });
 
