@@ -1623,6 +1623,7 @@
     "refErrorCaste": "A caste value holds lowercase letters, digits and hyphens.",
     "refErrorForaging": "The foraging level has a single value and it is already in the tree.",
     "refErrorIssue": "A task value must be an issue identifier (UUID).",
+    "refAlreadyExists": "A limit for this value is already present in the list.",
     "addTo": "Add a limit: {{level}}",
     "addProjectLabel": "Project",
     "addProjectPlaceholder": "Select a project",
