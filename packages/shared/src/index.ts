@@ -3041,3 +3041,8 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
+export * from "./locale-validator.js";
+export * from "./locale-upload.js";
+
+
