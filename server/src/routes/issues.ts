@@ -28,6 +28,7 @@ import {
   isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
+import { triggerReviewApprovalPropagation } from "../services/pull-request-approval-propagation.js";
 import {
   evaluateReviewerAvailability,
   issueNeedsReviewer,
@@ -15376,6 +15377,27 @@ export function issueRoutes(
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
 
+      const currentIssue = issue;
+      if (
+        decision?.outcome === "approved" ||
+        (existing.status === "in_review" && currentIssue.status === "done")
+      ) {
+        void triggerReviewApprovalPropagation(db, {
+          companyId: currentIssue.companyId,
+          issueId: currentIssue.id,
+          decisionOutcome: decision?.outcome ?? "approved",
+          verdictBody: decision?.body ?? null,
+          actor: {
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: currentIssue.id }, "failed to propagate PR review approval");
+        });
+      }
+
       // myrmidon(HOLD-READY): re-plan the wakes parked on the cleared hold.
       const committedUnblock = humanUnblock as HumanUnblockResult | null;
       if (committedUnblock?.replanAgentId) {
@@ -19721,6 +19743,26 @@ export function issueRoutes(
               source: "auto_approval_comment",
               _previous: { status: issueBeforeCommentDecision.status },
             },
+          });
+        }
+
+        if (
+          transition.decision?.outcome === "approved" ||
+          (issueBeforeCommentDecision.status === "in_review" && currentIssue.status === "done")
+        ) {
+          void triggerReviewApprovalPropagation(db, {
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+            decisionOutcome: transition.decision?.outcome ?? "approved",
+            verdictBody: transition.decision?.body ?? req.body?.body ?? null,
+            actor: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+            },
+          }).catch((err) => {
+            logger.warn({ err, issueId: currentIssue.id }, "failed to propagate PR review approval");
           });
         }
         commentDecisionStageWakeup = buildExecutionStageWakeup({
