@@ -23,6 +23,11 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
+const mockSwarmClaimApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  update: vi.fn(),
+}));
+
 vi.mock("@/components/myrmidon/runtimeLimitsApi", () => ({
   runtimeLimitsApi: mockRuntimeLimitsApi,
   runtimeLimitsQueryKey: ["myrmidon", "runtime-limits"],
@@ -38,6 +43,18 @@ vi.mock("@/api/heartbeats", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
+
+// myrmidon(1.7 UI2-SWARM-CLAIM, OPE-10133): the screen now also mounts the
+// swarm-claim block — mock its API so the parity tests above stay hermetic.
+vi.mock("@/components/myrmidon/swarmClaimSettingsApi", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/myrmidon/swarmClaimSettingsApi")
+  >("@/components/myrmidon/swarmClaimSettingsApi");
+  return {
+    ...actual,
+    swarmClaimSettingsApi: mockSwarmClaimApi,
+  };
+});
 
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
@@ -127,6 +144,31 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
     document.body.appendChild(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockRuntimeLimitsApi.get.mockResolvedValue(openView);
+    // myrmidon(1.7 UI2-SWARM-CLAIM, OPE-10133): a healthy swarm-claim view for
+    // the embedded block.
+    mockSwarmClaimApi.get.mockResolvedValue({
+      settings: {
+        enabled: true,
+        leaseTtlSec: 600,
+        maxActiveTasks: 4,
+        p0Preemption: false,
+        sweepIntervalSec: 30,
+      },
+      sources: {
+        enabled: "settings",
+        leaseTtlSec: "default",
+        maxActiveTasks: "default",
+        p0Preemption: "default",
+        sweepIntervalSec: "default",
+      },
+      counters: {
+        queuedUnassigned: 12,
+        claimedLastHour: 7,
+        cancelledLastHour: 1,
+      },
+      recentAudit: [],
+      cooldown: { remainingSec: 0, active: false },
+    });
     mockRuntimeLimitsApi.update.mockImplementation(async (_patch) => ({
       limits: {
         maxConcurrentRuns: 16,

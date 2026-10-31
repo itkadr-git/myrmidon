@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

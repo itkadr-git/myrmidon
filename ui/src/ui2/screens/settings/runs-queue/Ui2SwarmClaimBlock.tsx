@@ -10,8 +10,8 @@ import {
   swarmClaimSettingsQueryKey,
   swarmClaimStatusLine,
 } from "../../../../components/myrmidon/swarmClaimSettingsApi";
-import { Ui2Section, Ui2SkeletonRows } from "../../../components/ui2Primitives";
-import { Ui2ErrorState } from "../../../components/ui2StateViews";
+import { Ui2Section } from "../../../components/ui2Primitives";
+import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateViews";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 
 function sourceLabel(
