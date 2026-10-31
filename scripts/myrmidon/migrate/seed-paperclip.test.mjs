@@ -83,6 +83,43 @@ describe("PaperclipApiClient HTTP client", () => {
   let port;
   const recordedRequests = [];
 
+  it("retains Better Auth session cookies for authenticated requests", async () => {
+    const seenCookies = [];
+    const authServer = http.createServer((req, res) => {
+      if (req.url === "/api/auth/sign-up/email") {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": ["better-auth.session_token=session123; Path=/; HttpOnly", "better-auth.state=state123; Path=/"],
+        });
+        res.end(JSON.stringify({ user: { id: "user-1" } }));
+        return;
+      }
+      if (req.url === "/api/auth/sign-in/email") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ user: { id: "user-1" } }));
+        return;
+      }
+      if (req.url === "/api/bootstrap/claim") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ claimed: true, userId: "user-1" }));
+        return;
+      }
+      seenCookies.push(req.headers.cookie || "");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "company-1" }));
+    });
+
+    await new Promise((resolve) => authServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const client = new PaperclipApiClient(`http://127.0.0.1:${authServer.address().port}`);
+      await client.request("/api/auth/sign-up/email", { method: "POST", body: { email: "seed@example.test" } });
+      await client.request("/api/companies", { method: "POST", body: { name: "Seed company" } });
+      assert.equal(seenCookies[0], "better-auth.session_token=session123; better-auth.state=state123");
+    } finally {
+      await new Promise((resolve) => authServer.close(resolve));
+    }
+  });
+
   it("handles JSON requests and responses", async () => {
     server = http.createServer((req, res) => {
       let body = "";
@@ -167,6 +204,10 @@ describe("seedPaperclip mock flow execution", () => {
 
         if (req.url.startsWith("/api/auth/sign-up/email")) {
           res.end(JSON.stringify({ user: { id: `usr-${parsed.email}`, email: parsed.email } }));
+        } else if (req.url === "/api/auth/sign-in/email") {
+          res.end(JSON.stringify({ user: { id: "usr-signin", email: parsed.email } }));
+        } else if (req.url === "/api/bootstrap/claim") {
+          res.end(JSON.stringify({ claimed: true, userId: "usr-signin" }));
         } else if (req.url === "/api/companies" && req.method === "POST") {
           companyCounter++;
           res.end(JSON.stringify({ id: `comp-${companyCounter}`, name: parsed.name, issuePrefix: parsed.issuePrefix }));

@@ -50,7 +50,7 @@ Usage: node seed-paperclip.mjs [options]
 
 Options:
   --base-url <url>        Paperclip API base URL (default: http://127.0.0.1:3100)
-  --api-key <key>         Paperclip API key / token (optional in local_trusted mode)
+  --api-key <key>         Paperclip board API key / token (required in authenticated mode)
   --passwords-file <path> Path to file with passwords for 2 users (required)
   --out <path>            Output path for seed-report.json (default: seed-report.json)
   --concurrency <n>       Parallel request concurrency (default: 15)
@@ -100,8 +100,9 @@ export function readPasswords(filePath) {
 
 export class PaperclipApiClient {
   constructor(baseUrl, apiKey = "") {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
+    this.cookie = "";
   }
 
   async request(endpoint, options = {}) {
@@ -118,11 +119,17 @@ export class PaperclipApiClient {
       body = JSON.stringify(body);
     }
 
-    const res = await fetch(url, {
-      ...options,
-      headers,
-      body,
-    });
+    const requestOptions = { ...options, headers, body };
+    if (this.cookie) requestOptions.headers.Cookie = this.cookie;
+    const res = await fetch(url, requestOptions);
+
+    const setCookies = typeof res.headers.getSetCookie === "function"
+      ? res.headers.getSetCookie()
+      : (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")] : []);
+    if (setCookies.length) {
+      const cookiePairs = setCookies.map((cookie) => cookie.split(";", 1)[0]).filter(Boolean);
+      if (cookiePairs.length) this.cookie = cookiePairs.join("; ");
+    }
 
     const contentType = res.headers.get("content-type") || "";
     let data = null;
@@ -234,6 +241,35 @@ export async function seedPaperclip(options = {}) {
         throw new Error(`Failed to create or sign-in user ${userSpec.email}: ${signInErr.message}`);
       }
     }
+  }
+
+  // Sign in as the first seeded user after all registrations so the claim and
+  // company creation use that user's session rather than the second signup's.
+  try {
+    const adminSession = await client.request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { Origin: baseUrl },
+      body: { email: userSpecs[0].email, password: userSpecs[0].password },
+    });
+    const adminUserId = adminSession.data?.user?.id || report.entities.users[0]?.id;
+    const bootstrapRes = await client.request("/api/bootstrap/claim", {
+      method: "POST",
+      headers: { Origin: baseUrl },
+      body: {},
+    });
+    if (!bootstrapRes.data?.claimed && !bootstrapRes.data?.userId) {
+      throw new Error("Paperclip did not confirm the first-admin claim");
+    }
+    console.log(`  + Instance admin claimed for ${adminUserId}`);
+  } catch (claimErr) {
+    if (claimErr.status !== 409) throw claimErr;
+    // A rerun may find the instance claimed already. Verify the seeded user
+    // can use the instance-admin-only company route before continuing.
+    const probe = await client.request("/api/companies");
+    if (!Array.isArray(probe.data)) {
+      throw new Error(`Instance already claimed, but seeded user is not an instance admin: ${claimErr.message}`);
+    }
+    console.log(`  * Instance admin already claimed; verified company access for ${report.entities.users[0]?.id}`);
   }
 
   // 2. Create >= 2 Companies
