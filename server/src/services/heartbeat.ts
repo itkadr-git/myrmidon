@@ -161,6 +161,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { buildContinuationKey } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -433,6 +434,7 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import { tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -3932,6 +3934,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  continuationEventId?: string | null;
   contextSnapshot?: Record<string, unknown>;
   externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
@@ -28572,6 +28575,10 @@ export function heartbeatService(
   }
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    const continuationEventId = opts.continuationEventId ??
+      readNonEmptyString(opts.payload?.continuationEventId) ??
+      readNonEmptyString(opts.contextSnapshot?.continuationEventId) ??
+      null;
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -30838,6 +30845,122 @@ export function heartbeatService(
               successorRunId: explicitContinuationRunId,
               requestedByActorType: "user", requestedByActorId: opts.requestedByActorId,
             });
+          }
+
+          if (
+            reason === "issue_continuation_needed" &&
+            source === "automation" &&
+            (opts.requestedByActorType === "system" || !opts.requestedByActorType)
+          ) {
+            const recoveryParentRunId =
+              readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
+              readNonEmptyString(payload?.retryOfRunId) ??
+              readNonEmptyString(opts.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.failedRunId) ??
+              readNonEmptyString(payload?.failedRunId);
+
+            const recoveryHead =
+              readNonEmptyString(enrichedContextSnapshot.continuationHead) ??
+              readNonEmptyString(payload?.continuationHead) ??
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId);
+
+            const isRecovery = Boolean(
+              recoveryParentRunId ||
+              recoveryHead ||
+              enrichedContextSnapshot.issueRecovery ||
+              payload?.issueRecovery ||
+              enrichedContextSnapshot.recoveryMode ||
+              payload?.recoveryMode ||
+              (typeof enrichedContextSnapshot.source === "string" && (
+                enrichedContextSnapshot.source.startsWith("issue.") ||
+                enrichedContextSnapshot.source.includes("recovery") ||
+                enrichedContextSnapshot.source.includes("stranded")
+              ))
+            );
+
+            const recoveryToken =
+              recoveryParentRunId ??
+              recoveryHead ??
+              (typeof enrichedContextSnapshot.source === "string" ? enrichedContextSnapshot.source : "recovery");
+
+            const lastRunRows = await tx
+              .select({ finishedAt: heartbeatRuns.finishedAt })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                sql`${heartbeatRuns.finishedAt} is not null`,
+              ))
+              .orderBy(desc(heartbeatRuns.finishedAt))
+              .limit(1);
+            const lastFinishedAt = lastRunRows[0]?.finishedAt ?? null;
+            const eventRows = continuationEventId
+              ? [{ id: continuationEventId }]
+              : lastFinishedAt
+                ? await tx.select({ id: activityLog.id }).from(activityLog).where(and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, lastFinishedAt),
+                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  )).orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+                : [];
+
+            if (!isRecovery && eventRows.length === 0) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
+                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+
+            const eventRevision = eventRows.map((row) => row.id).sort().join(",");
+            const revision = isRecovery
+              ? eventRevision
+                ? `recovery:${recoveryToken}:${eventRevision}`
+                : `recovery:${recoveryToken}`
+              : eventRevision;
+
+            const alreadyClaimedKey =
+              readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) ??
+              readNonEmptyString(payload?.continuationClaimKey);
+
+            if (!alreadyClaimedKey) {
+              const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
+              if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+                companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
+              }) === "deduped") {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
+                  status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
+            }
+
+            enrichedContextSnapshot.continuationEventId = revision;
+            enrichedContextSnapshot.continuationEventRevision = revision;
+            if (recoveryParentRunId) enrichedContextSnapshot.retryOfRunId = recoveryParentRunId;
+            const extraRecoveryProps = {
+              ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
+              ...(recoveryHead ? { continuationHead: recoveryHead } : {}),
+              ...(alreadyClaimedKey ? { continuationClaimKey: alreadyClaimedKey } : {}),
+            };
+            payload = {
+              ...(payload ?? {}),
+              issueId,
+              continuationEventId: revision,
+              continuationEventRevision: revision,
+              ...extraRecoveryProps,
+            };
           }
 
           const wakeupRequest = await tx
