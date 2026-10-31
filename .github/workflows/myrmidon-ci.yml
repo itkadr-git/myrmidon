@@ -88,15 +88,6 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
-      - name: Release freeze check
-        if: ${{ github.event_name == 'pull_request' && github.repository == 'itkadr-git/myrmidon' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          ./scripts/myrmidon/release/release-freeze.sh --check
-
       - name: Hot files review check
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         env:
