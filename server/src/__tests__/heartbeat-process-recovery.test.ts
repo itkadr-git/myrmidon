@@ -10387,6 +10387,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await seedStrandedIssueFixture({
         status: "todo",
         runStatus: "failed",
+        retryReason: "assignment_recovery",
       });
 
     const heartbeat = heartbeatService(db);
