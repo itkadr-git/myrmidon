@@ -54,9 +54,11 @@ On the standby host (`myr-vm1`):
 2. **Execute Base Backup Sync**:
    Run the setup command to stream initial base backup, configure credentials/passfile, and register replication slot:
    ```bash
-   PRIMARY_PG_HOST="<primary-host>"    PG_REPLICATOR_PASSWORD="<replication-password>"    scripts/myrmidon/standby/standby-ctl.sh setup --target all
+   PRIMARY_PG_HOST="<primary-host>" PG_REPLICATOR_PASSWORD="<replication-password>" scripts/myrmidon/standby/standby-ctl.sh setup --target all
+   # Or using an existing credential passfile:
+   # scripts/myrmidon/standby/standby-ctl.sh setup --target all --credentials /etc/standby/pgpass
    ```
-   This generates `standby.signal` and configures `primary_conninfo` (with password/passfile) and `restore_command`.
+   This prepares replication credentials via `.pgpass`, streams initial basebackup with `PGPASSFILE`, generates `standby.signal`, and configures `primary_conninfo` (with passfile reference, never embedding raw passwords in config) and `restore_command`.
 
 3. **Start Standby Services**:
    Launch the standby container via Docker Compose:

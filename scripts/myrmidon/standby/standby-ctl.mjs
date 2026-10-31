@@ -30,8 +30,9 @@ export const DEFAULT_CONFIG = {
   boardDbName: "paperclip",
   hindsightDbUser: "myrmidon_hindsight",
   hindsightDbName: "myrmidon_hindsight",
-  replicatorPassword: process.env.PG_REPLICATOR_PASSWORD || "standby_secret",
+  replicatorPassword: process.env.PG_REPLICATOR_PASSWORD || "",
   passfilePath: process.env.PG_PASSFILE_PATH || "",
+  credentialPath: process.env.STANDBY_CREDENTIAL_PATH || "",
   rpoMaxSeconds: 900, // RPO <= 15 min
   rtoTargetSeconds: 1800, // RTO <= 30 min
 };
@@ -217,8 +218,6 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
   const replUser = isBoard
     ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
-  const replPassword = overrides.replicatorPassword || DEFAULT_CONFIG.replicatorPassword;
-  const passfilePath = overrides.passfilePath || DEFAULT_CONFIG.passfilePath;
   const replSlot = isBoard
     ? overrides.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
     : overrides.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
@@ -227,11 +226,15 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
     : overrides.hindsightWalArchiveDir || DEFAULT_CONFIG.hindsightWalArchiveDir;
   const appName = isBoard ? "myrmidon_board_standby" : "myrmidon_hindsight_standby";
 
-  const passParam = passfilePath
-    ? ` passfile=${passfilePath}`
-    : replPassword
-    ? ` password=${replPassword}`
-    : "";
+  // Use passfile for standby authentication; never embed raw password in primary_conninfo
+  const passfilePath =
+    overrides.containerPassfilePath ||
+    overrides.passfilePath ||
+    overrides.credentialPath ||
+    DEFAULT_CONFIG.passfilePath ||
+    DEFAULT_CONFIG.credentialPath ||
+    "/var/lib/postgresql/data/.pgpass";
+  const passParam = passfilePath ? ` passfile=${passfilePath}` : "";
 
   return [
     `# PostgreSQL standby configuration for ${target} (managed by standby-ctl.mjs)`,
@@ -463,8 +466,58 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     }
   }
 
-  // 2. Run pg_basebackup
-  const baseRes = runner(basebackup.executable, basebackup.args, { timeoutMs: 300000 });
+  // 2. Prepare host-side replication credentials / passfile before basebackup
+  const replPassword =
+    options.replicatorPassword !== undefined
+      ? options.replicatorPassword
+      : DEFAULT_CONFIG.replicatorPassword;
+  const credentialPath =
+    options.credentialPath ||
+    options.passfilePath ||
+    DEFAULT_CONFIG.credentialPath ||
+    DEFAULT_CONFIG.passfilePath;
+
+  let hostPassfilePath = credentialPath;
+  if (!hostPassfilePath) {
+    hostPassfilePath = path.join(path.dirname(dataDir), ".pgpass");
+  }
+
+  if (replPassword) {
+    try {
+      const passDir = path.dirname(hostPassfilePath);
+      if (!fsOps.existsSync(passDir)) {
+        fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
+      }
+      fsOps.writeFileSync(
+        hostPassfilePath,
+        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`
+      );
+      if (fsOps.chmodSync) {
+        fsOps.chmodSync(hostPassfilePath, 0o600);
+      }
+    } catch (err) {
+      return {
+        success: false,
+        target,
+        error: `Failed to create host passfile at ${hostPassfilePath}: ${err.message}`,
+      };
+    }
+  } else if (!fsOps.existsSync(hostPassfilePath)) {
+    return {
+      success: false,
+      target,
+      error: `Replication credentials missing: passfile not found at '${hostPassfilePath}' and no replication password provided (set PG_REPLICATOR_PASSWORD or pass credentialPath)`,
+    };
+  }
+
+  // 3. Run pg_basebackup with PGPASSFILE in environment
+  const baseRes = runner(basebackup.executable, basebackup.args, {
+    timeoutMs: 300000,
+    env: {
+      ...process.env,
+      PGPASSFILE: hostPassfilePath,
+    },
+  });
   if (baseRes.exitCode !== 0) {
     return {
       success: false,
@@ -474,19 +527,25 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 3. Write passfile (.pgpass) and configuration
-  const replPassword = options.replicatorPassword || DEFAULT_CONFIG.replicatorPassword;
-  if (replPassword) {
-    const pgpassPath = path.join(dataDir, ".pgpass");
-    try {
-      fsOps.writeFileSync(
-        pgpassPath,
-        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`
-      );
-      if (fsOps.chmodSync) {
-        fsOps.chmodSync(pgpassPath, 0o600);
-      }
-    } catch {}
+  // 4. Write container passfile (.pgpass) inside dataDir and configuration
+  const containerPassfileHost = path.join(dataDir, ".pgpass");
+  try {
+    let pgpassContent = "";
+    if (fsOps.existsSync(hostPassfilePath)) {
+      pgpassContent = fsOps.readFileSync(hostPassfilePath, "utf8");
+    } else if (replPassword) {
+      pgpassContent = `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`;
+    }
+    fsOps.writeFileSync(containerPassfileHost, pgpassContent);
+    if (fsOps.chmodSync) {
+      fsOps.chmodSync(containerPassfileHost, 0o600);
+    }
+  } catch (err) {
+    return {
+      success: false,
+      target,
+      error: `Failed to write container passfile at ${containerPassfileHost}: ${err.message}`,
+    };
   }
 
   try {
@@ -921,17 +980,47 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const durationMs = Date.now() - startTime;
   const durationSeconds = Math.round(durationMs / 1000);
   const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
-  const smokeTestPassed = (boardSmokeRes.stdout || "").trim() === "1" && (hindsightSmokeRes.stdout || "").trim() === "1";
+  const boardSmokeOk = (boardSmokeRes.stdout || "").trim() === "1";
+  const hindsightSmokeOk = (hindsightSmokeRes.stdout || "").trim() === "1";
+  const smokeTestPassed = boardSmokeOk && hindsightSmokeOk;
+  const promoted = (verifyRes.stdout || "").trim() === "f";
+
+  const success = promoted && smokeTestPassed && rtoOk;
+
+  const errors = [];
+  if (!promoted) {
+    errors.push(
+      `Promotion verification failed: in_recovery is '${(verifyRes.stdout || "").trim()}', expected 'f'`
+    );
+  }
+  if (!smokeTestPassed) {
+    if (!boardSmokeOk) {
+      errors.push(
+        `Smoke test failed for database '${boardDb}' (exit: ${boardSmokeRes.exitCode}, out: ${(boardSmokeRes.stdout || boardSmokeRes.stderr || "").trim()})`
+      );
+    }
+    if (!hindsightSmokeOk) {
+      errors.push(
+        `Smoke test failed for database '${hindsightDb}' (exit: ${hindsightSmokeRes.exitCode}, out: ${(hindsightSmokeRes.stdout || hindsightSmokeRes.stderr || "").trim()})`
+      );
+    }
+  }
+  if (!rtoOk) {
+    errors.push(
+      `RTO target exceeded (${durationSeconds}s > ${DEFAULT_CONFIG.rtoTargetSeconds}s)`
+    );
+  }
 
   return {
-    success: true,
+    success,
     target,
-    promoted: (verifyRes.stdout || "").trim() === "f",
+    promoted,
     smokeTestPassed,
     verifiedDatabases: [boardDb, hindsightDb],
     durationSeconds,
     targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
     rtoOk,
+    ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
   };
 }
 
@@ -985,6 +1074,15 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   if (flags.json !== undefined) {
     flags.json = true;
   }
+  if (flags.passfile !== undefined) {
+    flags.passfilePath = flags.passfile;
+  }
+  if (flags.credentials !== undefined) {
+    flags.credentialPath = flags.credentials;
+  }
+  if (flags["credential-path"] !== undefined) {
+    flags.credentialPath = flags["credential-path"];
+  }
 
   switch (command) {
     case "setup": {
@@ -1027,7 +1125,11 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     case "rehearse": {
       const rehearseTargets = target === "all" ? ["board"] : targets;
       const results = rehearseTargets.map((t) => executeRehearsal(t, flags, deps));
-      console.log(JSON.stringify({ command: "rehearse", results }, null, 2));
+      const allSuccess = results.every((r) => r.success);
+      const allRtoOk = results.every((r) => r.rtoOk);
+      console.log(
+        JSON.stringify({ command: "rehearse", allSuccess, allRtoOk, results }, null, 2)
+      );
       const anyFailed = results.some((r) => !r.success || !r.rtoOk);
       return anyFailed ? 1 : 0;
     }
