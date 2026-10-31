@@ -5,20 +5,25 @@
 import { describe, expect, it } from "vitest";
 import {
   METRIC_FAMILIES,
+  collectMetricsParts,
   escapeLabelValue,
   formatSampleValue,
   percentile,
   renderMetricsText,
+  type CapacityDashboardMetricsSnapshot,
   type MetricsSnapshot,
 } from "./metrics.js";
 import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { BLOCKER_DASHBOARD_PANELS } from "@myrmidon/shared";
+import { computeBlockedMetrics } from "./blocked.js";
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
     role: "all",
     runsActive: 2,
     runsQueued: 5,
+    runsQueuedOver30m: 1,
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     runDurationSecondsP50: 42.5,
@@ -28,6 +33,9 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
       { role: "engineer", status: "in_progress", count: 1 },
       { role: "reviewer", status: "in_review", count: 2 },
     ],
+    reviewTasksWithoutReviewer: 0,
+    blockedTasksWithoutAssignee: 0,
+    codeTasksOnNoncodingRoles: 0,
     swarmClaimsActive: 4,
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
@@ -92,6 +100,69 @@ describe("prometheus exposition format", () => {
     }
   });
 
+  it("exposes the approved capacity provider fixture through scrape collection and rendering", async () => {
+    const fixture: CapacityDashboardMetricsSnapshot = {
+      readinessRatio: 0.5,
+      queueAgeSeconds: 120,
+      projectShare: [
+        { project: "11111111-1111-4111-8111-111111111111", share: 0.75 },
+        { project: "22222222-2222-4222-8222-222222222222", share: 0.25 },
+      ],
+      starvationTotal: 2,
+      claimRejectionTotal: {
+        capacity_limit: 3, project_scope: 1, caste_scope: 0, assignment_conflict: 0,
+        dependency_blocked: 0, interaction_pending: 0, already_claimed: 0, not_ready: 0, other: 0,
+      },
+    };
+    const target = () => target;
+    const mockDbProxy: any = new Proxy(target, {
+      get(_t, prop) {
+        if (prop === "then") return (res: (v: unknown[]) => unknown) => Promise.resolve([]).then(res);
+        if (prop === "catch") return (res: (err: unknown) => unknown) => Promise.resolve([]).catch(res);
+        return () => mockDbProxy;
+      },
+      apply() { return mockDbProxy; },
+    });
+    const collected = await collectMetricsParts({
+      db: { select: () => mockDbProxy } as never,
+      now: () => new Date("2026-10-27T00:00:00.000Z"),
+      errorWindowSec: 300,
+      latencyWindowSec: 300,
+      capacityDashboard: () => fixture,
+    });
+    expect(collected.errors).toEqual([]);
+    const text = renderMetricsText(snapshot(collected.fields));
+    expect(text).toContain("# TYPE myrmidon_readiness_ratio gauge");
+    expect(text).toContain('myrmidon_readiness_ratio{role="all"} 0.5');
+    expect(text).toContain('myrmidon_queue_age_seconds{role="all"} 120');
+    expect(text).toContain('myrmidon_project_share{role="all",project="11111111-1111-4111-8111-111111111111"} 0.75');
+    expect(text).toContain('myrmidon_project_share{role="all",project="22222222-2222-4222-8222-222222222222"} 0.25');
+    expect(text).toContain("# TYPE myrmidon_starvation_total counter");
+    expect(text).toContain('myrmidon_starvation_total{role="all"} 2');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="capacity_limit"} 3');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="caste_scope"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="other"} 0');
+  });
+
+  it("omits unavailable capacity samples, including replacing an earlier snapshot", () => {
+    const prior = renderMetricsText(snapshot({ capacityDashboard: {
+      readinessRatio: 0.5, queueAgeSeconds: 120, projectShare: [], starvationTotal: 2,
+      claimRejectionTotal: { capacity_limit: 0, project_scope: 0, caste_scope: 0, assignment_conflict: 0, dependency_blocked: 0, interaction_pending: 0, already_claimed: 0, not_ready: 0, other: 0 },
+    } }));
+    expect(prior).toContain("myrmidon_readiness_ratio{");
+    const unavailable = renderMetricsText(snapshot({ capacityDashboard: null }));
+    for (const family of ["readiness_ratio", "queue_age_seconds", "project_share", "starvation_total", "claim_rejection_total"]) {
+      expect(unavailable).toContain(`# HELP myrmidon_${family} `);
+      expect(unavailable).not.toContain(`myrmidon_${family}{`);
+    }
+    const unknownQueue = renderMetricsText(snapshot({ capacityDashboard: {
+      readinessRatio: 0.5, queueAgeSeconds: null, projectShare: null, starvationTotal: 2, claimRejectionTotal: null,
+    } }));
+    expect(unknownQueue).not.toContain("myrmidon_queue_age_seconds{");
+    expect(unknownQueue).not.toContain("myrmidon_project_share{");
+    expect(unknownQueue).not.toContain("myrmidon_claim_rejection_total{");
+  });
+
   it("renders exactly one HELP and one TYPE line per family", () => {
     const text = renderMetricsText(snapshot());
     const lines = text.split("\n");
@@ -107,6 +178,7 @@ describe("prometheus exposition format", () => {
     const text = renderMetricsText(snapshot());
     expect(text).toContain("# TYPE myrmidon_runs_active gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued gauge");
+    expect(text).toContain("# TYPE myrmidon_runs_queued_over_30m gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_total gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_window gauge");
     expect(text).toContain("# TYPE myrmidon_run_duration_seconds summary");
@@ -116,24 +188,29 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_review_tasks_without_reviewer gauge");
+    expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
+    expect(text).toContain("# TYPE myrmidon_code_tasks_on_noncoding_roles gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
   it("renders one sample line per family and per role/status pair", () => {
     const text = renderMetricsText(snapshot());
-    const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
+    const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_") && !line.startsWith("# "));
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
-    // continuation dedupe counters = 27.
-    expect(sampleLines).toHaveLength(27);
+    // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
+    // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31.
+    expect(sampleLines).toHaveLength(31);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
     expect(text).toContain("myrmidon_board_event_loop_utilization{role=\"all\"} 0.42");
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
+    expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
   });
 
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
@@ -152,6 +229,7 @@ describe("prometheus exposition format", () => {
       expect(line, `sample must carry role: ${line}`).toContain('role="worker"');
     }
     expect(text).toContain("myrmidon_runs_active{role=\"worker\"} 2");
+    expect(text).toContain('myrmidon_runs_queued_over_30m{role="worker"} 1');
     expect(text).toContain('myrmidon_board_db_queries_total{role="worker",lane="heartbeat_tick"} 5');
     // Metric names are untouched by the role label.
     expect(text).toContain("# HELP myrmidon_runs_active ");
@@ -347,6 +425,35 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_corpus_shadow_module_latency_seconds{");
   });
 
+  it("registers every dashboard panel source in the live Prometheus exposition", () => {
+    const panelSources = BLOCKER_DASHBOARD_PANELS.map(({ query }) => query);
+    for (const source of panelSources) {
+      expect(METRIC_FAMILIES, `registered family for dashboard source ${source}`).toContain(source);
+    }
+
+    const text = renderMetricsText(snapshot({
+      blocked: [{
+        companyId: "company-a",
+        groups: computeBlockedMetrics([{
+          id: "blocked-a",
+          status: "blocked",
+          blockedSince: new Date("2026-10-01T00:00:00Z"),
+          blockerMetadata: null,
+        }], new Date("2026-10-02T00:00:00Z")),
+      }],
+      blockerRoots: { companies: [{
+        companyId: "company-a",
+        roots: [{ root: "root-a", fanout: 2 }],
+        terminalCount: 1,
+        rootsOverLimit: 0,
+      }] },
+    }));
+    for (const source of panelSources) {
+      expect(text, `rendered metric ${source}`).toContain(`# TYPE ${source} `);
+      expect(text, `sample for ${source}`).toMatch(new RegExp(`^${source}(?:[{ ]|$)`, "m"));
+    }
+  });
+
   it("ends with a newline and separates families with blank lines", () => {
     const text = renderMetricsText(snapshot());
     expect(text.endsWith("\n")).toBe(true);
@@ -358,8 +465,8 @@ describe("prometheus exposition format", () => {
       const help = /^# HELP (\S+) .+$/.exec(lines[0]);
       expect(help, `block must start with HELP: ${lines[0]}`).not.toBeNull();
       const name = help![1];
-      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary)$`));
-      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))).toBe(true);
+      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary|histogram)$`));
+      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `) || line.startsWith(`${name}_`))).toBe(true);
       return name;
     });
     expect(names.sort()).toEqual([...METRIC_FAMILIES].sort());

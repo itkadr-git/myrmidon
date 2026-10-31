@@ -94,6 +94,22 @@ describe("issueNeedsReviewer", () => {
     expect(issueNeedsReviewer(issue({ executionState: { status: "idle", monitor: { status: "cleared" } } }))).toBe(false);
   });
 
+  it("requires explicit recovery clock and updatedAt, and enforces the grace period", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    const updatedAt = new Date("2026-10-26T11:45:00Z");
+    expect(issueNeedsReviewer(issue({ reviewPathRecoveryEligible: true }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: new Date("2026-10-26T11:50:01Z"),
+    }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: updatedAt,
+    }))).toBe(true);
+  });
+
   it("myrmidon(HUMAN-REVIEW-WAIT): never routes a human-only wait to an agent reviewer", () => {
     expect(issueNeedsReviewer(issue({ reviewPolicy: "human_only", responsibleUserId: "owner" }))).toBe(false);
     // other policies do not declare a human wait — routing stays available
@@ -134,6 +150,25 @@ describe("pickReviewer", () => {
       pickReviewer({ candidates: [{ id: AUTHOR, role: "reviewer", load: 0 }], excluded: excludedReviewerIds(issue()), maxLoad: 5 }),
     ).toBeNull();
   });
+
+  it("filters out reviewers whose model matches authorModel", () => {
+    const list: ReviewerCandidate[] = [
+      { id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true },
+      { id: REV_B, role: "reviewer", load: 1, model: "model-y", invokable: true },
+    ];
+    // Author has model-x: REV_A is excluded despite lower load; REV_B is picked.
+    const picked = pickReviewer({ candidates: list, excluded: new Set(), maxLoad: 5, authorModel: "model-x" });
+    expect(picked?.id).toBe(REV_B);
+
+    // If both have model-x, nobody is eligible.
+    const none = pickReviewer({
+      candidates: [{ id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true }],
+      excluded: new Set(),
+      maxLoad: 5,
+      authorModel: "model-x",
+    });
+    expect(none).toBeNull();
+  });
 });
 
 describe("evaluateReviewerAvailability", () => {
@@ -168,6 +203,20 @@ describe("evaluateReviewerAvailability", () => {
       loadByAgent: new Map(),
       issue: issue(),
       maxLoad: 2,
+    });
+    expect(result.selected?.id).toBe(REV_B);
+  });
+
+  it("passes authorModel to filter candidates by model", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: REV_A, role: "reviewer", invokable: true, model: "model-x" },
+        { id: REV_B, role: "reviewer", invokable: true, model: "model-y" },
+      ],
+      loadByAgent: new Map([[REV_A, 0], [REV_B, 1]]),
+      issue: issue(),
+      maxLoad: 5,
+      authorModel: "model-x",
     });
     expect(result.selected?.id).toBe(REV_B);
   });

@@ -123,6 +123,7 @@ import {
 } from "@myrmidon/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listGatewayModels, refreshGatewayModels } from "./hermes-gateway-models.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -796,6 +797,8 @@ const kimiLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
+  listModels: listGatewayModels,
+  refreshModels: refreshGatewayModels,
 };
 
 const hermesLocalAdapter: ServerAdapterModule = {

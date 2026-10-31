@@ -281,7 +281,7 @@ describe("ActiveAgentsPanel", () => {
           execution: {
             phase: "reconnecting", label: "Reconnecting", cause: null,
             lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
-            recoveryOwner: "agent", nextAction: null, permittedActions: ["inspect_run"],
+            recoveryOwner: "agent", nextAction: null, operatorActions: ["inspect_run"],
             predecessorRunId: null, successorRunId: null,
           },
         }}
