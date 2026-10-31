@@ -882,6 +882,8 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
+  /** Retry pending participant reviews before the general assigned-task lane. */
+  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -977,6 +979,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
+        const review = await deps.pickupReviewForAgent?.(agent);
+        if (review?.handled) {
+          wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
+          totals.woken += review.woken;
+          continue;
+        }
         const perAgent = await idlePickupForAgent(deps, agent, {
           // The pass already decided with the resolved settings; handing the
           // decision over keeps the environment from vetoing a stored "on".
