@@ -174,15 +174,13 @@ const FIELD_LABEL: Record<FieldKey, string> = {
   name: "ui2.screens.fleet.addName",
   url: "ui2.screens.fleet.addUrl",
   tokenSecret: "ui2.screens.fleet.addToken",
-  caCert: "ui2.screens.fleet.addCa",
-  clientCertSecretKey: "ui2.screens.fleet.addClientCert",
   maxCpus: "ui2.screens.fleet.addMaxCpus",
   maxMemoryMb: "ui2.screens.fleet.addMaxMemory",
   maxBots: "ui2.screens.fleet.addMaxBots",
   gatewayPortStart: "ui2.screens.fleet.addPortStart",
   gatewayPortEnd: "ui2.screens.fleet.addPortEnd",
 };
-const FIELD_ORDER: FieldKey[] = ["name", "url", "tokenSecret", "clientCertSecretKey", "caCert", "maxCpus", "maxMemoryMb", "maxBots", "gatewayPortStart", "gatewayPortEnd"];
+const FIELD_ORDER: FieldKey[] = ["name", "url", "tokenSecret", "maxCpus", "maxMemoryMb", "maxBots", "gatewayPortStart", "gatewayPortEnd"];
 
 function AddSiteForm({ companyId }: { companyId: string }) {
   const { t } = useUi2I18n();
@@ -221,11 +219,7 @@ function AddSiteForm({ companyId }: { companyId: string }) {
       {FIELD_ORDER.map((field) => (
         <label key={field} className="flex flex-col gap-1 text-xs">
           <span>{t(FIELD_LABEL[field] as never)}</span>
-          {field === "caCert" ? (
-            <textarea className={INPUT_CLASS + " font-mono"} rows={5} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} />
-          ) : (
-            <input className={INPUT_CLASS} name={field} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} autoComplete="off" />
-          )}
+          <input className={INPUT_CLASS} name={field} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} autoComplete="off" />
         </label>
       ))}
       {problem ? <p className="text-xs text-destructive" role="alert" data-testid="add-site-problem">{problem}</p> : null}
