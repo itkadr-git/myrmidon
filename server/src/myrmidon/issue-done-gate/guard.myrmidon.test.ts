@@ -211,8 +211,7 @@ describe("issue done pull-request gate", () => {
     expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/14");
   });
 
-  it("blocks done when a mixed set contains a closed PR without a merged replacement", async () => {
-    const closedPr = "https://github.com/acme/project/pull/14";
+  it("allows done when a mixed set contains a closed PR and another linked PR is merged", async () => {
     const snapshot = await inspectIssueDonePullRequests(
       fakeDb([
         product({ id: "wp-1", number: 12 }),
@@ -222,6 +221,19 @@ describe("issue done pull-request gate", () => {
       issueId,
       resolver({ 12: "merged", 14: "closed" }),
     );
-    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow(closedPr);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("blocks done when all linked PRs in a set are closed without any merged PR", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([
+        product({ id: "wp-1", number: 12 }),
+        product({ id: "wp-2", number: 14 }),
+      ]),
+      companyId,
+      issueId,
+      resolver({ 12: "closed", 14: "closed" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/12");
   });
 });

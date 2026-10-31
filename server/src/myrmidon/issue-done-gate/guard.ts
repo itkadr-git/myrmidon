@@ -150,6 +150,11 @@ export async function inspectIssueDonePullRequests(
       return { product, state: "unknown" as const, url: product.url };
     }
   }));
+  const merged = states.some(({ state }) => state === "merged");
+  const closed = states.filter(({ state }) => state === "closed");
+  if (merged && closed.length > 0) {
+    return states.filter(({ state }) => state !== "closed");
+  }
   return states;
 }
 
@@ -166,8 +171,13 @@ export function assertIssueDonePullRequestsSettled(states: Awaited<ReturnType<ty
 }
 
 export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]) {
-  for (const product of products) {
+  const pullRequests = products.filter((product) => product.type === "pull_request");
+  const hasMerged = pullRequests.some((product) => product.status === "merged");
+  for (const product of pullRequests) {
     if (product.status === "archived" || product.status === "merged") continue;
+    // A closed PR is settled when another linked PR is already merged; an
+    // open/draft product must still block completion in that mixed set.
+    if (hasMerged && product.status === "closed") continue;
     block(product);
   }
 }
