@@ -377,6 +377,25 @@ export const en = {
           metrics: "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
           states: { running: "Running", stopped: "Stopped", unknown: "Unknown" },
         },
+        more: {
+          title: "More",
+          subtitle: "Additional sections and preferences.",
+          sections: {
+            navigation: "Navigation",
+            appearance: "Appearance",
+          },
+          theme: "Theme",
+          themeLight: "Light",
+          themeDark: "Dark",
+          themeSystem: "System",
+          links: {
+            swarm: "Swarm",
+            costs: "Costs",
+            quality: "Quality",
+            settings: "Settings",
+            agentCard: "Agent card",
+          },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
@@ -745,6 +764,25 @@ export type Ui2Catalog = {
       placeholderBody: string;
       placeholderLegacyLink: string;
       fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      more: {
+        title: string;
+        subtitle: string;
+        sections: {
+          navigation: string;
+          appearance: string;
+        };
+        theme: string;
+        themeLight: string;
+        themeDark: string;
+        themeSystem: string;
+        links: {
+          swarm: string;
+          costs: string;
+          quality: string;
+          settings: string;
+          agentCard: string;
+        };
+      };
     },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
