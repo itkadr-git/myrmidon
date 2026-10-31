@@ -14,6 +14,7 @@ import { useUi2AttentionCount } from "../useUi2Status";
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useCompany } from "@/context/CompanyContext";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function PhoneTab({
   to,
@@ -124,6 +125,7 @@ export function Ui2PhoneHeader() {
         <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
           {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
         </span>
+        <Ui2AccountMenu compact />
       </div>
     </div>
   );

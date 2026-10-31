@@ -75,6 +75,13 @@
     "russian": "Русский",
     "switchTo": "Переключить язык интерфейса"
   },
+  "uiSwitch": {
+    "label": "Интерфейс",
+    "new": "Новая",
+    "legacy": "Прежняя",
+    "instanceDefault": "По настройке экземпляра",
+    "switchTo": "Переключить версию интерфейса"
+  },
   "status": {
     "backlog": "Бэклог",
     "todo": "К выполнению",
@@ -1673,7 +1680,9 @@
     },
     "journalCreated": "Лимит создан: {{amount}}",
     "journalDeleted": "Лимит удалён: {{amount}}",
-    "journalUpdated": "Было {{before}}, стало {{after}}"
+    "journalUpdated": "Было {{before}}, стало {{after}}",
+    "exportCsv": "Экспорт CSV",
+    "exportJson": "Экспорт JSON"
   },
   "pluginLabels": {
     "myrmidon_personal-bot": {

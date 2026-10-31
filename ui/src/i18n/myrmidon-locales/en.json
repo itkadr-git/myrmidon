@@ -75,6 +75,13 @@
     "russian": "Русский",
     "switchTo": "Switch interface language"
   },
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
+  },
   "status": {
     "backlog": "Backlog",
     "todo": "Todo",
@@ -1673,7 +1680,9 @@
     },
     "journalCreated": "Limit created: {{amount}}",
     "journalDeleted": "Limit deleted: {{amount}}",
-    "journalUpdated": "Was {{before}}, became {{after}}"
+    "journalUpdated": "Was {{before}}, became {{after}}",
+    "exportCsv": "Export CSV",
+    "exportJson": "Export JSON"
   },
   "pluginLabels": {
     "myrmidon_personal-bot": {

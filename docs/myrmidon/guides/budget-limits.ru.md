@@ -55,6 +55,7 @@ PUT    .../budget-limits/limits/:level/:ref       создать или заме
 DELETE .../budget-limits/limits/:level/:ref       удалить (board)
 GET    .../budget-limits/journal          журнал изменений, новые сверху
 GET    .../budget-limits/usage            расход по каждому лимиту + overLimit
+GET    .../budget-limits/export           экспорт отчёта по расходам в CSV или JSON (?format=csv|json, ?level=)
 GET    .../budget-limits/signal-only      действующий флаг + источник
 PATCH  .../budget-limits/signal-only      включить/выключить блокировку (board)
 ```

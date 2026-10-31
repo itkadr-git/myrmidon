@@ -1,4 +1,5 @@
 import type {
+  InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
@@ -6,6 +7,16 @@ import type {
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
 } from "@myrmidon/shared";
+
+export type {
+  InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
+  InstanceGeneralSettings,
+  InstanceSettings,
+  PatchInstanceSettings,
+  PatchInstanceGeneralSettings,
+  PatchInstanceExperimentalSettings,
+};
 import { api } from "./client";
 
 export const instanceSettingsApi = {
