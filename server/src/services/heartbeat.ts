@@ -386,7 +386,7 @@ import {
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -9574,7 +9574,7 @@ export function heartbeatService(
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
-  const budgetHooks = {
+  const budgetHooks: BudgetServiceHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
     // myrmidon(M3): owner signal on a budget hard-stop — delivered into the
     // interrupted issue threads, deduped per incident, off via
@@ -9605,14 +9605,13 @@ export function heartbeatService(
     // active, over-its-period limit refuses — see admission.ts.
     resolveBudgetLimitAdmissionBlock: async ({ companyId, agentId, context }) =>
       evaluateBudgetLimitAdmission(
-        { db, now: () => new Date() },
+        { db, now: () => new Date(), env: runtimeEnv },
         {
           companyId,
           agentId,
           issueId: context?.issueId ?? null,
           projectId: context?.projectId ?? null,
           settings: { getGeneral: () => instanceSettings.getGeneral() },
-          env: runtimeEnv,
         },
       ),
   };

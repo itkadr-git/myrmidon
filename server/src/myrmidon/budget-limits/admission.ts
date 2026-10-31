@@ -138,7 +138,7 @@ export function decideBudgetLimitAdmission(
 export interface BudgetLimitAdmissionPorts {
   db: Db;
   now?: () => Date;
-  env?: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
 }
 
 /** Inputs resolved per admission (companyId/agentId come from the queue). */

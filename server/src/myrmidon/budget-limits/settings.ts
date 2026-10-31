@@ -34,7 +34,7 @@ export async function readBudgetLimitsSettings(
 /** Read the effective signal-only flag with its source (env wins, forced). */
 export async function readResolvedSignalOnly(
   settings: { getGeneral: () => Promise<unknown> },
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): Promise<ResolvedBudgetLimitsSignalOnly> {
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   return resolveBudgetLimitsSignalOnly(general[BUDGET_LIMITS_SETTINGS_KEY], env);

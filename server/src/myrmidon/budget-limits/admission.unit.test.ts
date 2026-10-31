@@ -33,7 +33,7 @@ describe("budget-limit admission decision (1.7 BUDGET-CONFIG)", () => {
     const decision = decideBudgetLimitAdmission(effective(), 600, { signalOnly: false });
     expect(decision.blocked).toBe(true);
     if (!decision.blocked) return;
-    expect(decision.scopeType).toBe("issue");
+    expect(decision.scopeType).toBe("agent");
     expect(decision.scopeId).toBe("issue-1");
     expect(decision.reason).toContain("$6.00");
     expect(decision.reason).toContain("$5.00");
