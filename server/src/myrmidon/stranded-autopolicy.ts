@@ -139,14 +139,22 @@ export function readStrandedAutoPolicyEnabled(env: NodeJS.ProcessEnv = process.e
 export type StrandedAutoPolicyDecision =
   | { kind: "retry"; attempt: number; maxAttemptsPerDay: number }
   | {
-      kind: "reassign_to_manager";
-      managerAgentId: string;
+      kind: "monitor_external_service";
+      serviceName: string;
+      notes: string;
+      nextCheckAt?: string;
       attemptsInWindow: number;
       maxAttemptsPerDay: number;
     }
   | {
       kind: "disposition_blocked";
       ownerAgentId: string;
+      attemptsInWindow: number;
+      maxAttemptsPerDay: number;
+    }
+  | {
+      kind: "reassign_to_manager";
+      managerAgentId: string;
       attemptsInWindow: number;
       maxAttemptsPerDay: number;
     }
@@ -174,6 +182,11 @@ export function decideStrandedAutoPolicy(input: {
    * never taken over; it is blocked with an agent owner instead.
    */
   hasExecutionWorkflow?: boolean;
+  /**
+   * OPE-9072: issue has an open PR with pending CI checks. Instead of escalating
+   * or failing disposition, schedule an external_service monitor on CI.
+   */
+  hasPendingCi?: boolean;
   /** A corrective handoff already used its final attempt; do not retry it again. */
   successfulRunHandoffExhausted?: boolean;
   /**
@@ -197,6 +210,15 @@ export function decideStrandedAutoPolicy(input: {
 }): StrandedAutoPolicyDecision {
   if (input.assigneePaused) {
     return { kind: "vendor_default", attemptsInWindow: input.attemptsInWindow, maxAttemptsPerDay: input.maxAttemptsPerDay };
+  }
+  if (input.hasPendingCi) {
+    return {
+      kind: "monitor_external_service",
+      serviceName: "CI",
+      notes: "Pending CI external service monitor",
+      attemptsInWindow: input.attemptsInWindow,
+      maxAttemptsPerDay: input.maxAttemptsPerDay,
+    };
   }
   if (!input.successfulRunHandoffExhausted && input.maxAttemptsPerDay > 0 && input.attemptsInWindow < input.maxAttemptsPerDay) {
     return { kind: "retry", attempt: input.attemptsInWindow + 1, maxAttemptsPerDay: input.maxAttemptsPerDay };
@@ -658,4 +680,196 @@ export function buildStrandedDispositionBlockedComment(input: {
     "The issue carries its own execution workflow, so it was not taken over and the assignee is unchanged. " +
       "It is now `blocked` and owned by a senior agent, who is asked to assign the final status.",
   ].join("\n");
+}
+
+export interface OpenPrCiStatusInput {
+  openPr: {
+    metadata?: unknown;
+    externalId?: string | null;
+    updatedAt?: Date | null;
+  } | null;
+  lastComment?: {
+    body?: string | null;
+    createdAt?: Date | null;
+  } | null;
+  contextSnapshot?: unknown;
+  externalPrObject?: {
+    data?: unknown;
+  } | null;
+}
+
+/**
+ * Evaluates whether an open pull request currently has pending CI checks.
+ *
+ * Requirements (OPE-9072 / review-10 findings):
+ * 1. Checks that the PR head matches the head mentioned in the executor's
+ *    last comment or run context (an outdated comment referring to a previous
+ *    head does NOT qualify).
+ * 2. Reads GitHub checks status from the work product metadata or external objects:
+ *    if checks are already completed / passed / failed, CI is not pending.
+ * 3. Does not endlessly schedule an external_service monitor based on stale text alone.
+ */
+export function isPendingCiForOpenPr(input: OpenPrCiStatusInput): boolean {
+  if (!input.openPr) return false;
+
+  const meta = (typeof input.openPr.metadata === "object" && input.openPr.metadata !== null
+    ? input.openPr.metadata
+    : {}) as Record<string, unknown>;
+
+  const extData = (typeof input.externalPrObject?.data === "object" && input.externalPrObject.data !== null
+    ? input.externalPrObject.data
+    : {}) as Record<string, unknown>;
+
+  const prHead = typeof meta.headSha === "string"
+    ? meta.headSha.trim()
+    : typeof meta.sha === "string"
+      ? meta.sha.trim()
+      : typeof extData.headSha === "string"
+        ? (extData.headSha as string).trim()
+        : null;
+
+  // 1. Check explicit check state in metadata or externalObjects
+  const activeCi = typeof meta.activeCi === "object" && meta.activeCi !== null
+    ? meta.activeCi as Record<string, unknown>
+    : null;
+  const activeCiStatus = typeof activeCi?.status === "string" ? activeCi.status.trim().toLowerCase() : null;
+  const activeCiHead = typeof activeCi?.headSha === "string" ? activeCi.headSha.trim() : null;
+
+  const metaCheckStatus = typeof meta.checks === "string"
+    ? meta.checks.trim().toLowerCase()
+    : typeof meta.ciStatus === "string"
+      ? meta.ciStatus.trim().toLowerCase()
+      : typeof meta.checksStatus === "string"
+        ? meta.checksStatus.trim().toLowerCase()
+        : typeof meta.ciState === "string"
+          ? meta.ciState.trim().toLowerCase()
+          : typeof meta.ci === "string"
+            ? meta.ci.trim().toLowerCase()
+            : typeof meta.conclusion === "string"
+              ? meta.conclusion.trim().toLowerCase()
+              : null;
+
+  const extCiStatus = typeof extData.ci === "string"
+    ? extData.ci.trim().toLowerCase()
+    : typeof extData.checks === "string"
+      ? extData.checks.trim().toLowerCase()
+      : null;
+
+  const completedStatuses = new Set([
+    "completed",
+    "success",
+    "failure",
+    "failed",
+    "passed",
+    "pass",
+    "neutral",
+    "cancelled",
+    "timed_out",
+    "action_required",
+    "green",
+    "not_green",
+  ]);
+
+  // If checks are recorded as completed in activeCi, metadata or external data, CI is NOT pending
+  if (
+    (activeCiStatus && completedStatuses.has(activeCiStatus)) ||
+    (metaCheckStatus && completedStatuses.has(metaCheckStatus)) ||
+    (extCiStatus && completedStatuses.has(extCiStatus)) ||
+    ("activeCi" in meta && meta.activeCi === null && (meta.checksCompleted === true || meta.conclusion !== undefined))
+  ) {
+    return false;
+  }
+
+  // If activeCi exists and is active (queued / in_progress / pending)
+  if (activeCiStatus === "queued" || activeCiStatus === "in_progress" || activeCiStatus === "pending") {
+    if (activeCiHead && prHead) {
+      const a = activeCiHead.toLowerCase();
+      const p = prHead.toLowerCase();
+      if (!p.startsWith(a) && !a.startsWith(p)) {
+        return false; // activeCi was for a different / older head
+      }
+    }
+    return true;
+  }
+
+  // If metadata or external data indicates queued / in_progress
+  if (
+    metaCheckStatus === "queued" ||
+    metaCheckStatus === "in_progress" ||
+    metaCheckStatus === "pending" ||
+    extCiStatus === "queued" ||
+    extCiStatus === "in_progress" ||
+    extCiStatus === "pending"
+  ) {
+    return true;
+  }
+
+  // 2. Check comment and contextSnapshot text signals
+  const commentBody = input.lastComment?.body ?? "";
+  const runSummary =
+    typeof input.contextSnapshot === "object" && input.contextSnapshot !== null
+      ? JSON.stringify(input.contextSnapshot)
+      : typeof input.contextSnapshot === "string"
+        ? input.contextSnapshot
+        : "";
+
+  const ciCompletedRegex =
+    /(\bci\b|\bchecks\b|тест|github actions).*(completed|passed|failed|зелён|красн|заверш|успеш)/i;
+  const completedCiRegex =
+    /(completed|passed|failed|зелён|красн|заверш|успеш).*(\bci\b|\bchecks\b|тест|github actions)/i;
+  if (ciCompletedRegex.test(commentBody) || completedCiRegex.test(commentBody)) {
+    return false;
+  }
+
+  const ciPendingRegex =
+    /(\bci\b|\bchecks\b|тест|github actions).*(pending|running|in_progress|wait|идёт|ожида|прогон|монитор)/i;
+  const pendingCiRegex =
+    /(pending|running|wait|ожида|прогон|монитор).*(\bci\b|\bchecks\b|тест|github actions)/i;
+
+  const hasPendingText =
+    ciPendingRegex.test(commentBody) ||
+    pendingCiRegex.test(commentBody) ||
+    ciPendingRegex.test(runSummary);
+
+  if (!hasPendingText) {
+    return false;
+  }
+
+  // 3. Verify that the head mentioned in the comment matches the PR's current head
+  if (prHead) {
+    const headMentionRegex = /(?:head|sha|commit|головой|голова)\s*[:=/\s#]\s*`?([0-9a-f]{7,40})`?/i;
+    const slashShaRegex = /#\d+\s*[/|]\s*`?([0-9a-f]{7,40})`?/i;
+    const backtickShaRegex = /`([0-9a-f]{7,40})`/i;
+
+    const match =
+      commentBody.match(headMentionRegex) ||
+      runSummary.match(headMentionRegex) ||
+      commentBody.match(slashShaRegex) ||
+      runSummary.match(slashShaRegex) ||
+      commentBody.match(backtickShaRegex) ||
+      runSummary.match(backtickShaRegex);
+
+    if (match) {
+      const mentionedSha = match[1].toLowerCase();
+      const targetSha = prHead.toLowerCase();
+      if (!targetSha.startsWith(mentionedSha) && !mentionedSha.startsWith(targetSha)) {
+        // Mismatched / outdated head!
+        return false;
+      }
+    } else {
+      // Pending text without matching SHA when PR head is known must be rejected
+      return false;
+    }
+  }
+
+  // Check staleness of comment relative to PR update:
+  if (input.openPr.updatedAt && input.lastComment?.createdAt) {
+    const commentTime = new Date(input.lastComment.createdAt).getTime();
+    const prUpdateTime = new Date(input.openPr.updatedAt).getTime();
+    if (commentTime < prUpdateTime - 60 * 1000) {
+      return false;
+    }
+  }
+
+  return true;
 }
