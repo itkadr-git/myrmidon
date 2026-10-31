@@ -4271,6 +4271,8 @@ export function recoveryService(
           `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
           `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
           `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          `${input.ci.rateLimit?.remaining !== null && input.ci.rateLimit?.remaining !== undefined ? `GitHub rate limit remaining=${input.ci.rateLimit.remaining}/${input.ci.rateLimit.limit ?? "unknown"}; ` : ""}` +
+          `${input.ci.rateLimit?.resetEpochSeconds ? `rate limit reset at ${new Date(input.ci.rateLimit.resetEpochSeconds * 1000).toISOString()}; ` : ""}` +
           "the board wakes the reviewer to decide when the wait ends.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
@@ -4365,6 +4367,7 @@ export function recoveryService(
       latestRunId: latestRun.id,
       ciState: ci.state,
       ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      ...(ci.rateLimit ? { rateLimitRemaining: ci.rateLimit.remaining, rateLimitResetEpoch: ci.rateLimit.resetEpochSeconds } : {}),
       pullRequestUrl: ci.pullRequestUrl,
       headSha: ci.headSha,
     };
@@ -4378,13 +4381,17 @@ export function recoveryService(
             issueId: input.issue.id,
             identifier: input.issue.identifier,
             reason: ci.reason ?? null,
+            rateLimitRemaining: ci.rateLimit?.remaining ?? null,
+            rateLimitResetEpoch: ci.rateLimit?.resetEpochSeconds ?? null,
             attempt: decision.attempt,
             maxAttempts: decision.maxAttempts,
           },
           `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
         );
       }
-      const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+      const intervalCheckAt = Date.now() + REVIEW_CI_WAIT_INTERVAL_MS;
+      const resetCheckAt = (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000;
+      const nextCheckAt = new Date(Math.max(intervalCheckAt, resetCheckAt));
       const updated = await scheduleReviewCiWaitMonitor({
         issue: input.issue,
         latestRun,
