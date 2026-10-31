@@ -6135,10 +6135,9 @@ async function listIssueBlockedInboxAttentionMap(
     });
     const overdueBlockerIssue = overdueBlocker ? issuesById.get(overdueBlocker.issueId) : undefined;
     const blockedByUnassignedBlocker =
-      finding?.state === "blocked_by_unassigned_issue" ||
-      (finding?.state === "unassigned_blocked_issue_overdue" &&
-        finding.issueId !== row.id &&
-        Boolean(overdueBlocker));
+      finding?.state === "unassigned_blocked_issue_overdue" &&
+      finding.issueId !== row.id &&
+      Boolean(overdueBlocker);
     if (blockedByUnassignedBlocker) {
       result.set(
         row.id,
@@ -6153,6 +6152,7 @@ async function listIssueBlockedInboxAttentionMap(
             detail: "Assign an eligible owner to the overdue blocked issue in this dependency chain.",
           },
           sourceIssue: source,
+          leafIssue: overdueBlockerIssue ? issueRef(overdueBlockerIssue) : null,
           sampleIssueIdentifier: overdueBlocker?.identifier ?? finding?.identifier ?? null,
         }),
       );
