@@ -47,7 +47,7 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         return [];
       }
 
-      interface RawLegacyBlockedRow {
+      type RawLegacyBlockedRow = {
         company_id: string;
         import_key: string;
         issue_id: string;
@@ -55,7 +55,8 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         result_issue_id: string | null;
         created_at: Date | string;
         source_created_at: Date | string | null;
-      }
+        [key: string]: unknown;
+      };
 
       const rowsResult = await db.execute<RawLegacyBlockedRow>(sql`select
           l.company_id,
