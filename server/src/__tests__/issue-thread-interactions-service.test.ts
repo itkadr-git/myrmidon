@@ -75,6 +75,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
+    const defaultAgentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -83,6 +84,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -97,9 +105,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
 
-    return { companyId, goalId, issueId };
+    return { companyId, goalId, issueId, defaultAgentId };
   }
 
   async function attachPlanDocument(companyId: string, issueId: string) {
@@ -4245,6 +4254,112 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         id: created.id,
         status: "accepted",
       });
+    });
+  });
+
+  describe("guard: card creation without addressee is rejected (OPE-9150)", () => {
+    it("rejects interaction creation without addressee when recipient cannot be resolved and leaves no DB row", async () => {
+      const companyId = randomUUID();
+      const goalId = randomUUID();
+      const unassignedIssueId = randomUUID();
+      const creatorAgentId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: creatorAgentId,
+        companyId,
+        name: "Creator Agent",
+        role: "engineer",
+        status: "active",
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Goal",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(issues).values({
+        id: unassignedIssueId,
+        companyId,
+        goalId,
+        title: "Unassigned Issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: null,
+      });
+
+      await expect(
+        interactionsSvc.create(
+          { id: unassignedIssueId, companyId },
+          {
+            kind: "request_confirmation",
+            payload: { version: 1, prompt: "Proceed?" },
+          },
+          { agentId: creatorAgentId },
+        ),
+      ).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("Cannot determine recipient for interaction"),
+      });
+
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, unassignedIssueId));
+      expect(rows).toHaveLength(0);
+    });
+
+    it("creates interaction with explicit addressee and populates route_type and timeout_at in DB and response", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Addressed interaction");
+      const creatorAgentId = randomUUID();
+      const targetAgentId = randomUUID();
+
+      await db.insert(agents).values([
+        {
+          id: creatorAgentId,
+          companyId,
+          name: "Creator",
+          role: "engineer",
+          status: "active",
+        },
+        {
+          id: targetAgentId,
+          companyId,
+          name: "Target",
+          role: "engineer",
+          status: "active",
+        },
+      ]);
+
+      const created = await interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "request_confirmation",
+          addresseeAgentId: targetAgentId,
+          payload: { version: 1, prompt: "Approve?" },
+        },
+        { agentId: creatorAgentId },
+      );
+
+      expect(created.addresseeAgentId).toBe(targetAgentId);
+      expect(created.routeType).toBe("decision");
+      expect(created.timeoutAt).toBeDefined();
+      expect(typeof created.timeoutAt).toBe("string");
+
+      const [dbRow] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(dbRow).toBeDefined();
+      expect(dbRow.routeType).toBe("decision");
+      expect(dbRow.addresseeAgentId).toBe(targetAgentId);
+      expect(dbRow.timeoutAt).toBeInstanceOf(Date);
     });
   });
 });
