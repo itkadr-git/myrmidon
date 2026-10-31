@@ -293,6 +293,8 @@ import {
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
 import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
+import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -17349,6 +17351,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // writer's built-in free-text fallback.
           deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
         });
+      }
+      // myrmidon(1.7-ACTIVE-CHANNEL): an inbound Telegram DM from a linked
+      // owner marks the Telegram channel active for them; the next report
+      // decision reads it. Advisory and fire-and-forget — the delivery path
+      // never waits on it and never fails on it.
+      if (x8Dm.applies && actorUserId) {
+        markOwnerActivityBestEffort(db, { userId: actorUserId, channel: "telegram" });
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any

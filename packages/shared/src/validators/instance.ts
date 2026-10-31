@@ -97,6 +97,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
 import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
@@ -349,6 +351,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bridge-language; absent means "use the environment force,
   // then English".
   bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
