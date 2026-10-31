@@ -1,8 +1,10 @@
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import {
+  budgetLimitsExportQuerySchema,
   createCostEventSchema,
   createFinanceEventSchema,
+  escapeCsvCell,
   normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
@@ -294,6 +296,62 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const overview = await budgets.overview(companyId);
     res.json(overview);
+  });
+
+  router.get("/companies/:companyId/budgets/export", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+
+    const parsedQuery = budgetLimitsExportQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: "Invalid export query", issues: parsedQuery.error.issues });
+      return;
+    }
+
+    const { format } = parsedQuery.data;
+    const overview = await budgets.overview(companyId);
+
+    if (format === "csv") {
+      const headers = [
+        "company_id",
+        "scope_type",
+        "scope_id",
+        "amount_cents",
+        "window_kind",
+        "window_start",
+        "spent_cents",
+        "utilization_percent",
+        "status",
+      ];
+      const lines = [headers.join(",")];
+      for (const policy of overview.policies) {
+        lines.push(
+          [
+            escapeCsvCell(companyId),
+            escapeCsvCell(policy.scopeType),
+            escapeCsvCell(policy.scopeId ?? ""),
+            escapeCsvCell(policy.amountCents),
+            escapeCsvCell(policy.windowKind),
+            escapeCsvCell(policy.windowStart ?? ""),
+            escapeCsvCell(policy.spentCents),
+            escapeCsvCell(policy.utilizationPercent),
+            escapeCsvCell(policy.status),
+          ].join(","),
+        );
+      }
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="budgets-overview-${companyId}.csv"`);
+      res.send(lines.join("\n"));
+      return;
+    }
+
+    res.setHeader("Content-Disposition", `attachment; filename="budgets-overview-${companyId}.json"`);
+    res.json({
+      companyId,
+      generatedAt: new Date().toISOString(),
+      overview,
+    });
   });
 
   router.post(

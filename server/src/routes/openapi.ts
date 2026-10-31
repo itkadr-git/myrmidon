@@ -5144,6 +5144,20 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/budgets/export",
+  tags: ["costs"],
+  summary: "Export budget report in CSV or JSON",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      format: z.enum(["csv", "json"]).default("json"),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}/budgets",
   tags: ["costs"],
