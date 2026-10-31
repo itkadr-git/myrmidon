@@ -43,6 +43,7 @@
     "clean": "rm -rf dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
     "generate": "node ../../scripts/myrmidon/ci/migration-guard.mjs generate && pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate && pnpm run check:migrations",
+    "renumber": "node ../../scripts/myrmidon/db-renumber-migration.mjs",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "tsx src/seed.ts"
   },
