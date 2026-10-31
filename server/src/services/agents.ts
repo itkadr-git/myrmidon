@@ -2,6 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
+import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 import type { Db } from "@myrmidon/db";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
