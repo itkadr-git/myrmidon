@@ -1066,14 +1066,9 @@ except Exception:
 
   # 6. Save report artifact and update daily marker
   mkdir -p "${HERMES_HOME}/.myrmidon"
-  cat > "${HERMES_HOME}/.myrmidon/session-prune.json.tmp-${$}" <<EOF
-{
-  "stateDbBytesBefore": ${size_before},
-  "stateDbBytesAfter": ${size_after},
-  "deletedSessions": ${deleted_sessions},
-  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
+  printf '{"stateDbBytesBefore":%s,"stateDbBytesAfter":%s,"deletedSessions":%s,"updatedAt":"%s"}\n' \
+    "$size_before" "$size_after" "$deleted_sessions" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "${HERMES_HOME}/.myrmidon/session-prune.json.tmp-${$}"
   mv -f "${HERMES_HOME}/.myrmidon/session-prune.json.tmp-${$}" "${HERMES_HOME}/.myrmidon/session-prune.json"
   echo "$now" > "$marker"
 
@@ -1091,7 +1086,6 @@ if [ "${MYRMIDON_BOT_SESSION_MAINTENANCE:-1}" != "0" ]; then
   elif [ "$m_rc" -ne 0 ]; then
     log "WARNING: session maintenance failed with exit code ${m_rc}; continuing gateway startup"
   fi
-fi
 fi
 
 # --replace: a previous instance's lock (from a hard container restart) does

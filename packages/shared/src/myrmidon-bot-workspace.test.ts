@@ -143,6 +143,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
       graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
       scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+      sessionRetentionDays: "MYRMIDON_BOTD_SESSION_RETENTION_DAYS",
       boardUrl: "MYRMIDON_BOTD_BOARD_URL",
       boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
       hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
@@ -163,6 +164,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     expect(resolveBotDiskMechanics(undefined)).toEqual({
       graceClosingMinutes: 30,
       scratchTtlHours: 24,
+      sessionRetentionDays: 30,
       partitionThresholdPercent: 85,
       partitionRefuseOpenPercent: 90,
       partitionCriticalPercent: 95,
@@ -200,6 +202,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     expect(resolveBotDiskMechanics(stored)).toEqual({
       graceClosingMinutes: 30,
       scratchTtlHours: 24,
+      sessionRetentionDays: 30,
       partitionThresholdPercent: 85,
       partitionRefuseOpenPercent: 90,
       partitionCriticalPercent: 95,
