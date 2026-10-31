@@ -136,7 +136,7 @@ import { useCloudInstance } from "./hooks/useCloudInstance";
 import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { useMyrmidonUi2Enabled } from "./ui2/useMyrmidonUi2Enabled"; // myrmidon(UI2-SHELL)
 import { Ui2Root } from "./ui2/Ui2Root"; // myrmidon(UI2-SHELL)
-import { ui2PlaceholderRoutes } from "./ui2/routes"; // myrmidon(UI2-SHELL)
+import { ui2PlaceholderRoutes, Ui2PlaceholderScreen } from "./ui2/routes"; // myrmidon(UI2-SHELL)
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 
@@ -249,6 +249,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/caste-directory" element={<Navigate to="/company/settings/castes" replace />} />
       <Route path="company/settings/voice-stt" element={<VoiceSttScreen />} /> {/* myrmidon(1.6.1 VOICE-STT C) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
+      <Route path="company/settings/guards" element={<Ui2PlaceholderScreen />} /> {/* myrmidon(OPE-10138): guardrails settings route */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
