@@ -2,10 +2,12 @@
  * Read-only SQL extraction queries for 1.6.6 simulation fixture (OPE-8312 §5.12).
  *
  * Provenance & Verification:
- * - UTC Cutoff: 2026-10-25T16:00:00.000Z
+ * - Source: Production DB export by ADM on 2026-10-31 ~08:00 UTC (document relations-export)
+ * - UTC Cutoff / capturedAt: 2026-10-31T08:00:00.000Z
  * - Scope: release "1.6.6", companyId "2870b911-483a-4091-9f15-183841811143"
  * - Issue counts: 276 open issues (status in backlog, todo, in_progress, in_review, blocked)
- * - Ready count: 26 ready issues (open issues not blocked by unresolved dependencies)
+ * - Relations count: 94 blocking relations (type "blocks", both endpoints within snapshot issues)
+ * - Ready count: 100 ready issues (open issues not blocked by unresolved dependencies)
  * - Excluded fields: title, description, body, comment, comments, notes, secrets, tokens
  */
 export const STRUCTURAL_SNAPSHOT_SQL_QUERY = `
@@ -135,7 +137,7 @@ function isValidIsoDate(val: unknown): val is string {
 
 export function isIssueReadyForClaim(
   issue: StructuralIssueSnapshot,
-  relationsByIssueId: Map<string, StructuralIssueRelationSnapshot[]>,
+  relationsByBlockedIssueId: Map<string, StructuralIssueRelationSnapshot[]>,
   issuesById: Map<string, StructuralIssueSnapshot>,
 ): boolean {
   if (issue.status !== "todo") return false;
@@ -143,10 +145,10 @@ export function isIssueReadyForClaim(
   if (issue.executionLockedAt !== null) return false;
   if (!issue.projectId && !issue.casteKey) return false;
 
-  const blockers = relationsByIssueId.get(issue.id) ?? [];
+  const blockers = relationsByBlockedIssueId.get(issue.id) ?? [];
   for (const rel of blockers) {
     if (rel.type !== "blocks") continue;
-    const blocker = issuesById.get(rel.relatedIssueId);
+    const blocker = issuesById.get(rel.issueId);
     if (blocker && blocker.status !== "done" && blocker.status !== "cancelled") {
       return false;
     }
@@ -164,16 +166,16 @@ export function calculateReadyIssuesCount(
     issuesById.set(issue.id, issue);
   }
 
-  const relationsByIssueId = new Map<string, StructuralIssueRelationSnapshot[]>();
+  const relationsByBlockedIssueId = new Map<string, StructuralIssueRelationSnapshot[]>();
   for (const rel of relations) {
-    const list = relationsByIssueId.get(rel.issueId) ?? [];
+    const list = relationsByBlockedIssueId.get(rel.relatedIssueId) ?? [];
     list.push(rel);
-    relationsByIssueId.set(rel.issueId, list);
+    relationsByBlockedIssueId.set(rel.relatedIssueId, list);
   }
 
   let count = 0;
   for (const issue of issues) {
-    if (isIssueReadyForClaim(issue, relationsByIssueId, issuesById)) {
+    if (isIssueReadyForClaim(issue, relationsByBlockedIssueId, issuesById)) {
       count++;
     }
   }

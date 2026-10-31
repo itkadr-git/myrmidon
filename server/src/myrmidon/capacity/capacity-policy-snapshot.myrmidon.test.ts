@@ -21,16 +21,16 @@ describe("capacity policy simulation snapshot (OPE-9199)", () => {
     expect(() => validateSnapshot(fixture)).not.toThrow();
   });
 
-  it("contains exactly 276 open issues and ~26 ready issues", () => {
+  it("contains exactly 276 open issues and 100 ready issues", () => {
     expect(fixture.issues.length).toBe(276);
     expect(fixture.metrics.totalOpenIssues).toBe(276);
-    expect(fixture.metrics.readyIssuesCount).toBe(26);
+    expect(fixture.metrics.readyIssuesCount).toBe(100);
 
     const calculatedReady = calculateReadyIssuesCount(
       fixture.issues,
       fixture.issueRelations
     );
-    expect(calculatedReady).toBe(26);
+    expect(calculatedReady).toBe(100);
   });
 
   it("verifies absence of any task text, comments, notes, or secrets", () => {
@@ -197,7 +197,7 @@ describe("capacity policy simulation snapshot (OPE-9199)", () => {
         metrics: { ...fixture.metrics, readyIssuesCount: 0 },
       };
       expect(() => validateSnapshot(mismatchedReady)).toThrow(
-        /readyIssuesCount \(0\) does not match calculated ready count \(26\)/
+        /readyIssuesCount \(0\) does not match calculated ready count \(100\)/
       );
     });
   });
