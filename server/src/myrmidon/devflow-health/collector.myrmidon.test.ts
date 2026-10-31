@@ -44,6 +44,7 @@ function createMockDb(fixtures: {
             hasJoin = true;
             return queryChain;
           }),
+          leftJoin: vi.fn(() => queryChain),
           where: vi.fn(() => queryChain),
           limit: vi.fn(() => queryChain),
           then: (resolve: (val: any) => void) => {
