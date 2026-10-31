@@ -1129,6 +1129,85 @@ export interface SwarmPoolReadOptions {
   issueId?: string;
 }
 
+export {
+  clearFailedRunsCache,
+  invalidateFailedRunsCache,
+  DEFAULT_FAILED_RUNS_CACHE_TTL_MS,
+} from "./effective-pheromone.js";
+
+export interface SwarmLastRunRow {
+  agentId: string;
+  lastActiveAt: Date | string | null;
+}
+
+export const LAST_RUN_ROWS_CACHE_TTL_MS = 60_000;
+
+interface LastRunRowsCacheEntry {
+  rows: SwarmLastRunRow[];
+  expiresAt: number;
+  inFlight?: Promise<SwarmLastRunRow[]>;
+}
+
+const lastRunRowsCache = new Map<string, LastRunRowsCacheEntry>();
+
+export async function getCachedLastRunRows(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+): Promise<SwarmLastRunRow[]> {
+  const nowMs = now.getTime();
+  const entry = lastRunRowsCache.get(companyId);
+  if (entry && entry.expiresAt > nowMs && !entry.inFlight) {
+    return entry.rows;
+  }
+  if (entry?.inFlight) {
+    return entry.inFlight;
+  }
+  let inFlightPromise: Promise<SwarmLastRunRow[]> | undefined;
+  const execute = async (): Promise<SwarmLastRunRow[]> => {
+    try {
+      const rows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .groupBy(heartbeatRuns.agentId);
+      lastRunRowsCache.set(companyId, {
+        rows,
+        expiresAt: now.getTime() + LAST_RUN_ROWS_CACHE_TTL_MS,
+      });
+      return rows;
+    } finally {
+      const current = lastRunRowsCache.get(companyId);
+      if (current && inFlightPromise && current.inFlight === inFlightPromise) {
+        delete current.inFlight;
+      }
+    }
+  };
+  const promise = execute();
+  inFlightPromise = promise;
+  if (entry) {
+    entry.inFlight = promise;
+  } else {
+    lastRunRowsCache.set(companyId, {
+      rows: [],
+      expiresAt: 0,
+      inFlight: promise,
+    });
+  }
+  return promise;
+}
+
+export function invalidateLastRunRowsCache(companyId?: string): void {
+  if (companyId) {
+    lastRunRowsCache.delete(companyId);
+  } else {
+    lastRunRowsCache.clear();
+  }
+}
+
 /**
  * Every caste of the company that an agent holds, with its ready queue (only
  * castes with at least one ready row are returned) and every agent of that
@@ -1144,47 +1223,41 @@ export async function listIdleRolePairs(
   options: SwarmPoolReadOptions = {},
 ): Promise<SwarmIdleRolePair[]> {
   const poolNow = options.order?.now ?? new Date();
-  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] = await Promise.all([
-    db
-      .select({
-        id: agents.id,
-        companyId: agents.companyId,
-        name: agents.name,
-        reportsTo: agents.reportsTo,
-        role: agents.role,
-        status: agents.status,
-        pausedAt: agents.pausedAt,
-        metadata: agents.metadata,
-      })
-      .from(agents)
-      .innerJoin(companies, eq(companies.id, agents.companyId))
-      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
-      // A stable order of the pool. Two passes over equal facts see the same
-      // rows in the same order; the pick itself is the scent (T10).
-      .orderBy(asc(agents.id)),
-    db
-      .select({ agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] =
+    await Promise.all([
+      db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          reportsTo: agents.reportsTo,
+          role: agents.role,
+          status: agents.status,
+          pausedAt: agents.pausedAt,
+          metadata: agents.metadata,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
+        // A stable order of the pool. Two passes over equal facts see the same
+        // rows in the same order; the pick itself is the scent (T10).
+        .orderBy(asc(agents.id)),
+      db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+          ),
         ),
-      ),
-    db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, companyId))
-      .groupBy(heartbeatRuns.agentId),
-    // The live leases of the company, per agent. The per-agent ceiling needs
-    // them: an agent that already holds a lease is not a free agent, and a
-    // hardcoded zero here would hand it a second task it cannot start.
-    liveClaimCountsByAgent(db, companyId),
-    openLoadByAgent(db, companyId),
-  ] as const);
+      getCachedLastRunRows(db, companyId, poolNow),
+      // The live leases of the company, per agent. The per-agent ceiling needs
+      // them: an agent that already holds a lease is not a free agent, and a
+      // hardcoded zero here would hand it a second task it cannot start.
+      liveClaimCountsByAgent(db, companyId),
+      openLoadByAgent(db, companyId),
+    ] as const);
 
   // The quota facts are read for the candidate agents of this pass only.
   const quotaHoldByAgent = await quotaHoldsByAgent(

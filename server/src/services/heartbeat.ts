@@ -796,6 +796,8 @@ import { tryDevReviewContinuationOnRelease, devProcessProjectIds } from "../myrm
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
+  invalidateFailedRunsCache,
+  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
@@ -13028,6 +13030,15 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
+    invalidateLastRunRowsCache(updated.companyId);
+    if (
+      updated.status === "failed" ||
+      updated.status === "timed_out" ||
+      (updated.status as string) === "blocked" ||
+      (updated.status as string) === "needs_followup"
+    ) {
+      invalidateFailedRunsCache(updated.companyId);
+    }
     void emitAgentTaskRun(db, updated);
     void reportRunFailure(db, updated);
   }
