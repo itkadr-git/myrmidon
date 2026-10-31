@@ -7151,6 +7151,8 @@ function getActorIdentityPart(req: Request): string {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
 
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
@@ -7160,9 +7162,11 @@ function getActorIdentityPart(req: Request): string {
         : null,
     ]);
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = (wakeReason !== undefined || hasResult)
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
   });
