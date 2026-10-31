@@ -30,6 +30,7 @@ function profile(overrides: Partial<CompiledProfile> = {}): CompiledProfile {
 
 interface FakeDriver extends BotContainerDriver {
   calls: string[];
+  writtenProfiles: CompiledProfile[];
   current(): BotContainerStatus;
 }
 
@@ -49,6 +50,7 @@ function fakeDriver(
   } = {},
 ): FakeDriver {
   const calls: string[] = [];
+  const writtenProfiles: CompiledProfile[] = [];
   let current = initial;
   const maybeFail = (step: keyof NonNullable<typeof opts.fail>) => {
     const message = opts.fail?.[step];
@@ -56,6 +58,7 @@ function fakeDriver(
   };
   return {
     calls,
+    writtenProfiles,
     current: () => current,
     async status() {
       calls.push("status");
@@ -90,6 +93,7 @@ function fakeDriver(
     },
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
+      writtenProfiles.push(compiled);
       maybeFail("writeProfile");
       current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash, maxConcurrentRuns: compiled.maxConcurrentRuns };
     },
@@ -286,6 +290,74 @@ describe("reconcileBot", () => {
       expect(outcome).toEqual({ kind: "applied_files" });
       expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
       expect(maintenance.enterCalls).toBe(0);
+    });
+
+    it("assigning a skill does not create a maintenance window; hot files apply without restart", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-old",
+      });
+      const maintenance = fakeMaintenance([0]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-new-with-skill",
+        files: [
+          { path: "hermes/config.yaml", content: "model: default\n", mode: 0o644, secret: false },
+          {
+            path: "hermes/skills/paperclip-managed/test-skill/SKILL.md",
+            content: "# test-skill\n",
+            mode: 0o644,
+            secret: false,
+          },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(driver.writtenProfiles[0]?.files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "hermes/skills/paperclip-managed/test-skill/SKILL.md",
+            content: "# test-skill\n",
+          }),
+        ]),
+      );
+    });
+
+    it("instruction edit: editing AGENTS.md applies via applied_files without restart or maintenance", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-old",
+      });
+      const maintenance = fakeMaintenance([0]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-new-instructions",
+        files: [
+          { path: "workspace/AGENTS.md", content: "# Updated Instructions\n", mode: 0o644, secret: false },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(driver.writtenProfiles[0]?.files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "workspace/AGENTS.md",
+            content: "# Updated Instructions\n",
+          }),
+        ]),
+      );
     });
 
     it("restart: different restartHash — pauses only this agent, drains, writes, restarts, resumes", async () => {

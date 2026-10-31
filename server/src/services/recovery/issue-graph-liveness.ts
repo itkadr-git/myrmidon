@@ -86,7 +86,9 @@ export type IssueReviewPathFactKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  // myrmidon(OPE-10045): an approval recorded before the PR merged.
+  | "approved_pending_merge";
 
 export interface IssueReviewPathFact {
   kind: IssueReviewPathFactKind;
@@ -297,6 +299,23 @@ export function classifyIssueReviewPaths(
 
   if (hasScheduledIssueMonitorPath(issue, nowMs)) {
     paths.push({ kind: "monitor", ref: null, agentId: issue.assigneeAgentId ?? null, userId: null, since: null });
+  }
+
+  // myrmidon(OPE-10045): the reviewer approved the last stage while the PR
+  // was still open. The decision is recorded and the PR sync closes the task
+  // after the merge, so the review is waiting on the merge, not stalled.
+  const lastDecisionId = issue.executionState?.lastDecisionId;
+  if (
+    issue.executionState?.status === "completed" &&
+    issue.executionState?.lastDecisionOutcome === "approved"
+  ) {
+    paths.push({
+      kind: "approved_pending_merge",
+      ref: typeof lastDecisionId === "string" ? lastDecisionId : null,
+      agentId: null,
+      userId: null,
+      since: null,
+    });
   }
 
   const appendExecutionPaths = (

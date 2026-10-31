@@ -12,12 +12,15 @@ import {
   type ProcessesSettings,
 } from "@myrmidon/shared";
 import {
+  apiChildMaxOldSpaceMb,
   createProcessSupervisor,
+  SUPERVISOR_API_MAX_OLD_SPACE_ENV,
   SUPERVISOR_BACKOFF_INITIAL_MS,
   SUPERVISOR_DRAIN_GRACE_MS,
   SUPERVISOR_IPC_DRAIN,
   SUPERVISOR_IPC_READY,
   SUPERVISOR_NO_CHILD_GRACE_MS,
+  SUPERVISOR_READY_TIMEOUT_MS,
   type ProcessSupervisorDeps,
   type SupervisorListenerHandle,
 } from "./supervisor.js";
@@ -285,5 +288,108 @@ describe("process supervisor (PROCS-1.2)", () => {
     // The pending restart of child[0] must not fire after shutdown.
     clock.advance(60_000);
     expect(children).toHaveLength(2);
+  });
+});
+
+// myrmidon(OPE-10011): the second round from the stand — children alive but
+// never ready, and the moves the supervisor dropped while in startingSplit.
+describe("process supervisor: readiness deadline and startingSplit moves (OPE-10011)", () => {
+  const flush = async () => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+  const drained = (child: FakeChild) => child.sent.some((m) => (m as { type?: string }).type === SUPERVISOR_IPC_DRAIN);
+
+  it("a child that never reports ready abandons the split: emergency single, attention, every child drained", async () => {
+    const { supervisor, children, listeners, attention, clock } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "single" }));
+    await supervisor.apply(settings({ mode: "split", apiCount: 2 }));
+    children[0].emit("message", { type: SUPERVISOR_IPC_READY });
+    // children[1] is alive and silent — the no-child grace never sees it.
+    clock.advance(SUPERVISOR_READY_TIMEOUT_MS - 1);
+    expect(supervisor.state()).toBe("startingSplit");
+    clock.advance(1);
+    await flush();
+    expect(supervisor.state()).toBe("emergencySingle");
+    expect(attention).toEqual([
+      expect.objectContaining({ reason: "api_children_not_ready", desiredApiCount: 2, readyApiCount: 1 }),
+    ]);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0].closed).toBe(false); // the worker kept the port all along
+    expect(children.every(drained)).toBe(true);
+
+    // The same split applied again is a retry, not "already converged".
+    await supervisor.apply(settings({ mode: "split", apiCount: 2 }));
+    expect(supervisor.state()).toBe("startingSplit");
+    expect(children).toHaveLength(4);
+  });
+
+  it("a restart timer that fires after the fall back forks nothing", async () => {
+    const { supervisor, children, clock } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "split", apiCount: 2 }));
+    clock.advance(SUPERVISOR_READY_TIMEOUT_MS - 500);
+    children[1].exitCode = 1;
+    children[1].emit("exit", 1, null); // restart due in 1 s
+    clock.advance(500); // children[0]'s readiness deadline: fall back
+    await flush();
+    expect(supervisor.state()).toBe("emergencySingle");
+    clock.advance(SUPERVISOR_BACKOFF_INITIAL_MS);
+    expect(children).toHaveLength(2);
+  });
+
+  it("in split a restarted child that stays silent is restarted again; split stays in force", async () => {
+    const { supervisor, children, attention, clock } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "split", apiCount: 1 }));
+    children[0].emit("message", { type: SUPERVISOR_IPC_READY });
+    await flush();
+    expect(supervisor.state()).toBe("split");
+    children[0].exitCode = 1;
+    children[0].emit("exit", 1, null);
+    clock.advance(SUPERVISOR_BACKOFF_INITIAL_MS);
+    expect(children).toHaveLength(2);
+    clock.advance(SUPERVISOR_READY_TIMEOUT_MS);
+    expect(children[1].killed).toContain("SIGTERM");
+    expect(supervisor.state()).toBe("split");
+    expect(attention).toHaveLength(0);
+  });
+
+  it("apiCount down while starting drains the not-ready children first and the smaller quorum puts split in force", async () => {
+    const { supervisor, children, listeners } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "single" }));
+    await supervisor.apply(settings({ mode: "split", apiCount: 3 }));
+    children[2].emit("message", { type: SUPERVISOR_IPC_READY });
+    await flush();
+    expect(supervisor.state()).toBe("startingSplit");
+    await supervisor.apply(settings({ mode: "split", apiCount: 1 }));
+    await flush();
+    expect(children.map(drained)).toEqual([true, true, false]);
+    expect(supervisor.state()).toBe("split");
+    expect(listeners[0].closed).toBe(true);
+  });
+
+  it("apiCount up while starting forks the missing children", async () => {
+    const { supervisor, children } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "split", apiCount: 1 }));
+    await supervisor.apply(settings({ mode: "split", apiCount: 3 }));
+    expect(children).toHaveLength(3);
+    expect(supervisor.state()).toBe("startingSplit");
+  });
+
+  it("single while starting drains every child and the worker keeps the port", async () => {
+    const { supervisor, children, listeners } = makeSupervisor();
+    await supervisor.apply(settings({ mode: "single" }));
+    await supervisor.apply(settings({ mode: "split", apiCount: 2 }));
+    await supervisor.apply(settings({ mode: "single" }));
+    expect(supervisor.state()).toBe("single");
+    expect(children.every(drained)).toBe(true);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0].closed).toBe(false);
+  });
+
+  it("the api child's old-space ceiling is 1024 MB unless the env override is 256..8192", () => {
+    expect(apiChildMaxOldSpaceMb({})).toBe(1024);
+    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "512" })).toBe(512);
+    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "128" })).toBe(1024);
+    expect(apiChildMaxOldSpaceMb({ [SUPERVISOR_API_MAX_OLD_SPACE_ENV]: "lots" })).toBe(1024);
   });
 });

@@ -456,7 +456,9 @@ export type IssueReviewAttentionPathKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  // myrmidon(OPE-10045): the last stage was approved before the PR merged; the PR sync closes the task.
+  | "approved_pending_merge";
 
 export interface IssueReviewAttentionPath {
   kind: IssueReviewAttentionPathKind;
@@ -566,6 +568,7 @@ export interface IssueUnblockDescriptor {
   owner: IssueUnblockOwner;
   action: string;
   reasonRef?: IssueUnblockReasonRef;
+  reason?: string;
 }
 
 export interface IssueRecoveryAction {
