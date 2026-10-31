@@ -1,4 +1,15 @@
 import { z } from "zod";
+
+const legacySequentialExecutionPolicyInputSchema = z.object({
+  mode: z.literal("sequential"),
+  stages: z.array(z.unknown()).optional(),
+  commentRequired: z.boolean().optional(),
+  monitor: z.unknown().nullable().optional(),
+  reviewPreset: z.unknown().optional(),
+  authorizationPolicy: z.unknown().optional(),
+  maxReviewRounds: z.number().int().positive().max(50).nullable().optional(),
+  reviewEscalationPolicy: z.unknown().nullable().optional(),
+});
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
@@ -754,7 +765,6 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
     };
   }, schema);
 }
-
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -1019,6 +1029,10 @@ export const updateIssueSchema = objectWithoutDefaults(
     responsibleAgentId: z.string().guid().optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
+    executionPolicy: legacySequentialExecutionPolicyInputSchema
+      .or(issueExecutionPolicySchema)
+      .optional()
+      .nullable(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
