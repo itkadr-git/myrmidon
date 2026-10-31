@@ -4691,11 +4691,7 @@ export function recoveryService(
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
           ...input.issue,
-<<<<<<< HEAD
           hasOpenPullRequest: Boolean(openPrProduct),
-=======
-          hasOpenPullRequest: Boolean(openPrProduct),
->>>>>>> origin/main
         }),
         hasPendingCi,
         successfulRunHandoffExhausted: handoffExhausted,
