@@ -13,6 +13,9 @@ function id(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 }
 
+const support = await getEmbeddedPostgresTestSupport();
+const describePg = support.supported ? describe : describe.skip;
+
 describe("readdress-apply", () => {
   describe("unit: computeRouteType and computeTimeoutAt", () => {
     it("computes routeType with fallback to decision", () => {
@@ -84,9 +87,6 @@ describe("readdress-apply", () => {
       expect(csv).toContain(id(1));
     });
   });
-
-  const support = await getEmbeddedPostgresTestSupport();
-  const describePg = support.supported ? describe : describe.skip;
 
   describePg("PostgreSQL integration", () => {
     const cleanups: Array<() => Promise<void>> = [];
