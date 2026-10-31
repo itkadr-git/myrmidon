@@ -37,65 +37,6 @@ export function redCiSince(events: { conclusion: string | null; at: string }[]):
   return since;
 }
 
-<<<<<<< HEAD
-export interface PrApprovalProductFact {
-  status: string;
-  reviewState?: string | null;
-  createdAt?: Date | string | null;
-  updatedAt?: Date | string | null;
-  externalId?: string | number | null;
-  url?: string | null;
-  metadata?: Record<string, unknown> | null;
-}
-
-export interface PrApprovalCommentFact {
-  body: string;
-  createdAt: Date | string;
-  authorAgentId?: string | null;
-  authorUserId?: string | null;
-  authorType?: string | null;
-}
-
-export interface ApprovedPrSinceOptions {
-  prNumber?: number | null;
-  currentHeadSha?: string | null;
-  reviewerAgentIds?: string[] | null;
-  authorAgentId?: string | null;
-  fallbackApprovedAt?: Date | string | null;
-}
-
-/**
- * Extracts PR number from multiple sources:
- * metadata.number, metadata.prNumber, metadata.pullRequestNumber, product.externalId, or PR URL.
- */
-export function extractPrNumber(product: PrApprovalProductFact): number | null {
-  const meta = product.metadata ?? {};
-  const candidates = [
-    meta.number,
-    meta.prNumber,
-    meta.pullRequestNumber,
-    product.externalId,
-  ];
-  for (const val of candidates) {
-    if (typeof val === "number" && Number.isSafeInteger(val) && val > 0) {
-      return val;
-    }
-    if (typeof val === "string") {
-      const match = val.match(/^\s*#?(\d+)\s*$/);
-      if (match) {
-        const num = Number(match[1]);
-        if (Number.isSafeInteger(num) && num > 0) return num;
-      }
-    }
-  }
-  if (typeof product.url === "string") {
-    const match = product.url.match(/\/pull\/(\d+)/i);
-    if (match) {
-      const num = Number(match[1]);
-      if (Number.isSafeInteger(num) && num > 0) return num;
-    }
-  }
-=======
 export interface ReviewVerdict {
   outcome: "approve" | "return" | "other";
   at: string;
@@ -156,12 +97,70 @@ export function staleMarkerSince(input: {
     return input.verdict.at;
   }
 
->>>>>>> origin/main
+  return null;
+}
+
+export interface PrApprovalProductFact {
+  status: string;
+  reviewState?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  externalId?: string | number | null;
+  url?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface PrApprovalCommentFact {
+  body: string;
+  createdAt: Date | string;
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+  authorType?: string | null;
+}
+
+export interface ApprovedPrSinceOptions {
+  prNumber?: number | null;
+  currentHeadSha?: string | null;
+  reviewerAgentIds?: string[] | null;
+  authorAgentId?: string | null;
+  fallbackApprovedAt?: Date | string | null;
+}
+
+/**
+ * Extracts PR number from multiple sources:
+ * metadata.number, metadata.prNumber, metadata.pullRequestNumber, product.externalId, or PR URL.
+ */
+export function extractPrNumber(product: PrApprovalProductFact): number | null {
+  const meta = product.metadata ?? {};
+  const candidates = [
+    meta.number,
+    meta.prNumber,
+    meta.pullRequestNumber,
+    product.externalId,
+  ];
+  for (const val of candidates) {
+    if (typeof val === "number" && Number.isSafeInteger(val) && val > 0) {
+      return val;
+    }
+    if (typeof val === "string") {
+      const match = val.match(/^\s*#?(\d+)\s*$/);
+      if (match) {
+        const num = Number(match[1]);
+        if (Number.isSafeInteger(num) && num > 0) return num;
+      }
+    }
+  }
+  if (typeof product.url === "string") {
+    const match = product.url.match(/\/pull\/(\d+)/i);
+    if (match) {
+      const num = Number(match[1]);
+      if (Number.isSafeInteger(num) && num > 0) return num;
+    }
+  }
   return null;
 }
 
 /**
-<<<<<<< HEAD
  * Determines when an active PR became approved, if it is currently approved and not merged/closed.
  * Reads:
  * 1. Product reviewState / status ("approved") and metadata (reviewApproved, reviewApprovedAt, review-approved label).
@@ -404,7 +403,9 @@ export function approvedPrSince(
   return isApproved && approvedSinceTime !== null
     ? new Date(approvedSinceTime).toISOString()
     : null;
-=======
+}
+
+/**
  * Derives the timestamp since an approved PR has been waiting for auto-merge.
  * Emits the approval timestamp when a PR is approved and remains open/unmerged.
  * Returns null when merged, closed, or not approved.
@@ -436,5 +437,4 @@ export function stalledRouterSince(input: {
   const time = Date.parse(input.inReviewSince);
   if (!Number.isFinite(time)) return null;
   return input.inReviewSince;
->>>>>>> origin/main
 }

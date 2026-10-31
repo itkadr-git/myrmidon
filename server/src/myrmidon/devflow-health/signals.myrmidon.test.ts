@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-<<<<<<< HEAD
   approvedPrSince,
   buildDevflowSignals,
   extractPrNumber,
-=======
-  buildDevflowSignals,
->>>>>>> origin/main
   redCiSince,
   staleMarkerSince,
   stalledMergeSince,
@@ -36,7 +32,6 @@ describe("DEVFLOW runtime signals", () => {
     ]);
   });
 
-<<<<<<< HEAD
   it("delivers approvedNotMergedMs alerts when duration meets threshold", () => {
     const sample = {
       companyId: "company-a",
@@ -298,61 +293,6 @@ describe("DEVFLOW runtime signals", () => {
     });
   });
 
-=======
-  it("builds alerts for stale marker, stalled merge, and stalled router with dedup keys", () => {
-    const samples = [
-      {
-        companyId: "company-a",
-        subjectId: "issue-1",
-        subjectKind: "issue" as const,
-        title: "PR 1",
-        metric: "staleMarkerMs" as const,
-        since: "2026-10-27T19:00:00Z", // 60 min ago
-      },
-      {
-        companyId: "company-a",
-        subjectId: "issue-2",
-        subjectKind: "issue" as const,
-        title: "PR 2",
-        metric: "stalledMergeMs" as const,
-        since: "2026-10-27T18:30:00Z", // 90 min ago
-      },
-      {
-        companyId: "company-a",
-        subjectId: "issue-3",
-        subjectKind: "issue" as const,
-        title: "Issue 3",
-        metric: "stalledRouterMs" as const,
-        since: "2026-10-27T19:20:00Z", // 40 min ago
-      },
-    ];
-
-    const signals = buildDevflowSignals(
-      samples,
-      {
-        staleMarkerMs: 50 * 60_000,
-        stalledMergeMs: 60 * 60_000,
-        stalledRouterMs: 50 * 60_000, // 40 min is below this threshold
-      },
-      now,
-    );
-
-    expect(signals).toHaveLength(2);
-    expect(signals[0]).toMatchObject({
-      metric: "staleMarkerMs",
-      subjectId: "issue-1",
-      durationMs: 3_600_000,
-      dedupKey: "devflow:company-a:staleMarkerMs:issue-1",
-    });
-    expect(signals[1]).toMatchObject({
-      metric: "stalledMergeMs",
-      subjectId: "issue-2",
-      durationMs: 5_400_000,
-      dedupKey: "devflow:company-a:stalledMergeMs:issue-2",
-    });
-  });
-
->>>>>>> origin/main
   describe("staleMarkerSince (Approval-to-PR-marker step)", () => {
     const approveVerdict = {
       outcome: "approve" as const,
@@ -371,7 +311,7 @@ describe("DEVFLOW runtime signals", () => {
       ).toBe("2026-10-27T19:00:00Z");
     });
 
-    it("emits verdict timestamp when marker was applied prior to the verdict (stale marker)", () => {
+    it("emits verdict timestamp when marker is older than the latest verdict (stale marker)", () => {
       expect(
         staleMarkerSince({
           verdict: approveVerdict,
@@ -385,17 +325,10 @@ describe("DEVFLOW runtime signals", () => {
     it("emits verdict timestamp when head moved after review (head mismatch)", () => {
       expect(
         staleMarkerSince({
-<<<<<<< HEAD
           verdict: approveVerdict,
           marker: { hasMarker: true, markedAt: "2026-10-27T19:05:00Z" },
           prStatus: "open",
           currentHeadSha: "def5678",
-=======
-          verdict: approveVerdict, // for head abc1234
-          marker: { hasMarker: true, markedAt: "2026-10-27T19:05:00Z" },
-          prStatus: "open",
-          currentHeadSha: "def5678", // new head
->>>>>>> origin/main
         }),
       ).toBe("2026-10-27T19:00:00Z");
     });

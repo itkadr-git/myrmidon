@@ -127,10 +127,6 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     }
   }
 
-  if (!stored && Object.keys(thresholds).length === 0) {
-    return [];
-  }
-
   const samples: DevflowSample[] = [];
 
   // 1. Engineer idle
