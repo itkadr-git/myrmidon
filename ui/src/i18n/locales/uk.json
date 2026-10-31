@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "Інтерфейс",
+    "new": "Нова",
+    "legacy": "Попередня",
+    "instanceDefault": "За налаштуванням екземпляра",
+    "switchTo": "Перемкнути версію інтерфейсу"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Main navigation",
@@ -406,6 +413,18 @@
       "window5h": "Вікно 5г",
       "window7d": "Вікно 7д",
       "lastOk": "Останній OK"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {

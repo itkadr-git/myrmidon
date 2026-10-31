@@ -193,6 +193,20 @@ describe("ui2 personal override (?ui=1|2)", () => {
 });
 
 describe("ui2 i18n", () => {
+  it("carries interface switch keys in en and ru", () => {
+    const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
+    const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));
+    for (const messages of [en, ru]) {
+      expect(messages.uiSwitch).toBeDefined();
+      expect(messages.uiSwitch.label).toBeTruthy();
+      expect(messages.uiSwitch.new).toBeTruthy();
+      expect(messages.uiSwitch.legacy).toBeTruthy();
+      expect(messages.uiSwitch.instanceDefault).toBeTruthy();
+    }
+    expect(ru.uiSwitch.new).toBe("Новая");
+    expect(ru.uiSwitch.legacy).toBe("Прежняя");
+    expect(ru.uiSwitch.instanceDefault).toBe("По настройке экземпляра");
+  });
   it("has the ui2 namespace in en and ru with the shell and screen keys", () => {
     const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
     const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));

@@ -80,6 +80,7 @@ import type { Db } from "@myrmidon/db";
 import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
+import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import {
   companies,
   activityLog,
@@ -107,6 +108,7 @@ import {
   pipelineCases,
   pipelineStages,
   pipelines,
+  projects,
   projectWorkspaces,
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
@@ -199,6 +201,9 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
+  validateIdeasProjectConstraints,
+  checkIdeasWeeklySLA,
+  isIdeasProjectName,
 } from "@myrmidon/shared";
 import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -3755,6 +3760,42 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
+  const resolveProjectName = async (projectId: string): Promise<string | null> => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId));
+        if (rows[0]?.name) return rows[0].name;
+      }
+    } catch {
+      // ignore db error
+    }
+    try {
+      if (projectsSvc && typeof projectsSvc.getById === "function") {
+        const proj = await projectsSvc.getById(projectId);
+        if (proj?.name) return proj.name;
+      }
+    } catch {
+      // ignore service error
+    }
+    return null;
+  };
+  const listCompanyProjects = async (companyId: string) => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+        if (rows.length > 0) return rows;
+      }
+    } catch {}
+    try {
+      if (projectsSvc && typeof projectsSvc.list === "function") {
+        return await projectsSvc.list(companyId);
+      }
+    } catch {}
+    return [];
+  };
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -8988,6 +9029,96 @@ export function issueRoutes(
     res.json({ count });
   });
 
+  router.get("/companies/:companyId/ideas/sla", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await listCompanyProjects(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+    res.json({
+      companyId,
+      projectId: ideasProject.id,
+      projectName: ideasProject.name,
+      sla,
+      staleIssues,
+    });
+  });
+
+  router.post("/companies/:companyId/ideas/sla/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await listCompanyProjects(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+
+    let notificationSent = false;
+    let triageIssueId: string | null = null;
+
+    if (sla.staleCount > 0) {
+      const staleListFormatted = staleIssues
+        .map((i) => `- [${i.identifier}] ${i.title} (создана ${new Date(i.createdAt).toISOString().slice(0, 10)})`)
+        .join("\n");
+
+      const existingTriage = await svc.list(companyId, {
+        status: ["todo", "in_progress"],
+      });
+      const activeTriageIssue = existingTriage.find(
+        (i) => i.title.includes("SLA: разбор просроченных идей") && i.status !== "done" && i.status !== "cancelled",
+      );
+
+      if (!activeTriageIssue) {
+        const newIssue = await svc.create(companyId, {
+          title: `[SLA: разбор просроченных идей] ${sla.staleCount} карточек старше 7 дней`,
+          description: `Автоматический аудит SLA проекта «Идеи» (OPE-9760):\nОбнаружено ${sla.staleCount} карточек старше 7 дней без решения:\n\n${staleListFormatted}\n\nНеобходимо разобрать их: перевести в выпуск с исполнителем, отклонить с причиной или оставить.`,
+          priority: "high",
+          status: "todo",
+        });
+        triageIssueId = newIssue.id;
+        notificationSent = true;
+      } else {
+        triageIssueId = activeTriageIssue.id;
+        notificationSent = true;
+      }
+    }
+
+    res.json({
+      audited: true,
+      compliant: sla.staleCount === 0,
+      sla,
+      staleIssues,
+      notificationSent,
+      triageIssueId,
+    });
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -9304,10 +9435,52 @@ export function issueRoutes(
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
+      ciResult: null as unknown,
+      pullRequestsCi: [] as unknown[],
     };
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const prs = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      response.pullRequestsCi = prs;
+      response.ciResult = prs[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, response),
     );
+  });
+
+  router.get("/issues/:id/ci-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const pullRequests = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      return res.json({
+        issueId: issue.id,
+        pullRequests,
+        primaryCiResult: pullRequests[0] ?? null,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
   });
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
@@ -12550,6 +12723,23 @@ export function issueRoutes(
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
+      if (rawCreateBody.projectId) {
+        const projName = await resolveProjectName(rawCreateBody.projectId as string);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
+            dueDate: (rawCreateBody as Record<string, unknown>).dueDate,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+            metadata: (rawCreateBody as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
+        }
+      }
       const actor = getActorInfo(req);
       const runWorkspaceInheritanceSourceIssueId =
         hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -13524,6 +13714,19 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (req.actor.type === "agent") {
+        throw forbidden(
+          `Board access required. Решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+          {
+            hint: `решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+            decisionEndpoint: `PATCH /api/issues/${id}`,
+            actions: {
+              approve: { status: "done", commentRequired: true },
+              request_changes: { status: "in_progress", commentRequired: true },
+            },
+          },
+        );
+      }
       assertBoard(req);
 
       if (req.actor.source !== "local_implicit") {
@@ -13734,6 +13937,44 @@ export function issueRoutes(
               ? req.body.executionWorkspacePreference
               : null,
         });
+      }
+      const targetProjectId =
+        req.body.projectId !== undefined ? (req.body.projectId as string | null) : existing.projectId;
+      const touchesIdeasConstraints =
+        req.body.projectId !== undefined ||
+        req.body.assigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined ||
+        (req.body as Record<string, unknown>).dueDate !== undefined ||
+        req.body.description !== undefined ||
+        (req.body as Record<string, unknown>).metadata !== undefined;
+      if (targetProjectId && touchesIdeasConstraints) {
+        const projName = await resolveProjectName(targetProjectId);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: requestedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId !== undefined
+                ? (req.body.assigneeUserId as string | null)
+                : existing.assigneeUserId,
+            dueDate:
+              (req.body as Record<string, unknown>).dueDate !== undefined
+                ? (req.body as Record<string, unknown>).dueDate
+                : (existing as Record<string, unknown>).dueDate,
+            description:
+              req.body.description !== undefined
+                ? (req.body.description as string | null)
+                : existing.description,
+            metadata:
+              (req.body as Record<string, unknown>).metadata !== undefined
+                ? (req.body as Record<string, unknown>).metadata
+                : (existing as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
+        }
       }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;

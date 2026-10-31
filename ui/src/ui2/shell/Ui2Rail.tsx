@@ -14,6 +14,7 @@ import { useUi2AttentionCount } from "../useUi2Status";
 import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t: tApp } = useTranslation();
@@ -181,27 +182,9 @@ export function Ui2Rail() {
         style={{
           marginTop: "auto",
           borderTop: "1px solid var(--myr-hairline)",
-          padding: "var(--myr-space-1) var(--myr-space-2)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
         }}
       >
-        <span
-          style={{
-            fontSize: "var(--myr-text-nano)",
-            color: "var(--myr-ink)",
-            fontWeight: 600,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {selectedCompany?.name ?? t("ui2.owner")}
-        </span>
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.ownerChannel")}
-        </span>
+        <Ui2AccountMenu />
       </div>
     </aside>
   );

@@ -21,10 +21,20 @@
 // mode that governs its own runs. The settings live in
 // instance_settings.general.guardrailModes; a PUT takes effect on the next
 // guardrail evaluation, no restart.
-
+//
+// myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check.
+//
+//   POST /api/myrmidon/companies/:companyId/guardrails/validate-regex
+//   POST /api/myrmidon/guardrails/validate-regex
+//
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
-import { guardrailModesSettingsSchema, type GuardrailModesSettings } from "@myrmidon/shared";
+import {
+  guardrailModesSettingsSchema,
+  type GuardrailModesSettings,
+  validateGuardrailRegex,
+  validateGuardrailRegexRequestSchema,
+} from "@myrmidon/shared";
 import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
@@ -128,6 +138,29 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
     });
     res.json({ events, count: events.length, limit });
   });
+
+  // myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check
+  router.post(
+    "/myrmidon/companies/:companyId/guardrails/validate-regex",
+    validate(validateGuardrailRegexRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      const result = validateGuardrailRegex(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/myrmidon/guardrails/validate-regex",
+    validate(validateGuardrailRegexRequestSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const result = validateGuardrailRegex(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }
