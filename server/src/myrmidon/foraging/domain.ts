@@ -172,6 +172,14 @@ export interface ForagingCandidateInput {
   summary: string;
   diff: ForagingSnapshotDiff;
   detectedAt: Date;
+  /** Edge-fetch source capture and fail-closed injection scan result. */
+  provenance?: {
+    requestId: string;
+    sourceUrl: string;
+    fetchedAt: string;
+    contentSha256: string;
+    scannerVerdict: { flagged: boolean; score: number; matched: string[] };
+  };
 }
 
 /**

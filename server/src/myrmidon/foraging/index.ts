@@ -18,7 +18,6 @@
 
 import type { Db } from "@myrmidon/db";
 import { financeEvents } from "@myrmidon/db";
-import { secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
@@ -135,19 +134,12 @@ export interface ForagingWiring {
 /** The store, the reader and the service bound to the database. */
 export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): ForagingWiring {
   const store = createDbForagingStore(db);
-  const secrets = secretService(db);
   const settings = instanceSettingsService(db);
   const service = createForagingService({
     store,
     reader: createForagingReader({
       env,
       minHostIntervalMs: readForagingSettings(env).minHostIntervalMs,
-      readKey: async (companyId, secretName) => {
-        if (!secretName) return null;
-        const row = await secrets.getByName(companyId, secretName);
-        if (!row) return null;
-        return secrets.resolveSecretValue(companyId, row.id, "latest");
-      },
     }),
     candidatePort: foragingCandidatePort(db),
     // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the
