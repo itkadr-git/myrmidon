@@ -230,6 +230,28 @@ export async function resolveGitHubOperationCredentials(
         source: resolved.identitySource ?? "personal",
         reason: resolved.error ?? "No GitHub identity connected",
       };
+      // myrmidon(GITHUB-SHARED-IDENTITY): no dedicated/personal/delegated OAuth
+      // grant for this run — a self-hosted GitHub App may serve the repository.
+      if (!resolved.configured || resolved.noCandidate) {
+        const app = await applyGitHubAppIdentity(db, {
+          companyId: input.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId:
+            typeof run.contextSnapshot?.issueId === "string"
+              ? run.contextSnapshot.issueId
+              : null,
+          responsibleUserId:
+            context?.cause === "company_default"
+              ? null
+              : (context?.responsibleUserId ?? null),
+          repository: normalizeGitHubRepository(input.repository) ?? (await inferRunRepository(db, run)),
+        });
+        if (app) {
+          summary = app.summary;
+          env = app.env;
+        }
+      }
     }
   } catch {
     // Provider/secret errors can contain sensitive response bodies. Never persist them.
@@ -237,36 +259,6 @@ export async function resolveGitHubOperationCredentials(
       status: "unavailable",
       reason: "GitHub credentials are temporarily unavailable",
     };
-  }
-
-  // myrmidon(GITHUB-SHARED-IDENTITY): if no personal/dedicated identity connected (or unavailable),
-  // check whether the company has a GitHub App configured that covers `input.repository` (or the run's task repository).
-  if (summary.status !== "available") {
-    const targetRepository =
-      normalizeGitHubRepository(input.repository) ?? (await inferRunRepository(db, run));
-    const appResult = await applyGitHubAppIdentity(db, {
-      companyId: input.companyId,
-      repository: targetRepository,
-      responsibleUserId: context.responsibleUserId ?? null,
-      actor: { type: "agent", agentId: input.agentId, companyId: input.companyId },
-    });
-    if (appResult.status === "available" && appResult.env) {
-      summary = {
-        status: "available",
-        source: appResult.source,
-        repository: appResult.repository,
-        login: appResult.login,
-        authenticationMode: appResult.authenticationMode,
-      };
-      env = appResult.env;
-    } else if (appResult.status === "absent" && appResult.reasonCode === "repository_required") {
-      summary = {
-        status: "absent",
-        reasonCode: "repository_required",
-        availableRepositories: appResult.availableRepositories,
-        reason: appResult.reason,
-      };
-    }
   }
 
   if (context)
