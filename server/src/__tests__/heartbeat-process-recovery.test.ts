@@ -5130,6 +5130,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       addresseeAgentId: agentId,
       sourceRunId: null,
       sourceCommentId: null,
+      payload: {
+        version: 1,
+        prompt: "Review this delivery",
+      },
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -5217,6 +5221,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       addresseeAgentId: agentId,
       sourceRunId: null,
       sourceCommentId: null,
+      payload: {
+        version: 1,
+        prompt: "Review this delivery",
+      },
       createdAt: new Date(),
       updatedAt: new Date(),
     });
