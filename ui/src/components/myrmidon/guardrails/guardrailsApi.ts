@@ -13,7 +13,7 @@ import type {
   GuardrailModesSettings,
   GuardrailRule,
   ResolvedGuardrailMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const guardrailsSettingsQueryKey = (companyId: string) =>
   ["myrmidon", "guardrails", "settings", companyId] as const;

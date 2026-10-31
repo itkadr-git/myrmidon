@@ -16,7 +16,7 @@ import {
   createDb,
   guardrailEvents,
   instanceSettings,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

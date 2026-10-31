@@ -30,7 +30,7 @@ import {
   type GuardrailRule,
   type GuardrailMode,
   type ResolvedGuardrailMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface GuardrailsAgentRow {
   agentId: string;

@@ -19,7 +19,7 @@
 // values themselves.
 
 import { and, eq } from "drizzle-orm";
-import { agents, instanceSettings, type Db } from "@paperclipai/db";
+import { agents, instanceSettings, type Db } from "@myrmidon/db";
 import {
   GUARDRAIL_DEFAULT_MODE,
   GUARDRAIL_MASK_PLACEHOLDER,
@@ -30,7 +30,7 @@ import {
   type GuardrailMode,
   type GuardrailModesSettings,
   type ResolvedGuardrailMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 const INSTANCE_SETTINGS_SINGLETON_KEY = "default";
 
