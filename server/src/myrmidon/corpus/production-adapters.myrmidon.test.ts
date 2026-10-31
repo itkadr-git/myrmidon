@@ -27,6 +27,10 @@ if (!support.supported || !pgvector.ok) {
   console.warn(`[corpus] production adapter test skipped: ${pgvector.reason ?? support.reason}`);
 }
 
+afterAll(async () => {
+  await pgvector.cleanup();
+});
+
 run("production corpus adapters", () => {
   let database: EmbeddedPostgresTestDatabase | undefined;
   let storageDir: string | undefined;

@@ -22,5 +22,6 @@ export { createHttpDocumentParser } from "./parser/http-document-parser.js";
 export * from "./import/ragflow.js";
 export {
   installPgvectorIntoEmbeddedCluster,
+  cleanupPgvectorFromEmbeddedCluster,
   type PgvectorInstall,
 } from "./test-pgvector.js";
