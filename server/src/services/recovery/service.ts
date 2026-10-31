@@ -195,6 +195,19 @@ import {
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
+// myrmidon(OPE-10045): a reviewer run without a decision is not a stall while
+// CI runs, and gets an explicit decision request before the board escalation.
+import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_DECISION_RECOVERY_INSTRUCTION,
+  REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+  REVIEW_STAGE_RECOVERY_WINDOW_MS,
+  countStalledReviewDeferrals,
+  decideStalledReviewRecovery,
+  type ReviewPullRequestCiFacts,
+} from "../../myrmidon/review-stage-recovery/policy.js";
+import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -968,6 +981,8 @@ export function recoveryService(
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    /** myrmidon(OPE-10045): CI of the issue's open PR head; tests inject a fake. */
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -4028,6 +4043,221 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  // myrmidon(OPE-10045): CI of the open PR head, read lazily so the resolver's
+  // GitHub/secrets imports stay out of the heartbeat import graph.
+  async function resolveReviewPullRequestCi(input: {
+    companyId: string;
+    issueId: string;
+  }): Promise<ReviewPullRequestCiFacts> {
+    try {
+      if (deps.resolveReviewPullRequestCi) return await deps.resolveReviewPullRequestCi(input);
+      const { createReviewPullRequestCiResolver } = await import(
+        "../../myrmidon/review-stage-recovery/github-ci.js"
+      );
+      return await createReviewPullRequestCiResolver({ db })(input);
+    } catch {
+      return { state: "unknown", pullRequestUrl: null, headSha: null, reason: "resolver_error" };
+    }
+  }
+
+  async function scheduleReviewCiWaitMonitor(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: NonNullable<LatestIssueRun>;
+    ci: ReviewPullRequestCiFacts;
+    nextCheckAt: Date;
+  }) {
+    const previousPolicy = normalizeIssueExecutionPolicy(
+      input.issue.executionPolicy ?? null,
+    );
+    const policy = {
+      ...(previousPolicy ?? {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [],
+      }),
+      monitor: {
+        nextCheckAt: input.nextCheckAt.toISOString(),
+        notes:
+          `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
+          `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
+          `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          "the board wakes the reviewer to decide when the wait ends.",
+        scheduledBy: "assignee" as const,
+        kind: "external_service" as const,
+        serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+        externalRef: input.ci.pullRequestUrl ?? input.latestRun.id,
+        timeoutAt: null,
+        maxAttempts: null,
+        recoveryPolicy: "wake_owner" as const,
+      },
+    };
+    const transition = applyIssueMonitorPolicyTransition({
+      issue: input.issue,
+      policy,
+      previousPolicy,
+      requestedStatus: input.issue.status,
+      requestedAssigneePatch: {},
+      actor: { agentId: null, userId: null },
+      monitorExplicitlyUpdated: true,
+    });
+    return issuesSvc.update(input.issue.id, {
+      ...transition.patch,
+      executionPolicy: policy,
+    });
+  }
+
+  /**
+   * myrmidon(OPE-10045): true when the escalation of a stalled execution
+   * review is deferred (a CI wait was scheduled or the reviewer was woken
+   * again), false when the normal escalation must run.
+   */
+  async function deferStalledExecutionReview(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause?: StrandedRecoveryCause;
+  }): Promise<boolean> {
+    if (input.recoveryCause !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) return false;
+    if (input.issue.status !== "in_review") return false;
+    const latestRun = input.latestRun;
+    // Only a reviewer run that ended normally without a decision. Failed or
+    // cancelled runs keep their own retry budget and escalation.
+    if (!latestRun || latestRun.status !== "succeeded") return false;
+    const state = parseIssueExecutionState(input.issue.executionState);
+    if (state?.status !== "pending") return false;
+    const participant = state.currentParticipant;
+    const participantAgentId =
+      participant?.type === "agent" ? participant.agentId ?? null : null;
+    if (!participantAgentId || latestRun.agentId !== participantAgentId) return false;
+    const participantAgent = await getAgent(participantAgentId);
+    if (
+      !participantAgent ||
+      participantAgent.companyId !== input.issue.companyId ||
+      !(await isAgentInvokable(participantAgent))
+    ) {
+      return false;
+    }
+    if (await isInvocationBudgetBlocked(input.issue, participantAgentId)) return false;
+
+    const stageId = state.currentStageId ?? null;
+    const deferralRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.issue.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issue.id),
+          eq(activityLog.action, REVIEW_STAGE_RECOVERY_DEFERRED_ACTION),
+          gte(activityLog.createdAt, new Date(Date.now() - REVIEW_STAGE_RECOVERY_WINDOW_MS)),
+        ),
+      );
+    const deferrals = countStalledReviewDeferrals(deferralRows, stageId);
+    const ci = await resolveReviewPullRequestCi({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+    });
+    const decision = decideStalledReviewRecovery({
+      ci: ci.state,
+      ciWaitsUsed: deferrals.ciWaits,
+      // The release tail's own review-participant retry was the first re-wake.
+      decisionRewakesUsed: 1 + deferrals.decisionRetries,
+    });
+    if (decision.kind === "escalate") return false;
+
+    const activityDetails = {
+      identifier: input.issue.identifier,
+      kind: decision.kind === "wait_for_ci" ? "ci_wait" : "decision_retry",
+      attempt: decision.attempt,
+      maxAttempts: decision.maxAttempts,
+      stageId,
+      stageType: state.currentStageType ?? null,
+      participantAgentId,
+      latestRunId: latestRun.id,
+      ciState: ci.state,
+      ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      pullRequestUrl: ci.pullRequestUrl,
+      headSha: ci.headSha,
+    };
+
+    if (decision.kind === "wait_for_ci") {
+      // myrmidon(OPE-10063): a CI the board cannot read is waited for like a running one;
+      // one warning line per wait says why (reason codes carry no token).
+      if (ci.state === "unknown") {
+        logger.warn(
+          {
+            issueId: input.issue.id,
+            identifier: input.issue.identifier,
+            reason: ci.reason ?? null,
+            attempt: decision.attempt,
+            maxAttempts: decision.maxAttempts,
+          },
+          `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
+        );
+      }
+      const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+      const updated = await scheduleReviewCiWaitMonitor({
+        issue: input.issue,
+        latestRun,
+        ci,
+        nextCheckAt,
+      }).catch((error: unknown) => {
+        logger.warn(
+          {
+            issueId: input.issue.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "myrmidon(OPE-10045): could not schedule the review CI wait; escalating instead",
+        );
+        return null;
+      });
+      if (!updated) return false;
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        runId: latestRun.id,
+        action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: { ...activityDetails, nextCheckAt: nextCheckAt.toISOString() },
+      });
+      return true;
+    }
+
+    // The attempt is recorded before the wake: the woken run can finish and
+    // come back here before this function returns, and it must see the count.
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: latestRun.id,
+      action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: activityDetails,
+    });
+    const queued = await enqueueStrandedIssueRecovery({
+      issueId: input.issue.id,
+      companyId: input.issue.companyId,
+      agentId: participantAgentId,
+      reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+      retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+      source: "issue.execution_review_recovery",
+      retryOfRunId: latestRun.id,
+      extraContext: {
+        currentStageId: stageId,
+        currentStageType: state.currentStageType ?? null,
+        reviewRecoveryInstruction:
+          `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
+        reviewDecisionRetryAttempt: decision.attempt,
+        reviewDecisionMaxRetries: decision.maxAttempts,
+      },
+    }).catch(() => null);
+    return Boolean(queued);
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -4040,6 +4270,12 @@ export function recoveryService(
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
   }) {
+    // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
+    // without a decision first waits for CI on the PR head, then gets one more
+    // explicit decision request. Only after that is it escalated, and the
+    // escalation keeps the stage (participant, return assignee) as it is.
+    if (await deferStalledExecutionReview(input)) return input.issue;
+
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -6049,8 +6285,9 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
-              "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+              `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
           },
         });
         if (queued) {
