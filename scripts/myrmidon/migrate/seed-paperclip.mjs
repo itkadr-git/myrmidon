@@ -427,6 +427,8 @@ export async function seedPaperclip(options = {}) {
         name: spec.name,
         role: spec.role,
         title: spec.title,
+        adapterType: "process",
+        adapterConfig: { command: "node", args: ["-e", "process.exit(0)"] },
         status: "active",
         appearance: appearancePayload,
       },

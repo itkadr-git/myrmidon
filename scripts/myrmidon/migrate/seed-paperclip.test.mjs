@@ -279,6 +279,8 @@ describe("seedPaperclip mock flow execution", () => {
       // Verify agent appearance payload format
       assert.equal(capturedAgents.length, 6);
       for (const ag of capturedAgents) {
+        assert.equal(ag.adapterType, "process");
+        assert.ok(ag.adapterConfig?.command);
         assert.ok(ag.appearance, "Agent must have appearance");
         assert.equal(ag.appearance.characterVersion, "cap-v1");
         assert.ok(ag.appearance.paletteId, "Agent must have paletteId");
