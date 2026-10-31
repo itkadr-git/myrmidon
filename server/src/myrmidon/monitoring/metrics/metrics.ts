@@ -196,6 +196,8 @@ export const METRIC_FAMILIES = [
   // flag off the table stays empty and the families render HELP/TYPE only.
   "myrmidon_corpus_shadow_ragflow_latency_seconds",
   "myrmidon_corpus_shadow_module_latency_seconds",
+  // OPE-9476: runs failed before model emitted output
+  "myrmidon_agent_failed_before_model_total",
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
@@ -345,6 +347,9 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+
+  /** OPE-9476: runs that failed before the model emitted output, per agentId. */
+  failedBeforeModel?: Record<string, number> | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -433,6 +438,8 @@ export interface MetricsCollectorDeps {
   /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
   recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 
+  /** OPE-9476: where failed-before-model counters come from; tests inject a fake. */
+  failedBeforeModel?: (() => Record<string, number>) | null;
   /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
   capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
@@ -474,6 +481,33 @@ async function readRunCounters(db: Db, now: Date): Promise<{
     queuedOver30m: Number(staleQueuedRow?.total ?? 0),
     failedTotal,
   };
+}
+
+/** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
+export async function readAgentFailedBeforeModel(
+  db: Db,
+): Promise<Record<string, number>> {
+  try {
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        total: count(),
+      })
+      .from(heartbeatRuns)
+      .where(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = true`,
+      )
+      .groupBy(heartbeatRuns.agentId);
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      if (row.agentId) {
+        result[row.agentId] = Number(row.total);
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -895,6 +929,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runScratch,
 
       fleetSites,
+      failedBeforeModel: await guarded(
+        "myrmidon_agent_failed_before_model_total",
+        () =>
+          Promise.resolve().then(() =>
+            deps.failedBeforeModel
+              ? deps.failedBeforeModel()
+              : readAgentFailedBeforeModel(deps.db),
+          ),
+        null as Record<string, number> | null,
+      ),
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
@@ -993,7 +1037,8 @@ export function escapeLabelValue(value: string): string {
 
 /** Renders a floating-point sample value the way the format prints them. */
 export function formatSampleValue(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+  const num = Number(value ?? 0);
+  return Number.isInteger(num) ? String(num) : String(Number(num.toFixed(6)));
 }
 
 function familyBlock(
@@ -1165,7 +1210,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_review_tasks_without_reviewer",
       "Issues in review without an assigned reviewer participant.",
       "gauge",
-      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer ?? 0)}`],
     ),
   );
   blocks.push(
@@ -1173,7 +1218,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_blocked_tasks_without_assignee",
       "Blocked issues without an assignee.",
       "gauge",
-      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee ?? 0)}`],
     ),
   );
   blocks.push(
@@ -1527,6 +1572,21 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Failover moves of bots off a lost remote site by result, cumulative since boot.",
       "counter",
       fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+  );
+
+  const failedBeforeModelSamples = Object.entries(snapshot.failedBeforeModel ?? {}).map(
+    ([agentId, count]) =>
+      `myrmidon_agent_failed_before_model_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_agent_failed_before_model_total",
+      "Heartbeat runs that failed before the model response started.",
+      "counter",
+      failedBeforeModelSamples.length > 0
+        ? failedBeforeModelSamples
+        : [`myrmidon_agent_failed_before_model_total{${R}} 0`],
     ),
   );
 

@@ -2309,6 +2309,97 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+export function computeTransientRetryDelayMs(params: {
+  nextAttempt: number;
+  now?: Date;
+  transientRetryNotBeforeHint?: Date | null;
+  isCooldownOrQuota?: boolean;
+  runFinishedAt?: Date | null;
+  runStartedAt?: Date | null;
+}): number | null {
+  const {
+    nextAttempt,
+    now = new Date(),
+    transientRetryNotBeforeHint,
+    isCooldownOrQuota = false,
+    runFinishedAt,
+    runStartedAt,
+  } = params;
+
+  const hintDate =
+    typeof transientRetryNotBeforeHint === "string" || typeof transientRetryNotBeforeHint === "number"
+      ? new Date(transientRetryNotBeforeHint)
+      : transientRetryNotBeforeHint instanceof Date
+        ? transientRetryNotBeforeHint
+        : null;
+  const validHint = hintDate && !isNaN(hintDate.getTime()) ? hintDate : null;
+
+  const finishedDate =
+    typeof runFinishedAt === "string" || typeof runFinishedAt === "number"
+      ? new Date(runFinishedAt)
+      : runFinishedAt instanceof Date
+        ? runFinishedAt
+        : null;
+  const validFinished = finishedDate && !isNaN(finishedDate.getTime()) ? finishedDate : null;
+
+  const startedDate =
+    typeof runStartedAt === "string" || typeof runStartedAt === "number"
+      ? new Date(runStartedAt)
+      : runStartedAt instanceof Date
+        ? runStartedAt
+        : null;
+  const validStarted = startedDate && !isNaN(startedDate.getTime()) ? startedDate : null;
+
+  const nowDate =
+    typeof now === "string" || typeof now === "number"
+      ? new Date(now)
+      : now instanceof Date
+        ? now
+        : new Date();
+  const validNow = !isNaN(nowDate.getTime()) ? nowDate : new Date();
+
+  if (validHint) {
+    const remainingHintMs = Math.max(
+      0,
+      validHint.getTime() - validNow.getTime(),
+    );
+    if (isCooldownOrQuota) {
+      // Cooldown / provider quota: repeat no earlier than retry_after / cooldown,
+      // and exponentially for repeated failures. When the hint has already passed
+      // (remainingHintMs === 0), do not retry immediately (0 ms) — continue
+      // backing off exponentially based on the cooldown window duration.
+      const hintDurationMs = Math.max(
+        60_000,
+        validHint.getTime() -
+          (validFinished?.getTime() ??
+            validStarted?.getTime() ??
+            validNow.getTime()),
+      );
+      const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+      const expDelayMs = Math.min(
+        hintDurationMs * expFactor,
+        GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+      );
+      return Math.max(remainingHintMs, expDelayMs);
+    }
+    return Math.min(
+      remainingHintMs,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  if (isCooldownOrQuota) {
+    const baseDelayMs = 60_000;
+    const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
+    return Math.min(
+      baseDelayMs * expFactor,
+      GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
+    );
+  }
+
+  return null;
+}
+
 async function resolveRunScopedMentionedSkillKeys(input: {
   db: Db;
   companyId: string;
@@ -15777,15 +15868,17 @@ export function heartbeatService(
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
     // gateway-busy budget above; the array would run out after two attempts.
-    const hintDelayMs = transientRetryNotBeforeHint
-      ? Math.min(
-          Math.max(
-            0,
-            transientRetryNotBeforeHint.getTime() - now.getTime(),
-          ),
-          GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS,
-        )
-      : null;
+    const isCooldownOrQuota =
+      readHeartbeatRunErrorFamily(run) === "provider_quota" ||
+      Boolean(parseObject(run.resultJson).cooldown);
+    const hintDelayMs = computeTransientRetryDelayMs({
+      nextAttempt,
+      now,
+      transientRetryNotBeforeHint,
+      isCooldownOrQuota,
+      runFinishedAt: run.finishedAt,
+      runStartedAt: run.startedAt,
+    });
     const computedBaseSchedule =
       opts?.delayMs != null || hintDelayMs != null
         ? nextAttempt <= maxAttempts
@@ -17332,6 +17425,10 @@ export function heartbeatService(
       if (options.excludeRunId) {
         conditions.push(sql`${heartbeatRuns.id} <> ${options.excludeRunId}`);
       }
+      // OPE-9476: runs that failed before the model response started do not consume daily run cap
+      conditions.push(
+        sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+      );
       const [row] = await client
         .select({ total: sql<number>`count(*)::integer` })
         .from(heartbeatRuns)
