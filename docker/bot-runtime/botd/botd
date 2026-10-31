@@ -20,7 +20,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { execFile } = require("node:child_process");
+const { execFile, spawnSync } = require("node:child_process");
 
 // The board writes the bot's API key and URL (and the botd settings) into the hermes
 // .env, not into the container env botd inherits from the entrypoint: load the keys
@@ -176,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -188,6 +188,7 @@ async function main() {
     import(path.join(__dirname, "lib", "remove.js")),
     import(path.join(__dirname, "lib", "cache.js")),
     tryImport("repair.js"),
+    tryImport("git-migration.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -329,13 +330,35 @@ async function main() {
 
   // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
   // during this pass are never evicted: the only copy of someone's work outlives the quota.
-  const retention = async ({ startedAt }) => {
+  const retention = async ({ startedAt, desired: passDesired }) => {
     if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
     // Verified retention enforces independent backup receipt verification before deletion.
     // Unverified archives remain intact; deletion requires verified OneDrive receipt.
     const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt, requireVerifiedReceipt: true });
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
+
+    // Idle git migration (OPE-9673):
+    // Repack repositories with alternates when bot is idle, gated by gitMigrationEnabled,
+    // serialized across fleet with nice/ionice and durable .repack-migrated marker.
+    const migrationEnabled = process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "1" || process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "true";
+    if (migrationEnabled && gitMigrationMod && typeof gitMigrationMod.migrateIdleGitRepos === "function") {
+      try {
+        const isIdle = runProbe ? (runProbe.probe().live === false) : false;
+        const res = gitMigrationMod.migrateIdleGitRepos({
+          baseDir: BASE_DIR,
+          workspacesDir: WORKSPACE_DIR,
+          idle: isIdle,
+          enabled: migrationEnabled,
+          log,
+        });
+        if (res && res.migrated > 0) {
+          log(`botd: git migration repacked ${res.migrated} repos (idle-gated)`);
+        }
+      } catch (err) {
+        log(`botd: git migration warning: ${err.message}`);
+      }
+    }
   };
 
   const loop = loopMod.createLoop({
