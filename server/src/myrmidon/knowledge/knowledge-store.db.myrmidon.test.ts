@@ -962,7 +962,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(created.title).toBe("Original Title");
       expect(created.summary).toBe("Original summary");
 
-      const rev1 = await store.getRevision(companyId, created.id, 1);
+      const initialRevisions = await store.listRevisions(companyId, "wiki/title-lifecycle");
+      expect(initialRevisions).toHaveLength(1);
+      const rev1 = initialRevisions[0]!;
       expect(rev1.title).toBe("Original Title");
       expect(rev1.summary).toBe("Original summary");
 
@@ -979,12 +981,12 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       );
 
       // Before publish: item title has NOT changed
-      const itemBeforePublish = await store.get(companyId, "wiki/title-lifecycle");
+      const itemBeforePublish = (await store.get(companyId, "wiki/title-lifecycle"))!;
       expect(itemBeforePublish.title).toBe("Original Title");
       expect(itemBeforePublish.summary).toBe("Original summary");
 
       // History shows both revisions with their respective titles
-      const revisions = await store.listRevisions(companyId, created.id);
+      const revisions = await store.listRevisions(companyId, "wiki/title-lifecycle");
       expect(revisions).toHaveLength(2);
       expect(revisions[0]!.revisionNumber).toBe(1);
       expect(revisions[0]!.title).toBe("Original Title");
@@ -996,17 +998,17 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       await store.publish(companyId, "wiki/title-lifecycle", AGENT);
 
       // After publish: GET item returns the new title and summary
-      const itemAfterPublish = await store.get(companyId, "wiki/title-lifecycle");
+      const itemAfterPublish = (await store.get(companyId, "wiki/title-lifecycle"))!;
       expect(itemAfterPublish.title).toBe("Updated Title");
       expect(itemAfterPublish.summary).toBe("Updated summary");
 
       // Old revision 1 still retains the old title
-      const oldRev = await store.getRevision(companyId, created.id, 1);
+      const oldRev = (await store.getRevision(companyId, "wiki/title-lifecycle", rev1.id))!;
       expect(oldRev.title).toBe("Original Title");
       expect(oldRev.summary).toBe("Original summary");
 
       // Delivered revision 2 has the new title
-      const newRev = await store.getRevision(companyId, created.id, 2);
+      const newRev = (await store.getRevision(companyId, "wiki/title-lifecycle", itemAfterPublish.deliveredRevisionId!))!;
       expect(newRev.title).toBe("Updated Title");
       expect(newRev.summary).toBe("Updated summary");
     });
