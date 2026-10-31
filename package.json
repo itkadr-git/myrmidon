@@ -31,6 +31,7 @@
     "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @myrmidon/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
     "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @myrmidon/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
     "db:generate": "pnpm --filter @myrmidon/db generate",
+    "db:renumber": "node scripts/myrmidon/db-renumber-migration.mjs",
     "db:migrate": "pnpm --filter @myrmidon/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "knowledge:migrate": "pnpm run preflight:workspace-links && tsx scripts/knowledge-migrate.ts",

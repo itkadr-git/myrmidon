@@ -54,6 +54,7 @@ PUT    .../budget-limits/limits/:level/:ref       create or replace (board)
 DELETE .../budget-limits/limits/:level/:ref       remove (board)
 GET    .../budget-limits/journal          change journal, newest first
 GET    .../budget-limits/usage            per-limit spent + overLimit
+GET    .../budget-limits/export           export spend report in CSV or JSON (?format=csv|json, ?level=)
 GET    .../budget-limits/signal-only      effective flag + source
 GET    .../budget-limits/effective/:issueId  effective limit for an issue
 PATCH  .../budget-limits/signal-only      turn enforcement on/off (board)
