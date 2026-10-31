@@ -138,7 +138,17 @@
         "saving": "Saving...",
         "save": "Save channel settings",
         "saveError": "Saving the channel settings failed.",
-        "loadError": "Failed to load channel settings."
+        "loadError": "Failed to load channel settings.",
+        "telegramPoolBridgesTitle": "Telegram Pool Bridges (ChatGPT & Gemini)",
+        "telegramPoolChatGptBridge": "ChatGPT Pool Bridge",
+        "telegramPoolGeminiBridge": "Gemini Pool Bridge",
+        "telegramPoolAllowedChatId": "Allowed Chat ID",
+        "telegramPoolAllowedChatIdPlaceholder": "e.g. 123456789",
+        "telegramPoolModel": "Model",
+        "telegramPoolChatGptModelPlaceholder": "balanced",
+        "telegramPoolGeminiModelPlaceholder": "gemini-2.0-flash",
+        "telegramPoolBotToken": "Bot Token / Secret Ref",
+        "telegramPoolBotTokenPlaceholder": "Bot token or secret:name"
       },
       "clouds-settings-page": {
         "requestFailed": "Request failed: {{status}}",

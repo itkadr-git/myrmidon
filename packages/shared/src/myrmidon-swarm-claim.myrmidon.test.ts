@@ -536,4 +536,23 @@ describe("swarm names shared with the supervisor part", () => {
       } as unknown as Parameters<typeof resolveSwarmQueueEligibility>[0]),
     ).toEqual({ eligible: true, source: "caste" });
   });
+
+  it("resolves capacityPolicy defaults to disabled and respects env override", () => {
+    const def = resolveSwarmClaimSettings();
+    expect(def.settings.capacityPolicy?.enabled).toBe(false);
+    expect(def.sources.capacityPolicy).toBe("default");
+
+    const envOn = resolveSwarmClaimSettings({
+      env: { MYRMIDON_CAPACITY_POLICY_ENABLED: "1" },
+    });
+    expect(envOn.settings.capacityPolicy?.enabled).toBe(true);
+    expect(envOn.sources.capacityPolicy).toBe("env");
+
+    const envOff = resolveSwarmClaimSettings({
+      stored: { ...def.settings, capacityPolicy: { ...def.settings.capacityPolicy!, enabled: true } },
+      env: { MYRMIDON_CAPACITY_POLICY_ENABLED: "0" },
+    });
+    expect(envOff.settings.capacityPolicy?.enabled).toBe(false);
+    expect(envOff.sources.capacityPolicy).toBe("env");
+  });
 });

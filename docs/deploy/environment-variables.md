@@ -141,9 +141,11 @@ configuration fails closed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw) |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
+| `MYRMIDON_SECRETS_MASTER_KEY` (alias: `PAPERCLIP_SECRETS_MASTER_KEY`) | (from file) | 32-byte encryption key (base64/hex/raw) |
+| `MYRMIDON_SECRETS_MASTER_KEY_FILE` (alias: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) | `~/.paperclip/.../secrets/master.key` | Path to key file |
+| `MYRMIDON_SECRETS_STRICT_MODE` (alias: `PAPERCLIP_SECRETS_STRICT_MODE`) | `false` | Require secret refs for sensitive env vars |
+
+> Note: All secrets configuration variables support both `MYRMIDON_*` (canonical) and legacy `PAPERCLIP_*` variable names. When both are set, `MYRMIDON_*` takes precedence.
 
 ## Agent Runtime (Injected into agent processes)
 
