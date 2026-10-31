@@ -390,9 +390,11 @@ async function main() {
       uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
       terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
     };
-    hygieneMod.cleanCaches({
+    await hygieneMod.cleanCaches({
       now: startedAt ? startedAt.getTime() : Date.now(),
       limits,
+      pressure,
+      execFile,
       log,
     });
   };
@@ -408,10 +410,32 @@ async function main() {
     });
   };
 
+  const pressurePass = async (level) => {
+    const startedAt = new Date();
+    let cleanedBytes = 0;
+    if (hygieneMod && typeof hygieneMod.cleanCaches === "function") {
+      const g = readJson(DISK_STATE_PATH, {});
+      const result = await hygieneMod.cleanCaches({
+        now: startedAt.getTime(),
+        limits: g.grace ?? {},
+        pressure: level,
+        execFile,
+        log,
+      });
+      cleanedBytes += Number(result?.cleanedBytes) || 0;
+      cleanedBytes += Number(result?.targets?.["uv-cache"]?.cleanedBytes) || 0;
+    }
+    if (repackMod && typeof repackMod.repackAllBases === "function") {
+      await repackMod.repackAllBases(BASE_DIR, { now: startedAt.getTime(), gitBin: GIT_BIN, log });
+    }
+    return { cleanedBytes };
+  };
+
   const loop = loopMod.createLoop({
     retention,
     hygiene,
     repack,
+    pressurePass,
     desired,
     rules,
     gather,
