@@ -197,6 +197,131 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(wakes[0]?.payload).toMatchObject({ issueId });
   });
 
+  it("routes a review PATCH to a reviewer whose model differs from the author", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission routing");
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    const selectedReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: selectedReviewerId,
+        companyId,
+        name: "Different Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-b" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Automatic reviewer selection",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: selectedReviewerId,
+    });
+    expect(res.body.assigneeAgentId).toBe(selectedReviewerId);
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${selectedReviewerId}`));
+    expect(wakes).toHaveLength(1);
+    const rejectedCandidateWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${sameModelReviewerId}`));
+    expect(rejectedCandidateWakes).toHaveLength(0);
+  });
+
+  it("raises no_reviewer signal when only reviewers with matching model are available", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission matching model only");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Matching model only",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.assigneeAgentId).toBeNull();
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+  });
+
   it("rolls back review transition and does not leave issue in_review when wake persistence fails", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission rollback");
     const reviewerAgentId = randomUUID();

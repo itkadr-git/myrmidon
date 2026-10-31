@@ -166,6 +166,7 @@ export interface PoolAccountChannelView {
   state: PoolAccountState | string;
   stateRu?: string;
   plan?: string | null;
+  models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
   windows: {

@@ -101,7 +101,9 @@ import {
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  setFleetSiteSecurityResolver,
 } from "@myrmidon/hermes-paperclip-adapter";
+import { getActiveFleetSite } from "../myrmidon/bot-containers/site-registry.js";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -124,6 +126,7 @@ import {
 } from "@myrmidon/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listGatewayModels, refreshGatewayModels } from "./hermes-gateway-models.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -797,7 +800,21 @@ const kimiLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
+  listModels: listGatewayModels,
+  refreshModels: refreshGatewayModels,
 };
+
+setFleetSiteSecurityResolver((siteName: string, companyId?: string) => {
+  const site = getActiveFleetSite(siteName, companyId);
+  if (!site) return null;
+  return {
+    name: site.name,
+    url: site.url,
+    status: site.status,
+    profile: site.profile,
+    companyId: site.companyId,
+  };
+});
 
 const hermesLocalAdapter: ServerAdapterModule = {
   ...createHermesLocalServerAdapter(),

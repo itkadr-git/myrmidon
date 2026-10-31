@@ -2,10 +2,13 @@ import { getAgentWorkEligibility, isAgentInvokable, type IssueReviewPolicy } fro
 import { isBlockerOpen } from "../../myrmidon/blocker-resolved.js";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
+export const UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS = 30 * 60 * 1000;
+
 export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
   | "blocked_by_unassigned_issue"
+  | "unassigned_blocked_issue_overdue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
@@ -21,6 +24,10 @@ export interface IssueLivenessIssueInput {
   identifier: string | null;
   title: string;
   status: string;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  statusUpdatedAt?: Date | string | null;
+  blockedTransitionAt?: Date | string | null;
   projectId?: string | null;
   goalId?: string | null;
   parentId?: string | null;
@@ -79,7 +86,9 @@ export type IssueReviewPathFactKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  // myrmidon(OPE-10045): an approval recorded before the PR merged.
+  | "approved_pending_merge";
 
 export interface IssueReviewPathFact {
   kind: IssueReviewPathFactKind;
@@ -94,6 +103,7 @@ export interface IssueLivenessDependencyPathEntry {
   identifier: string | null;
   title: string;
   status: string;
+  blockedTransitionAt: Date | string | null;
 }
 
 export type IssueLivenessOwnerCandidateReason =
@@ -147,6 +157,9 @@ function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathE
     identifier: issue.identifier,
     title: issue.title,
     status: issue.status,
+    blockedTransitionAt: (issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt)
+      ? new Date(readDateMs(issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt)!)
+      : null,
   };
 }
 
@@ -286,6 +299,23 @@ export function classifyIssueReviewPaths(
 
   if (hasScheduledIssueMonitorPath(issue, nowMs)) {
     paths.push({ kind: "monitor", ref: null, agentId: issue.assigneeAgentId ?? null, userId: null, since: null });
+  }
+
+  // myrmidon(OPE-10045): the reviewer approved the last stage while the PR
+  // was still open. The decision is recorded and the PR sync closes the task
+  // after the merge, so the review is waiting on the merge, not stalled.
+  const lastDecisionId = issue.executionState?.lastDecisionId;
+  if (
+    issue.executionState?.status === "completed" &&
+    issue.executionState?.lastDecisionOutcome === "approved"
+  ) {
+    paths.push({
+      kind: "approved_pending_merge",
+      ref: typeof lastDecisionId === "string" ? lastDecisionId : null,
+      agentId: null,
+      userId: null,
+      since: null,
+    });
   }
 
   const appendExecutionPaths = (
@@ -548,6 +578,41 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+  }
+
+  for (const issue of input.issues) {
+    if (issue.status !== "blocked") continue;
+    const blockedSinceMs = readDateMs(
+      issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt,
+    );
+    if (
+      issue.assigneeAgentId ||
+      issue.assigneeUserId ||
+      blockedSinceMs == null ||
+      nowMs - blockedSinceMs <
+        UNASSIGNED_BLOCKED_ISSUE_ATTENTION_THRESHOLD_MS ||
+      hasScheduledIssueMonitorPath(issue, nowMs) ||
+      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
+      hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
+      hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
+      (issue.parentId != null && hasWaitingPath(issue.companyId, issue.parentId, openRecoveryIssues))
+    ) {
+      continue;
+    }
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+      includeStalledAssignee: true,
+    });
+    findings.push(finding({
+      issue,
+      state: "unassigned_blocked_issue_overdue",
+      reason: `${issueLabel(issue)} has remained blocked without an assignee for at least 30 minutes.`,
+      dependencyPath: [issue],
+      recoveryIssue: issue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction: `Assign ${issueLabel(issue)} to an owner who can unblock it, or record an explicit waiting path.`,
+      blockerIssueId: issue.id,
+    }));
   }
 
   function reviewFinding(

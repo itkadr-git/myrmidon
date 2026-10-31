@@ -20,7 +20,8 @@ export function warnIfLegacyBinaryName(
   argv1: string | undefined = process.argv[1],
   write: (message: string) => void = (message) => process.stderr.write(message),
 ): boolean {
-  if (warned || !isLegacyBinaryInvocation(argv1)) return false;
+  const legacyScriptInvocation = process.env.npm_lifecycle_event === LEGACY_BINARY_NAME;
+  if (warned || (!isLegacyBinaryInvocation(argv1) && !legacyScriptInvocation)) return false;
   warned = true;
   write(`${LEGACY_BINARY_WARNING}\n`);
   return true;

@@ -33,6 +33,7 @@ describe("skillDirectoriesFromArchive", () => {
   it("ignores entries outside skills/ and files directly at the skills root", () => {
     const archive = buildUstarArchive([
       file("skills-board/owned/SKILL.md", "board copy, never imported"),
+      file("skills/paperclip-managed/corp/SKILL.md", "board copy, never imported"),
       file("skills/loose.md", "not a skill"),
       file("skills/deploy/SKILL.md", "ok"),
     ]);
