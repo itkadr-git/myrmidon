@@ -23,6 +23,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, AlarmClock } from "lucide-react";
 import type {
+  InstanceGeneralSettings,
   SwarmClaimSettingsPatch,
   SwarmClaimSettingSource,
   SwarmSettings,

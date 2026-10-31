@@ -756,4 +756,144 @@ describe("service", () => {
       expect(result.health.reason).toContain("9 GitHub App token(s) issued in the last 10 min (1 denied)");
     });
   });
+
+  describe("swarm-scent", () => {
+    it("reports off when classifier is disabled", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({ general: { swarm: { scent: { enabled: false } } } });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("off");
+      expect(result.health.reason).toContain("classifier is disabled");
+    });
+
+    it("reports misconfigured when base URL is missing", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => null,
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("нет базового URL");
+    });
+
+    it("reports misconfigured when secret is missing in company secrets", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => false,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("секрет ключа");
+      expect(result.health.reason).toContain("отсутствует в компании");
+    });
+
+    it("reports misconfigured when model is not in LiteLLM gateway", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => false,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("отсутствует в шлюзе LiteLLM");
+    });
+
+    it("reports failing when >50% of classifications fail", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 10, failed: 6 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain(">50% классификаций за час завершились ошибкой (6/10, 60%)");
+    });
+
+    it("reports working when classifications succeed", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 10, failed: 2 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("8/10 classifications succeeded in the last hour");
+    });
+  });
+
+  describe("execution-holds", () => {
+    it("reports working when 0 open tasks held", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 0, oldestAt: null }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("no open tasks with execution holds");
+    });
+
+    it("reports working when open tasks held but none older than 24h", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 3, oldestAt: new Date(NOW.getTime() - 12 * 3600_000) }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("none older than 24 h (oldest 12 h)");
+    });
+
+    it("reports failing when open tasks held older than 24h", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 5, oldestAt: new Date(NOW.getTime() - 30 * 3600_000) }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("oldest held for 30 h (>24 h)");
+    });
+  });
 });
