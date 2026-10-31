@@ -20,7 +20,8 @@ import {
   swarmLeaseExpiresAt,
   swarmPriorityRank,
   type CapacityCandidate,
-  type CapacityMetrics,  type CapacityPolicy,
+  type CapacityMetrics,
+  type CapacityPolicy,
   type PheromoneDynamicsSettings,
   type SwarmClaimLease,
   type SwarmClaimSettings,
@@ -141,6 +142,12 @@ export function nextQueueTaskForAgent(input: {
     /** 1.6.6 (P2.12 CAPACITY-POLICY): optional capacity policy. */
     capacityPolicy?: CapacityPolicy;
   };
+  /**
+   * 1.6.6 (OPE-9197 admission wiring): an explicit capacity policy for this
+   * admission decision. When set, candidates the policy rejects (project or
+   * caste at its active ceiling) are skipped even when the settings flag is
+   * off; `activeCounts` carries the live-claim counts it decides on.
+   */
   capacityPolicy?: CapacityPolicy;
   activeCounts?: Pick<CapacityMetrics, "activeByProject" | "activeByCaste">;
   now?: Date;
@@ -159,21 +166,23 @@ export function nextQueueTaskForAgent(input: {
     activeByProject: input.activeByProject,
     activeByCaste: input.activeByCaste,
   });
-  if (!input.capacityPolicy) {
-    return queue[0] ?? null;
-  }
-  for (const candidate of queue) {
-    const candidateWithScope = candidate as SwarmQueueCandidate & CapacityCandidate;
-    const decision = checkCapacity(
-      input.activeCounts ?? { activeByProject: {}, activeByCaste: {} },
-      candidateWithScope,
-      input.capacityPolicy,
-    );
-    if (decision.allowed) {
-      return candidate;
+  // 1.6.6 (OPE-9197): admission limits apply on the ordered queue regardless
+  // of the settings flag, so a saturated project or caste never gets a claim.
+  if (input.capacityPolicy) {
+    for (const candidate of queue) {
+      const candidateWithScope = candidate as SwarmQueueCandidate & CapacityCandidate;
+      const decision = checkCapacity(
+        input.activeCounts ?? { activeByProject: {}, activeByCaste: {} },
+        candidateWithScope,
+        input.capacityPolicy,
+      );
+      if (decision.allowed) {
+        return candidate;
+      }
     }
+    return null;
   }
-  return null;
+  return queue[0] ?? null;
 }
 
 /** A claim the store should write; the expiry is already stamped. */
