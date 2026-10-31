@@ -49,6 +49,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
+  asRecord,
   buildPrRoutingTaskPatch,
   buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
