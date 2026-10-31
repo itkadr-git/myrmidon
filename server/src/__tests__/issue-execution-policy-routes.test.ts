@@ -1515,10 +1515,8 @@ describe("issue execution policy routes", () => {
         .send({ body: "Test comment" });
 
       expect(res.status).toBe(201);
-      expect(mockIssueService.addComment).toHaveBeenCalledWith(
-        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        expect.objectContaining({ body: "Test comment" }),
-      );
+      expect(mockIssueService.addComment.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.addComment.mock.calls[0][1]).toBe("Test comment");
     });
   });
 });
