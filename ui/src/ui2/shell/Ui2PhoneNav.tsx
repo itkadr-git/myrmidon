@@ -9,6 +9,7 @@ import { useTranslation } from "@/i18n";
 import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Link, useLocation } from "@/lib/router";
+import { toCompanyRelativePath } from "@/lib/company-routes";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
@@ -137,7 +138,8 @@ export function Ui2PhoneHeader() {
 }
 
 export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean {
-  const normalizedPath = pathname.split("?")[0].replace(/\/$/, "") || "/";
+  const relativePath = toCompanyRelativePath(pathname);
+  const normalizedPath = relativePath.split("?")[0].replace(/\/$/, "") || "/";
   const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
   if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
   if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
