@@ -89,6 +89,12 @@ async function readGitHub(
   const first = await readJson(fetchImpl, url, token);
   if (first.ok) return first;
   if (token && (first.status === 401 || first.status === 403 || first.status === 404)) {
+    // An exhausted authenticated installation budget applies to the installation,
+    // not just this endpoint. Anonymous fallback burns the shared IP quota too;
+    // preserve the reset time so the monitor can retry after GitHub's reset.
+    if (first.code.endsWith("_rate_limited")) {
+      return { ok: false, reason: `${what}:${first.code}` };
+    }
     const anonymous = await readJson(fetchImpl, url, null);
     if (anonymous.ok) return anonymous;
     return { ok: false, reason: `${what}:${first.code}+anonymous:${anonymous.code}` };
