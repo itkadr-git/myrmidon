@@ -4,6 +4,7 @@ import type { Db } from "@myrmidon/db";
 import { usersAdminRoutes, type UsersAdminRoutesOptions } from "./routes.js";
 
 export * from "./service.js";
+export * from "./store.js";
 
 /** Router for app.ts: /api/myrmidon/users-admin-a/*. */
 export function myrmidonUsersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
