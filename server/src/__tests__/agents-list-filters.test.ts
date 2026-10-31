@@ -172,8 +172,9 @@ describe("filterAgentListItems with 5-agent fixture", () => {
 
     // title/role match spanning multiple agents
     const byEngineer = filterAgentListItems(fixtureAgents, { q: "ENGINEER" });
-    // Agent 2 (role: engineer, title: Senior Backend Engineer) and Agent 3 (title: Staff QA Engineer)
-    expect(byEngineer.map((a) => a.id)).toEqual(["agent-2", "agent-3"]);
+    // Agent 2 (role: engineer, title: Senior Backend Engineer), Agent 3 (title: Staff QA Engineer),
+    // Agent 5 (title: Principal Site Reliability Engineer)
+    expect(byEngineer.map((a) => a.id)).toEqual(["agent-2", "agent-3", "agent-5"]);
   });
 
   it("filters by status independently (single or comma-separated)", () => {
