@@ -1230,13 +1230,6 @@
     {
       "idx": 178,
       "version": "7",
-      "when": 1784241826832,
-      "tag": "0177_activity_log_responsible_user",
-      "breakpoints": true
-    },
-    {
-      "idx": 178,
-      "version": "7",
       "when": 1784241827832,
       "tag": "0178_summary_slots",
       "breakpoints": true
@@ -2538,17 +2531,10 @@
       "breakpoints": true
     },
     {
-      "idx": 426,
+      "idx": 425,
       "version": "7",
-      "when": 1793323806000,
-      "tag": "0426_provider_usage_snapshots",
-      "breakpoints": true
-    },
-    {
-      "idx": 427,
-      "version": "7",
-      "when": 1793323807000,
-      "tag": "0427_provider_usage_warning_deliveries",
+      "when": 1793323805000,
+      "tag": "0425_execution_policy_sequential_to_normal",
       "breakpoints": true
     },
     {

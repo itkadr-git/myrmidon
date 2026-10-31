@@ -60,7 +60,9 @@ export interface Ui2RouteEntry {
  * language-settings guard test.
  */
 function ui2Screen(element: ReactNode): ReactNode {
-  return <Ui2I18nProvider>{element}</Ui2I18nProvider>;
+  // A single Ui2I18nProvider is mounted at Ui2Root above Ui2Shell so that
+  // settings changes propagate to rail, top bar, and sidebar without reload.
+  return element;
 }
 
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [

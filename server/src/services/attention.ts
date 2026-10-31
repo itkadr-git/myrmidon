@@ -3970,7 +3970,7 @@ async function buildAttentionFeedSnapshot(
       // operator desk (the Features page holds the detail). The signals come
       // from the process-level clock the health pass feeds (features/
       // attention.ts); the card disappears when the feature is healthy again.
-      for (const feature of readFeatureAttentionSignals()) {
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
