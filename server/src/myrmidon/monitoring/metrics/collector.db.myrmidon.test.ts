@@ -126,6 +126,168 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
   });
 
+  it("reads active recovery age and counts manually seeded addressless actions", async () => {
+    const companyId = await seedCompany();
+    const sourceIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Recovery source",
+      status: "todo",
+      priority: "normal",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const recoveryActionId = randomUUID();
+    try {
+      await db.execute(sql`ALTER TABLE "issue_recovery_actions" DROP CONSTRAINT IF EXISTS "issue_recovery_actions_dedupe_owner_sla_check"`);
+      await db.insert(issueRecoveryActions).values({
+        id: recoveryActionId,
+        companyId,
+        sourceIssueId,
+        kind: "ci_restart",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerQueue: null,
+        cause: "ci_failure",
+        fingerprint: "fingerprint-a",
+        dedupeKey: "dedupe-a",
+        slaDueAt: new Date(NOW.getTime() + 60_000),
+        nextCheckAt: new Date(NOW.getTime() + 30_000),
+        nextAction: "inspect",
+        createdAt: new Date(NOW.getTime() - 45_000),
+        updatedAt: NOW,
+      });
+      const snapshot = await collectMetricsSnapshot({
+        db,
+        now: () => NOW,
+        errorWindowSec: 3600,
+        latencyWindowSec: 3600,
+      });
+      expect(snapshot.recoveryAddresslessActive).toBe(1);
+      expect(snapshot.recoveryAgeSeconds).toEqual([{ kind: "ci_restart", seconds: 45 }]);
+    } finally {
+      await db.delete(issueRecoveryActions);
+      await db.execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_recovery_actions_dedupe_owner_sla_check') THEN
+            ALTER TABLE "issue_recovery_actions" ADD CONSTRAINT "issue_recovery_actions_dedupe_owner_sla_check"
+              CHECK ("dedupe_key" IS NULL OR (
+                (CASE WHEN "owner_agent_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_user_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_queue" IS NOT NULL THEN 1 ELSE 0 END) = 1
+                AND "sla_due_at" IS NOT NULL
+                AND "next_check_at" IS NOT NULL
+              ));
+          END IF;
+        END $$;
+      `);
+    }
+  });
+
+  it("reports recovery factory production behavior and addressless row in /metrics", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    const sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId, title: "Recovery source", status: "todo", priority: "normal", createdAt: NOW, updatedAt: NOW });
+
+    const metricsPort = createRecoveryFactoryMetrics();
+    const factory = issueRecoveryActionService(db, metricsPort);
+
+    // 1. Production created
+    const created = await factory.ensureRecoveryIssue({
+      sourceIssueId,
+      kind: "ci_restart",
+      dedupeKey: `recovery-factory-ci-${sourceIssueId}`,
+      owner: { agentId },
+      slaMinutes: 30,
+      nextCheckAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      evidence: {},
+    });
+    expect(created.outcome).toBe("created");
+
+    // 2. Production deduped
+    const deduped = await factory.ensureRecoveryIssue({
+      sourceIssueId,
+      kind: "ci_restart",
+      dedupeKey: `recovery-factory-ci-${sourceIssueId}`,
+      owner: { agentId },
+      slaMinutes: 30,
+      nextCheckAt: new Date(NOW.getTime() + 60_000).toISOString(),
+      evidence: {},
+    });
+    expect(deduped.outcome).toBe("deduped");
+
+    // 3. Production succeeded via resolveActiveForIssue
+    const resolved = await factory.resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: created.recoveryActionId,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "CI green on retry",
+    });
+    expect(resolved?.status).toBe("resolved");
+
+    const actionId = randomUUID();
+    try {
+      await db.execute(sql`ALTER TABLE "issue_recovery_actions" DROP CONSTRAINT IF EXISTS "issue_recovery_actions_dedupe_owner_sla_check"`);
+      // Active addressless legacy row with createdAt 45 seconds ago (tests addressless count + DB collector age calculation)
+      await db.insert(issueRecoveryActions).values({
+        id: actionId,
+        companyId,
+        sourceIssueId,
+        kind: "operator_action",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerQueue: null,
+        cause: "operator_intervention",
+        fingerprint: "recovery-metrics-addressless",
+        dedupeKey: "recovery-metrics-addressless",
+        slaDueAt: new Date(NOW.getTime() + 60_000),
+        nextCheckAt: new Date(NOW.getTime() + 30_000),
+        nextAction: "inspect",
+        createdAt: new Date(NOW.getTime() - 45_000),
+        updatedAt: NOW,
+      });
+
+      const snapshot = await collectMetricsSnapshot({
+        db,
+        now: () => NOW,
+        errorWindowSec: 3600,
+        latencyWindowSec: 3600,
+        recoveryFactoryMetrics: metricsPort,
+      });
+      const text = renderMetricsText(snapshot);
+
+      expect(text).toContain('myrmidon_recovery_created_total{role="all",kind="ci_restart"} 1');
+      expect(text).toContain('myrmidon_recovery_deduped_total{role="all",kind="ci_restart"} 1');
+      expect(text).toContain('myrmidon_recovery_success_total{role="all",kind="ci_restart"} 1');
+      expect(text).toContain('myrmidon_recovery_age_seconds{role="all",kind="operator_action"} 45');
+      expect(text).toContain('myrmidon_recovery_addressless_active{role="all"} 1');
+    } finally {
+      await db.delete(issueRecoveryActions);
+      await db.execute(sql`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'issue_recovery_actions_dedupe_owner_sla_check') THEN
+            ALTER TABLE "issue_recovery_actions" ADD CONSTRAINT "issue_recovery_actions_dedupe_owner_sla_check"
+              CHECK ("dedupe_key" IS NULL OR (
+                (CASE WHEN "owner_agent_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_user_id" IS NOT NULL THEN 1 ELSE 0 END +
+                 CASE WHEN "owner_queue" IS NOT NULL THEN 1 ELSE 0 END) = 1
+                AND "sla_due_at" IS NOT NULL
+                AND "next_check_at" IS NOT NULL
+              ));
+          END IF;
+        END $$;
+      `);
+    }
+  });
+
   it("counts active, queued and failed runs", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId, "engineer");
