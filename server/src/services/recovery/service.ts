@@ -4044,19 +4044,21 @@ export function recoveryService(
       input.latestRun,
       input.recoveryCause,
     );
+    const successfulRunDisposition =
+      recoveryCause.startsWith("successful_run_") ||
+      Boolean(input.successfulRunHandoffEvidence);
 
     // legacy stranded-recovery issues retain their in-place escalation.
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
       input.recoveryCause !== "configuration_incomplete" &&
       input.latestRun.status !== "failed" &&
-      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       !infraInterruptRetryBudgetExhausted({
         scheduledRetryAttempt: input.scheduledRetryAttempt,
         scheduledRetryReason: input.scheduledRetryReason,
@@ -4092,9 +4094,10 @@ export function recoveryService(
     }
     // myrmidon(L4): a successful run that leaves the issue without a
     // disposition resolves by bounded auto-retry, then manager review,
-    // instead of escalating straight to an owner card. Only the last-run-
-    // succeeded causes are in scope; a failed run stays on the vendor path
-    // below (L1's concern). See ../../myrmidon/stranded-autopolicy.ts.
+    // instead of escalating straight to an owner card. An exhausted
+    // successful-run handoff also stays on the agent disposition path if its
+    // corrective attempt failed; unrelated failed-run causes retain L1's
+    // vendor path. See ../../myrmidon/stranded-autopolicy.ts.
     //
     // The `previousStatus`/`issue.status === "in_progress"` check narrows
     // this to the actual "in progress, no disposition" case the spec
@@ -4112,7 +4115,11 @@ export function recoveryService(
     const strandedAutoPolicyLatestRun = input.latestRun;
     if (
       readStrandedAutoPolicyEnabled() &&
-      strandedAutoPolicyLatestRun?.status === "succeeded" &&
+      strandedAutoPolicyLatestRun &&
+      (strandedAutoPolicyLatestRun.status === "succeeded" ||
+        successfulRunDisposition) &&
+      (!input.rerouteToSharedQueue ||
+        successfulRunDisposition) &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4185,6 +4192,7 @@ export function recoveryService(
         managerAgentId,
         escalationAgentId,
         targetIsAdm,
+        requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
           ...input.issue,
           hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
@@ -4660,6 +4668,24 @@ export function recoveryService(
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
 
+    if (successfulRunDisposition) {
+      // Missing escalation agents, a paused assignee, or disabled auto-policy
+      // are not permission to create a board-owned liveness block for a
+      // successful-run disposition handoff. For an exhausted failure, keep
+      // the vendor's cause-keyed board escalation instead of turning every
+      // successful_run_* cause into a silent no-op.
+      if (input.latestRun?.status === "succeeded") return input.issue;
+      if (input.issue.originKind === "stranded_issue_recovery") {
+        return issuesSvc.update(input.issue.id, {
+          status: "blocked",
+          blockedByIssueIds: await existingUnresolvedBlockerIssueIds(
+            input.issue.companyId,
+            input.issue.id,
+          ),
+        });
+      }
+    }
+
     const approvedInfraReroute = Boolean(
       input.rerouteToSharedQueue &&
         !isStrandedIssueRecoveryIssue(input.issue) &&
@@ -4774,7 +4800,7 @@ export function recoveryService(
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun.status !== "failed" &&
       recoveryCause !== "configuration_incomplete" &&
       !infraInterruptRetryBudgetExhausted({
@@ -4806,7 +4832,7 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
       // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
       // recovery action is the reason; name it so the block is never reasonless.
-      ...(blockerIds.length === 0
+      ...(blockerIds.length === 0 && !successfulRunDisposition
         ? {
             unblockDescriptor: recoveryLivenessDescriptor(
               input.issue.id,
@@ -6164,7 +6190,6 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
-          rerouteToSharedQueue: true,
           scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
           scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
         });
