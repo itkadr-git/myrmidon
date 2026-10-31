@@ -173,6 +173,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       resolveBotDiskMechanics({
         graceClosingMinutes: 45,
         scratchTtlHours: 12,
+        sessionRetentionDays: 14,
         partitionThresholdPercent: 80,
         partitionRefuseOpenPercent: 88,
         partitionCriticalPercent: 93,
@@ -183,6 +184,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     ).toEqual({
       graceClosingMinutes: 45,
       scratchTtlHours: 12,
+      sessionRetentionDays: 14,
       partitionThresholdPercent: 80,
       partitionRefuseOpenPercent: 88,
       partitionCriticalPercent: 93,
