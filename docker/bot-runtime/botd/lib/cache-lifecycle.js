@@ -6,47 +6,32 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { atomicSafeDrop } from "./archive.js";
 
 export const CACHE_MAX_AGE_DAYS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function safeDropCacheFile(file, cacheRoot) {
-  const root = path.resolve(cacheRoot);
-  const resolved = path.resolve(file);
-  if (!resolved.startsWith(root + path.sep)) {
-    throw new Error("unsafe cache file path: outside cache root");
-  }
-  if (/(^|[/\\])(state\.db|session|auth|credential|\.git)/i.test(path.basename(file))) {
-    throw new Error("never delete protected file: " + file);
-  }
-  const lstat = fs.lstatSync(file);
-  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink !== 1) {
-    throw new Error("unsafe file type or symlink: " + file);
-  }
-  // TOCTOU race check: open with O_NOFOLLOW and verify inode & dev match
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const fstat = fs.fstatSync(fd);
-    if (fstat.ino !== lstat.ino || fstat.dev !== lstat.dev || !fstat.isFile() || fstat.nlink !== 1) {
-      throw new Error("TOCTOU race detected: file changed between stat and open");
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.unlinkSync(file);
+  return atomicSafeDrop(file, cacheRoot, "cache");
 }
 
 function cacheAudit(cacheRoot, record) {
-  const journalPath = path.join(cacheRoot, "cache-retention-journal.jsonl");
-  const fd = fs.openSync(journalPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const root = path.resolve(cacheRoot);
+  if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) {
+    throw new Error("unsafe cache root: root cannot be a symlink");
+  }
+  const journalPath = path.join(root, "cache-retention-journal.jsonl");
+  if (fs.existsSync(journalPath) && fs.lstatSync(journalPath).isSymbolicLink()) {
+    throw new Error("unsafe cache retention journal: cannot be a symlink");
+  }
+  const fd = fs.openSync(journalPath,
+    fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile() || st.nlink !== 1) throw new Error("unsafe cache retention journal");
     fs.writeSync(fd, `${JSON.stringify(record)}\n`);
     fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
+  } finally { fs.closeSync(fd); }
 }
 
 export function cacheRetentionPass(cacheRoot, opts = {}) {

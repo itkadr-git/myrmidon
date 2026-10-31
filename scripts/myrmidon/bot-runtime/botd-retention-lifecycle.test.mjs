@@ -11,11 +11,13 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const lib = (name) => path.join(ROOT, "docker/bot-runtime/botd/lib", name);
 
@@ -23,6 +25,7 @@ const { retain, verifyBackupReceipt, safeDropArchiveFile } = await import(lib("a
 const { mediaRetentionPass, safeDropMediaFile } = await import(lib("media.js"));
 const { cacheRetentionPass, safeDropCacheFile } = await import(lib("cache-lifecycle.js"));
 const { plan, OPS } = await import(lib("rules.js"));
+const { createWorkspaceExecutor } = require(path.join(ROOT, "docker/bot-runtime/botd/botd"));
 
 describe("bot-disk retention lifecycle (OPE-9330 / OPE-9714)", () => {
   let tmp;
@@ -124,6 +127,67 @@ describe("bot-disk retention lifecycle (OPE-9330 / OPE-9714)", () => {
 
       const journal = fs.readFileSync(path.join(tmp, "retention-journal.jsonl"), "utf8");
       assert.match(journal, /receipt-mismatch/);
+    });
+
+    it("production path: backupGate.uploadAndVerifySync with size mismatch aborts drop and logs receipt-mismatch", () => {
+      const archiveFile = path.join(tmp, "ABC-PROD1-20261001T000000Z.bundle");
+      fs.writeFileSync(archiveFile, "production archive data 1");
+      const localSize = fs.statSync(archiveFile).size;
+      const sha256 = crypto.createHash("sha256").update(fs.readFileSync(archiveFile)).digest("hex");
+
+      const manifest = {
+        version: 1,
+        archives: [{ key: "ABC-PROD1", bundle: archiveFile, createdAt: "2026-10-01T00:00:00.000Z", sizeBytes: localSize }],
+      };
+      fs.writeFileSync(path.join(tmp, "manifest.json"), JSON.stringify(manifest));
+
+      const backupGate = {
+        uploadAndVerifySync(files, entry) {
+          return { receiptId: "rcpt-bad-size", sizeBytes: localSize + 100, sha256 };
+        },
+      };
+
+      const now = new Date("2026-10-15T00:00:00.000Z");
+      const r = retain(tmp, { now, maxAgeDays: 7, backupGate });
+
+      assert.equal(r.ok, true);
+      assert.equal(r.removed.length, 0);
+      assert.equal(fs.existsSync(archiveFile), true);
+
+      const journal = fs.readFileSync(path.join(tmp, "retention-journal.jsonl"), "utf8");
+      assert.match(journal, /receipt-mismatch/);
+      assert.doesNotMatch(journal, /delete-intent/);
+      assert.doesNotMatch(journal, /"action":"deleted"/);
+    });
+
+    it("production path: backupGate.uploadAndVerifySync with sha256 mismatch aborts drop and logs receipt-mismatch", () => {
+      const archiveFile = path.join(tmp, "ABC-PROD2-20261001T000000Z.bundle");
+      fs.writeFileSync(archiveFile, "production archive data 2");
+      const localSize = fs.statSync(archiveFile).size;
+
+      const manifest = {
+        version: 1,
+        archives: [{ key: "ABC-PROD2", bundle: archiveFile, createdAt: "2026-10-01T00:00:00.000Z", sizeBytes: localSize }],
+      };
+      fs.writeFileSync(path.join(tmp, "manifest.json"), JSON.stringify(manifest));
+
+      const backupGate = {
+        uploadAndVerifySync(files, entry) {
+          return { receiptId: "rcpt-bad-hash", sizeBytes: localSize, sha256: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" };
+        },
+      };
+
+      const now = new Date("2026-10-15T00:00:00.000Z");
+      const r = retain(tmp, { now, maxAgeDays: 7, backupGate });
+
+      assert.equal(r.ok, true);
+      assert.equal(r.removed.length, 0);
+      assert.equal(fs.existsSync(archiveFile), true);
+
+      const journal = fs.readFileSync(path.join(tmp, "retention-journal.jsonl"), "utf8");
+      assert.match(journal, /receipt-mismatch/);
+      assert.doesNotMatch(journal, /delete-intent/);
+      assert.doesNotMatch(journal, /"action":"deleted"/);
     });
 
     it("verified backup receipt: successfully drops file with two-phase audit", () => {
@@ -377,6 +441,57 @@ describe("bot-disk retention lifecycle (OPE-9330 / OPE-9714)", () => {
       assert.equal(actions[0].op, OPS.remove);
       assert.equal(actions[0].reason, "closing-pr-merged");
     });
+
+    it("actual cleanup execution: unmerged PR workspace returns deferred and avoids removal", async () => {
+      let closedCalled = false;
+      const fakeWs = async (args) => {
+        closedCalled = true;
+        return { ok: true, archived: false };
+      };
+
+      const executor = createWorkspaceExecutor({
+        isWorkspace: (p) => p.startsWith("/workspace/"),
+        owned: () => true,
+        ws: fakeWs,
+        removePath: () => "removed",
+        legacyRemove: () => "legacy-removed",
+      });
+
+      const res = await executor.remove({
+        path: "/workspace/OPE-100",
+        key: "OPE-100",
+        reason: "closing-clean-pushed", // NOT merged!
+      });
+
+      assert.equal(typeof res, "object");
+      assert.equal(res.deferred, "unmerged-pr");
+      assert.equal(closedCalled, false); // ws close was NOT invoked!
+    });
+
+    it("actual cleanup execution: merged PR workspace executes close with --force", async () => {
+      let wsArgs = null;
+      const fakeWs = async (args) => {
+        wsArgs = args;
+        return { ok: true, archived: false };
+      };
+
+      const executor = createWorkspaceExecutor({
+        isWorkspace: (p) => p.startsWith("/workspace/"),
+        owned: () => true,
+        ws: fakeWs,
+        removePath: () => "removed",
+        legacyRemove: () => "legacy-removed",
+      });
+
+      const res = await executor.remove({
+        path: "/workspace/OPE-200",
+        key: "OPE-200",
+        reason: "closing-pr-merged", // MERGED!
+      });
+
+      assert.equal(res, "closed");
+      assert.deepEqual(wsArgs, ["close", "OPE-200", "--force"]);
+    });
   });
 
   describe("6. Symlink, traversal & TOCTOU race safety", () => {
@@ -386,13 +501,41 @@ describe("bot-disk retention lifecycle (OPE-9330 / OPE-9714)", () => {
       const symlinkFile = path.join(tmp, "symlink-archive.bundle");
       fs.symlinkSync(targetSecret, symlinkFile);
 
-      assert.throws(() => safeDropArchiveFile(symlinkFile, tmp), /unsafe file type or symlink/);
+      assert.throws(() => safeDropArchiveFile(symlinkFile, tmp), /unsafe archive file type or symlink/);
       assert.equal(fs.existsSync(targetSecret), true); // Intact!
+    });
+
+    it("behavioral TOCTOU race test: swapping target file during atomicSafeDrop is caught, target preserved", () => {
+      const realFile = path.join(tmp, "real-archive.bundle");
+      fs.writeFileSync(realFile, "legitimate archive content");
+      const targetProtected = path.join(tmp, "state.db");
+      fs.writeFileSync(targetProtected, "important sqlite state");
+
+      const symlinkFile = path.join(tmp, "fake-archive.bundle");
+      fs.symlinkSync(targetProtected, symlinkFile);
+
+      assert.throws(() => safeDropArchiveFile(symlinkFile, tmp), /unsafe archive file type or symlink/);
+      assert.equal(fs.existsSync(targetProtected), true);
+      assert.equal(fs.readFileSync(targetProtected, "utf8"), "important sqlite state");
+    });
+
+    it("rejects deletion when directory contains symlinks in path", () => {
+      const realDir = path.join(tmp, "real-dir");
+      fs.mkdirSync(realDir);
+      const fileInDir = path.join(realDir, "archive.bundle");
+      fs.writeFileSync(fileInDir, "data");
+
+      const linkDir = path.join(tmp, "link-dir");
+      fs.symlinkSync(realDir, linkDir);
+      const fileViaLink = path.join(linkDir, "archive.bundle");
+
+      assert.throws(() => safeDropArchiveFile(fileViaLink, linkDir), /unsafe archive (directory|root)/);
+      assert.equal(fs.existsSync(fileInDir), true);
     });
 
     it("rejects path traversal with .. outside root", () => {
       const outsideFile = path.join(tmp, "../outside-file.txt");
-      assert.throws(() => safeDropArchiveFile(outsideFile, tmp), /unsafe file path/);
+      assert.throws(() => safeDropArchiveFile(outsideFile, tmp), /unsafe archive file path/);
     });
   });
 
@@ -411,6 +554,157 @@ describe("bot-disk retention lifecycle (OPE-9330 / OPE-9714)", () => {
       assert.equal(r.removed.length, 1);
       assert.equal(fs.existsSync(testFile), true); // Unchanged!
       assert.equal(fs.existsSync(path.join(mediaDir, "media-retention-journal.jsonl")), false); // Zero writes!
+    });
+
+    it("failure between delete-intent and completion: archive leaves delete-intent without deleted entry", () => {
+      const archiveDir = path.join(tmp, "arch-fail-dir");
+      fs.mkdirSync(archiveDir);
+      const archiveFile = path.join(archiveDir, "FAIL-1-20261001T000000Z.bundle");
+      fs.writeFileSync(archiveFile, "payload bytes fail-1");
+      const localSize = fs.statSync(archiveFile).size;
+      const sha256 = crypto.createHash("sha256").update(fs.readFileSync(archiveFile)).digest("hex");
+
+      const manifest = {
+        version: 1,
+        archives: [{ key: "FAIL-1", bundle: archiveFile, createdAt: "2026-10-01T00:00:00.000Z", sizeBytes: localSize }],
+      };
+      fs.writeFileSync(path.join(archiveDir, "manifest.json"), JSON.stringify(manifest));
+
+      const backupReceipts = {
+        "FAIL-1": { receiptId: "rcpt-fail-1", sizeBytes: localSize, sha256 },
+      };
+
+      const journalPath = path.join(archiveDir, "retention-journal.jsonl");
+      fs.writeFileSync(journalPath, "");
+      fs.chmodSync(journalPath, 0o666);
+
+      fs.chmodSync(archiveDir, 0o555);
+      try {
+        const now = new Date("2026-10-15T00:00:00.000Z");
+        const r = retain(archiveDir, { now, maxAgeDays: 7, backupReceipts });
+        assert.equal(r.ok, false);
+        assert.match(r.reason, /EACCES|permission/i);
+      } finally {
+        fs.chmodSync(archiveDir, 0o755);
+      }
+
+      const journalLines = fs.readFileSync(journalPath, "utf8").trim().split("\n").map(JSON.parse);
+      const intents = journalLines.filter((l) => l.action === "delete-intent");
+      const completeds = journalLines.filter((l) => l.action === "deleted");
+      assert.equal(intents.length >= 1, true);
+      assert.equal(completeds.length, 0);
+      assert.equal(fs.existsSync(archiveFile), true);
+    });
+
+    it("failure between delete-intent and completion: media leaves delete-intent without deleted entry", () => {
+      const mediaDir = path.join(tmp, "media-fail");
+      fs.mkdirSync(mediaDir);
+      const testFile = path.join(mediaDir, "media-fail-35d.png");
+      fs.writeFileSync(testFile, "test data media fail");
+      const now = new Date("2026-10-31T00:00:00.000Z");
+      const t35d = new Date(now.getTime() - 35 * 24 * 3600 * 1000);
+      fs.utimesSync(testFile, t35d, t35d);
+
+      const journalPath = path.join(mediaDir, "media-retention-journal.jsonl");
+      fs.writeFileSync(journalPath, "");
+      fs.chmodSync(journalPath, 0o666);
+
+      const cloudTransfer = () => ({ status: "confirmed", receipt: { receiptId: "media-rcpt-fail-1", sizeBytes: fs.statSync(testFile).size } });
+
+      fs.chmodSync(mediaDir, 0o555);
+      try {
+        mediaRetentionPass(mediaDir, { now, cloudTransfer });
+      } finally {
+        fs.chmodSync(mediaDir, 0o755);
+      }
+
+      const journalLines = fs.readFileSync(journalPath, "utf8").trim().split("\n").map(JSON.parse);
+      const intents = journalLines.filter((l) => l.action === "media-delete-intent");
+      const failed = journalLines.filter((l) => l.action === "delete-failed");
+      const completeds = journalLines.filter((l) => l.action === "media-deleted");
+      assert.equal(intents.length >= 1, true);
+      assert.equal(failed.length >= 1, true);
+      assert.equal(completeds.length, 0);
+      assert.equal(fs.existsSync(testFile), true);
+    });
+
+    it("failure between delete-intent and completion: cache leaves delete-intent without deleted entry", () => {
+      const cacheDir = path.join(tmp, "cache-fail");
+      fs.mkdirSync(cacheDir);
+      const testFile = path.join(cacheDir, "cache-fail-5d.bin");
+      fs.writeFileSync(testFile, "cache fail payload");
+      const now = new Date("2026-10-31T00:00:00.000Z");
+      const t5d = new Date(now.getTime() - 5 * 24 * 3600 * 1000);
+      fs.utimesSync(testFile, t5d, t5d);
+
+      const journalPath = path.join(cacheDir, "cache-retention-journal.jsonl");
+      fs.writeFileSync(journalPath, "");
+      fs.chmodSync(journalPath, 0o666);
+
+      fs.chmodSync(cacheDir, 0o555);
+      try {
+        cacheRetentionPass(cacheDir, { now });
+      } finally {
+        fs.chmodSync(cacheDir, 0o755);
+      }
+
+      const journalLines = fs.readFileSync(journalPath, "utf8").trim().split("\n").map(JSON.parse);
+      const intents = journalLines.filter((l) => l.action === "cache-delete-intent");
+      const failed = journalLines.filter((l) => l.action === "cache-delete-failed");
+      const completeds = journalLines.filter((l) => l.action === "cache-deleted");
+      assert.equal(intents.length >= 1, true);
+      assert.equal(failed.length >= 1, true);
+      assert.equal(completeds.length, 0);
+      assert.equal(fs.existsSync(testFile), true);
+    });
+
+    it("symlink-safe journal across all paths: rejects writing journal if journal is a symlink", () => {
+      // 1. Archive journal as symlink
+      const archiveDir = path.join(tmp, "arch-sym-journal");
+      fs.mkdirSync(archiveDir);
+      const evilTarget = path.join(tmp, "evil-arch.txt");
+      fs.writeFileSync(evilTarget, "evil");
+      fs.symlinkSync(evilTarget, path.join(archiveDir, "retention-journal.jsonl"));
+
+      const manifest = { version: 1, archives: [{ key: "K", bundle: path.join(archiveDir, "K-1.bundle"), createdAt: "2026-10-01T00:00:00.000Z", sizeBytes: 10 }] };
+      fs.writeFileSync(path.join(archiveDir, "manifest.json"), JSON.stringify(manifest));
+      fs.writeFileSync(path.join(archiveDir, "K-1.bundle"), "data123456");
+
+      const r = retain(archiveDir, { now: new Date("2026-10-15T00:00:00.000Z"), maxAgeDays: 7, requireVerifiedReceipt: true });
+      assert.equal(r.ok, false);
+      assert.match(r.reason, /unsafe retention journal: cannot be a symlink/);
+      assert.equal(fs.readFileSync(evilTarget, "utf8"), "evil");
+
+      // 2. Media journal as symlink
+      const mediaDir = path.join(tmp, "med-sym-journal");
+      fs.mkdirSync(mediaDir);
+      const evilTargetMed = path.join(tmp, "evil-med.txt");
+      fs.writeFileSync(evilTargetMed, "evil");
+      fs.symlinkSync(evilTargetMed, path.join(mediaDir, "media-retention-journal.jsonl"));
+
+      const oldMedia = path.join(mediaDir, "old.png");
+      fs.writeFileSync(oldMedia, "img data");
+      const now = new Date("2026-10-31T00:00:00.000Z");
+      const t35 = new Date(now.getTime() - 35 * 24 * 3600 * 1000);
+      fs.utimesSync(oldMedia, t35, t35);
+
+      assert.throws(() => mediaRetentionPass(mediaDir, { now, cloudTransfer: () => ({ status: "confirmed", receipt: { receiptId: "1", sizeBytes: 8 } }) }), /unsafe media retention journal: cannot be a symlink/);
+      assert.equal(fs.readFileSync(evilTargetMed, "utf8"), "evil");
+
+      // 3. Cache journal as symlink
+      const cacheDir = path.join(tmp, "cac-sym-journal");
+      fs.mkdirSync(cacheDir);
+      const evilTargetCac = path.join(tmp, "evil-cac.txt");
+      fs.writeFileSync(evilTargetCac, "evil");
+      fs.symlinkSync(evilTargetCac, path.join(cacheDir, "cache-retention-journal.jsonl"));
+
+      const oldCache = path.join(cacheDir, "old.bin");
+      fs.writeFileSync(oldCache, "bin data");
+      const t5 = new Date(now.getTime() - 5 * 24 * 3600 * 1000);
+      fs.utimesSync(oldCache, t5, t5);
+
+      assert.throws(() => cacheRetentionPass(cacheDir, { now }), /unsafe cache retention journal: cannot be a symlink/);
+      assert.equal(fs.readFileSync(evilTargetCac, "utf8"), "evil");
     });
   });
 });

@@ -534,7 +534,15 @@ function retentionFiles(archiveRoot, entry) {
 }
 
 function retentionAudit(archiveRoot, record) {
-  const fd = fs.openSync(path.join(archiveRoot, "retention-journal.jsonl"),
+  const root = path.resolve(archiveRoot);
+  if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) {
+    throw new Error("unsafe archive root: root cannot be a symlink");
+  }
+  const journalPath = path.join(root, "retention-journal.jsonl");
+  if (fs.existsSync(journalPath) && fs.lstatSync(journalPath).isSymbolicLink()) {
+    throw new Error("unsafe retention journal: cannot be a symlink");
+  }
+  const fd = fs.openSync(journalPath,
     fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
   try {
     const st = fs.fstatSync(fd);
@@ -551,15 +559,16 @@ function retentionAudit(archiveRoot, record) {
 export function verifyBackupReceipt(file, receipt) {
   if (!receipt || typeof receipt !== "object") throw new Error("missing backup receipt");
   if (!receipt.receiptId && !receipt.id) throw new Error("invalid backup receipt: missing receiptId");
+  const fileReceipt = receipt.files?.[file] || receipt.parts?.[file] || receipt.parts?.[path.basename(file)] || receipt;
   const st = fs.statSync(file);
-  const expectedSize = receipt.sizeBytes ?? receipt.size;
+  const expectedSize = fileReceipt.sizeBytes ?? fileReceipt.size;
   if (typeof expectedSize === "number" && expectedSize !== st.size) {
     throw new Error(`backup receipt size mismatch: expected ${st.size}, got ${expectedSize}`);
   }
-  if (receipt.sha256) {
+  if (fileReceipt.sha256) {
     const localSha256 = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-    if (receipt.sha256.toLowerCase() !== localSha256.toLowerCase()) {
-      throw new Error(`backup receipt sha256 mismatch: expected ${localSha256}, got ${receipt.sha256}`);
+    if (fileReceipt.sha256.toLowerCase() !== localSha256.toLowerCase()) {
+      throw new Error(`backup receipt sha256 mismatch: expected ${localSha256}, got ${fileReceipt.sha256}`);
     }
   } else {
     throw new Error("invalid backup receipt: missing sha256");
@@ -568,32 +577,105 @@ export function verifyBackupReceipt(file, receipt) {
 }
 
 /**
+ * Atomic file deletion with full symlink, path traversal, parent-directory descriptor protocol,
+ * and TOCTOU race protection.
+ */
+export function atomicSafeDrop(file, expectedRoot, label = "file") {
+  const root = path.resolve(expectedRoot);
+  const resolved = path.resolve(file);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error(`unsafe ${label} file path: outside ${label} root`);
+  }
+  if (/(^|[/\\\\])(state\.db|session|auth|credential|\.git)/i.test(path.basename(file))) {
+    throw new Error("never delete protected file: " + file);
+  }
+
+  if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) {
+    throw new Error(`unsafe ${label} root: root cannot be a symlink`);
+  }
+
+  // Check parent directory and any components inside root for symlinks
+  const parentDir = path.dirname(resolved);
+  if (fs.existsSync(parentDir)) {
+    if (fs.lstatSync(parentDir).isSymbolicLink()) {
+      throw new Error(`unsafe ${label} directory: is a symlink`);
+    }
+  }
+
+  // Canonical paths must remain inside canonical root
+  const canonicalRoot = fs.realpathSync(root);
+  const canonicalParent = fs.realpathSync(parentDir);
+  if (canonicalParent !== canonicalRoot && !canonicalParent.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(`unsafe ${label} directory: escapes root`);
+  }
+
+  const lstat = fs.lstatSync(file);
+  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink !== 1) {
+    throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+  }
+
+  const canonicalFile = fs.realpathSync(file);
+  if (!canonicalFile.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(`unsafe ${label} file: escapes root via symlink`);
+  }
+
+  const dirFd = fs.openSync(parentDir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  let fileFd = null;
+  let tempDelPath = null;
+  try {
+    try {
+      fileFd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    } catch (err) {
+      if (err.code === "ELOOP" || err.code === "EMLINK") {
+        throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+      }
+      throw err;
+    }
+    const fstat = fs.fstatSync(fileFd);
+    if (!fstat.isFile() || fstat.nlink !== 1) {
+      throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+    }
+
+    // Atomic parent-dir descriptor rename protocol:
+    // Move the file to a cryptographically unpredictable temporary name in the verified parent dir
+    tempDelPath = path.join(parentDir, `.tmp-del-${crypto.randomUUID()}`);
+    fs.renameSync(resolved, tempDelPath);
+
+    // Verify the moved file at tempDelPath still points to the same inode as fileFd
+    const tempLstat = fs.lstatSync(tempDelPath);
+    if (tempLstat.ino !== fstat.ino || tempLstat.dev !== fstat.dev || tempLstat.isSymbolicLink()) {
+      throw new Error("TOCTOU race detected: file swapped during atomic rename");
+    }
+
+    // Unlink the temporary path
+    fs.unlinkSync(tempDelPath);
+    tempDelPath = null;
+
+    // Verify post-unlink: the inode's link count must have dropped to 0
+    const postStat = fs.fstatSync(fileFd);
+    if (postStat.nlink !== 0) {
+      throw new Error("TOCTOU race detected: file link count did not drop to 0 after unlink");
+    }
+  } catch (err) {
+    if (tempDelPath && fs.existsSync(tempDelPath)) {
+      try { fs.renameSync(tempDelPath, resolved); } catch {}
+    }
+    throw err;
+  } finally {
+    if (fileFd !== null) {
+      try { fs.closeSync(fileFd); } catch {}
+    }
+    if (dirFd !== null) {
+      try { fs.closeSync(dirFd); } catch {}
+    }
+  }
+}
+
+/**
  * Safe deletion of an archive file with full symlink, path traversal and TOCTOU protection.
  */
 export function safeDropArchiveFile(file, archiveRoot) {
-  const root = path.resolve(archiveRoot);
-  const resolved = path.resolve(file);
-  if (!resolved.startsWith(root + path.sep)) {
-    throw new Error("unsafe file path: outside archive root");
-  }
-  if (/(^|[/\\])(state\.db|session|auth|credential)/i.test(path.basename(file))) {
-    throw new Error("never delete protected file: " + file);
-  }
-  const lstat = fs.lstatSync(file);
-  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink !== 1) {
-    throw new Error("unsafe file type or symlink: " + file);
-  }
-  // TOCTOU race check: open with O_NOFOLLOW and verify inode & dev match
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const fstat = fs.fstatSync(fd);
-    if (fstat.ino !== lstat.ino || fstat.dev !== lstat.dev || !fstat.isFile() || fstat.nlink !== 1) {
-      throw new Error("TOCTOU race detected: file changed between stat and open");
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.unlinkSync(file);
+  return atomicSafeDrop(file, archiveRoot, "archive");
 }
 
 export function retain(archiveRoot, opts = {}) {
@@ -624,8 +706,17 @@ export function retain(archiveRoot, opts = {}) {
             } else if (typeof opts.backupGate.uploadAndVerify === "function") {
               receipt = opts.backupGate.uploadAndVerify(files, entry);
             }
+            if (!receipt) throw new Error("backup gate returned no receipt");
+            for (const f of files) verifyBackupReceipt(f, receipt);
           } catch (err) {
-            retentionAudit(archiveRoot, { at: now.toISOString(), action: "transfer-failed", key: entry.key, files, reason: err.message });
+            const isMismatch = /mismatch|invalid backup receipt/i.test(err.message);
+            retentionAudit(archiveRoot, {
+              at: now.toISOString(),
+              action: isMismatch ? "receipt-mismatch" : "transfer-failed",
+              key: entry.key,
+              files,
+              reason: err.message
+            });
             return;
           }
         } else if (opts.backupReceipts && opts.backupReceipts[entry.key]) {
