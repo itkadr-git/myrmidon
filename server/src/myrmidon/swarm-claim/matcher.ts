@@ -1138,8 +1138,8 @@ export async function getCachedLastRunRows(
   if (entry?.inFlight) {
     return entry.inFlight;
   }
-  let inFlightPromise: Promise<LastRunRow[]> | undefined;
-  const execute = async (): Promise<LastRunRow[]> => {
+  let inFlightPromise: Promise<SwarmLastRunRow[]> | undefined;
+  const execute = async (): Promise<SwarmLastRunRow[]> => {
     try {
       const rows = await db
         .select({

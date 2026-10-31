@@ -53,9 +53,7 @@ import {
 } from "../myrmidon/swarm-claim/matcher.js";
 import {
   invalidateFailedRunsCache,
-  computeFailedRunsMap,
 } from "../myrmidon/swarm-claim/effective-pheromone.js";
-import * as effectivePheromoneModule from "../myrmidon/swarm-claim/effective-pheromone.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -493,7 +491,7 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     invalidateFailedRunsCache(companyId);
     invalidateLastRunRowsCache(companyId);
 
-    const spy = vi.spyOn(effectivePheromoneModule, "computeFailedRunsMap");
+    const spy = vi.spyOn(db, "execute");
     try {
       // 5 calls within 60s
       for (let i = 0; i < 5; i++) {

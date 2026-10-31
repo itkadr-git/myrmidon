@@ -199,7 +199,7 @@ export async function getCachedFailedRunsMap(
   db: { execute: (query: SQL) => Promise<unknown> },
   companyId: string,
   now: Date = new Date(),
-): Promise<ReadonlyMap<string, number>> {
+): Promise<Map<string, number>> {
   const nowMs = now.getTime();
   const entry = failedRunsCache.get(companyId);
   if (entry && entry.expiresAt > nowMs && !entry.inFlight) {
@@ -208,8 +208,8 @@ export async function getCachedFailedRunsMap(
   if (entry?.inFlight) {
     return entry.inFlight;
   }
-  let inFlightPromise: Promise<ReadonlyMap<string, number>> | undefined;
-  const execute = async (): Promise<ReadonlyMap<string, number>> => {
+  let inFlightPromise: Promise<Map<string, number>> | undefined;
+  const execute = async (): Promise<Map<string, number>> => {
     try {
       const map = await computeFailedRunsMap(db, companyId, now);
       failedRunsCache.set(companyId, {
