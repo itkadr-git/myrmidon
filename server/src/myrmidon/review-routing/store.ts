@@ -250,10 +250,11 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         .orderBy(desc(issues.updatedAt), issues.id)
         .limit(limit);
       return rows.map(({ issue: row }) => ({
-        ...toRoutingIssue(row),
+        ...toRoutingIssue(row as typeof issues.$inferSelect),
         companyId: row.companyId,
         identifier: row.identifier,
         title: row.title,
+        updatedAt: row.updatedAt,
       }));
     },
 

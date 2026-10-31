@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueComments,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -105,6 +107,18 @@ describeEmbeddedPostgres("metrics collector", () => {
       livenessReason: input.livenessReason ?? null,
     });
     return runId;
+  }
+
+  async function seedIssue(companyId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return issueId;
   }
 
   it("counts active, queued and failed runs", async () => {
