@@ -44,6 +44,19 @@ export function denyStatePath(env: NodeJS.ProcessEnv): string {
   return (env[DENY_STATE_PATH_ENV] ?? "").trim() || path.join(licenseDir(env), DENY_STATE_NAME);
 }
 
+/**
+ * Atomically writes the signed deny-list JSON to `file`.
+ * Creates the file with 0644 mode via a temporary file and rename in the same
+ * directory to prevent partial reads by active checks. Never creates the target directory.
+ */
+export function writeDenyListFile(file: string, denyListRaw: string): void {
+  const dir = path.dirname(file);
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp.${process.pid}.${Date.now()}`);
+  const content = Buffer.from(denyListRaw.trim() + "\n", "utf8");
+  writeFileSync(tmp, content, { mode: 0o644 });
+  renameSync(tmp, file);
+}
+
 function b64urlDecode(part: unknown): Buffer {
   if (typeof part !== "string" || !/^[A-Za-z0-9_-]+$/.test(part)) throw new Error("not base64url");
   return Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64");
@@ -91,6 +104,42 @@ export interface DenyListReader {
   revoked(who: { licenseId?: string | null; instanceId?: string | null; kid?: string | null }): boolean;
 }
 
+export function storedDenyStateSerial(statePath: string): number | null {
+  try {
+    const raw = readFileSync(statePath, "utf8").trim();
+    return /^[0-9]{1,15}$/.test(raw) ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function currentDenyFileSerial(
+  filePath: string,
+  trustedKeys: readonly TrustedIssuerKey[],
+): number | null {
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    if (raw.length > MAX_DENY_BYTES) return null;
+    const data = parseDenyList(raw, trustedKeys);
+    return data.serial;
+  } catch {
+    return null;
+  }
+}
+
+export function highestAcceptedDenySerial(
+  env: NodeJS.ProcessEnv,
+  trustedKeys: readonly TrustedIssuerKey[],
+): number | null {
+  const statePath = denyStatePath(env);
+  const filePath = denyListPath(env);
+  const seen = [
+    storedDenyStateSerial(statePath),
+    currentDenyFileSerial(filePath, trustedKeys),
+  ].filter((n): n is number => n !== null);
+  return seen.length > 0 ? Math.max(...seen) : null;
+}
+
 export function createDenyListReader(input: {
   env: () => NodeJS.ProcessEnv;
   trustedKeys: readonly TrustedIssuerKey[];
@@ -103,15 +152,6 @@ export function createDenyListReader(input: {
     warned.add(key);
     input.warn?.(`license deny-list ignored: ${message}`);
   };
-
-  function storedSerial(statePath: string): number | null {
-    try {
-      const raw = readFileSync(statePath, "utf8").trim();
-      return /^[0-9]{1,15}$/.test(raw) ? Number(raw) : null;
-    } catch {
-      return null;
-    }
-  }
 
   function load(): DenyList | null {
     const env = input.env();
@@ -135,7 +175,7 @@ export function createDenyListReader(input: {
       return null;
     }
     const statePath = denyStatePath(env);
-    const seen = [maxSerial, storedSerial(statePath)].filter((n): n is number => n !== null);
+    const seen = [maxSerial, storedDenyStateSerial(statePath)].filter((n): n is number => n !== null);
     const highest = seen.length > 0 ? Math.max(...seen) : null;
     if (highest !== null && data.serial < highest) {
       warnOnce(`rollback:${data.serial}<${highest}`, `serial ${data.serial} is lower than the seen ${highest}`);

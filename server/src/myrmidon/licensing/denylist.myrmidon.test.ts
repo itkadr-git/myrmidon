@@ -5,10 +5,14 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import express from "express";
+import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { errorHandler } from "../../middleware/error-handler.js";
 import { moduleStatuses } from "./client-license.js";
-import { createDenyListReader } from "./denylist.js";
+import { createDenyListReader, writeDenyListFile } from "./denylist.js";
 import { keyId, verifyLicense } from "./license.js";
+import { licensingRoutes } from "./routes.js";
 
 const INSTALL_ID = "myr-0123456789abcdef0123";
 const NOW_S = 1_800_000_000;
@@ -147,5 +151,232 @@ describe("deny-list in the licensing check", () => {
     const reader = createDenyListReader({ env: () => env, trustedKeys: [k.publicKey] });
     writeFileSync(path.join(dir, "license.deny.json"), denyFile(k.privateKey, { instance_ids: [INSTALL_ID] }));
     expect(reader.revoked({ instanceId: INSTALL_ID })).toBe(true);
+  });
+
+  it("writeDenyListFile writes atomically with 0644 mode and overwrites cleanly", () => {
+    const k = keys();
+    const denyTarget = path.join(dir, "license.deny.json");
+    const content = denyFile(k.privateKey, { ids: ["lic-1"], serial: 10 });
+    writeDenyListFile(denyTarget, content);
+    expect(readFileSync(denyTarget, "utf8")).toBe(content.trim() + "\n");
+  });
+});
+
+describe("POST /api/licensing/deny-list endpoint", () => {
+  const admin = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: true, companyIds: [] };
+  const member = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [] };
+
+  function app(actor: unknown, env: NodeJS.ProcessEnv, trustedKeys: Array<string | KeyObject>) {
+    const a = express();
+    a.use(express.json());
+    a.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = actor;
+      next();
+    });
+    a.use(
+      "/api",
+      licensingRoutes({
+        env,
+        installId: async () => ({ installId: INSTALL_ID, source: "machine-id" as const }),
+        now: () => new Date(NOW_S * 1000),
+        installedModules: async () => ["google-ai"],
+        trustedKeys,
+      }),
+    );
+    a.use(errorHandler);
+    return a;
+  }
+
+  it("saves a valid deny-list, writes file atomically, and updates module status to revoked", async () => {
+    const k = keys();
+    const licenseTarget = path.join(dir, "license.key");
+    const denyTarget = path.join(dir, "license.deny.json");
+    const licenseText = license(k.privateKey, k.publicKey, "lic-test-1");
+    writeFileSync(licenseTarget, licenseText);
+
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: licenseTarget,
+      MYR_LICENSE_DENY_PATH: denyTarget,
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const application = app(admin, env, [k.publicKey]);
+
+    // Initial status: valid
+    const initialStatus = await request(application).get("/api/licensing/status");
+    expect(initialStatus.status).toBe(200);
+    const googleInitial = initialStatus.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleInitial.state).toBe("valid");
+    expect(googleInitial.reason).toBe("ok");
+
+    // Post valid signed deny-list revoking lic-test-1
+    const denyContent = denyFile(k.privateKey, { ids: ["lic-test-1"], serial: 1 });
+    const postRes = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: `\n${denyContent}  \n` });
+    expect(postRes.status).toBe(200);
+
+    // File on disk written atomically with 0644 mode
+    expect(readFileSync(denyTarget, "utf8")).toBe(denyContent.trim() + "\n");
+
+    // Returned client state immediately reflects revocation
+    const googleRevoked = postRes.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleRevoked).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // Subsequent GET status also reports revoked
+    const updatedStatus = await request(application).get("/api/licensing/status");
+    const googleUpdated = updatedStatus.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleUpdated).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // Also works under /api/myrmidon/licensing/deny-list prefix
+    const denyContent2 = denyFile(k.privateKey, { instance_ids: [INSTALL_ID], serial: 2 });
+    const postRes2 = await request(application)
+      .post("/api/myrmidon/licensing/deny-list")
+      .send({ value: denyContent2 });
+    expect(postRes2.status).toBe(200);
+    expect(readFileSync(denyTarget, "utf8")).toBe(denyContent2.trim() + "\n");
+  });
+
+  it("rejects rollback serial with 409 deny_list_rollback without modifying file or revoked status, and accepts equal serial idempotently", async () => {
+    const k = keys();
+    const licenseTarget = path.join(dir, "license.key");
+    const denyTarget = path.join(dir, "license.deny.json");
+    const licenseText = license(k.privateKey, k.publicKey, "lic-test-1");
+    writeFileSync(licenseTarget, licenseText);
+
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: licenseTarget,
+      MYR_LICENSE_DENY_PATH: denyTarget,
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const application = app(admin, env, [k.publicKey]);
+
+    // 1. Deliver deny-list with serial 2 revoking lic-test-1
+    const denyContent2 = denyFile(k.privateKey, { ids: ["lic-test-1"], serial: 2 });
+    const postRes1 = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent2 });
+    expect(postRes1.status).toBe(200);
+
+    const fileContentAfterSerial2 = readFileSync(denyTarget, "utf8");
+    expect(fileContentAfterSerial2).toBe(denyContent2.trim() + "\n");
+
+    const statusAfterSerial2 = await request(application).get("/api/licensing/status");
+    const googleAfterSerial2 = statusAfterSerial2.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterSerial2).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // 2. Deliver deny-list with serial 1 (rollback) -> 409 deny_list_rollback
+    const denyContent1 = denyFile(k.privateKey, { ids: [], serial: 1 });
+    const rollbackRes = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent1 });
+    expect(rollbackRes.status).toBe(409);
+    expect(rollbackRes.body.code).toBe("deny_list_rollback");
+
+    // 3. File remains unchanged
+    expect(readFileSync(denyTarget, "utf8")).toBe(fileContentAfterSerial2);
+
+    // 4. Module remains revoked
+    const statusAfterRollback = await request(application).get("/api/licensing/status");
+    const googleAfterRollback = statusAfterRollback.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterRollback).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // 5. Equal serial 2 -> idempotent 200, module remains revoked
+    const equalRes = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent2 });
+    expect(equalRes.status).toBe(200);
+    expect(readFileSync(denyTarget, "utf8")).toBe(fileContentAfterSerial2);
+
+    const statusAfterEqual = await request(application).get("/api/licensing/status");
+    const googleAfterEqual = statusAfterEqual.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterEqual).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+  });
+
+  it("refuses invalid or foreign-signed deny-lists with 422 deny_list_invalid", async () => {
+    const k = keys();
+    const foreign = keys();
+    const denyTarget = path.join(dir, "license.deny.json");
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: denyTarget,
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const application = app(admin, env, [k.publicKey]);
+
+    const cases: Array<[string, string]> = [
+      ["not a json envelope", "malformed envelope"],
+      [JSON.stringify({ not: "an envelope" }), "missing payload/signature"],
+      [denyFile(foreign.privateKey, { ids: ["lic-1"] }), "foreign issuer key"],
+      [denyFile(k.privateKey, {}, '{"broken":"json"'), "malformed payload json"],
+      [denyFile(k.privateKey, { ids: [123] as unknown as string[] }), "invalid types in payload"],
+    ];
+
+    for (const [value, label] of cases) {
+      const res = await request(application).post("/api/licensing/deny-list").send({ value });
+      expect(res.status, label).toBe(422);
+      expect(res.body.code, label).toBe("deny_list_invalid");
+    }
+    expect(existsSync(denyTarget)).toBe(false);
+  });
+
+  it("refuses to save deny-list when target directory is unwritable with 409 deny_list_path_unwritable", async () => {
+    const k = keys();
+    const unwritablePath = path.join(dir, "nonexistent-dir", "license.deny.json");
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: unwritablePath,
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const application = app(admin, env, [k.publicKey]);
+    const validDeny = denyFile(k.privateKey, { ids: ["lic-1"] });
+
+    const res = await request(application).post("/api/licensing/deny-list").send({ value: validDeny });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("deny_list_path_unwritable");
+    expect(res.body.error).toContain(unwritablePath);
+    expect(res.body.error).toContain("ENOENT");
+  });
+
+  it("enforces instance-admin authorization and validates request body", async () => {
+    const k = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const validDeny = denyFile(k.privateKey, { ids: ["lic-1"] });
+
+    // 403 for non-admin
+    const forbiddenRes = await request(app(member, env, [k.publicKey]))
+      .post("/api/licensing/deny-list")
+      .send({ value: validDeny });
+    expect(forbiddenRes.status).toBe(403);
+    expect(existsSync(env.MYR_LICENSE_DENY_PATH!)).toBe(false);
+
+    // 400 for invalid body
+    const badBodyRes = await request(app(admin, env, [k.publicKey]))
+      .post("/api/licensing/deny-list")
+      .send({ value: "" });
+    expect(badBodyRes.status).toBe(400);
+
+    const missingFieldRes = await request(app(admin, env, [k.publicKey]))
+      .post("/api/licensing/deny-list")
+      .send({});
+    expect(missingFieldRes.status).toBe(400);
   });
 });

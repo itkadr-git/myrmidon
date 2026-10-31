@@ -614,5 +614,7 @@ describe("licensing routes: client side", () => {
     const res = await request(app(member, envFor())).post("/api/licensing/license").send({ value: RUNNER_ISSUED.all });
     expect(res.status).toBe(403);
     expect(() => readFileSync(licenseFile)).toThrow();
+    const denyRes = await request(app(member, envFor())).post("/api/licensing/deny-list").send({ value: "{}" });
+    expect(denyRes.status).toBe(403);
   });
 });
