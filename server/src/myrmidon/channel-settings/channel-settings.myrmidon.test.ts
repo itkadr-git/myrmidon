@@ -262,9 +262,9 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: the routes", () => {
       })
       .expect(200);
 
-    expect(current.document.channel?.telegramPoolChatGptEnabled).toBe(true);
-    expect(current.document.channel?.telegramPoolChatGptChatId).toBe("123456789");
-    expect(current.document.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+    expect(current.document?.channel?.telegramPoolChatGptEnabled).toBe(true);
+    expect(current.document?.channel?.telegramPoolChatGptChatId).toBe("123456789");
+    expect(current.document?.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
 
     // Masked in API response
     expect(res.body.telegramPoolChatGptEnabled.value).toBe(true);
@@ -272,7 +272,8 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: the routes", () => {
     expect(res.body.telegramPoolChatGptBotToken.value).toBe("********");
 
     // Masked in audit log
-    expect(audits[0].details.channel.telegramPoolChatGptBotToken).toBe("********");
+    const auditDetails = audits[0]?.details as { channel?: Record<string, unknown> } | undefined;
+    expect(auditDetails?.channel?.telegramPoolChatGptBotToken).toBe("********");
 
     // Subsequent update with mask does not overwrite stored token
     const res2 = await request(withActor(admin))
@@ -283,8 +284,8 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: the routes", () => {
       })
       .expect(200);
 
-    expect(current.document.channel?.telegramPoolChatGptChatId).toBe("987654321");
-    expect(current.document.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+    expect(current.document?.channel?.telegramPoolChatGptChatId).toBe("987654321");
+    expect(current.document?.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
     expect(res2.body.telegramPoolChatGptBotToken.value).toBe("********");
   });
 });

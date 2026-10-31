@@ -33,7 +33,7 @@ export interface TelegramPoolBridgeModuleConfig {
   moduleId: string;
   moduleKey?: string;
   companyId?: string;
-  provider: "chatgpt" | "google";
+  provider: "chatgpt" | "google" | "gemini";
   model: string;
   botToken?: string | null;
   allowedChatId?: string | number | null;
@@ -374,7 +374,7 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
 }
 
 export async function resolveTelegramPoolBotToken(
-  provider: "chatgpt" | "gemini",
+  provider: "chatgpt" | "google" | "gemini",
   settings: ChannelSettings,
   deps?: {
     companyId?: string;
