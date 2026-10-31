@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
 } from "./client.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
+  startEmbeddedPostgresTestCluster,
+  type EmbeddedPostgresTestCluster,
 } from "./test-embedded-postgres.js";
 
 const DERIVED_ATTRIBUTION_MIGRATION = "0132_issue_comment_derived_attribution_fast.sql";
@@ -17,8 +19,15 @@ const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+// One cluster per file. It replays every migration once; each test clones the
+// migrated template. Starting a cluster and replaying every migration per test
+// cost ~7 s on a developer machine and well over the 20 s test budget on a
+// loaded CI runner.
+let cluster: EmbeddedPostgresTestCluster | null = null;
+
 async function createTempDatabase(): Promise<string> {
-  const db = await startEmbeddedPostgresTestDatabase("paperclip-derived-attribution-");
+  if (!cluster) throw new Error("embedded Postgres test cluster is not started");
+  const db = await cluster.createDatabase();
   cleanups.push(db.cleanup);
   return db.connectionString;
 }
@@ -134,6 +143,15 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("issue comment derived attribution migration", () => {
+  beforeAll(async () => {
+    cluster = await startEmbeddedPostgresTestCluster("paperclip-derived-attribution-");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    await cluster?.cleanup();
+    cluster = null;
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it(
     "fresh installs include the relocated schema and no deleted 0126 migration",
     async () => {
