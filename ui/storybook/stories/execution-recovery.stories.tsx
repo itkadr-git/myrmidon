@@ -21,7 +21,7 @@ const base: ExecutionProjection = {
   maxAttempts: 3,
   recoveryOwner: null,
   nextAction: null,
-  permittedActions: ["inspect_run"],
+  operatorActions: ["inspect_run"],
   predecessorRunId: null,
   successorRunId: null,
 };
