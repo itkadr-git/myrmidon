@@ -83,3 +83,15 @@ func TestFleetd_EventsOom_Handler(t *testing.T) {
 		t.Errorf("unexpected event: %+v", ev)
 	}
 }
+
+func TestFleetd_ExtractBotKey(t *testing.T) {
+	if got := extractBotKey("myrmidon-bot-agent-fleet"); got != "agent-fleet" {
+		t.Errorf("expected agent-fleet, got %s", got)
+	}
+	if got := extractBotKey("/myrmidon-bot-uuid-f.task"); got != "uuid-f" {
+		t.Errorf("expected uuid-f, got %s", got)
+	}
+	if got := extractBotKey("myrmidon-pg"); got != "" {
+		t.Errorf("expected empty string for non-bot container, got %s", got)
+	}
+}

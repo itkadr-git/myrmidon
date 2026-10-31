@@ -181,4 +181,62 @@ describe("container-oom", () => {
     expect(state.lastSinceNano).toBe(1730000000500000000);
     expect(values).toHaveBeenCalledTimes(1);
   });
+
+  it("syncOomEventsOfSweep ignores non-bot container events and records bot event with uuid agentId", async () => {
+    const botAgentId = "9c916eb2-9d0a-4ff1-bcf3-bb2176b6d511";
+    const events: DriverOomEvent[] = [
+      {
+        containerId: "cid-foreign",
+        botKey: "litellm-gateway",
+        time: 100,
+        timeNano: 1730000000100000000,
+        source: "docker.events",
+      },
+      {
+        containerId: "cid-bot",
+        botKey: botAgentId,
+        time: 200,
+        timeNano: 1730000000200000000,
+        source: "docker.events",
+      },
+    ];
+
+    const getOomEvents = vi.fn(async () => events);
+    let limitCall = 0;
+
+    const chain: any = {
+      from() { return chain; },
+      where() { return chain; },
+      orderBy() { return chain; },
+      limit: vi.fn(async () => {
+        limitCall++;
+        if (limitCall === 1) return [{ companyId: "comp-1", role: "engineer" }];
+        if (limitCall === 2) return [];
+        return [{ id: "run-1" }];
+      }),
+      then(resolve: (v: unknown) => unknown, reject?: (err: unknown) => unknown) {
+        return Promise.resolve([]).then(resolve, reject);
+      },
+    };
+    const values = vi.fn(async () => undefined);
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      select: () => chain,
+      insert: () => ({ values }),
+    };
+    const db = {
+      transaction: async (fn: (t: typeof tx) => unknown) => fn(tx),
+    } as unknown as Db;
+
+    const state = { lastSinceNano: 0 };
+    const agents = [{ agentId: botAgentId, botKey: botAgentId, adapterType: "myrmidon", adapterConfig: {} }];
+    const deps = { driver: { getOomEvents } as any, db } as any;
+
+    await syncOomEventsOfSweep(agents as any, deps, state);
+
+    // Foreign event was skipped, bot event recorded
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ agentId: botAgentId }));
+    expect(state.lastSinceNano).toBe(1730000000200000000);
+  });
 });

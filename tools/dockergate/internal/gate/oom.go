@@ -155,7 +155,11 @@ func (g *Gate) consumeDockerEvents(ctx context.Context, socketPath string) error
 			continue
 		}
 		name := raw.Actor.Attributes["name"]
-		botKey := extractBotKey(name)
+		cleanName := strings.TrimPrefix(name, "/")
+		if !strings.HasPrefix(cleanName, "myrmidon-bot-") {
+			continue
+		}
+		botKey := ExtractBotKey(name)
 		timeNano := raw.TimeNano
 		if timeNano == 0 && raw.Time > 0 {
 			timeNano = raw.Time * 1e9
@@ -172,7 +176,9 @@ func (g *Gate) consumeDockerEvents(ctx context.Context, socketPath string) error
 	return scanner.Err()
 }
 
-func extractBotKey(name string) string {
+// ExtractBotKey extracts the bot identifier from container name.
+// Non-bot containers return an empty string.
+func ExtractBotKey(name string) string {
 	name = strings.TrimPrefix(name, "/")
 	if strings.HasPrefix(name, "myrmidon-bot-") {
 		rest := strings.TrimPrefix(name, "myrmidon-bot-")
@@ -181,5 +187,5 @@ func extractBotKey(name string) string {
 		}
 		return rest
 	}
-	return name
+	return ""
 }

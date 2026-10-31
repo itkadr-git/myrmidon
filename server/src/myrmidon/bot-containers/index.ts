@@ -606,7 +606,13 @@ export async function syncOomEventsOfSweep(
     }
     const sorted = [...events].sort((a, b) => (a.timeNano < b.timeNano ? -1 : a.timeNano > b.timeNano ? 1 : 0));
     for (const ev of sorted) {
-      const agentId = botKeyToAgentId.get(ev.botKey) ?? ev.botKey;
+      const agentId = botKeyToAgentId.get(ev.botKey);
+      if (!agentId) {
+        if (ev.timeNano > state.lastSinceNano) {
+          state.lastSinceNano = ev.timeNano;
+        }
+        continue;
+      }
       const obs = dockerEventOomObservation(ev);
       try {
         await recorder(agentId, obs);

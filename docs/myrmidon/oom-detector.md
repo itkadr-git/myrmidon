@@ -10,12 +10,14 @@ OPE-9934 implements the full event transport:
 2. **fleetd event listener**: fleetd listens to `/var/run/docker.sock` for `oom` events and inspects cgroup v2 `memory.events oom_kill` on the host, exposing them via `GET /v1/events/oom[?since=<nano>]`.
 3. **Child-process OOM capture**: Both PID 1 kills and child-process kills (where PID 1 remains alive) generate kernel OOM events that Docker surfaces via `docker events oom` and cgroup `memory.events oom_kill`.
 4. **Agent & run correlation**: Events are tied to the agent by container botKey, and correlated with the heartbeat run active at `occurredAt` (`startedAt <= occurredAt <= finishedAt`). Ambiguous or missing runs are recorded with `runId: null`.
-5. **Durable database counter**: Events are recorded in `activity_log` with action `agent.container_oom` and entityType `container_oom`. The durable counter is `countAgentContainerOom(db, agentId, runId?)`, matching the OOM kill records in `journalctl -k`.
-6. **Deduplication**: Transactional advisory locks keyed by `containerId:occurredAt:source` prevent duplicate recordings across concurrent reconciliation runs and board restarts.
+5. **Durable database counter**: Events are recorded in `activity_log` with action `agent.container_oom` and entityType `container_oom`. The durable counter is `countAgentContainerOom(db, agentId, runId?, { distinctContainers? })`, matching the OOM kill records in `journalctl -k`.
+6. **Deduplication & source accounting**: Transactional advisory locks keyed by `containerId:occurredAt:source` prevent duplicate recordings across concurrent reconciliation runs.
+   - For child process OOM kills with PID 1 alive, only `docker.events` (or `cgroup.memory_events`) captures the kill.
+   - When PID 1 itself dies, both `docker.events` (at kernel kill time) and `docker.inspect` (`State.OOMKilled` at container exit) observe the kill. Because `docker.inspect` FinishedAt and `docker.events` timestamps can differ, PID 1 termination may produce entries from both sources. To count unique containers killed by OOM, pass `{ distinctContainers: true }` or query `count(distinct details->>'containerId')`.
 
 ## Acceptance verification
 - Artificial OOM triggered in a test container (e.g. `tail /dev/zero` or Python memory allocation exceeding limit).
 - The kernel logs `Memory cgroup out of memory: Killed process` in `journalctl -k`.
 - Dockergate / fleetd event transport captures the `oom` event.
 - The board records the event in `activity_log`.
-- `countAgentContainerOom` matches the number of kernel OOM kills reported by `journalctl -k`.
+- `countAgentContainerOom` matches the number of kernel OOM kills reported by `journalctl -k` (or unique containers via distinctContainers).

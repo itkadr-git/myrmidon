@@ -169,6 +169,10 @@ func (s *server) consumeDockerEvents(ctx context.Context, socketPath string) err
 			continue
 		}
 		name := raw.Actor.Attributes["name"]
+		cleanName := strings.TrimPrefix(name, "/")
+		if !strings.HasPrefix(cleanName, "myrmidon-bot-") {
+			continue
+		}
 		botKey := extractBotKey(name)
 		timeNano := raw.TimeNano
 		if timeNano == 0 && raw.Time > 0 {
@@ -201,7 +205,7 @@ func extractBotKey(name string) string {
 		}
 		return rest
 	}
-	return name
+	return ""
 }
 
 // readCgroupOomKills probes cgroup v2 memory.events for oom_kill count.

@@ -196,11 +196,18 @@ export function fleetRoutingDriver(
       return driver.readBotSkills ? driver.readBotSkills(botKey) : null;
     },
     async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
-      const allDrivers: BotContainerDriver[] = [deps.dockerDriver, ...deps.fleetDrivers.values()];
-      const results = await Promise.all(
-        allDrivers.map(async (d) => (d.getOomEvents ? d.getOomEvents(sinceNano) : [])),
+      await awaitReady(deps);
+      const drivers = [deps.local, ...resolveFleetMap(deps).values()];
+      const settled = await Promise.allSettled(
+        drivers.map(async (d) => (d.getOomEvents ? d.getOomEvents(sinceNano) : [])),
       );
-      return results.flat();
+      const events: DriverOomEvent[] = [];
+      for (const res of settled) {
+        if (res.status === "fulfilled" && Array.isArray(res.value)) {
+          events.push(...res.value);
+        }
+      }
+      return events;
     },
   };
   return routed;

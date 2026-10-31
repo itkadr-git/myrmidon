@@ -88,3 +88,15 @@ func TestOom_A19_Endpoint(t *testing.T) {
 		t.Fatalf("expected 0 events, got %d", len(payloadSince.Events))
 	}
 }
+
+func TestExtractBotKey(t *testing.T) {
+	if got := gate.ExtractBotKey("myrmidon-bot-agent-a"); got != "agent-a" {
+		t.Errorf("expected agent-a, got %s", got)
+	}
+	if got := gate.ExtractBotKey("/myrmidon-bot-uuid-1.suffix"); got != "uuid-1" {
+		t.Errorf("expected uuid-1, got %s", got)
+	}
+	if got := gate.ExtractBotKey("litellm-gateway"); got != "" {
+		t.Errorf("expected empty string for non-bot container, got %s", got)
+	}
+}

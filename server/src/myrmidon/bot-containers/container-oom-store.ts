@@ -49,7 +49,12 @@ export function containerOomRecorder(db: Db) {
  * Returns the durable OOM count recorded in the database for an agent (and optionally a specific run).
  * Matches kernel OOM kill events reported by journalctl -k / cgroup memory.events oom_kill.
  */
-export async function countAgentContainerOom(db: Db, agentId: string, runId?: string): Promise<number> {
+export async function countAgentContainerOom(
+  db: Db,
+  agentId: string,
+  runId?: string,
+  options?: { distinctContainers?: boolean },
+): Promise<number> {
   const conditions = [
     eq(activityLog.agentId, agentId),
     eq(activityLog.action, "agent.container_oom"),
@@ -58,8 +63,11 @@ export async function countAgentContainerOom(db: Db, agentId: string, runId?: st
   if (runId) {
     conditions.push(eq(activityLog.runId, runId));
   }
+  const countExpression = options?.distinctContainers
+    ? sql<number>`count(distinct ${activityLog.details}->>'containerId')::int`
+    : sql<number>`count(*)::int`;
   const rows = await db
-    .select({ count: sql<number>`count(*)::int` })
+    .select({ count: countExpression })
     .from(activityLog)
     .where(and(...conditions));
   return Number(rows[0]?.count ?? 0);
