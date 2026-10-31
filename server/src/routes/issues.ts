@@ -12632,18 +12632,29 @@ export function issueRoutes(
           return;
         }
       }
-      if (req.actor.type === "agent" && effectiveParentId) {
-        createParent = await svc.getById(effectiveParentId);
+      if (effectiveParentId) {
+        if (!createParent) {
+          createParent = await svc.getById(effectiveParentId);
+        }
         if (!createParent || createParent.companyId !== companyId) {
           res.status(404).json({ error: "Parent issue not found" });
           return;
         }
         if (
+          req.actor.type === "agent" &&
           !isTaskBridgeKeyActor(req) &&
           !(await assertIssueWriteInfluenceAllowed(req, res, createParent))
         )
           return;
       }
+      const inheritedProjectId =
+        rawCreateBody.projectId == null && createParent?.projectId
+          ? createParent.projectId
+          : null;
+      const effectiveProjectId =
+        typeof rawCreateBody.projectId === "string" && rawCreateBody.projectId.length > 0
+          ? rawCreateBody.projectId
+          : (inheritedProjectId ?? null);
       if (
         !watchdogProductBugFollowUp &&
         !(await assertTaskWatchdogCreateIssueAllowed(
@@ -12665,7 +12676,7 @@ export function issueRoutes(
         issue: null,
         status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
         assigneeAgentId: normalizedAssigneeAgentId,
-        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        projectId: effectiveProjectId,
         labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
         casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
         harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
@@ -12725,6 +12736,7 @@ export function issueRoutes(
       const createBody = {
         ...rawCreateBody,
         parentId: effectiveParentId,
+        ...(effectiveProjectId !== null ? { projectId: effectiveProjectId } : {}),
         ...(normalizedAssigneeAgentId !== undefined
           ? { assigneeAgentId: normalizedAssigneeAgentId }
           : {}),
