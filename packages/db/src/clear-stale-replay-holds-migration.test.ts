@@ -24,11 +24,11 @@ interface AuditDetails {
   [key: string]: unknown;
 }
 
-function getEvidence(row: { evidence: unknown } | undefined): HoldEvidence {
+function getEvidence(row: Record<string, unknown> | undefined): HoldEvidence {
   return (row?.evidence ?? {}) as HoldEvidence;
 }
 
-function getAuditDetails(row: { details: unknown } | undefined): AuditDetails {
+function getAuditDetails(row: Record<string, unknown> | undefined): AuditDetails {
   return (row?.details ?? {}) as AuditDetails;
 }
 
