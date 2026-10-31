@@ -3933,26 +3933,33 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const nodeIdsSet = new Set(nodeIds);
-  const wakeRows: IssueBlockerAttentionActivePathRow[] = await dbOrTx
-    .select({
-      issueId: sql<
-        string | null
-      >`${agentWakeupRequests.payload} ->> 'issueId'`,
-    })
-    .from(agentWakeupRequests)
-    .where(
-      and(
-        eq(agentWakeupRequests.companyId, companyId),
-        inArray(
-          agentWakeupRequests.status,
-          BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES,
-        ),
-        sql`${agentWakeupRequests.runId} is null`,
-      ),
-    );
-  for (const row of wakeRows) {
-    if (row.issueId && nodeIdsSet.has(row.issueId)) activeIssueIds.add(row.issueId);
+  for (const chunk of chunkList(nodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const wakeRowsPromise: Promise<IssueBlockerAttentionActivePathRow[]> =
+      dbOrTx
+        .select({
+          issueId: sql<
+            string | null
+          >`${agentWakeupRequests.payload} ->> 'issueId'`,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(
+              agentWakeupRequests.status,
+              BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES,
+            ),
+            sql`${agentWakeupRequests.runId} is null`,
+            inArray(
+              sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`,
+              chunk,
+            ),
+          ),
+        );
+    const wakeRows = await wakeRowsPromise;
+    for (const row of wakeRows) {
+      if (row.issueId) activeIssueIds.add(row.issueId);
+    }
   }
 
   const explicitWaitCandidateIds = [...nodesById.values()]
@@ -4588,6 +4595,10 @@ async function listIssueReviewAttentionMap(
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          inArray(
+            sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
+            reviewIds,
+          ),
         ),
       ),
     dbOrTx
@@ -4614,6 +4625,15 @@ async function listIssueReviewAttentionMap(
             "deferred_issue_execution",
             "claimed",
           ]),
+          inArray(
+            sql<string>`coalesce(
+          ${agentWakeupRequests.payload} ->> 'issueId',
+          ${agentWakeupRequests.payload} ->> 'taskId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+        )`,
+            reviewIds,
+          ),
         ),
       ),
     dbOrTx
@@ -4761,8 +4781,8 @@ async function listIssueReviewAttentionMap(
     })),
     relations: [],
     agents: agentRows,
-    activeRuns: (activeRunRows as Array<{ issueId: string | null }>).filter((r) => r.issueId && reviewIds.includes(r.issueId)) as any,
-    queuedWakeRequests: (wakeRows as Array<{ issueId: string | null }>).filter((w) => w.issueId && reviewIds.includes(w.issueId)) as any,
+    activeRuns: activeRunRows,
+    queuedWakeRequests: wakeRows,
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     openRecoveryIssues: recoveryPaths,
