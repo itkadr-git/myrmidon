@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { useUi2StatusStrip } from "../useUi2Status";
 import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Ui2CommanderPalette } from "./Ui2CommanderPalette";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function formatMoney(cents: number, language: string): string {
   return `$${Math.round(cents / 100).toLocaleString(language)}`;
@@ -210,6 +211,8 @@ export function Ui2TopBar() {
             {strip.attentionCount > 99 ? "99+" : strip.attentionCount}
           </span>
         ) : null}
+
+        <Ui2AccountMenu compact />
       </div>
 
       <div style={{ marginLeft: "auto" }}><LanguageSwitch compact /></div>

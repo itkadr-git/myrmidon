@@ -75,6 +75,13 @@
     "russian": "Русский",
     "switchTo": "Switch interface language"
   },
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
+  },
   "status": {
     "backlog": "Backlog",
     "todo": "Todo",
