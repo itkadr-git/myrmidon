@@ -7,10 +7,20 @@
 // Read-only, board members with access to the company,
 // shaped after the evals routes. The layer is flag-only in 1.6.1: events
 // are recorded by the run-output hook, never mutated through the API.
+//
+// myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check.
+//
+//   POST /api/myrmidon/companies/:companyId/guardrails/validate-regex
+//   POST /api/myrmidon/guardrails/validate-regex
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
+import {
+  validateGuardrailRegex,
+  validateGuardrailRegexRequestSchema,
+} from "@myrmidon/shared";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { validate } from "../../middleware/validate.js";
 import { listGuardrailEvents } from "./events.js";
 
 export interface GuardrailRoutesDeps {
@@ -36,6 +46,29 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
     const events = await listGuardrailEvents(db, companyId, limit);
     res.json({ events, count: events.length, limit });
   });
+
+  // myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check
+  router.post(
+    "/myrmidon/companies/:companyId/guardrails/validate-regex",
+    validate(validateGuardrailRegexRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      const result = validateGuardrailRegex(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/myrmidon/guardrails/validate-regex",
+    validate(validateGuardrailRegexRequestSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const result = validateGuardrailRegex(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }
