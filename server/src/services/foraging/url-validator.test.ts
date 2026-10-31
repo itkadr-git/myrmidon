@@ -8,7 +8,7 @@ import {
   isHostnameAllowedByAllowlist,
   isPrivateOrBlockedIp,
   isSafeForagingUrl,
-  normalizeAllowlistDomains,
+  normalizeForagingAllowlistDomains,
   validateForagingUrl,
   validateForagingUrlSync,
 } from "./url-validator.js";
@@ -260,7 +260,7 @@ describe("url-validator (foraging SSRF and allowlist protection)", () => {
     });
 
     it("normalizes domain allowlist entries (trims, uppercase, trailing dots)", () => {
-      const normalized = normalizeAllowlistDomains([
+      const normalized = normalizeForagingAllowlistDomains([
         "  EXAMPLE.COM. ",
         "docs.myrmidon.io",
         "example.com", // duplicate

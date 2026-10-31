@@ -3,7 +3,7 @@ import {
   createForagingUrlSchema,
   foragingUrlSchema,
   isHostnameAllowedByAllowlist,
-  normalizeAllowlistDomains,
+  normalizeForagingAllowlistDomains,
   validateForagingUrlSync,
 } from "./foraging.js";
 
@@ -43,8 +43,8 @@ describe("shared foraging validator", () => {
     expect(schema.safeParse("https://other.com/docs").success).toBe(false);
   });
 
-  it("normalizeAllowlistDomains trims, lowercases and dedupes", () => {
-    expect(normalizeAllowlistDomains([" Example.COM ", "example.com", "a.example.com"])).toEqual([
+  it("normalizeForagingAllowlistDomains trims, lowercases and dedupes", () => {
+    expect(normalizeForagingAllowlistDomains([" Example.COM ", "example.com", "a.example.com"])).toEqual([
       "example.com",
       "a.example.com",
     ]);

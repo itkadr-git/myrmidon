@@ -109,7 +109,7 @@ export function isBlockedHostOrIp(host: string): boolean {
   return false;
 }
 
-export function normalizeAllowlistDomain(raw: unknown): string | null {
+export function normalizeForagingAllowlistDomain(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim().toLowerCase().replace(/\.$/, "");
   if (!value || value.length > 253) return null;
@@ -118,18 +118,18 @@ export function normalizeAllowlistDomain(raw: unknown): string | null {
   return value;
 }
 
-export function normalizeAllowlistDomains(raw: unknown): string[] {
+export function normalizeForagingAllowlistDomains(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   for (const entry of raw) {
-    const domain = normalizeAllowlistDomain(entry);
+    const domain = normalizeForagingAllowlistDomain(entry);
     if (domain) seen.add(domain);
   }
   return [...seen].sort();
 }
 
 export function isHostnameAllowedByAllowlist(hostname: string, allowlist: readonly string[]): boolean {
-  const normalizedAllowlist = normalizeAllowlistDomains(allowlist);
+  const normalizedAllowlist = normalizeForagingAllowlistDomains(allowlist);
   if (normalizedAllowlist.length === 0) return true;
   const cleanHost = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   return normalizedAllowlist.some((domain) => cleanHost === domain || cleanHost.endsWith(`.${domain}`));
@@ -168,7 +168,7 @@ export const foragingUrlSchema = z
 
 export function createForagingUrlSchema(options?: { allowlist?: readonly string[] }) {
   let schema = foragingUrlSchema;
-  const allowlist = options?.allowlist ? normalizeAllowlistDomains(options.allowlist) : [];
+  const allowlist = options?.allowlist ? normalizeForagingAllowlistDomains(options.allowlist) : [];
   if (allowlist.length > 0) {
     schema = schema.refine(
       (val) => {
