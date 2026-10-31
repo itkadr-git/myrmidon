@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
+import zlib from "node:zlib";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,7 +48,6 @@ d("backup-lib: vector(1024) and hnsw index", () => {
       process.env.PAPERCLIP_SCRATCH_DIR ??
       os.tmpdir();
     const tmpDir = await mkdtemp(path.join(scratchDir, "backup-vec-test-"));
-    const backupFile = path.join(tmpDir, "backup.sql");
 
     const sourceSql = postgres(sourceDb.connectionString);
     const targetSql = postgres(targetDb.connectionString);
@@ -55,6 +55,7 @@ d("backup-lib: vector(1024) and hnsw index", () => {
     try {
       await sourceSql.unsafe(`
         CREATE EXTENSION IF NOT EXISTS vector;
+        DROP TABLE IF EXISTS "corpus_chunks" CASCADE;
         CREATE TABLE "corpus_chunks" (
           "id" uuid PRIMARY KEY,
           "content" text NOT NULL,
@@ -71,19 +72,26 @@ d("backup-lib: vector(1024) and hnsw index", () => {
         );
       `);
 
-      await runDatabaseBackup({
+      const backupResult = await runDatabaseBackup({
         connectionString: sourceDb.connectionString,
-        outputFilePath: backupFile,
+        backupDir: tmpDir,
+        retention: { keepLastOnly: true },
         backupEngine: "javascript",
       });
 
-      const backupSql = await readFile(backupFile, "utf8");
+      const backupGz = await readFile(backupResult.backupFile);
+      const backupSql = zlib.gunzipSync(backupGz).toString("utf8");
       expect(backupSql).toContain("vector(1024)");
       expect(backupSql).not.toMatch(/"embedding"\s+"public"\."vector"\s*[,)]/);
 
+      await targetSql.unsafe(`
+        CREATE EXTENSION IF NOT EXISTS vector;
+        DROP TABLE IF EXISTS "corpus_chunks" CASCADE;
+      `);
+
       await runDatabaseRestore({
         connectionString: targetDb.connectionString,
-        inputFilePath: backupFile,
+        backupFile: backupResult.backupFile,
       });
 
       const cols = await targetSql<{ column_name: string; formatted_type: string }[]>`
