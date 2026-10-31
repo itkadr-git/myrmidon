@@ -127,7 +127,12 @@ describe("1.6.6 CAPACITY-POLICY (OPE-9202): feature flag in claim queue", () => 
     });
     expect(legacyQueue.map((c) => c.issueId)).toEqual(["task-a1", "task-a2", "task-b1"]);
 
-    // Capacity policy enabled: project fairness alternates project shares (A1, B1, A2)
+    // Capacity policy enabled: the queue stays ordered by priority band first;
+    // fairness is the final tie-break for candidates of equal effective rank
+    // (orderCandidatesWithPolicy contract). With starvation promotion off
+    // (afterMin beyond the fixture's ages) all three share one rank, so
+    // Project fairness decides: Project A's share is capped at
+    // ceil(3 * 0.5) = 2, putting Project B's task ahead of A's second task.
     const policyQueue = selectQueueForAgent({
       candidates,
       liveClaims: [],
@@ -136,6 +141,7 @@ describe("1.6.6 CAPACITY-POLICY (OPE-9202): feature flag in claim queue", () => 
         ...DEFAULT_CAPACITY_POLICY,
         enabled: true,
         fairness: { perProjectMaxShare: 0.5 },
+        starvation: { afterMin: 240, promoteBy: 1 },
       },
     });
     // With fairness, Project B gets scheduled before the second Project A task
@@ -177,17 +183,20 @@ describe("1.6.6 CAPACITY-POLICY (OPE-9202): default-off and rollback", () => {
     });
     expect(baseline?.issueId).toBe("task-1");
 
-    // Enable policy: with limit of 0 for proj-A, proj-A is rejected, proj-B selected
+    // Enable policy: proj-A is at its per-project active ceiling (the metrics
+    // come from the caller — see service.ts), so proj-A candidates are
+    // rejected and proj-B's task is the top.
     const withPolicy = nextQueueTaskForAgent({
       candidates,
       liveClaims: [],
       activeTasks: 0,
+      activeByProject: { "proj-A": 1, "proj-B": 0 },
       settings: {
         ...defaultSettings,
         capacityPolicy: {
           ...DEFAULT_CAPACITY_POLICY,
           enabled: true,
-          limits: { perProjectActive: 0, perCasteActive: null },
+          limits: { perProjectActive: 1, perCasteActive: null },
         },
       },
       now: NOW,
