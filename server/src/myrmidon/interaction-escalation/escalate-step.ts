@@ -58,7 +58,7 @@ export async function escalateInteractionStep(
       fromRecipient: from,
       toRecipient: next,
       reason: "timeout",
-    });
+    }).onConflictDoNothing();
     if ("agentId" in next) {
       await tx.insert(agentWakeupRequests).values({
         companyId: card.companyId,
