@@ -89,7 +89,10 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
 
   it("uses only the vm-exec gateway", async () => {
     resetForagingHostState();
-    const fetchImpl = vi.fn(async () => Response.json(edgePage({ request_id: "server-request", url: "https://example.com/a" }, "x")));
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      return Response.json(edgePage({ request_id: payload.request_id, url: "https://example.com/a" }, "x"));
+    });
     const reader = createForagingReader({
       minHostIntervalMs: 0,
       env: { MYRMIDON_VMEXEC_URL: "https://edge.example.test", MYRMIDON_VMEXEC_TOKEN: "test-token" } as NodeJS.ProcessEnv,
@@ -106,12 +109,13 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
   it("makes zero direct outbound HTTP calls to source url (0 outbound)", async () => {
     resetForagingHostState();
     const outboundHttpProxyCalls: string[] = [];
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const urlStr = String(url);
       if (!urlStr.startsWith("https://edge.example.test/")) {
         outboundHttpProxyCalls.push(urlStr);
       }
-      return Response.json(edgePage({ request_id: "server-request", url: "https://example.com/target" }, "clean text"));
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      return Response.json(edgePage({ request_id: payload.request_id, url: "https://example.com/target" }, "clean text"));
     });
     const reader = createForagingReader({
       minHostIntervalMs: 0,
