@@ -11,6 +11,7 @@ import {
   migrateIdleGitRepos,
   withFleetMigrationLock,
   removeMirrorCoveredPacks,
+  resolveMirrorGitDirs,
   runRepackWithNiceIonice,
   findMigrationCandidates,
   resolveWorktreeGitDir,
@@ -277,6 +278,18 @@ test("INTEGRATION: resolveWorktreeGitDir follows .git pointer and commondir", ()
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test("INTEGRATION: mirror alternates resolve relative paths and reject unrelated targets", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "git-mig-alt-"));
+  const repo = makeRepo(path.join(tmp, "fleet", "repo.git"));
+  const mirror = makeRepo(path.join(tmp, "fleet", "mirror.git"), { unreachable: false });
+  const unrelated = makeRepo(path.join(tmp, "elsewhere", "mirror.git"), { unreachable: false });
+  const objectsDir = path.join(repo, "objects");
+  const relative = path.relative(objectsDir, path.join(mirror, "objects"));
+  assert.deepEqual(resolveMirrorGitDirs(objectsDir, `${relative}\n`, path.join(tmp, "fleet")), [mirror]);
+  assert.deepEqual(resolveMirrorGitDirs(objectsDir, `${path.join(unrelated, "objects")}\n`, path.join(tmp, "fleet")), []);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test("INTEGRATION: removeMirrorCoveredPacks deletes a pack fully present in the mirror", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "git-mig-mirror-"));
   const mirror = makeRepo(path.join(tmp, "mirror.git"), { unreachable: false });
@@ -289,8 +302,7 @@ test("INTEGRATION: removeMirrorCoveredPacks deletes a pack fully present in the 
   assert.ok(packsBefore.length > 0, "repo must have a pack");
 
   const alternates = `${path.join(mirror, "objects")}\n`;
-  const res = removeMirrorCoveredPacks(repo, alternates);
-  assert.strictEqual(res.checked, packsBefore.length);
+  const res = removeMirrorCoveredPacks(repo, alternates, { mirrorRoot: tmp });
   assert.ok(res.removed >= 1, `mirror-covered pack must be removed (removed=${res.removed})`);
   const packsAfter = fs.readdirSync(packDir).filter((f) => f.endsWith(".pack"));
   assert.ok(packsAfter.length < packsBefore.length);
@@ -304,7 +316,7 @@ test("INTEGRATION: removeMirrorCoveredPacks keeps a pack with objects missing fr
   const mirror = path.join(tmp, "mirror.git");
   sh("git", ["init", "-q", "--bare", mirror]); // empty mirror: nothing covered
   const alternates = `${path.join(mirror, "objects")}\n`;
-  const res = removeMirrorCoveredPacks(repo, alternates);
+  const res = removeMirrorCoveredPacks(repo, alternates, { mirrorRoot: tmp });
   assert.strictEqual(res.removed, 0, "pack with mirror-missing objects must stay");
   fs.rmSync(tmp, { recursive: true, force: true });
 });
