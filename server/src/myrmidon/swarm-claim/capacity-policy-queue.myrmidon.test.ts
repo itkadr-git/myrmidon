@@ -4,8 +4,11 @@
 // Acceptance:
 //   1. policy is enabled via feature flag in claim queue (settings / env);
 //   2. default-off and rollback return prior behavior without a restart;
-//   3. tests exclude invalid claims (covered by live lease, capacity limit)
-//      and cross-project claims (agent cannot claim non-member project task).
+//   3. tests exclude invalid claims (covered by live lease, capacity limit).
+// Cross-project claim exclusion (agent cannot claim a non-member project
+// task) is covered on the real matcher/queue path in
+// cross-project-load.myrmidon.test.ts (outsider agent + projectScopedClaimGate),
+// not by an in-memory filter here.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -254,35 +257,5 @@ describe("1.6.6 CAPACITY-POLICY (OPE-9202): excludes invalid and cross-project c
 
     // task-a is rejected by capacity limits; task-b is selected
     expect(next?.issueId).toBe("task-b");
-  });
-
-  it("excludes cross-project claims: agent only receives candidates filtered for their project membership", () => {
-    // In swarm-claim architecture:
-    // listRoleQueue(db, companyId, role, agentId) and matcher apply projectScopedClaimGate(agentId)
-    // and projectMemberAgentIds checks so that cross-project tasks are never fed as eligible
-    // candidates for an agent from another project.
-    const projectMemberIds = new Set(["agent-alpha"]); // agent-beta is NOT a member of proj-A
-
-    const candidateProjectA = makeCandidate({ issueId: "task-proj-a", projectId: "proj-A" });
-    const candidateUnassigned = makeCandidate({ issueId: "task-global", projectId: null });
-
-    // Simulate agent-beta (not a member of proj-A) querying queue:
-    // candidateProjectA is excluded by project membership gate
-    const candidatesForAgentBeta = [candidateProjectA, candidateUnassigned].filter(
-      (c) => !c.projectId || projectMemberIds.has("agent-beta"),
-    );
-
-    const next = nextQueueTaskForAgent({
-      candidates: candidatesForAgentBeta,
-      liveClaims: [],
-      activeTasks: 0,
-      settings: {
-        ...defaultSettings,
-        capacityPolicy: { ...DEFAULT_CAPACITY_POLICY, enabled: true },
-      },
-      now: NOW,
-    });
-
-    expect(next?.issueId).toBe("task-global");
   });
 });
