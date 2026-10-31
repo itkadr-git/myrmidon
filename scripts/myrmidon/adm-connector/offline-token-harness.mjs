@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import path from 'node:path';
 import { createHooks, classify } from './hooks.mjs';
 import { BASELINE, estimateTokens, generateBaselineSessionStart, generateBaselineMemoryRead } from './token-benchmark.mjs';
 
@@ -22,13 +21,12 @@ async function main() {
   if (!Array.isArray(dataset) || dataset.length !== 50 || dataset.some(row => !row || typeof row.text !== 'string')) {
     throw new Error('dataset must be a JSON array of exactly 50 {text} objects');
   }
-  const realDataset = !path.resolve(datasetPath).endsWith('/adm-sample-50.json');
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'adm-offline-bench-'));
   try {
     const sessionId = 'offline-token-benchmark';
-    const loader = realDataset
-      ? async () => { throw new Error('real-data mode requires local snapshot; network disabled'); }
-      : async () => ({ items: (await import('./failure-matrix.mjs')).STANDARD_ITEMS, fetchedAt: Date.now(), degraded: false });
+    // The operator-owned dataset is local input only. Hook metadata is a pinned
+    // offline snapshot; never fetch REST data while measuring it.
+    const loader = async () => ({ items: (await import('./failure-matrix.mjs')).STANDARD_ITEMS, fetchedAt: Date.now(), degraded: false });
     const hooks = createHooks({ stateDir, load: loader });
     const oldStart = generateBaselineSessionStart();
     const newStartResult = await hooks.run({ hook_event_name: 'SessionStart', session_id: sessionId });
