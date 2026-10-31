@@ -24,7 +24,7 @@ export interface ForagingUrlValidationResult {
 export function looksLikeIpAddress(host: string): boolean {
   if (host.startsWith("[") && host.endsWith("]")) return true;
   if (parseIpv4Address(host)) return true;
-  return /^[0-9a-fA-F:]+:[0-9a-fA-F:]+$/.test(host) && host.includes(":");
+  return /^[0-9a-fA-F:]+$/.test(host) && host.includes(":");
 }
 
 export function isAllowedForagingProtocol(protocol: string): protocol is ForagingAllowedProtocol {
