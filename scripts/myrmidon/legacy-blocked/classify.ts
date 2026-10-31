@@ -62,35 +62,45 @@ function addCandidate(
 }
 
 function classifyComment(comment: string): Candidate[] {
-  const text = comment.trim().toLowerCase();
+  const text = comment.trim().toLowerCase().replace(/ё/g, "е");
   if (!text) return [];
 
   // Only recognize explicit present-tense statements; negated or resolved
   // statements are not evidence about the current blocker.
   const hasNegationOrResolution =
     /\b(?:not|no longer|never)\s+(?:blocked|waiting|awaiting|pending)\b/.test(text) ||
-    /\b(?:resolved|completed|cleared|unblocked)\b/.test(text);
-  if (hasNegationOrResolution) return [];
+    /\b(?:resolved|completed|cleared|unblocked)\b/.test(text) ||
+    /(?:уже\s+)?не\s+(?:ждем|ожидаем|заблокирован|заблокирована|заблокировано|ждет|ждут)|разблокирован|решен(?:о|а|ы)?\b|снят(?:о|а|ы)?\b/.test(text);
+  const isNegatedDecisionWait =
+    /(?:уже\s+)?не\s+(?:ждем|ожидаем)\s+(?:решени\w*|согласовани\w*)/.test(text);
+  if (hasNegationOrResolution || isNegatedDecisionWait) return [];
 
   const candidates: Candidate[] = [];
   if (/\b(?:awaiting|waiting for)\s+(?:an?\s+)?(?:human|owner|user)\s+(?:decision|approval|input)\b/.test(text) ||
-      /\b(?:human|owner|user)\s+(?:decision|approval|input)\s+(?:is\s+)?(?:required|needed|pending)\b/.test(text)) {
+      /\b(?:human|owner|user)\s+(?:decision|approval|input)\s+(?:is\s+)?(?:required|needed|pending)\b/.test(text) ||
+      /(?:нужно|нужны)\s+(?:решени\p{L}*|согласовани\p{L}*)/u.test(text) ||
+      /(?:ждем|ожидаем)\s+решени\p{L}*\s+(?:владельца|алекса|alex)/u.test(text)) {
     candidates.push("human_decision");
   }
-  if (/\b(?:recovery task|recovery issue|operator action)\s+(?:is\s+)?(?:required|open|pending|created)\b/.test(text)) {
+  if (/\b(?:recovery task|recovery issue|operator action)\s+(?:is\s+)?(?:required|open|pending|created)\b/.test(text) ||
+      /нужна\s+задача\s+восстановления|(?:нужно|требуется)\s+действие\s+оператора/.test(text)) {
     candidates.push("recovery");
   }
-  if (/\b(?:permission denied|access denied|missing (?:repository )?access|missing permission|resource unavailable)\b/.test(text)) {
+  if (/\b(?:permission denied|access denied|missing (?:repository )?access|missing permission|resource unavailable)\b/.test(text) ||
+      /нет\s+(?:доступа|прав)|отказано\s+в\s+доступе/.test(text)) {
     candidates.push("resource");
   }
   if (/\b(?:awaiting|waiting for)\s+(?:a\s+)?(?:vendor|provider|external|upstream)\s+(?:response|reply|action|service)\b/.test(text) ||
-      /\bexternal wait\b/.test(text)) {
+      /\bexternal wait\b/.test(text) ||
+      /(?:ждем|ожидаем)\s+(?:ответа|действия)\s+(?:поставщика|провайдера|внешнего\s+сервиса)/.test(text)) {
     candidates.push("external_wait");
   }
-  if (/\b(?:blocked by|waiting on|depends on)\s+(?:issue\s+)?(?:ope-\d+|[a-f0-9]{8}-[a-f0-9-]{27,})\b/i.test(text)) {
+  if (/\b(?:blocked by|waiting on|depends on)\s+(?:issue\s+)?(?:ope-\d+|[a-f0-9]{8}-[a-f0-9-]{27,})\b/i.test(text) ||
+      /(?:заблокировано|заблокирован|заблокирована|ждет|ждем|ожидает|зависит\s+от)\s+(?:задачи?\s+)?ope-\d+/.test(text)) {
     candidates.push("dependency");
   }
-  if (/\b(?:duplicate|cancelled|canceled|will not be pursued|no further work is needed)\b/.test(text)) {
+  if (/\b(?:duplicate|cancelled|canceled|will not be pursued|no further work is needed)\b/.test(text) ||
+      /дубликат|отменено|не\s+нужно/.test(text)) {
     candidates.push("terminal");
   }
   return candidates;
