@@ -284,7 +284,7 @@ export async function runDigestForCompany(
  *  set, selects the forum-topic thread inside that chat. */
 export async function resolveTargetConversation(
   db: Db,
-  input: { companyId: string; chatId: string | null; topicId: number | null },
+  input: { companyId: string; chatId: string | null; topicId: number | string | null },
 ): Promise<{ endpointId: string; conversationId: string; issueId: string; threadId: string } | null> {
   if (input.chatId === null || input.chatId.trim() === "") return null;
   const chat = input.chatId.trim();
@@ -313,7 +313,7 @@ export async function resolveTargetConversation(
       inArray(chatConversations.state, ["active", "waiting"]),
     ))
     .orderBy(sql`${chatConversations.sessionGeneration} desc`);
-  const withTopic = input.topicId !== null && input.topicId !== undefined;
+  const withTopic = input.topicId !== null && input.topicId !== undefined && String(input.topicId).trim() !== "";
   const wantedThreadIds = withTopic
     ? [`telegram:${chat}:${input.topicId}`]
     : [`telegram:${chat}`, `telegram:${chat}:${input.topicId ?? ""}`];

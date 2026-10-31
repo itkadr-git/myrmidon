@@ -19,6 +19,7 @@ import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { revokeAllUserSessions } from "./session-service.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -1128,6 +1129,9 @@ export function accessService(db: Db) {
         nextStatus === "suspended"
       ) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
+        // myrmidon(OPE-10179): suspending a member kills every live session and
+        // board API key at once — old tokens must stop working immediately.
+        await revokeAllUserSessions(existing.principalId, tx);
       }
 
       return tx

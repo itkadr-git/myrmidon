@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "Интерфейс",
+    "new": "Новая",
+    "legacy": "Прежняя",
+    "instanceDefault": "По настройке экземпляра",
+    "switchTo": "Переключить версию интерфейса"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Основная навигация",
@@ -114,7 +121,6 @@
       "badge": "Решений ждёт: {{count}}"
     },
     "owner": "Владелец",
-    "ownerChannel": "Web · сейчас",
     "commander": {
       "aria": "Сказать Полководцу (Ctrl K)",
       "placeholder": "Сказать Полководцу…",
@@ -150,6 +156,13 @@
       "castes": "Касты и модели",
       "system": "Система",
       "language": "Язык"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Активен · Веб",
+        "telegram": "Активен · Telegram",
+        "none": "Давно не появлялся"
+      }
     }
   },
   "connectorPanel": {
@@ -406,6 +419,18 @@
       "window5h": "Окно 5ч",
       "window7d": "Окно 7д",
       "lastOk": "Последний OK"
+    },
+    "litellmChannels": {
+      "title": "Группы моделей и каналы LiteLLM",
+      "description": "Группы моделей и маршрутизируемые каналы провайдеров, настроенные в LiteLLM.",
+      "loading": "Загрузка групп моделей и каналов...",
+      "empty": "Группы моделей и каналы LiteLLM не найдены.",
+      "error": "Ошибка загрузки каналов LiteLLM: {{error}}",
+      "group": "Группа",
+      "provider": "Провайдер",
+      "providerModel": "Модель провайдера",
+      "order": "Приоритет",
+      "weight": "Вес"
     }
   },
   "castes": {

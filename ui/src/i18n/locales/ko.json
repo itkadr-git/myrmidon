@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Main navigation",
@@ -114,7 +121,6 @@
       "badge": "{{count}} decisions waiting"
     },
     "owner": "Owner",
-    "ownerChannel": "Web · now",
     "commander": {
       "aria": "Tell the Commander (Ctrl K)",
       "placeholder": "Tell the Commander…",
@@ -150,6 +156,13 @@
       "castes": "Castes and models",
       "system": "System",
       "language": "Language"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Active · Web",
+        "telegram": "Active · Telegram",
+        "none": "Active · not seen recently"
+      }
     }
   },
   "connectorPanel": {
@@ -406,6 +419,18 @@
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
       "lastOk": "Last OK"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {

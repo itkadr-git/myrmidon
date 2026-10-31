@@ -15,6 +15,7 @@ import { RUN_STALL_ERROR_CODE } from "../myrmidon/run-stall/constants.js";
 // reassignment) are retried or released, not held -- only for a conversation
 // adapter or one with its own idempotency key, see infra-interrupts.ts
 import { shouldSkipReconciliationForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
+import { looksLikePendingInteractionAddresseeWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -39,6 +40,18 @@ export function legacyExecutionNeedsReconciliation(
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
+  // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
+  if (
+    run.errorCode === "process_lost" &&
+    run.contextSnapshot &&
+    looksLikePendingInteractionAddresseeWake(
+      run.contextSnapshot as Record<string, unknown>,
+    ) &&
+    executionFailureRetryCount(run) < 2
+  ) {
+    return false;
+  }
   // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
   // provider startup is a deliberate wait, not an unknown provider outcome.
   if (

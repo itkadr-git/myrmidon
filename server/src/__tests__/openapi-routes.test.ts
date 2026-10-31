@@ -74,6 +74,7 @@ const apiPrefixes: Record<string, string> = {
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
+  "users.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =

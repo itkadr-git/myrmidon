@@ -5,7 +5,7 @@
 // utilities that carry values are avoided on purpose so check-token-gates
 // never depends on an allowlist for ui2).
 import { useTranslation } from "@/i18n";
-import { useUi2I18n } from "../i18n/Ui2I18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
@@ -14,12 +14,15 @@ import { useUi2AttentionCount } from "../useUi2Status";
 import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
 import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
-  const t = (key: string, values?: Record<string, string | number>) =>
-    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const Icon = item.icon;
   return (
     <span
@@ -91,9 +94,11 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
 
 export function Ui2Rail() {
   const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
-  const t = (key: string, values?: Record<string, string | number>) =>
-    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const { selectedCompany } = useCompany();
   const attentionCount = useUi2AttentionCount();
   const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
@@ -181,27 +186,9 @@ export function Ui2Rail() {
         style={{
           marginTop: "auto",
           borderTop: "1px solid var(--myr-hairline)",
-          padding: "var(--myr-space-1) var(--myr-space-2)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
         }}
       >
-        <span
-          style={{
-            fontSize: "var(--myr-text-nano)",
-            color: "var(--myr-ink)",
-            fontWeight: 600,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {selectedCompany?.name ?? t("ui2.owner")}
-        </span>
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.ownerChannel")}
-        </span>
+        <Ui2AccountMenu />
       </div>
     </aside>
   );
