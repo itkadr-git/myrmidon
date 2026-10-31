@@ -399,7 +399,7 @@ import {
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -903,6 +903,7 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
@@ -9692,7 +9693,7 @@ export function heartbeatService(
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
-  const budgetHooks = {
+  const budgetHooks: BudgetServiceHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
     // myrmidon(M3): owner signal on a budget hard-stop — delivered into the
     // interrupted issue threads, deduped per incident, off via
@@ -9715,6 +9716,23 @@ export function heartbeatService(
         ? (input: BudgetSignalOnlyInput) =>
             deliverBudgetSignalOnly(db, budgetSignalOnlyPorts, input).then(() => undefined)
         : undefined,
+    // myrmidon(1.7-BUDGET-CONFIG): the A-hierarchy limits on run admission.
+    // Every evaluation resolves fresh: effective limit for the issue (issue →
+    // foraging → caste → project nest → company nest), spend of the period,
+    // the limit row's own mode, and the global signal-only flag (default ON =
+    // report-only, the corrupt-data-safe direction A chose). Only a hard,
+    // active, over-its-period limit refuses — see admission.ts.
+    resolveBudgetLimitAdmissionBlock: async ({ companyId, agentId, context }) =>
+      evaluateBudgetLimitAdmission(
+        { db, now: () => new Date(), env: runtimeEnv },
+        {
+          companyId,
+          agentId,
+          issueId: context?.issueId ?? null,
+          projectId: context?.projectId ?? null,
+          settings: { getGeneral: () => instanceSettings.getGeneral() },
+        },
+      ),
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, {
