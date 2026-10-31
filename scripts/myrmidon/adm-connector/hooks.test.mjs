@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, utimes } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHooks, classify } from './hooks.mjs';
@@ -10,6 +11,20 @@ async function setup(items, extra = {}) {
   const hooks = createHooks({ stateDir: dir, load: async () => ({ items, fetchedAt: Date.now(), degraded: false }), ...extra });
   return { hooks, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
+test('stale lock from killed hook is reclaimed and next prompt proceeds', async () => {
+  const { hooks, cleanup } = await setup([item('adm/trigger/ssh', ['ssh'])]);
+  try {
+    const sessionId = 'killed-hook';
+    const lock = join(hooks.stateDir, `${createHash('sha256').update(sessionId).digest('hex')}.json.lock`);
+    await mkdir(lock, { recursive: true });
+    const old = new Date(Date.now() - 31_000);
+    await utimes(lock, old, old);
+    const result = await hooks.run({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, prompt: 'ssh host' });
+    assert.equal(result.mode, 'main');
+    assert.ok(result.bytes > 0);
+  } finally { await cleanup(); }
+});
+
 test('session summaries only, compaction excludes trigger index and bodies', async () => {
   const { hooks, cleanup } = await setup([item('adm/policy/security', [], 'SECRET BODY'), item('adm/trigger/ssh', ['ssh'])]);
   try {

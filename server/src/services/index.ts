@@ -227,3 +227,9 @@ export {
   clearExpiredContinuationKeys,
   type ContinuationDedupeOutcome,
 } from "./continuation-dedupe.js";
+export {
+  sessionService,
+  revokeAllUserSessions,
+  setSessionDb,
+  getSessionDb,
+} from "./session-service.js";

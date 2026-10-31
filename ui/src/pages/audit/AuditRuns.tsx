@@ -19,6 +19,9 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link, useSearchParams } from "@/lib/router";
 import { relativeTime } from "@/lib/utils";
 import { i18n, useTranslation } from "@/i18n";
+import { RunsWithResultPanel } from "./RunsWithResultPanel";
+
+export { RunsWithResultPanel } from "./RunsWithResultPanel";
 
 const ALL = "__all";
 const RUN_LIMIT = 200;
@@ -131,6 +134,7 @@ function RoutineScopedRuns({
 export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const view = searchParams.get("view") ?? "all";
   const agentId = searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
   const agents = useQuery({
@@ -145,7 +149,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         summary: true,
       }),
     refetchInterval: 15_000,
-    enabled: !routineId,
+    enabled: !routineId && view === "all",
   });
   const routineRuns = useQuery({
     queryKey: [...queryKeys.routines.runs(routineId ?? ""), "audit"],
@@ -165,6 +169,18 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     () => (runs.data ?? []).filter((run) => status === ALL || run.status === status),
     [runs.data, status],
   );
+
+  const updateView = (newView: "all" | "results") => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (newView === "all") next.delete("view");
+        else next.set("view", newView);
+        return next;
+      },
+      { replace: true },
+    );
+  };
 
   const updateFilter = (key: "agentId" | "runStatus", value: string) => {
     setSearchParams(
@@ -203,12 +219,35 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">{t("area.search-timeline-audit-2.audit-runs.page.title")}</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          {t("area.search-timeline-audit-2.audit-runs.page.description")}
-        </p>
+      <div className="flex items-center gap-2 border-b border-border pb-2">
+        <Button
+          variant={view === "all" ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => updateView("all")}
+          data-testid="tab-all-runs"
+        >
+          {t("area.search-timeline-audit-2.audit-runs.tabs.allRuns", "All runs")}
+        </Button>
+        <Button
+          variant={view === "results" ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => updateView("results")}
+          data-testid="tab-runs-with-result"
+        >
+          {t("area.search-timeline-audit-2.audit-runs.tabs.runsWithResult", "Runs with result")}
+        </Button>
       </div>
+
+      {view === "results" ? (
+        <RunsWithResultPanel companyId={companyId} />
+      ) : (
+        <>
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">{t("area.search-timeline-audit-2.audit-runs.page.title")}</h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              {t("area.search-timeline-audit-2.audit-runs.page.description")}
+            </p>
+          </div>
 
       <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
@@ -309,6 +348,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
       )}
 
       <p className="text-xs text-muted-foreground">{t("area.search-timeline-audit-2.audit-runs.page.footer", { limit: RUN_LIMIT })}</p>
+        </>
+      )}
     </div>
   );
 }

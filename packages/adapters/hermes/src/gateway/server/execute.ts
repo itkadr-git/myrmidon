@@ -127,6 +127,12 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  consecutiveToolErrors: {
+    toolName: string;
+    count: number;
+    lastError: string;
+  } | null;
 };
 
 type TextRedactor = (value: string) => string;
@@ -840,6 +846,7 @@ function createExecutionState(runId: string): ExecutionState {
     guardToolArguments: new Map(),
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
+    consecutiveToolErrors: null,
   };
 }
 
@@ -1085,6 +1092,40 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
+
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    if (toolHasError(record)) {
+      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
+      const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
+      const isSameError = Boolean(
+        isSameTool &&
+        state.consecutiveToolErrors?.lastError &&
+        errStr.length > 0 &&
+        state.consecutiveToolErrors.lastError === errStr,
+      );
+
+      let currentError = state.consecutiveToolErrors;
+      if (isSameTool && isSameError && currentError) {
+        currentError.count++;
+      } else {
+        currentError = { toolName: name, count: 1, lastError: errStr };
+        state.consecutiveToolErrors = currentError;
+      }
+
+      if (currentError.count >= 3) {
+        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${currentError.count} times consecutively with the same error.`;
+        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
+        markTerminal(state, {
+          runId: state.runId,
+          status: "failed",
+          eventName: "agent.runtime.stop_condition",
+          payload: { error: errorMsg },
+          output: errorMsg,
+        });
+      }
+    } else {
+      state.consecutiveToolErrors = null;
+    }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));
     if (reasoning) await ctx.onLog("stdout", formatCompactReasoningLine(reasoning));
