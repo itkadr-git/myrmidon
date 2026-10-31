@@ -48,7 +48,6 @@ describe("metrics self-check probe", () => {
     // The three recovery event counters are in-process port state as well.
     // The scent classifier alarm is also process-local, so it remains
     // available when database reads fail.
-    // The three recovery event counters are in-process port state as well.
     expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 3 + 1);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
@@ -62,6 +61,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_continuation_deduped_total" &&
         family !== "swarm_claim_conflicts_total" &&
         family !== "swarm_lease_recovered_total" &&
+        family !== "swarm_scent_classifier_alarm" &&
         family !== "myrmidon_readiness_ratio" &&
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&
