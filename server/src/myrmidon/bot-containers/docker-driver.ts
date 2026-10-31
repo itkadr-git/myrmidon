@@ -992,6 +992,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   const skillDirs = new Set<string>();
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") {
       for (const line of entry.content.toString("utf8").split("\n")) {
         const name = line.split(":")[0]?.trim();
@@ -1006,6 +1007,7 @@ export function skillDirectoriesFromArchive(entries: readonly UstarReadEntry[]):
   }
   for (const entry of entries) {
     if (entry.type !== "file") continue;
+    if (entry.path.startsWith("skills/paperclip-managed/")) continue;
     if (entry.path === "skills/.bundled_manifest") continue;
     const segments = entry.path.split("/").filter((segment) => segment.length > 0);
     if (segments.length < 3 || segments[0] !== "skills") continue;
@@ -1510,7 +1512,7 @@ export function dockerBotContainerDriver(
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's own skills
    * (hermes/skills/ — the container's ~/.hermes/skills) as (directory name,
    * files), for the reconcile pass's back-import into the company catalog.
-   * The board's own delivery (hermes/skills-board/) is NOT part of the
+   * The board's own delivery (hermes/skills/paperclip-managed/) is NOT part of the
    * result: it is the profile's managed directory, and reading it back would
    * re-import the catalog's own copy. Works on a live container (the Docker
    * archive API does not need exec); a stopped or missing container yields
