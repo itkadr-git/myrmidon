@@ -47,7 +47,7 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         return [];
       }
 
-      const rowsResult = await db.execute<{
+      interface RawLegacyBlockedRow {
         company_id: string;
         import_key: string;
         issue_id: string;
@@ -55,7 +55,9 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         result_issue_id: string | null;
         created_at: Date | string;
         source_created_at: Date | string | null;
-      }>(sql`select
+      }
+
+      const rowsResult = await db.execute<RawLegacyBlockedRow>(sql`select
           l.company_id,
           l.import_key,
           l.issue_id,
@@ -67,21 +69,24 @@ export function legacyBlockedReadPort(db: Db): LegacyBlockedReadPort {
         left join issues i on i.id = l.issue_id and i.company_id = l.company_id
         order by l.created_at, l.company_id, l.import_key`);
 
-      const rows = Array.isArray(rowsResult)
-        ? rowsResult
+      const rows: RawLegacyBlockedRow[] = Array.isArray(rowsResult)
+        ? (rowsResult as RawLegacyBlockedRow[])
         : ((rowsResult as any)?.rows ?? []);
 
-      return rows.map((row) => ({
-        companyId: row.company_id,
-        report: {
-          issueId: row.issue_id,
-          importKey: row.import_key,
-          class: legacyBlockedClassSchema.parse(row.class),
-        },
-        resultIssueId: row.result_issue_id,
-        createdAt: new Date(row.created_at),
-        sourceCreatedAt: row.source_created_at ? new Date(row.source_created_at) : null,
-      }));
+      return rows.map((row: RawLegacyBlockedRow) => {
+        const classResult = legacyBlockedClassSchema.safeParse(row.class);
+        return {
+          companyId: row.company_id,
+          report: {
+            issueId: row.issue_id,
+            importKey: row.import_key,
+            class: classResult.success ? classResult.data : "unknown",
+          },
+          resultIssueId: row.result_issue_id,
+          createdAt: new Date(row.created_at),
+          sourceCreatedAt: row.source_created_at ? new Date(row.source_created_at) : null,
+        };
+      });
     },
   };
 }
