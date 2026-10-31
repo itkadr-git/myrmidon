@@ -947,6 +947,8 @@ PYEOF
     hermes sessions optimize 2>&1 | while IFS= read -r line; do log "hermes optimize: $line"; done || log "WARNING: hermes sessions optimize failed"
   else
     log "WARNING: hermes CLI not found, skipping session maintenance"
+  fi
+fi
 
 run_session_maintenance() {
   if ! command -v hermes >/dev/null 2>&1; then
