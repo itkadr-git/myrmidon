@@ -34,4 +34,61 @@ describe("healthApi", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
   });
+
+  it("fetches replication health with query params and returns payload", async () => {
+    const mockPayload = {
+      status: "ok",
+      role: "primary",
+      inRecovery: false,
+      connectedStandbys: 1,
+      standbys: [],
+      lag: {
+        seconds: 0.12,
+        bytes: 1024,
+        lastReplayTimestamp: null,
+        currentWalLsn: "0/16B2D18",
+        lastReceiveLsn: null,
+        lastReplayLsn: null,
+      },
+      warnings: [],
+      checkedAt: "2026-10-31T12:00:00.000Z",
+    };
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mockPayload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await healthApi.getReplication({
+      maxLagSeconds: 30,
+      warnLagSeconds: 10,
+      role: "primary",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/health/replication?maxLagSeconds=30&warnLagSeconds=10&role=primary",
+      expect.objectContaining({
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      }),
+    );
+    expect(result).toEqual(mockPayload);
+  });
+
+  it("throws formatted error when getReplication receives an error status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid_query_parameters" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(healthApi.getReplication({ maxLagSeconds: -1 })).rejects.toThrow(
+      "invalid_query_parameters",
+    );
+  });
 });
