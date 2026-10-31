@@ -703,6 +703,25 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toEqual({ kind: "vendor_default", ...exhausted });
   });
 
+  it("successful-run disposition exhaustion never falls through to board", () => {
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: null,
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "vendor_default", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: "adm-1",
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
   it("retries still come first and a paused assignee keeps the old behaviour", () => {
     expect(
       decideStrandedAutoPolicy({
@@ -728,6 +747,15 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
       escalationPolicy: "stranded_disposition_chain_v1",
     });
     expect(patch.unblockDescriptor.owner).toEqual({ agentId: "adm-1" });
+    expect(patch.unblockDescriptor.reasonRef).toEqual({
+      kind: "event",
+      eventKey: "stranded.disposition:issue-1",
+    });
+    expect(patch.blockerMetadata).toMatchObject({
+      blockReason: "recovery",
+      owner: { agentId: "adm-1" },
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
     expect(patch.unblockDescriptor.action).toContain("final status");
     expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
   });

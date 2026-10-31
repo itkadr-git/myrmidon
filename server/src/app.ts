@@ -105,6 +105,7 @@ import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.
 import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
 import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
+import { boardJanitorRoutes } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
@@ -196,6 +197,7 @@ import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; 
 import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 import { myrmidonFleetSiteManageRoutes } from "./myrmidon/bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
+import type { FleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { siteHealthRoutes } from "./myrmidon/bot-containers/site-health-routes.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
@@ -226,6 +228,11 @@ import {
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
 import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+// myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
+import {
+  myrmidonArchitectDataMcpRoutes,
+  myrmidonArchitectDataRoutes,
+} from "./myrmidon/architect-data/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
@@ -786,6 +793,7 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    fleetClientManager?: () => FleetClientManager | null;
   },
 ) {
   const app = express();
@@ -1143,6 +1151,7 @@ export async function createApp(
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonFeaturesRoutes(db)); // myrmidon(FEATURES): feature registry with live health
+  api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
@@ -1201,10 +1210,10 @@ export async function createApp(
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
-  api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
+  api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
-  api.use(myrmidonFleetSiteManageRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T8): fleet screen API (overview, site bots, drain/resume, restart/stop, logs)
+  api.use(myrmidonFleetSiteManageRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T8): fleet screen API (overview, site bots, drain/resume, restart/stop, logs)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
@@ -1216,6 +1225,8 @@ export async function createApp(
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
   api.use(myrmidonCorpusMcpRoutes(db)); // myrmidon(1.6.6-CORPUS-D): company corpus MCP endpoint (corpus_search, corpus_get_document, corpus_list_datasets, corpus_list_documents)
+  api.use(myrmidonArchitectDataRoutes(db)); // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data
+  api.use(myrmidonArchitectDataMcpRoutes(db)); // myrmidon(1.6.6 ARCH-DATA): architect MCP endpoint
   api.use(myrmidonSttRoutes(db)); // myrmidon(1.6.1 VOICE-STT A1)
   api.use(myrmidonGitHubSharedIdentityRoutes(db)); // myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared GitHub authorization
   api.use(myrmidonVoiceMeetingProtocolRoutes()); // myrmidon(1.6.5 VOICE-STT B): meeting protocol from a labeled transcript

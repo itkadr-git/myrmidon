@@ -1521,6 +1521,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_review_participant_recovery",
   "execution_review_requested",
   "finish_successful_run_handoff",
+  "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
   "heartbeat.scheduling_suppressed",
@@ -3585,7 +3586,10 @@ async function coordinateIssueListGet(input: {
   }
 }
 
-function estimatedJsonBytes(value: unknown): number {
+export function estimatedJsonBytes(value: unknown): number {
+  if (!logger.isLevelEnabled("debug")) {
+    return 0;
+  }
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
@@ -3596,13 +3600,18 @@ function logIssueListRequest(input: {
   requestKey: ReturnType<typeof issueListRequestKey>;
   startedAt: number;
   cacheStatus: IssueListCacheStatus;
-  bodyBytes: number;
+  bodyBytes: number | (() => number);
   etagOutcome: "none" | "fresh" | "not_modified";
   identicalInFlightCount: number;
 }) {
+  if (!logger.isLevelEnabled("debug")) {
+    return;
+  }
   input.res.once("finish", () => {
     const contentEncoding = input.res.getHeader("content-encoding");
     const contentLength = Number(input.res.getHeader("content-length"));
+    const responseBytes =
+      typeof input.bodyBytes === "function" ? input.bodyBytes() : input.bodyBytes;
     logger.debug(
       {
         event: "safe_get_request_observed",
@@ -3616,7 +3625,7 @@ function logIssueListRequest(input: {
         requestCount: input.identicalInFlightCount,
         durationMs: Date.now() - input.startedAt,
         statusCode: input.res.statusCode,
-        responseBytes: input.bodyBytes,
+        responseBytes,
         compressedBytes:
           contentEncoding && Number.isFinite(contentLength)
             ? contentLength
@@ -8712,7 +8721,7 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: "retry",
-        bodyBytes: estimatedJsonBytes(body),
+        bodyBytes: () => estimatedJsonBytes(body),
         etagOutcome: "none",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8720,12 +8729,13 @@ export function issueRoutes(
       return;
     }
 
-    if (coordinated.response.kind === "compact") {
-      res.setHeader("Cache-Control", coordinated.response.cacheControl);
-      res.setHeader("ETag", coordinated.response.etag);
+    const coordinatedResponse = coordinated.response;
+    if (coordinatedResponse.kind === "compact") {
+      res.setHeader("Cache-Control", coordinatedResponse.cacheControl);
+      res.setHeader("ETag", coordinatedResponse.etag);
       const etagMatched = requestMatchesEtag(
         req.header("if-none-match"),
-        coordinated.response.etag,
+        coordinatedResponse.etag,
       );
       logIssueListRequest({
         req,
@@ -8734,9 +8744,10 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: coordinated.cacheStatus,
-        bodyBytes: etagMatched
-          ? 0
-          : estimatedJsonBytes(coordinated.response.body),
+        bodyBytes: () =>
+          etagMatched
+            ? 0
+            : estimatedJsonBytes(coordinatedResponse.body),
         etagOutcome: etagMatched ? "not_modified" : "fresh",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8744,7 +8755,7 @@ export function issueRoutes(
         res.status(304).end();
         return;
       }
-      res.json(coordinated.response.body);
+      res.json(coordinatedResponse.body);
       return;
     }
 
@@ -8755,11 +8766,11 @@ export function issueRoutes(
       requestKey,
       startedAt,
       cacheStatus: coordinated.cacheStatus,
-      bodyBytes: estimatedJsonBytes(coordinated.response.body),
+      bodyBytes: () => estimatedJsonBytes(coordinatedResponse.body),
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
-    res.json(coordinated.response.body);
+    res.json(coordinatedResponse.body);
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {

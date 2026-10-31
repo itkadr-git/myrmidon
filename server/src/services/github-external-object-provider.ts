@@ -209,6 +209,12 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
+  const rawMergeable = body.mergeable ?? body.mergeable_state ?? body.mergeableState;
+  const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+    ? "CONFLICTING"
+    : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+      ? "MERGEABLE"
+      : asString(rawMergeable);
   const additions = asNonNegativeInteger(body.additions);
   const deletions = asNonNegativeInteger(body.deletions);
   const changedFiles = asNonNegativeInteger(body.changed_files);
@@ -265,6 +271,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       state,
       merged,
       draft,
+      ...(mergeable ? { mergeable } : {}),
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
