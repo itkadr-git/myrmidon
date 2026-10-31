@@ -104,13 +104,16 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
     const result = await guardrailsOnRunOutput({
       db,
       companyId,
+      agentId,
       runId: ids.runId,
       issueId: ids.issueId,
       text,
       env: ENV_ON,
       now: FIXED_NOW,
     });
-    expect(result).toMatchObject({ recorded: 2, total: 2, totalSecrets: 1, totalPii: 1 });
+    // myrmidon(1.7-GRD-MODES): the hook now returns the enforcement
+    // decision; with no mode settings the flag-only default keeps the text.
+    expect(result).toMatchObject({ mode: "flag", rule: "secret", hits: 2, text });
     const events = await db.select().from(guardrailEvents);
     expect(events).toHaveLength(2);
     expect(events.every((row) => row.companyId === companyId)).toBe(true);
@@ -144,13 +147,14 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): run-output embedding integration", 
     const result = await guardrailsOnRunOutput({
       db,
       companyId,
+      agentId,
       runId: ids.runId,
       issueId: ids.issueId,
       text,
       env: ENV_ON,
       now: FIXED_NOW,
     });
-    expect(result?.total).toBe(60);
+    expect(result?.hits).toBe(60);
     expect(result?.recorded).toBe(GUARDRAIL_MAX_EVENTS_PER_RUN);
     const events = await db.select().from(guardrailEvents);
     expect(events).toHaveLength(GUARDRAIL_MAX_EVENTS_PER_RUN);

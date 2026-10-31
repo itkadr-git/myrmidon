@@ -9504,14 +9504,24 @@ export async function finalizeHeartbeatRunResponseComment(input: {
     issueId: input.issueId,
     skipRunIssueComment: input.skipRunIssueComment,
     addComment: async (text) => {
+      let commentText = text;
       if (input.db) {
-        await guardrailsOnRunOutput({
+        // myrmidon(1.6-GRD): output scan of the final run text before it
+        // becomes the visible issue comment. myrmidon(1.7-GRD-MODES):
+        // the resolved per-agent mode decides what a hit does — flag
+        // journals only, mask replaces the spans with [masked], block
+        // withholds the answer and posts the refusal text instead.
+        const guardrailDecision = await guardrailsOnRunOutput({
           db: input.db,
           companyId: input.companyId,
           runId: input.runId,
           issueId: input.issueId!,
+          agentId: input.agentId,
           text,
         }).catch(() => null);
+        if (guardrailDecision && guardrailDecision.text !== undefined && guardrailDecision.text !== null) {
+          commentText = guardrailDecision.text;
+        }
       }
       const presentationAuthorizationReason = input.db
         ? await resolveChatRunPresentationAuthorizationReason(input.db, {
@@ -9522,7 +9532,7 @@ export async function finalizeHeartbeatRunResponseComment(input: {
         : null;
       const comment = await input.issuesSvc.addComment(
         input.issueId!,
-        text,
+        commentText,
         { agentId: input.agentId, runId: input.runId },
         { authorizationReason: presentationAuthorizationReason },
       );

@@ -36,6 +36,8 @@ import type { ScentSettings } from "../myrmidon-scent.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): guardrail enforcement-mode settings type
+import type { GuardrailModesSettings } from "../myrmidon-guardrail-modes.js";
 // myrmidon(1.6.5-TG-LOCALE-C): the instance default language of the Telegram bridge.
 import type { BridgeLanguageSettings } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
@@ -333,6 +335,13 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   wipLimit?: WipLimitSettings;
+  /**
+   * myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides, changed
+   * from `GET`/`PUT /api/myrmidon/companies/:companyId/guardrails/settings`.
+   * Absent means every rule is flag-only. Kept in sync with the validator
+   * of the same field (packages/shared/src/validators/instance.ts).
+   */
+  guardrailModes?: GuardrailModesSettings;
   /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.

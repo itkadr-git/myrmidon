@@ -53,6 +53,8 @@ import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // 
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): guardrail mode overrides under instance general settings
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // myrmidon(F16): the issue-list agent defaults stored in the same general
@@ -272,6 +274,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides per company,
+  // caste and agent, changed from /api/myrmidon/companies/:id/guardrails/settings;
+  // absent means every rule is flag-only (the 1.6.1 behavior).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
