@@ -13,6 +13,7 @@ import {
   issuePlanDecompositions,
   issueRelations,
   issues,
+  issueWorkProducts,
 } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -43,6 +44,7 @@ import {
   readIdlePickupEnabled,
   readIdlePickupIntervalSec,
   readIdlePickupRecentSuccessWindowMs,
+  isReviewPendingWaitingForCi,
 } from "../myrmidon/idle-pickup.ts";
 
 // IDLE-PICKUP (1.3): the board wakes an agent with a free queue on its
@@ -464,6 +466,77 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.woken).toBe(1);
     const [call] = vi.mocked(deps.enqueueWakeup).mock.calls;
     expect((call[1] as { contextSnapshot: { issueId: string } }).contextSnapshot.issueId).not.toBe(parentId);
+  });
+
+  it("does not wake review participant when review stage is pending and waiting for CI (executionState ciState pending/unknown, OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "pending",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake review participant when review stage is pending and PR work product has ciState unknown (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #2078",
+      status: "open",
+      metadata: {
+        ciState: "unknown",
+      },
+    });
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes review participant when review stage is pending and CI is green (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "green",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("a container whose children are all done is itself ready again", async () => {
@@ -1318,5 +1391,103 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     expect(result.agentsChecked).toBe(0);
     expect(result.woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+});
+
+describe("isReviewPendingWaitingForCi (OPE-10082)", () => {
+  const agentId = randomUUID();
+
+  it("returns true when executionState has review pending and ciState is pending or unknown", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "unknown",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when PR workProduct metadata has ciState pending/unknown or activeCi queued", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { ciState: "pending" },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { activeCi: { status: "queued" } },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when CI is green", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "green",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when currentParticipant is a different agent", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: randomUUID() },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when review stage is not pending", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "approved",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
   });
 });

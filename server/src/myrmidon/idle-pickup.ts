@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
@@ -464,6 +464,62 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
 }
 
 /**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
+}
+
+/**
  * Wakes the agent's highest-priority ready issue when the agent has no live
  * run for it and no wake already in flight. One wake per pass: the next pass
  * (the next tick, or the next release) picks the next issue once this one has
@@ -573,6 +629,27 @@ export async function idlePickupForAgent(
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
 
+  const candidateIds = ordered.map((c) => c.id);
+  const prProducts =
+    candidateIds.length > 0
+      ? await deps.db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, agent.companyId),
+              inArray(issueWorkProducts.issueId, candidateIds),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+      : [];
+  const prMetadataByIssueId = new Map(
+    prProducts.map((p) => [p.issueId, p.metadata as Record<string, unknown> | null]),
+  );
+
   // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
   // automatic run ended stale and that has not moved since is not woken again
   // until the exponential window (base*2^(n-1), ceiling 24 h) elapses — this
@@ -595,6 +672,27 @@ export async function idlePickupForAgent(
     }
     if (liveIssueIds.has(candidate.id)) {
       result.alreadyActive += 1;
+      continue;
+    }
+    // OPE-10082: idle_pickup does not wake a review participant for an issue whose
+    // review stage is pending and waiting for CI (ciState pending/unknown).
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prMetadataByIssueId.get(candidate.id),
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      result.alreadyActive += 1;
+      logger.info(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+        },
+        "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
       continue;
     }
     const recentRun = recentRunsByIssueId.get(candidate.id);
@@ -864,6 +962,27 @@ export async function findTopReadyIssueForAgent(
   for (const candidate of orderIdlePickupCandidates(candidates)) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
+    const prProduct = await db
+      .select({ metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, agent.companyId),
+          eq(issueWorkProducts.issueId, candidate.id),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      continue;
+    }
     return candidate;
   }
   return null;

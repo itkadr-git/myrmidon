@@ -333,6 +333,7 @@ describe("metrics endpoint routes", () => {
       agentErrorSignals: 0,
       llmCostCentsWindow: 0,
       deferredIssueExecutionOver30m: 0,
+      codeTasksOnNoncodingRoles: 0,
       scrapeErrors: 0,
       collectedAt: NOW.toISOString(),
     };

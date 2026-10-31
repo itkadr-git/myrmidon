@@ -36,6 +36,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     ],
     reviewTasksWithoutReviewer: 0,
     blockedTasksWithoutAssignee: 0,
+    codeTasksOnNoncodingRoles: 0,
     swarmClaimsActive: 4,
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
@@ -191,6 +192,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
     expect(text).toContain("# TYPE myrmidon_review_tasks_without_reviewer gauge");
     expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
+    expect(text).toContain("# TYPE myrmidon_code_tasks_on_noncoding_roles gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
@@ -207,8 +209,9 @@ describe("prometheus exposition format", () => {
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
-    // plus queued >30m gauge = 30, plus deferredIssueExecutionOver30m = 31.
-    expect(sampleLines).toHaveLength(31);
+    // plus queued >30m gauge = 30, plus deferredIssueExecutionOver30m = 31,
+    // plus codeTasksOnNoncodingRoles gauge = 32.
+    expect(sampleLines).toHaveLength(32);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
