@@ -60,10 +60,11 @@ describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
     expect(merged).toEqual({ ...BASE, pnpmStoreDir: "/scratch/.store" });
   });
 
-  it("a patch of one workspace-lifecycle key keeps the other four", () => {
+  it("a patch of one workspace-lifecycle key keeps the other five", () => {
     const merged = mergeBotDiskSettings(BASE as never, { scratchTtlHours: 6 });
     expect(merged.scratchTtlHours).toBe(6);
     expect(merged.graceClosingMinutes).toBe(45);
+    expect(merged.sessionRetentionDays).toBe(30);
     expect(merged.partitionThresholdPercent).toBe(80);
     expect(merged.partitionRefuseOpenPercent).toBe(88);
     expect(merged.partitionCriticalPercent).toBe(97);
