@@ -95,10 +95,7 @@ export function poolChatRoutes(
       return;
     }
 
-    let companyId =
-      options?.defaultCompanyId ??
-      options?.env?.MYRMIDON_TELEGRAM_POOL_COMPANY_ID ??
-      process.env.MYRMIDON_TELEGRAM_POOL_COMPANY_ID;
+    let companyId = options?.defaultCompanyId;
 
     if (!companyId) {
       try {

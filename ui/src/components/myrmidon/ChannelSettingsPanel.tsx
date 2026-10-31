@@ -370,166 +370,166 @@ export function ChannelSettingsPanelView({
           </div>
         ))}
 
-        <div className=\"space-y-4 md:col-span-2 border-t pt-4\" data-testid=\"channel-settings-telegram-pool-bridges\">
-          <h3 className=\"text-sm font-semibold\">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
-          <div className=\"grid gap-4 md:grid-cols-2\">
+        <div className="space-y-4 md:col-span-2 border-t pt-4" data-testid="channel-settings-telegram-pool-bridges">
+          <h3 className="text-sm font-semibold">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
+          <div className="grid gap-4 md:grid-cols-2">
             {/* ChatGPT Bridge */}
-            <div className=\"space-y-3 p-3 border rounded-md\">
-              <div className=\"flex items-center justify-between gap-4\">
-                <div className=\"space-y-1\">
-                  <Label htmlFor=\"channel-settings-telegramPoolChatGptEnabled\">ChatGPT Pool Bridge</Label>
-                  <p className=\"text-xs text-muted-foreground\">
-                    <span data-testid=\"channel-settings-source-telegramPoolChatGptEnabled\">
-                      {sourceLabel(view, \"telegramPoolChatGptEnabled\")}
+            <div className="space-y-3 p-3 border rounded-md">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="channel-settings-telegramPoolChatGptEnabled">ChatGPT Pool Bridge</Label>
+                  <p className="text-xs text-muted-foreground">
+                    <span data-testid="channel-settings-source-telegramPoolChatGptEnabled">
+                      {sourceLabel(view, "telegramPoolChatGptEnabled")}
                     </span>
                     {view.telegramPoolChatGptEnabled?.overridden ? (
-                      <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptEnabled.envName}</span>
+                      <span className="ml-2 font-mono">{view.telegramPoolChatGptEnabled.envName}</span>
                     ) : null}
                   </p>
                 </div>
                 <ToggleSwitch
-                  id=\"channel-settings-telegramPoolChatGptEnabled\"
+                  id="channel-settings-telegramPoolChatGptEnabled"
                   checked={numbers.telegramPoolChatGptEnabled}
-                  onCheckedChange={(checked) => setBoolField(\"telegramPoolChatGptEnabled\", checked)}
+                  onCheckedChange={(checked) => setBoolField("telegramPoolChatGptEnabled", checked)}
                   disabled={view.telegramPoolChatGptEnabled?.overridden}
                 />
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolChatGptChatId\">Allowed Chat ID</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolChatGptChatId">Allowed Chat ID</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolChatGptChatId\"
-                  placeholder=\"e.g. 123456789\"
+                  id="channel-settings-telegramPoolChatGptChatId"
+                  placeholder="e.g. 123456789"
                   value={numbers.telegramPoolChatGptChatId}
-                  onChange={(e) => setField(\"telegramPoolChatGptChatId\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolChatGptChatId", e.target.value)}
                   disabled={view.telegramPoolChatGptChatId?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolChatGptChatId\">
-                    {sourceLabel(view, \"telegramPoolChatGptChatId\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolChatGptChatId">
+                    {sourceLabel(view, "telegramPoolChatGptChatId")}
                   </span>
                   {view.telegramPoolChatGptChatId?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptChatId.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolChatGptChatId.envName}</span>
                   ) : null}
                 </div>
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolChatGptModel\">Model</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolChatGptModel">Model</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolChatGptModel\"
-                  placeholder=\"balanced\"
+                  id="channel-settings-telegramPoolChatGptModel"
+                  placeholder="balanced"
                   value={numbers.telegramPoolChatGptModel}
-                  onChange={(e) => setField(\"telegramPoolChatGptModel\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolChatGptModel", e.target.value)}
                   disabled={view.telegramPoolChatGptModel?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolChatGptModel\">
-                    {sourceLabel(view, \"telegramPoolChatGptModel\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolChatGptModel">
+                    {sourceLabel(view, "telegramPoolChatGptModel")}
                   </span>
                   {view.telegramPoolChatGptModel?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptModel.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolChatGptModel.envName}</span>
                   ) : null}
                 </div>
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolChatGptBotToken\">Bot Token / Secret Ref</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolChatGptBotToken">Bot Token / Secret Ref</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolChatGptBotToken\"
-                  type=\"password\"
-                  placeholder=\"Bot token or secret:name\"
+                  id="channel-settings-telegramPoolChatGptBotToken"
+                  type="password"
+                  placeholder="Bot token or secret:name"
                   value={numbers.telegramPoolChatGptBotToken}
-                  onChange={(e) => setField(\"telegramPoolChatGptBotToken\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolChatGptBotToken", e.target.value)}
                   disabled={view.telegramPoolChatGptBotToken?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolChatGptBotToken\">
-                    {sourceLabel(view, \"telegramPoolChatGptBotToken\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolChatGptBotToken">
+                    {sourceLabel(view, "telegramPoolChatGptBotToken")}
                   </span>
                   {view.telegramPoolChatGptBotToken?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptBotToken.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolChatGptBotToken.envName}</span>
                   ) : null}
                 </div>
               </div>
             </div>
 
             {/* Gemini Bridge */}
-            <div className=\"space-y-3 p-3 border rounded-md\">
-              <div className=\"flex items-center justify-between gap-4\">
-                <div className=\"space-y-1\">
-                  <Label htmlFor=\"channel-settings-telegramPoolGeminiEnabled\">Gemini Pool Bridge</Label>
-                  <p className=\"text-xs text-muted-foreground\">
-                    <span data-testid=\"channel-settings-source-telegramPoolGeminiEnabled\">
-                      {sourceLabel(view, \"telegramPoolGeminiEnabled\")}
+            <div className="space-y-3 p-3 border rounded-md">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="channel-settings-telegramPoolGeminiEnabled">Gemini Pool Bridge</Label>
+                  <p className="text-xs text-muted-foreground">
+                    <span data-testid="channel-settings-source-telegramPoolGeminiEnabled">
+                      {sourceLabel(view, "telegramPoolGeminiEnabled")}
                     </span>
                     {view.telegramPoolGeminiEnabled?.overridden ? (
-                      <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiEnabled.envName}</span>
+                      <span className="ml-2 font-mono">{view.telegramPoolGeminiEnabled.envName}</span>
                     ) : null}
                   </p>
                 </div>
                 <ToggleSwitch
-                  id=\"channel-settings-telegramPoolGeminiEnabled\"
+                  id="channel-settings-telegramPoolGeminiEnabled"
                   checked={numbers.telegramPoolGeminiEnabled}
-                  onCheckedChange={(checked) => setBoolField(\"telegramPoolGeminiEnabled\", checked)}
+                  onCheckedChange={(checked) => setBoolField("telegramPoolGeminiEnabled", checked)}
                   disabled={view.telegramPoolGeminiEnabled?.overridden}
                 />
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolGeminiChatId\">Allowed Chat ID</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolGeminiChatId">Allowed Chat ID</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolGeminiChatId\"
-                  placeholder=\"e.g. 123456789\"
+                  id="channel-settings-telegramPoolGeminiChatId"
+                  placeholder="e.g. 123456789"
                   value={numbers.telegramPoolGeminiChatId}
-                  onChange={(e) => setField(\"telegramPoolGeminiChatId\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolGeminiChatId", e.target.value)}
                   disabled={view.telegramPoolGeminiChatId?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolGeminiChatId\">
-                    {sourceLabel(view, \"telegramPoolGeminiChatId\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolGeminiChatId">
+                    {sourceLabel(view, "telegramPoolGeminiChatId")}
                   </span>
                   {view.telegramPoolGeminiChatId?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiChatId.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolGeminiChatId.envName}</span>
                   ) : null}
                 </div>
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolGeminiModel\">Model</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolGeminiModel">Model</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolGeminiModel\"
-                  placeholder=\"gemini-2.0-flash\"
+                  id="channel-settings-telegramPoolGeminiModel"
+                  placeholder="gemini-2.0-flash"
                   value={numbers.telegramPoolGeminiModel}
-                  onChange={(e) => setField(\"telegramPoolGeminiModel\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolGeminiModel", e.target.value)}
                   disabled={view.telegramPoolGeminiModel?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolGeminiModel\">
-                    {sourceLabel(view, \"telegramPoolGeminiModel\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolGeminiModel">
+                    {sourceLabel(view, "telegramPoolGeminiModel")}
                   </span>
                   {view.telegramPoolGeminiModel?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiModel.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolGeminiModel.envName}</span>
                   ) : null}
                 </div>
               </div>
 
-              <div className=\"space-y-1\">
-                <Label htmlFor=\"channel-settings-telegramPoolGeminiBotToken\">Bot Token / Secret Ref</Label>
+              <div className="space-y-1">
+                <Label htmlFor="channel-settings-telegramPoolGeminiBotToken">Bot Token / Secret Ref</Label>
                 <Input
-                  id=\"channel-settings-telegramPoolGeminiBotToken\"
-                  type=\"password\"
-                  placeholder=\"Bot token or secret:name\"
+                  id="channel-settings-telegramPoolGeminiBotToken"
+                  type="password"
+                  placeholder="Bot token or secret:name"
                   value={numbers.telegramPoolGeminiBotToken}
-                  onChange={(e) => setField(\"telegramPoolGeminiBotToken\", e.target.value)}
+                  onChange={(e) => setField("telegramPoolGeminiBotToken", e.target.value)}
                   disabled={view.telegramPoolGeminiBotToken?.overridden}
                 />
-                <div className=\"text-xs text-muted-foreground\">
-                  <span data-testid=\"channel-settings-source-telegramPoolGeminiBotToken\">
-                    {sourceLabel(view, \"telegramPoolGeminiBotToken\")}
+                <div className="text-xs text-muted-foreground">
+                  <span data-testid="channel-settings-source-telegramPoolGeminiBotToken">
+                    {sourceLabel(view, "telegramPoolGeminiBotToken")}
                   </span>
                   {view.telegramPoolGeminiBotToken?.overridden ? (
-                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiBotToken.envName}</span>
+                    <span className="ml-2 font-mono">{view.telegramPoolGeminiBotToken.envName}</span>
                   ) : null}
                 </div>
               </div>

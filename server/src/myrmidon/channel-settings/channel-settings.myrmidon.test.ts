@@ -90,7 +90,15 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: resolving the document"
     expect(settings.telegramApiBaseUrl.value).toBeNull();
     // myrmidon(CA-A): the document gained channelAccessMode (default "sponsor").
     expect(settings.channelAccessMode.value).toBe("sponsor");
-    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(12).fill("default"));
+    expect(settings.telegramPoolChatGptEnabled.value).toBe(false);
+    expect(settings.telegramPoolChatGptChatId.value).toBe("");
+    expect(settings.telegramPoolChatGptModel.value).toBe("balanced");
+    expect(settings.telegramPoolChatGptBotToken.value).toBe("");
+    expect(settings.telegramPoolGeminiEnabled.value).toBe(false);
+    expect(settings.telegramPoolGeminiChatId.value).toBe("");
+    expect(settings.telegramPoolGeminiModel.value).toBe("gemini-2.0-flash");
+    expect(settings.telegramPoolGeminiBotToken.value).toBe("");
+    expect(Object.values(settings).map((entry) => entry.source)).toEqual(Array(20).fill("default"));
   });
 
   it("reads the environment and marks those keys as overridden", () => {
