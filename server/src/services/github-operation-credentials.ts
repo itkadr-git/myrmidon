@@ -19,7 +19,8 @@ import {
 import { secretService } from "./secrets.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
-import { normalizeGitHubRepository, readGitHubSharedIdentitySettings, githubAppsFor, githubPatsFor } from "../myrmidon/github-shared-identity/settings.js";
+import { normalizeGitHubRepository, githubAppsFor, githubPatsFor } from "../myrmidon/github-shared-identity/settings.js";
+import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { onResetGitHubAppTokenCache } from "../myrmidon/github-shared-identity/index.js";
 import {
   allowsGitHubCredentialExport,

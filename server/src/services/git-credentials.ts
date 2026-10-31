@@ -71,6 +71,7 @@ export type GitCredential = {
   githubIdentity?: { userId: string; login: string };
   // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App installation
   identitySource?: "personal" | "dedicated" | "app" | "pat";
+  expiresAt?: string;
   connectionId?: string;
   grantId?: string;
   // myrmidon(GITHUB-SHARED-IDENTITY): the commit author/committer when it is not
