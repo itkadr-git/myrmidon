@@ -13,11 +13,26 @@ import { Ui2Shell } from "../ui2/shell/Ui2Shell";
 import { Ui2I18nProvider } from "../ui2/i18n/Ui2I18n";
 import { Ui2Knowledge } from "../ui2/screens/knowledge/Ui2Knowledge";
 import { Ui2KnowledgeCurrentUi } from "../ui2/screens/knowledge/Ui2KnowledgeCurrentUi";
+import { Ui2LanguageSettings } from "../ui2/screens/settings/language/Ui2LanguageSettings";
 
 const params = new URLSearchParams(window.location.search);
-const screen = params.get("screen") === "legacy" ? "legacy" : "ui2";
+const screenParam = params.get("screen");
+const screen = screenParam === "legacy" ? "legacy" : screenParam === "language" ? "language" : "ui2";
 const page = params.get("page") ?? "infra/long-page";
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function Ui2Language() {
+  return (
+    <Ui2I18nProvider>
+      <Ui2Shell>
+        <Routes>
+          <Route path="/:companyPrefix/company/settings" element={<Ui2LanguageSettings />} />
+          <Route path="/:companyPrefix/company/settings/language" element={<Ui2LanguageSettings />} />
+        </Routes>
+      </Ui2Shell>
+    </Ui2I18nProvider>
+  );
+}
 
 function Legacy() {
   return (
@@ -55,12 +70,16 @@ const [spaceKey, slug] = [page.slice(0, page.lastIndexOf("/")), page.slice(page.
 const start =
   screen === "legacy"
     ? `/OPE/wiki/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`
-    : `/OPE/knowledge/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`;
+    : screen === "language"
+      ? `/OPE/company/settings/language`
+      : `/OPE/knowledge/${encodeURIComponent(spaceKey)}/${encodeURIComponent(slug)}`;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[start]}>{screen === "legacy" ? <Legacy /> : <Ui2 />}</MemoryRouter>
+      <MemoryRouter initialEntries={[start]}>
+        {screen === "legacy" ? <Legacy /> : screen === "language" ? <Ui2Language /> : <Ui2 />}
+      </MemoryRouter>
     </QueryClientProvider>
   </StrictMode>,
 );

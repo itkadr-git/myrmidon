@@ -28,7 +28,7 @@ export interface ExecutionProjection {
   maxAttempts: number;
   recoveryOwner: "agent" | "board" | null;
   nextAction: string | null;
-  permittedActions: Array<"inspect_run" | "inspect_recovery">;
+  operatorActions?: Array<"inspect_run" | "inspect_recovery">;
   predecessorRunId: string | null;
   successorRunId: string | null;
 }

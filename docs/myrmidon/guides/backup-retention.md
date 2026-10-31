@@ -69,3 +69,13 @@ removes such orphaned `.sql` files older than one hour (constant
 touched: the cutoff is strictly older than one hour and the writer keeps its
 mtime fresh. Removed orphans count into the run's `prunedCount`, same as
 retention deletions.
+
+## Verified Bot Archive Retention (OPE-9330 / OPE-9714)
+
+Work archives generated on bot storage volumes are governed by verified cloud backup
+before any local file can be pruned:
+- Archives older than 7 days (or evicted during quota pressure) require an upload
+  to OneDrive and receipt verification.
+- The receipt is independently checked for existence, exact byte size, and SHA-256 match.
+- If upload fails or verification fails, local archive files are preserved intact.
+- Two-phase durable audit logging records intent before removal and completion after removal.
