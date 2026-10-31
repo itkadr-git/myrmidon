@@ -45,10 +45,9 @@ describe("metrics self-check probe", () => {
     // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
     // The continuation and claim counters are process-local too.
     // The five capacity-dashboard metrics remain available without database reads.
-    // Five legacy-blocked families are safe on pre-migration databases too.
     // OPE-9476: failed_before_model counter is in-process state too (+1 = 31),
     // and the three recovery event counters are in-process port state as well.
-    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1 + 3 + 5);
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1 + 3);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -69,8 +68,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_claim_rejection_total" &&
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
-        family !== "myrmidon_recovery_success_total" &&
-        !family.startsWith("legacy_blocked_"),
+        family !== "myrmidon_recovery_success_total",
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

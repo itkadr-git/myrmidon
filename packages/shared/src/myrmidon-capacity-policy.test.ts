@@ -109,6 +109,30 @@ describe("capacity policy contract", () => {
     }, DEFAULT_CAPACITY_POLICY)).toEqual({ allowed: true, reason: "allowed" });
   });
 
+  it("enforces cross-project and cross-caste isolation: saturated unrelated project/caste does not block candidate", () => {
+    const policy = mergeCapacityPolicyPatch(DEFAULT_CAPACITY_POLICY, {
+      limits: { perProjectActive: 2, perCasteActive: 3 },
+    });
+
+    // projectB is saturated (>= 2 active tasks), but candidate is in projectA (0 active tasks)
+    expect(checkCapacity({
+      activeByProject: { projectB: 10, projectA: 0 },
+      activeByCaste: { engineering: 0 },
+    }, { projectId: "projectA", casteId: "engineering" }, policy)).toEqual({
+      allowed: true,
+      reason: "allowed",
+    });
+
+    // casteB is saturated (>= 3 active tasks), but candidate is in casteA (0 active tasks)
+    expect(checkCapacity({
+      activeByProject: { projectA: 0 },
+      activeByCaste: { qa: 5, engineering: 0 },
+    }, { projectId: "projectA", casteId: "engineering" }, policy)).toEqual({
+      allowed: true,
+      reason: "allowed",
+    });
+  });
+
   it("promotes candidates after the starvation threshold without mutating input", () => {
     const now = Date.parse("2026-01-01T02:00:00Z");
     const old = { priority: "low", createdAt: now - 61 * 60_000 };

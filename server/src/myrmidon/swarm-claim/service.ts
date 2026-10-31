@@ -212,12 +212,27 @@ export async function claimNextTaskForAgent(
   ]);
   const liveClaims = [...companyClaims, ...agentClaims];
 
+  const activeByProject: Record<string, number> = {};
+  const activeByCaste: Record<string, number> = {};
+  const candidateMap = new Map(candidates.map((c) => [c.issueId, c]));
+  for (const claim of liveClaims) {
+    const candidate = candidateMap.get(claim.issueId);
+    if (candidate?.projectId) {
+      activeByProject[candidate.projectId] = (activeByProject[candidate.projectId] ?? 0) + 1;
+    }
+    if (candidate?.casteId) {
+      activeByCaste[candidate.casteId] = (activeByCaste[candidate.casteId] ?? 0) + 1;
+    }
+  }
+
   const next = nextQueueTaskForAgent({
     candidates,
     liveClaims,
     activeTasks: agentClaims.length,
     settings: effectiveSettings,
     now,
+    activeByProject,
+    activeByCaste,
   });
   if (!next) {
     // Distinguish "nothing to take" from "not allowed to take".
@@ -228,6 +243,8 @@ export async function claimNextTaskForAgent(
         activeTasks: 0,
         settings: effectiveSettings,
         now,
+        activeByProject,
+        activeByCaste,
       });
       if (bareQueue) return { claim: null, reason: "limit_reached" };
     }

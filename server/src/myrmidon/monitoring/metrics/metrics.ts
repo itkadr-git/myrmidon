@@ -64,10 +64,6 @@ import { continuationDedupeMetrics } from "../../../services/continuation-dedupe
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
-  collectLegacyBlockedMetrics, legacyBlockedReadPort, renderLegacyBlockedMetrics,
-  type LegacyBlockedMetrics, type LegacyBlockedReadPort,
-} from "./legacy-blocked.js";
-import {
   recoveryFactoryMetrics as processRecoveryMetrics,
   ISSUE_RECOVERY_ACTION_KINDS,
   type IssueRecoveryActionKind,
@@ -128,11 +124,6 @@ import {
 export const METRIC_FAMILIES = [
   "blocked_age_seconds",
   "blocked_missing_fields_total",
-  "legacy_blocked_migrated_total",
-  "legacy_blocked_classified_total",
-  "legacy_blocked_unknown_total",
-  "legacy_blocked_duplicate_total",
-  "legacy_blocked_remaining_age_seconds",
   ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
@@ -264,7 +255,6 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
   }
 }
 export interface MetricsSnapshotFields {
-  legacyBlocked?: LegacyBlockedMetrics | null;
   interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
@@ -397,7 +387,6 @@ export function recoveryPortSnapshot(port: RecoveryFactoryMetricsPort) {
 }
 
 export interface MetricsCollectorDeps {
-  legacyBlocked?: LegacyBlockedReadPort;
   interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
@@ -883,11 +872,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
 
   // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
-  const legacyBlocked = await guarded<LegacyBlockedMetrics | null>(
-    "legacy_blocked_migrated_total|legacy_blocked_classified_total|legacy_blocked_unknown_total|legacy_blocked_duplicate_total|legacy_blocked_remaining_age_seconds",
-    () => collectLegacyBlockedMetrics(deps.legacyBlocked ?? legacyBlockedReadPort(deps.db), now),
-    null,
-  );
   const fleetSites = await guarded(
     "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
     () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
@@ -969,7 +953,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       runScratch,
 
-      legacyBlocked,
       fleetSites,
       failedBeforeModel: await guarded(
         "myrmidon_agent_failed_before_model_total",
@@ -1107,7 +1090,7 @@ function familyBlock(
 export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const role = snapshot.role ?? "all";
   const R = `role="${escapeLabelValue(role)}"`;
-  const blocks: string[] = [renderLegacyBlockedMetrics(snapshot.legacyBlocked ?? null, role)];
+  const blocks: string[] = [];
 
   const blockedAgeSamples: string[] = [];
   const blockedMissingFieldsSamples: string[] = [];
