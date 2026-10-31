@@ -3041,3 +3041,7 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
+export * from "./myrmidon-auto-update-window-cron.js";
+
+
