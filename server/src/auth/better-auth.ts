@@ -5,6 +5,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@myrmidon/db";
 import { isUserBlocked } from "../myrmidon/users-admin-a/service.js"; // myrmidon(OPE-8985)
+import { usersAdminAuthPlugin } from "./users-admin-a-plugin.js";
 import {
   authAccounts,
   authSessions,
@@ -259,6 +260,15 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
+  const usersAdminPlugin = usersAdminAuthPlugin({
+    db,
+    readGeneral: async () => {
+      const { getInstanceSettings } = await import("../services/instance-settings.js");
+      return (await getInstanceSettings(db)).general;
+    },
+    env: process.env,
+  });
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -290,6 +300,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         },
       },
     },
+    plugins: [usersAdminPlugin],
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -302,6 +313,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     ...(resolveWorkspaceHandoffIdentity(config)
       ? {
           plugins: [
+            usersAdminPlugin,
             workspaceLoginHandoffPlugin({
               db,
               // Re-resolved per exchange so a hot restart cannot keep validating
