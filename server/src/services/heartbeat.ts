@@ -3179,7 +3179,7 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
   return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
 }
 
-function isConfigurationIncompleteFailure(
+export function isConfigurationIncompleteFailure(
   error: unknown,
 ): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
@@ -25938,20 +25938,13 @@ export function heartbeatService(
                 localAgentJwtScope,
               )
             : null;
-        if (
-          nativeRuntimeResolution.kind === "legacy" &&
-          adapter.supportsLocalAgentJwt &&
-          !authToken
-        ) {
-          logger.warn(
-            {
-              companyId: agent.companyId,
-              agentId: agent.id,
-              runId: run.id,
-              adapterType: agent.adapterType,
-            },
-            "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
-          );
+        if (nativeRuntimeResolution.kind === "legacy" && adapter.supportsLocalAgentJwt) {
+          if (!authToken) {
+            throw new ConfigurationIncompleteFailure(
+              `Cannot issue PAPERCLIP_API_KEY for adapter ${agent.adapterType}; refusing to start run without a valid run token`,
+              { code: "local_agent_jwt_unavailable" },
+            );
+          }
         }
         let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
         const inspectFinalizeWorkspaceBranch = async () => {
