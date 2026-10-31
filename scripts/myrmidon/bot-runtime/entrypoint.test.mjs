@@ -52,6 +52,16 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /log "phase gateway_launch starting"/);
   });
 
+  it("declares hermes session maintenance before gateway launch when enabled", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const prune = source.indexOf("phase hermes_session_maintenance starting");
+    const launch = source.indexOf("phase gateway_launch starting");
+    assert.ok(prune >= 0, "session maintenance must be declared");
+    assert.ok(launch > prune, "gateway launch must follow session maintenance");
+    assert.match(source, /hermes sessions prune --yes --older-than "\$\{prune_days\}d"/);
+    assert.match(source, /hermes sessions optimize/);
+  });
+
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);

@@ -70,6 +70,22 @@
           "minutes": "{{minutes}}m {{seconds}}s"
         },
         "routineRunFallback": "Routine run",
+        "tabs": {
+          "allRuns": "All runs",
+          "runsWithResult": "Runs with result"
+        },
+        "resultsPanel": {
+          "title": "Runs with result",
+          "description": "Heartbeat runs that completed with a result, filtered by agent and wake reason.",
+          "wakeReason": "Wake reason",
+          "allReasons": "All wake reasons",
+          "empty": "No runs with result found.",
+          "emptyFiltered": "No runs with result match the selected filters.",
+          "tableLabel": "Runs with result table",
+          "colRun": "Run",
+          "colResult": "Result",
+          "colStarted": "Started"
+        },
         "routineScoped": {
           "loading": "Loading routine runs…",
           "tryAgain": "Try again",
