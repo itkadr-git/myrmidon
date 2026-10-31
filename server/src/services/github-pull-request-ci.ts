@@ -571,7 +571,7 @@ export function createPullRequestCiResolver(
         };
       }
 
-      let runs: GitHubCheckRunItem[] = [];
+      let runs: CheckRunsFetchResult;
       try {
         runs = await fetchCommitCheckRuns(
           reference.owner,

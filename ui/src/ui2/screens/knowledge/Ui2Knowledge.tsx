@@ -626,6 +626,7 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
 
   return (
     <Ui2Page className="ui2-knowledge-page !max-w-none" title={t("ui2.knowledge.title")} subtitle={t("ui2.knowledge.subtitle")}>
+      <Link to={`${linkBase}/review`} className="text-sm underline">{t("ui2.knowledge.reviewQueue")}</Link>
       <SearchPanel
         companyId={companyId}
         query={query}

@@ -237,6 +237,11 @@ export function InboxIssueMetaLeading({
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
+      {issue.blockerMetadata?.issueRewakeFreeze ? (
+        <Badge variant="outline" title={`Empty re-wakes frozen since ${issue.blockerMetadata.issueRewakeFreeze.frozenAt}`}>
+          Re-wakes frozen · {timeAgo(issue.blockerMetadata.issueRewakeFreeze.frozenAt)}
+        </Badge>
+      ) : null}
       {isLive && (
         <Badge variant="ghost"
           className={cn(
