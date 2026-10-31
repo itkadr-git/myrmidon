@@ -33,7 +33,7 @@ export const guardrailRuleSchema = z.object({
   mode: guardrailRuleModeSchema.default("flag").optional(),
   surface: guardrailRuleSurfaceSchema.default("all").optional(),
   pattern: z.string().nullable().optional(),
-  config: z.record(z.unknown()).nullable().optional(),
+  config: z.record(z.string(), z.unknown()).nullable().optional(),
   companyId: z.string().nullable().optional(),
   createdAt: z.string().datetime().or(z.date()).optional(),
   updatedAt: z.string().datetime().or(z.date()).optional(),
