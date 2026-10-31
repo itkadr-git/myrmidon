@@ -26,7 +26,6 @@ function makeMockSource(params: {
 }): RagflowSource {
   return {
     baseUrl: "https://ragflow.mock",
-    apiKey: "mock-key",
     pageSize: 10,
     async listDatasets() { return params.datasets; },
     async *listDocuments(datasetId: string) {

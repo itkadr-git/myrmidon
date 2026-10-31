@@ -299,7 +299,6 @@ describe("RAGFlow corpus import", () => {
     const memory = memoryTarget();
     const zeroChunkSource: RagflowSource = {
       baseUrl: "https://ragflow.example/",
-      apiKey: "test-key",
       pageSize: 1,
       async listDatasets() {
         return [{ id: "ds-empty", name: "Empty Dataset", document_count: 1, chunk_count: 0 }];

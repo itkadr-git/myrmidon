@@ -223,7 +223,7 @@ export async function dryRunRagflowImport(options: RagflowDryRunOptions): Promis
 
           const isReusable =
             state != null &&
-            state.embedding != null &&
+            Array.isArray(state.embedding) &&
             isReusableEmbedding(state.embedding, dimensions) &&
             state.embeddingModel === embeddingModel &&
             state.embeddingDimensions === dimensions &&
