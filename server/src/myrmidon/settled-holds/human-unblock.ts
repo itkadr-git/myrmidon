@@ -154,7 +154,7 @@ export async function issueHasSettledReplayHold(db: Db, companyId: string, issue
   }
 }
 
-function settledReplayHoldWhere(companyId: string, issueId: string) {
+export function settledReplayHoldWhere(companyId: string, issueId: string) {
   return and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
