@@ -732,6 +732,36 @@ describe.sequential("agent permission routes", () => {
     );
   }, 20_000);
 
+  it("filters heartbeat runs by wakeReason and hasResult", async () => {
+    mockHeartbeatService.listVersionKey.mockResolvedValue("vk-filtered");
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-with-result", resultJson: { summary: "ok" } }]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?wakeReason=issue_commented&hasResult=true&agentId=agent-1`),
+    );
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      false,
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      "issue_commented",
+      true,
+    );
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      { summary: false, wakeReason: "issue_commented", hasResult: true },
+    );
+  });
+
   it("redacts env values in agent mutation responses", async () => {
     const plaintextValue = "mutation-value-must-not-leak";
     const storedAgent = {

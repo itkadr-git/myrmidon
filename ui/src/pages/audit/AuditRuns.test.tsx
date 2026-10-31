@@ -141,6 +141,13 @@ describe("AuditRuns", () => {
     expect(container.textContent).toContain("Clear filters");
   });
 
+  it("renders RunsWithResultPanel when view is set to results", async () => {
+    currentSearch = "view=results";
+    await render();
+
+    expect(container.querySelector('[data-testid="runs-with-result-panel"]')).toBeTruthy();
+  });
+
   it("loads routine runs directly when the Audit scope is a routine", async () => {
     await render("routine-1");
 

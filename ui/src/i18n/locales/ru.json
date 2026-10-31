@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "Интерфейс",
+    "new": "Новая",
+    "legacy": "Прежняя",
+    "instanceDefault": "По настройке экземпляра",
+    "switchTo": "Переключить версию интерфейса"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Основная навигация",
@@ -148,7 +155,8 @@
       "autonomy": "Автономия",
       "guards": "Ограждения",
       "castes": "Касты и модели",
-      "system": "Система"
+      "system": "Система",
+      "language": "Язык"
     }
   },
   "connectorPanel": {
