@@ -2537,3 +2537,19 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+
+## 1.7 — Behavior-settings API: runtime settings (SETTINGS-TO-UI)
+
+Starting with Myrmidon 1.7 (SETTINGS-TO-UI, OPE-3942 / OPE-4097), execution guardrails, egress mode, tool execution limits, container reconciliation, and container fleet security allowlists are managed dynamically via the Behavior Settings API (`/api/myrmidon/behavior-settings`) and board UI panels without requiring a server restart.
+
+### Precedence and Resolution
+1. `ui` (Stored value): Value saved in `instance_settings.general.behaviorSettings` via UI or API.
+2. `env` (Environment variable): Falling back to the corresponding `MYRMIDON_*` environment variable when unset in UI.
+3. `default` (Built-in default): Fallback defined in the registry declaration (`packages/shared/src/myrmidon-behavior-settings.ts`).
+
+### Interface Panels & Security Confirmation
+- **Guardrails panel** (`InstanceGeneralSettings.tsx`): Instance → General settings. Controls egress mode (`bot_egress_mode`), tool breaker (`tool_breaker_*`), tool timeouts (`tool_timeout_*`), and allowed inherited run environment variables (`run_env_allow`).
+- **Fleet guardrails panel** (`CompanySettings.tsx`): Company Settings. Controls container runner toggle (`bot_containers`), reconcile interval (`bot_reconcile_interval_sec`), container image allowlist (`bot_image_allowlist`), mount sources allowlist (`bot_mount_sources`), container GitHub environment allowlist (`bot_container_github_env_allowlist`), YOLO autonomous mode (`bot_yolo`), Hindsight memory banks (`bot_hindsight_allowed_banks`), MCP servers (`bot_mcp_servers`), browser fleet (`browser_fleet`), and stack check intervals (`stack_check_interval_sec`).
+- **Security Confirmation**: Updating allowlists (`bot_image_allowlist`, `bot_mount_sources`, etc.) or enabling YOLO mode (`bot_yolo` = true) requires explicit modal confirmation in the UI.
+
+Changes apply immediately in-memory without server restart. Full catalog and release details: [changes/ope-4097-guardrails-fleet-settings.md](changes/ope-4097-guardrails-fleet-settings.md) and [docs/wiki/Settings-in-the-interface.md](../wiki/Settings-in-the-interface.md).
