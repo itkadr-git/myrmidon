@@ -583,7 +583,21 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       });
     });
 
-    it("maps a reassigned issue into a stale queued-run decision", async () => {
+  it("expires an old queued run regardless of missing task linkage", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const now = new Date();
+    const runId = await seedRun({ companyId, agentId, now: new Date(now.getTime() - 31 * 60 * 1000) });
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      runId, companyId, expectedStatus: "queued", staleAfterMs: 30 * 60 * 1000, now,
+    });
+    expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    const persisted = await db.select({ status: heartbeatRuns.status, error: heartbeatRuns.error, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
+    expect(persisted).toMatchObject({ status: "cancelled", errorCode: "queued_run_stale_timeout" });
+    expect(persisted?.error).toContain("30 minutes");
+  });
+
+  it("maps a reassigned issue into a stale queued-run decision", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const replacementAgentId = randomUUID();
       await seedAgent({ id: replacementAgentId, companyId, name: "ReplacementCoder" });

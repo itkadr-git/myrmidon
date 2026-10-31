@@ -1,5 +1,5 @@
 {
-  "id": "7cbd0699-69f0-4542-adde-bade3aa650d0",
+  "id": "b0e3cca4-7e1b-4a7c-953d-cfc0dbdbb847",
   "prevId": "aa8ac63f-1948-4cf3-8b0c-1eb94776d1e7",
   "version": "7",
   "dialect": "postgresql",
@@ -28709,12 +28709,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "client_cert_fingerprint": {
-          "name": "client_cert_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -35535,6 +35529,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "responsible_agent_id": {
+          "name": "responsible_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -36290,6 +36290,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "issues_company_responsible_agent_idx": {
+          "name": "issues_company_responsible_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "responsible_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -36434,6 +36455,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issues_responsible_agent_id_agents_id_fk": {
+          "name": "issues_responsible_agent_id_agents_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "responsible_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

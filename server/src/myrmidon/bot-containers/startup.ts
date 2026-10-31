@@ -30,6 +30,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
+import { containerOomRecorder } from "./container-oom-store.js";
 import type { BotContainerDriver } from "./driver.js";
 import { fleetSiteKey } from "./fleetd-hosts.js";
 import { dockerBotContainerDriver, readDockerDriverConfig, type DockerDriverConfig } from "./docker-driver.js";
@@ -53,6 +54,8 @@ import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
   createFleetClientManager,
+  setActiveFleetClientManager,
+  getActiveFleetClientManager,
   bootstrapFleetSitesFromEnv,
   type FleetClientManager,
   type FleetClientManagerDeps,
@@ -157,6 +160,7 @@ const defaultPorts: BotContainersStartupPorts = {
   readDriverConfig: (env) => readDockerDriverConfig(env),
   createDriver: (config, db) =>
     dockerBotContainerDriver(config, {
+      recordOom: containerOomRecorder(db),
       // myrmidon(BOT-DISK-F): the layout the owner applied (isolated unless a scope change was applied),
       // and the host-side move of a bot's directories when a recreate changes it.
       readScopeLayout: (botKey) => readAppliedScopeLayout(db, botKey),
@@ -207,6 +211,7 @@ export function startBotContainers(
   const started = build(db, env, intervalMs, ports);
   if (!started) return () => {};
   const { runtime, stopSweep, clientManager } = started;
+  setActiveFleetClientManager(clientManager);
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
@@ -219,7 +224,7 @@ export function startBotContainers(
     ports.log.error({ err }, "failed to start clone hygiene report collection");
   }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
-  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env, clientManager }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
   const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
   // myrmidon(1.6.6 OPE-9154): unattended site client certificate rotation scheduler
@@ -232,6 +237,7 @@ export function startBotContainers(
     stopSweep();
     stopCollector?.();
     clientManager.close();
+    if (getActiveFleetClientManager() === clientManager) setActiveFleetClientManager(null);
     stopSiteScheduler?.();
     stopSiteHealth?.();
     stopCertRotation?.();
