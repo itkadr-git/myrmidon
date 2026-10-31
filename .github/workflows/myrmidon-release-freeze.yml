@@ -15,9 +15,19 @@ name: Release freeze gate
 # checks of main; without that it is advisory only (red, but mergeable by
 # admins).
 
+# OPE-10063: the gate is computed once per pull_request event, so a PR checked
+# while the CI of a release tag ran stayed red after the freeze lifted (30.10:
+# `freeze` was red on every open PR while the CI of rc.19 ran). When "Myrmidon
+# CI (tag)" completes, the second job re-runs the failed gate runs of the open
+# PRs if the gate is open again (scripts/myrmidon/release/release-freeze-rerun.sh).
+# workflow_run workflows are taken from the default branch.
+
 on:
   pull_request:
     branches: [main]
+  workflow_run:
+    workflows: ["Myrmidon CI (tag)"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -26,7 +36,7 @@ permissions:
 jobs:
   freeze:
     name: freeze
-    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,3 +52,27 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/myrmidon/release/release-freeze.sh --check
+
+  rerun-failed-freeze:
+    name: re-run failed freeze gates
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'workflow_run' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Re-run the failed gate runs of open pull requests once the freeze is lifted
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-freeze-rerun.sh

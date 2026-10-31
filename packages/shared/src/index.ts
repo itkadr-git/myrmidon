@@ -150,9 +150,11 @@ export {
 } from "./pipeline-case-type.js";
 export {
   deriveResponsibleUser,
+  deriveResponsibleActor,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
+  type ResponsibleActor,
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
@@ -497,6 +499,7 @@ export {
   SECRET_SCOPES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
+  COST_STATUSES,
   FINANCE_EVENT_KINDS,
   FINANCE_DIRECTIONS,
   FINANCE_UNITS,
@@ -2971,8 +2974,10 @@ export * from "./myrmidon-model-providers.js";
 export * from "./myrmidon-bridge-language.js";
 // myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
 export * from "./myrmidon-features.js";
-// myrmidon(1.6.6 MODEL-MENU A): the model menu tree, its defaults and its resolution.
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree and resolver.
 export * from "./myrmidon-model-menu.js";
+// OPE-9499: operator-maintained list-price equivalent for subscription-backed model use.
+export * from "./myrmidon-model-api-pricing.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
@@ -3030,3 +3035,8 @@ export {
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+
+// myrmidon(1.6.6 ARCH-DATA): read-only product access for the architect role
+// to full operational metrics without secrets.
+export * from "./myrmidon-architect-data.js";
+

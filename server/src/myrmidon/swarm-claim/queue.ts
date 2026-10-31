@@ -16,7 +16,7 @@
 // than re-derived, so "ready" means one thing on both paths.
 
 import { blockerOpenSql } from "../blocker-resolved.js";
-import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@myrmidon/db";
 import {
   swarmRoleFromLabels,
@@ -30,7 +30,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
-  getCachedFailedRunsDerivedSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -152,8 +153,13 @@ export function roleQueueRows(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
-  derivedSql?: SQL,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ) {
+  const failedRunsJoin =
+    failedRunsMap !== undefined
+      ? failedRunsValuesSql(failedRunsMap)
+      : failedRunsDerivedSql(companyId, order?.now);
+
   return db
     .select({
       issueId: issues.id,
@@ -168,9 +174,8 @@ export function roleQueueRows(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(derivedSql ?? failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map when provided (#OPE-10012)
+    .leftJoin(failedRunsJoin, failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -238,9 +243,11 @@ export async function listRoleQueue(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
-  const derivedSql = await getCachedFailedRunsDerivedSql(db, companyId, order?.now);
-  const rows = await roleQueueRows(db, companyId, role, agentId, order, derivedSql);
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
+  const rows = await roleQueueRows(db, companyId, role, agentId, order, map);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
@@ -298,8 +305,10 @@ export async function listUnassignedQueue(
   db: Db,
   companyId: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
-  const derivedTableSql = await getCachedFailedRunsDerivedSql(db, companyId, order?.now);
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -310,9 +319,8 @@ export async function listUnassignedQueue(
       queuedAt: issues.createdAt,
     })
     .from(issues)
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(derivedTableSql, failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(map), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),

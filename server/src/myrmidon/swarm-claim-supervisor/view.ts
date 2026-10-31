@@ -29,7 +29,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnRawSql,
   failedRunsSinceLastChangeSql,
-  getCachedFailedRunsDerivedSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
 } from "../swarm-claim/effective-pheromone.js";
 
 /** Wake reason part A assigns to queue-driven wakes; informational in the view. */
@@ -716,12 +717,12 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
       return (Array.isArray(rows) ? rows : []) as unknown as ClaimRow[];
     },
     async listQueueRows(companyId) {
-      const derivedSql = await getCachedFailedRunsDerivedSql(db, companyId);
+      const failedRunsMap = await getCachedFailedRunsMap(db, companyId);
       const rows = await db.execute(sql`
         SELECT i.id AS issue_id, i.identifier, i.title, i.priority, i.pheromone_strength, i.project_id, i.created_at, i.blocked_transition_at, i.assignee_agent_id,
           ${failedRunsSinceLastChangeSql()} AS failed_runs_since_last_change
         FROM issues i
-        LEFT JOIN ${derivedSql} ON ${failedRunsJoinOnRawSql("i")}
+        LEFT JOIN ${failedRunsValuesSql(failedRunsMap)} ON ${failedRunsJoinOnRawSql("i")}
         WHERE i.company_id = ${companyId}
           AND i.status = 'todo'
         ORDER BY i.created_at ASC
