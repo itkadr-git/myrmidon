@@ -31,6 +31,7 @@ export interface PullRequestHeadState extends PrRef {
   url?: string | null;
   authorLogin?: string | null;
   baseRef?: string | null;
+  labels?: readonly string[];
 }
 
 export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {

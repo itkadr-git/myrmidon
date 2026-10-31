@@ -293,8 +293,9 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const schema = { openapi: "3.1.0", paths: {} };
     const forwarded: string[] = [];
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      client, queueDir,
       handleRequest: async (request) => {
         forwarded.push(`${request.method} ${request.path}`);
         return { status: 200, body: JSON.stringify(schema) };
@@ -311,7 +312,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/secrets" },
     ];
     for (const [index, request] of requests.entries()) {
-      await writeFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
+      await client.writeTextFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
         id: `schema-${index}`, ...request, query: "", headers: {}, body: "", createdAt: new Date().toISOString(),
       }));
     }
