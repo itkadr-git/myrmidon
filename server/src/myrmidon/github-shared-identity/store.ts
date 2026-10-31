@@ -17,6 +17,7 @@ import {
   parseStoredGitHubSharedIdentitySettings,
   type GitHubSharedIdentitySettings,
 } from "./settings.js";
+import { resetGitHubAppTokenCacheForTests } from "./app-token.js";
 
 const SINGLETON_KEY = "default";
 
@@ -77,6 +78,7 @@ export async function writeGitHubSharedIdentitySettings(
         general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${GITHUB_SHARED_IDENTITY_GENERAL_KEY}}`}::text[], ${JSON.stringify(companiesNext)}::jsonb, true)`,
       })
       .where(eq(instanceSettings.id, row.id));
+    resetGitHubAppTokenCacheForTests();
     return { previous, next, changed: true };
   });
 }

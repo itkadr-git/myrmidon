@@ -1,12 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { isUuidLike } from "@myrmidon/shared";
 import {
-  agents,
-  heartbeatRuns,
+  connectionGrants,
   issues,
   projectWorkspaces,
-  projects,
   runIdentityContexts,
+  toolConnections,
   type Db,
 } from "@myrmidon/db";
 import { forbidden } from "../errors.js";
@@ -16,11 +15,23 @@ import {
   resolveManagedGitHubCredential,
 } from "./git-credentials.js";
 import { secretService } from "./secrets.js";
-import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
-import { isLowTrustQuarantined } from "./source-trust.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): self-hosted GitHub App identities, chosen by the target repository
 import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broker.js";
 import { normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
+import { onResetGitHubAppTokenCache } from "../myrmidon/github-shared-identity/index.js";
+import {
+  allowsGitHubCredentialExport,
+  GENERIC_DENIAL,
+  quarantinedIssueDenial,
+  type GitHubCredentialDenial,
+} from "./github-credential-policy.js";
+
+export {
+  allowsGitHubCredentialExport,
+  GENERIC_DENIAL,
+  quarantinedIssueDenial,
+  type GitHubCredentialDenial,
+};
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -38,118 +49,6 @@ export type GitHubCredentialSummary = {
   authenticationMode?: "managed" | "host" | "anonymous";
 };
 
-/** A raw GitHub token cannot enforce the low-trust read-only tool boundary. */
-type GitHubCredentialDenial = {
-  allowed: boolean;
-  reason?: string;
-};
-const GENERIC_DENIAL: GitHubCredentialDenial = {
-  allowed: false,
-  reason:
-    "GitHub credentials are not available to low-trust or unverified executions; use authorized read-only tools.",
-};
-
-/**
- * A quarantined-issue denial reads to the executor as "no permissions" unless
- * it names what actually happened (the task itself is in low-trust quarantine)
- * and the one human path that unblocks it (promotion). The agent cannot
- * promote its own output by design, so the message must point at the operator
- * route instead of letting the agent restate the refusal as a rights problem.
- */
-function quarantinedIssueDenial(issueIdentifier: string | null | undefined, issueId: string): GitHubCredentialDenial {
-  const label = issueIdentifier ?? "this issue";
-  return {
-    allowed: false,
-    reason:
-      `GitHub credentials are withheld because the task (${label}) is quarantined as low-trust source material ` +
-      `(its creation run carried untrusted provenance — see issues.source_trust.disposition=quarantined), not because ` +
-      `the agent lacks permissions. This run cannot lift the quarantine itself. Ask a human operator to release it via ` +
-      `POST /api/issues/${issueId}/low-trust/promotions (board: “promote from low-trust”), then rerun the GitHub operation.`,
-  };
-}
-
-async function allowsGitHubCredentialExport(
-  db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
-): Promise<GitHubCredentialDenial> {
-  const issueId =
-    run.contextSnapshot?.issueId ??
-    run.contextSnapshot?.taskId ??
-    run.nativeIssueId;
-  if (
-    issueId !== undefined &&
-    issueId !== null &&
-    (typeof issueId !== "string" || !isUuidLike(issueId))
-  )
-    return GENERIC_DENIAL;
-  const [agent] = await db
-    .select({ companyId: agents.companyId, permissions: agents.permissions })
-    .from(agents)
-    .where(
-      and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)),
-    );
-  if (!agent) return GENERIC_DENIAL;
-  const [issue] =
-    typeof issueId === "string"
-      ? await db
-          .select({
-            companyId: issues.companyId,
-            id: issues.id,
-            identifier: issues.identifier,
-            projectId: issues.projectId,
-            executionPolicy: issues.executionPolicy,
-            sourceTrust: issues.sourceTrust,
-          })
-          .from(issues)
-          .where(
-            and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
-          )
-      : [];
-  if (issueId !== undefined && issueId !== null && !issue) return GENERIC_DENIAL;
-  if (isLowTrustQuarantined(issue?.sourceTrust))
-    return quarantinedIssueDenial(issue!.identifier, issue!.id);
-  const projectId = issue?.projectId ?? run.contextSnapshot?.projectId;
-  if (
-    projectId !== undefined &&
-    projectId !== null &&
-    (typeof projectId !== "string" || !isUuidLike(projectId))
-  )
-    return GENERIC_DENIAL;
-  const [project] =
-    typeof projectId === "string"
-      ? await db
-          .select({
-            companyId: projects.companyId,
-            executionWorkspacePolicy: projects.executionWorkspacePolicy,
-          })
-          .from(projects)
-          .where(
-            and(
-              eq(projects.id, projectId),
-              eq(projects.companyId, run.companyId),
-            ),
-          )
-      : [];
-  if (projectId !== undefined && projectId !== null && !project) return GENERIC_DENIAL;
-  const resolution = resolveCoreTrustPreset({
-    companyId: run.companyId,
-    agent,
-    project,
-    issue,
-    run: {
-      companyId: run.companyId,
-      executionPolicy: run.contextSnapshot?.executionPolicy,
-    },
-  });
-  if (resolution.kind === "standard") return { allowed: true };
-  return {
-    allowed: false,
-    reason:
-      GENERIC_DENIAL.reason +
-      ` (trust preset resolved: ${resolution.kind}${"detail" in resolution && resolution.detail ? ` — ${resolution.detail}` : ""})`,
-  };
-}
-
 /**
  * myrmidon(GITHUB-SHARED-IDENTITY): the repository of the run's task when the
  * caller named none (`gh auth status` or `gh api user` outside a clone). The
@@ -159,7 +58,7 @@ async function allowsGitHubCredentialExport(
  */
 async function inferRunRepository(
   db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
+  run: { companyId: string; contextSnapshot?: any; nativeIssueId?: string | null },
 ): Promise<string | null> {
   const issueId = run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId ?? run.nativeIssueId;
   if (typeof issueId !== "string" || !isUuidLike(issueId)) return null;
@@ -187,6 +86,58 @@ async function inferRunRepository(
   return distinct.size === 1 ? [...distinct][0]! : null;
 }
 
+const GITHUB_CREDENTIAL_CACHE_TTL_MS = 50 * 60 * 1000; // ~50 minutes
+
+interface CachedGitHubCredentialEntry {
+  result: {
+    identityContextId: string | null;
+    revision: number | null;
+    status: GitHubCredentialSummary["status"];
+    source?: string;
+    login?: string;
+    connectionId?: string | null;
+    grantId?: string | null;
+    authenticationMode?: string;
+    reason?: string;
+    env: Record<string, string>;
+  };
+  cachedAt: number;
+}
+
+const githubCredentialCache = new Map<string, CachedGitHubCredentialEntry>();
+
+export function clearGitHubOperationCredentialCache(): void {
+  githubCredentialCache.clear();
+}
+
+onResetGitHubAppTokenCache(clearGitHubOperationCredentialCache);
+
+async function isCachedCredentialStillActive(
+  db: Db,
+  connectionId?: string | null,
+  grantId?: string | null,
+): Promise<boolean> {
+  try {
+    if (connectionId) {
+      const rows = await db
+        .select({ enabled: toolConnections.enabled })
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connectionId));
+      if (!rows.length || !rows[0].enabled) return false;
+    }
+    if (grantId) {
+      const rows = await db
+        .select({ status: connectionGrants.status })
+        .from(connectionGrants)
+        .where(eq(connectionGrants.id, grantId));
+      if (!rows.length || rows[0].status !== "active") return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
@@ -200,6 +151,7 @@ export async function resolveGitHubOperationCredentials(
 ) {
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
+
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};
   // A sponsored guest's responsible person is an internal accountability field,
@@ -222,6 +174,26 @@ export async function resolveGitHubOperationCredentials(
       ...summary,
       env,
     };
+  }
+
+  const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
+  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
+  const cached = githubCredentialCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+    if (cached.result.connectionId || cached.result.grantId) {
+      const active = await isCachedCredentialStillActive(
+        db,
+        cached.result.connectionId,
+        cached.result.grantId,
+      );
+      if (!active) {
+        githubCredentialCache.delete(cacheKey);
+      } else {
+        return cached.result;
+      }
+    } else {
+      return cached.result;
+    }
   }
   try {
     const resolved = await resolveManagedGitHubCredential(
@@ -288,15 +260,31 @@ export async function resolveGitHubOperationCredentials(
       reason: "GitHub credentials are temporarily unavailable",
     };
   }
+
   if (context)
     await db
       .update(runIdentityContexts)
       .set({ github: summary })
       .where(eq(runIdentityContexts.id, context.id));
-  return {
+  const result = {
     identityContextId: context?.id ?? null,
     revision: context?.revision ?? null,
     ...summary,
     env,
   };
+  if (summary.status === "available" && Object.keys(env).length > 0) {
+    if (githubCredentialCache.size > 2000) {
+      const now = Date.now();
+      for (const [k, v] of githubCredentialCache.entries()) {
+        if (now - v.cachedAt >= GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+          githubCredentialCache.delete(k);
+        }
+      }
+    }
+    githubCredentialCache.set(cacheKey, {
+      result,
+      cachedAt: Date.now(),
+    });
+  }
+  return result;
 }

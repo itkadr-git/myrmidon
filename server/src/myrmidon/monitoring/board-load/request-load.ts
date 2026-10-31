@@ -45,6 +45,8 @@ export interface RequestLoadRouteSample {
   p95Ms: number;
   p99Ms: number;
   maxMs: number;
+  /** myrmidon(OPE-9997): p95 > 2s (2000ms) latency alert flag. */
+  alert: boolean;
 }
 
 export interface RequestLoadReadInput {
@@ -155,15 +157,17 @@ export function createRequestLog(options: { capacity?: number } = {}): RequestLo
       const samples: RequestLoadRouteSample[] = [];
       for (const bucket of byRoute.values()) {
         const sorted = [...bucket.durations].sort((a, b) => a - b);
+        const p95Ms = percentileMs(sorted, 0.95);
         samples.push({
           method: bucket.method,
           route: bucket.route,
           count: sorted.length,
           errorCount: bucket.errorCount,
           p50Ms: percentileMs(sorted, 0.5),
-          p95Ms: percentileMs(sorted, 0.95),
+          p95Ms,
           p99Ms: percentileMs(sorted, 0.99),
           maxMs: sorted[sorted.length - 1] ?? 0,
+          alert: p95Ms > 2000,
         });
       }
       samples.sort((a, b) => (b.p95Ms - a.p95Ms) || (b.count - a.count) || a.route.localeCompare(b.route));

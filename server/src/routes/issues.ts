@@ -165,6 +165,7 @@ import {
   ISSUE_LIST_AGENT_DEFAULT_LIMIT,
   ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
   ISSUE_LIST_AGENT_MAX_LIMIT,
+  shouldApplyIssueListAgentDefaults,
   issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
@@ -8516,15 +8517,14 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
-    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
-    // limit 200, max 500, description omitted in compact) behind the instance
-    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
-    // restores the pre-feature behaviour byte-for-byte.
-    const agentDefaultsEnabled =
-      req.actor.type === "agent" &&
-      issueListAgentDefaultsEnabled(
-        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
-      );
+    // myrmidon(F16, OPE-9997): agent actors and non-agent integration board keys
+    // get the defect-fix defaults (compact view, limit 200, max 500, description
+    // omitted in compact) behind the instance setting `issuesListAgentDefaults`;
+    // absent means ON, `{enabled: false}` restores the pre-feature behaviour byte-for-byte.
+    const agentDefaultsEnabled = shouldApplyIssueListAgentDefaults(
+      req.actor,
+      (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+    );
     const limit =
       parsedLimit === null
         ? agentDefaultsEnabled
