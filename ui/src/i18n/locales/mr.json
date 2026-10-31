@@ -43,7 +43,15 @@
     "idsSummary": "Agent ids",
     "summary": "Maintenance windows: {{count}} across {{rows}} kind(s), {{state}}",
     "row": "{{scope}} ({{state}}) since {{since}}: {{reason}} — windows: {{count}}, queued wakeups: {{queued}}.",
-    "endsBy": "ends by {{time}}"
+    "endsBy": "ends by {{time}}",
+    "scopedBotContainer": "Updating bot container for {{name}} (~1 min), the rest of the board is working",
+    "scopedBotContainerPrefix": "Updating bot container for ",
+    "scopedRestOfBoardWorking": " (~1 min), the rest of the board is working",
+    "scopedBotGeneral": "Maintenance for bot {{name}} (~1 min), the rest of the board is working",
+    "scopedBotGeneralPrefix": "Maintenance for bot ",
+    "scopedBotContainersPlural": "Updating bot containers ({{count}}) (~1 min), the rest of the board is working",
+    "scopedBotsGeneralPlural": "Maintenance for bots ({{count}}) (~1 min), the rest of the board is working",
+    "scopedDepartment": "Maintenance for project (~1 min), the rest of the board is working"
   },
   "about": {
     "title": "About Myrmidon",
