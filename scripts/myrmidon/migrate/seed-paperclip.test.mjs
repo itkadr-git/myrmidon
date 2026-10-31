@@ -166,6 +166,9 @@ describe("PaperclipApiClient HTTP client", () => {
 
       // Verify Authorization header was passed
       assert.equal(recordedRequests[0].headers.authorization, "Bearer secret-api-key");
+      // Verify browser-origin headers are sent so the board mutation guard accepts session mutations
+      assert.equal(recordedRequests[0].headers.origin, `http://127.0.0.1:${port}`);
+      assert.equal(recordedRequests[0].headers.referer, `http://127.0.0.1:${port}/`);
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

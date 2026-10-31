@@ -103,11 +103,26 @@ export class PaperclipApiClient {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.apiKey = apiKey;
     this.cookie = "";
+    try {
+      const u = new URL(this.baseUrl);
+      this.origin = `${u.protocol}//${u.host}`;
+    } catch {
+      this.origin = this.baseUrl;
+    }
   }
 
   async request(endpoint, options = {}) {
     const url = `${this.baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
     const headers = { ...(options.headers || {}) };
+
+    if (this.origin) {
+      if (!headers.Origin && !headers.origin) {
+        headers.Origin = this.origin;
+      }
+      if (!headers.Referer && !headers.referer) {
+        headers.Referer = `${this.origin}/`;
+      }
+    }
 
     if (this.apiKey && !headers.Authorization && !headers.authorization) {
       headers.Authorization = `Bearer ${this.apiKey}`;
