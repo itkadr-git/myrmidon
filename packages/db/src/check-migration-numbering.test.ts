@@ -61,23 +61,31 @@ describe("check-migration-numbering", () => {
 
   it("RED: flags duplicate idx in journal entries", () => {
     const entries = [
-      { idx: 1, tag: "0001_initial" },
-      { idx: 2, tag: "0002_branch_a" },
-      { idx: 2, tag: "0003_branch_b" },
+      { idx: 201, tag: "0201_initial" },
+      { idx: 202, tag: "0202_branch_a" },
+      { idx: 202, tag: "0203_branch_b" },
     ];
     expect(() => ensureNoDuplicateIndices(entries)).toThrow(
-      /Duplicate migration idx 2 in migration journal: 0002_branch_a, 0003_branch_b/,
+      /Duplicate migration idx 202 in migration journal: 0202_branch_a, 0203_branch_b/,
     );
   });
 
   it("RED: flags mismatch between journal idx and tag 4-digit prefix", () => {
     const entries = [
-      { idx: 1, tag: "0001_initial" },
-      { idx: 5, tag: "0002_branch_a" },
+      { idx: 201, tag: "0201_initial" },
+      { idx: 205, tag: "0202_branch_a" },
     ];
     expect(() => ensureNoDuplicateIndices(entries)).toThrow(
-      /entry 1 idx \(5\) does not match tag number \(0002\)/,
+      /entry 1 idx \(205\) does not match tag number \(0202\)/,
     );
+  });
+
+  it("accepts historical duplicate idx and mismatch below strict baseline (180)", () => {
+    const entries = [
+      { idx: 178, tag: "0177_activity_log_responsible_user" },
+      { idx: 178, tag: "0178_summary_slots" },
+    ];
+    expect(() => ensureNoDuplicateIndices(entries)).not.toThrow();
   });
 
   it("RED: flags out-of-order migration files", () => {
