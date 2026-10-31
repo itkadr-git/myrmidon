@@ -11966,7 +11966,21 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const nextStatus = issueRow.status === "in_review" ? "in_review" : "in_progress";
+      // Only the current participant of a pending review stage keeps the task in in_review (OPE-10082);
+      // an assignee resuming its own in_review task (e.g. after an interaction result) still promotes it.
+      // Fall back to the raw stored fields when the strict parser rejects a partial state.
+      const stageState = (parsedExecutionState ?? issueRow.executionState ?? null) as {
+        status?: unknown;
+        currentStageType?: unknown;
+        currentParticipant?: { type?: unknown; agentId?: unknown } | null;
+      } | null;
+      const keepInReview =
+        issueRow.status === "in_review" &&
+        stageState?.status === "pending" &&
+        stageState?.currentStageType === "review" &&
+        stageState?.currentParticipant?.type === "agent" &&
+        stageState?.currentParticipant?.agentId === agentId;
+      const nextStatus = keepInReview ? "in_review" : "in_progress";
       const updated = await db
         .update(issues)
         .set({
@@ -12085,7 +12099,7 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: current.status === "in_review" ? "in_review" : "in_progress",
+            status: current.status === "in_review" && keepInReview ? "in_review" : "in_progress",
             updatedAt: now,
           };
           if (current.status !== "in_progress" && current.status !== "in_review") {
