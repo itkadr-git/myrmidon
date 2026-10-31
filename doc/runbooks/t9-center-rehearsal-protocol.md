@@ -97,6 +97,8 @@ scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
 Run isolated drill on ephemeral port 5533 without stopping active replication:
 ```bash
 scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
+# Custom drill directory/port override if needed:
+# scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --drill-dir=/tmp/standby-drill-cluster --drill-port=5533
 ```
 **Execution flow**:
 1. Basebackup snapshot of `/srv/standby/myrmidon-pg/data` into ephemeral `/srv/standby/drill-cluster`.
