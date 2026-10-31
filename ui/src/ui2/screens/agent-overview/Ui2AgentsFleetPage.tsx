@@ -7,6 +7,7 @@ import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { pollInterval } from "@/lib/auth-session-recovery";
 import { useUi2I18n } from "../../i18n/Ui2I18n";
 import { Ui2Page, Ui2StatusDot } from "../../components/ui2Primitives";
 import { Ui2EmptyStateView, Ui2ErrorState, Ui2SkeletonRows } from "../../components/ui2StateViews";
@@ -28,14 +29,14 @@ export function Ui2AgentsFleetPage() {
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
     enabled: Boolean(selectedCompanyId),
-    refetchInterval: 30_000,
+    refetchInterval: pollInterval(30_000),
   });
   const agents = agentsQuery.data ?? [];
   const runsQuery = useQuery({
     queryKey: queryKeys.heartbeats(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: 50, limit: 100 }),
     enabled: Boolean(selectedCompanyId),
-    refetchInterval: 15_000,
+    refetchInterval: pollInterval(15_000),
   });
   const latestRuns = new Map<string, LiveRunForIssue>();
   for (const run of runsQuery.data ?? []) {
