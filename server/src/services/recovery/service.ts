@@ -6412,6 +6412,18 @@ export function recoveryService(
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        if (issue.originKind === "routine_execution" && handoffEvidence.exhausted) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "done",
+            companyGuard: issue.companyId,
+          });
+          if (updated) {
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
         if (isPluginManagedIssueLifecycle(issue)) {
           result.skipped += 1;
           continue;
