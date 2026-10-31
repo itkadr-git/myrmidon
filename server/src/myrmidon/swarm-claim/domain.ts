@@ -13,10 +13,12 @@
 import {
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
+  orderCandidatesWithPolicy,
   orderSwarmQueueCandidates,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
+  type CapacityPolicy,
   type PheromoneDynamicsSettings,
   type SwarmClaimLease,
   type SwarmClaimSettings,
@@ -83,9 +85,36 @@ export function selectQueueForAgent(input: {
    */
   dynamics?: PheromoneDynamicsSettings;
   now?: Date;
+  /**
+   * 1.6.6 (P2.12 CAPACITY-POLICY): capacity policy for the queue.
+   * When enabled, candidates are ordered with fairness, aging, and limits.
+   * When disabled (default-off) or rolled back, falls back to legacy order.
+   */
+  capacityPolicy?: CapacityPolicy;
+  activeByProject?: Readonly<Record<string, number>>;
+  activeByCaste?: Readonly<Record<string, number>>;
 }): SwarmQueueCandidate[] {
   const now = input.now ?? new Date();
   const covered = liveClaimIssueIds(input.liveClaims, now);
+
+  if (input.capacityPolicy?.enabled) {
+    const policyResult = orderCandidatesWithPolicy(
+      input.candidates as any,
+      {
+        now,
+        activeByProject: input.activeByProject ?? {},
+        activeByCaste: input.activeByCaste ?? {},
+        queueOptions: {
+          p0Preemption: input.p0Preemption,
+          dynamics: input.dynamics,
+          now,
+        },
+      },
+      input.capacityPolicy,
+    );
+    return policyResult.ordered.filter((candidate: SwarmQueueCandidate) => !covered.has(candidate.issueId));
+  }
+
   return orderSwarmQueueCandidates(input.candidates, {
     p0Preemption: input.p0Preemption,
     dynamics: input.dynamics,
@@ -106,8 +135,12 @@ export function nextQueueTaskForAgent(input: {
   settings: Pick<SwarmClaimSettings, "maxActiveTasks" | "enabled" | "p0Preemption"> & {
     /** 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design §2.3). */
     pheromoneDynamics?: PheromoneDynamicsSettings;
+    /** 1.6.6 (P2.12 CAPACITY-POLICY): optional capacity policy. */
+    capacityPolicy?: CapacityPolicy;
   };
   now?: Date;
+  activeByProject?: Readonly<Record<string, number>>;
+  activeByCaste?: Readonly<Record<string, number>>;
 }): SwarmQueueCandidate | null {
   if (!input.settings.enabled) return null;
   if (swarmActiveTaskLimitReached(input.activeTasks, input.settings)) return null;
@@ -117,6 +150,9 @@ export function nextQueueTaskForAgent(input: {
     p0Preemption: input.settings.p0Preemption,
     dynamics: input.settings.pheromoneDynamics,
     now: input.now,
+    capacityPolicy: input.settings.capacityPolicy,
+    activeByProject: input.activeByProject,
+    activeByCaste: input.activeByCaste,
   });
   return queue[0] ?? null;
 }

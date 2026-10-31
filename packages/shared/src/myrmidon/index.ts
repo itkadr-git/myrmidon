@@ -32,6 +32,7 @@ export * from "../myrmidon-budget-enforcement.js";
 export * from "../myrmidon-budget-limits.js";
 export * from "../myrmidon-budget-projection.js";
 export * from "../myrmidon-capacity-policy-order.js";
+export * from "../myrmidon-capacity-policy-schema.js";
 export * from "../myrmidon-capacity-policy.js";
 export * from "../myrmidon-castes.js";
 export * from "../myrmidon-channel-allowlist.js";
