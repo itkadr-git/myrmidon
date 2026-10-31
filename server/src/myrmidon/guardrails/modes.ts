@@ -45,7 +45,7 @@ export interface GuardrailModeEnforcement {
 export interface ResolveGuardrailModesInput {
   db: Db;
   companyId: string;
-  agentId: string;
+  agentId?: string | null;
   env?: NodeJS.ProcessEnv;
 }
 
