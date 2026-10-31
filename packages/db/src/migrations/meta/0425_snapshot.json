@@ -1,5 +1,5 @@
 {
-  "id": "af3a2530-d909-4778-b611-96720f5a2eef",
+  "id": "740d3b20-f5d1-46bf-b577-8d3eeb9cb80c",
   "prevId": "2315dd65-f4b2-47c5-94ef-554651257945",
   "version": "7",
   "dialect": "postgresql",
@@ -28709,12 +28709,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "client_cert_fingerprint": {
-          "name": "client_cert_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -35325,12 +35319,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "responsible_agent_id": {
-          "name": "responsible_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "issue_number": {
           "name": "issue_number",
           "type": "integer",
@@ -35541,6 +35529,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "responsible_agent_id": {
+          "name": "responsible_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -35678,27 +35672,6 @@
             },
             {
               "expression": "responsible_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_responsible_agent_idx": {
-          "name": "issues_company_responsible_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "responsible_agent_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -36317,6 +36290,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "issues_company_responsible_agent_idx": {
+          "name": "issues_company_responsible_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "responsible_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -36450,19 +36444,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "issues_responsible_agent_id_agents_id_fk": {
-          "name": "issues_responsible_agent_id_agents_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "responsible_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
         "issues_execution_workspace_id_execution_workspaces_id_fk": {
           "name": "issues_execution_workspace_id_execution_workspaces_id_fk",
           "tableFrom": "issues",
@@ -36474,6 +36455,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issues_responsible_agent_id_agents_id_fk": {
+          "name": "issues_responsible_agent_id_agents_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "responsible_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

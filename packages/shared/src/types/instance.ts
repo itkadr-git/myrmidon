@@ -32,6 +32,7 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
 import type { SwarmSettings } from "../myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5)
+import type { ScentSettings } from "../myrmidon-scent.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
@@ -161,6 +162,8 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   blockerRootFanoutAlertLimit?: number;
+  /** Consecutive empty issue runs before automatic re-wakes freeze (default 6). */
+  issueRewakeFreezeThreshold?: number;
   /**
    * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
    * how many HTTP processes (`api`) and scheduler processes (`worker`) the
@@ -308,7 +311,7 @@ export interface InstanceGeneralSettings {
    * defaults (gate on, base 30 min, ceiling 24 h). Kept in sync with the
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
-  swarm?: SwarmSettings;
+  swarm?: SwarmSettings & { scent?: ScentSettings };
   /**
    * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
    * the instance settings API. Controls whether bots get a common directory at

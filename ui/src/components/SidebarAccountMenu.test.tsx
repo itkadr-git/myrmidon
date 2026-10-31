@@ -448,4 +448,51 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
+  it("renders interface version toggle with New, Previous and Instance Default options", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="authenticated" />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const toggle = document.body.querySelector('[data-testid="ui-interface-toggle"]');
+    expect(toggle).not.toBeNull();
+    const optNew = document.body.querySelector('[data-testid="ui-switch-option-2"]');
+    const optLegacy = document.body.querySelector('[data-testid="ui-switch-option-1"]');
+    const optInstance = document.body.querySelector('[data-testid="ui-switch-option-instance"]');
+    expect(optNew).not.toBeNull();
+    expect(optLegacy).not.toBeNull();
+    expect(optInstance).not.toBeNull();
+
+    await act(async () => {
+      optNew?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem("myr.ui2.personal")).toBe("2");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
