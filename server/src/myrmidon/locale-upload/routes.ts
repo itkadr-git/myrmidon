@@ -4,6 +4,7 @@ import multer from \"multer\";
 import type { Db } from \"@myrmidon/db\";
 import {
   parseCatalogJson,
+  validateCatalogInputSchema,
   type LocaleValidationResult,
 } from \"@myrmidon/shared\";
 import { validateUploadedCatalog } from \"./validator.js\";
@@ -65,14 +66,20 @@ export function localeUploadRoutes(_db?: Db) {
     const body = req.body || {};
     const locale = (uploadedFile ? body.locale : (body.locale || req.query.locale)) as string | undefined;
 
-    if (!locale || typeof locale !== \"string\" || locale.trim() === \"\") {
+    const localeInput = validateCatalogInputSchema.safeParse({ locale });
+    if (!localeInput.success) {
       return res.status(400).json({
-        error: \"MISSING_LOCALE\",
-        message: \"Field 'locale' is required (e.g. 'ru', 'de', 'custom')\",
+        error: "INVALID_LOCALE",
+        message: "Field 'locale' must contain 2-35 letters, numbers, underscores, or hyphens",
+        errors: localeInput.error.issues.map((issue) => ({
+          path: issue.path.join(".") || "locale",
+          code: "INVALID_LOCALE",
+          message: issue.message,
+        })),
       });
     }
 
-    const strict = body.strict === true || body.strict === \"true\" || req.query.strict === \"true\";
+    const strict = body.strict === true || body.strict === "true" || req.query.strict === "true";
 
     let candidateObject: unknown = null;
 

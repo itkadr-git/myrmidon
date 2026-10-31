@@ -59,7 +59,30 @@ describe(\"locale-upload routes (OPE-10187)\", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe(\"MISSING_LOCALE\");
+    expect(res.body.error).toBe(\"INVALID_LOCALE\");
+  });
+
+  it(\"POST /api/myrmidon/locales/validate: rejects malformed locale values\", async () => {
+    const app = createTestApp();
+
+    for (const locale of [\"!\", \"e\", \"ru de\", \"a\".repeat(36), \"ру\"]) {
+      const res = await request(app)
+        .post(\"/api/myrmidon/locales/validate\")
+        .send({
+          locale,
+          catalog: { app: { title: \"Мирмидон\" } },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(\"INVALID_LOCALE\");
+      expect(res.body.message).toContain(\"2-35\");
+      expect(Array.isArray(res.body.errors)).toBe(true);
+    }
+
+    const ok = await request(app)
+      .post(\"/api/myrmidon/locales/validate\")
+      .send({ locale: \"custom-ru_2\", catalog: { app: { title: \"Мирмидон\" } } });
+    expect(ok.status).toBe(200);
   });
 
   it(\"POST /api/myrmidon/locales/validate: rejects request missing catalog\", async () => {
