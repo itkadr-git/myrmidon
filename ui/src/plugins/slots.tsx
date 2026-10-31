@@ -820,14 +820,14 @@ export function slotContextToHostContext(
  * This ensures that `usePluginData()`, `usePluginAction()`, and `useHostContext()`
  * have access to the current plugin ID and host context during the render phase.
  */
-function PluginBridgeScope({
+export function PluginBridgeScope({
   pluginId,
   context,
   children,
 }: {
   pluginId: string;
   context: PluginSlotContext;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,

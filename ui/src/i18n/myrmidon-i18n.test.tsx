@@ -71,11 +71,11 @@ const ALLOWED_KEY_LATIN: Record<string, Set<string>> = {
 function unruledLatinRuns(value: string, key?: string): string[] {
   const withoutPlaceholders = value.replace(/\{\{[^}]+\}\}/g, " ");
   const runs = withoutPlaceholders.match(/[A-Za-z][A-Za-z-]*/g) ?? [];
-  const allowedForKey = (key && ALLOWED_KEY_LATIN[key]) ?? null;
+  const allowedForKey = (key ? ALLOWED_KEY_LATIN[key] : undefined) ?? null;
   return runs.filter((run) => {
     if (run.length <= 1) return false; // single-letter shortcut hints
     if (ALLOWED_LATIN.has(run) || ALLOWED_LATIN.has(run.toUpperCase())) return false;
-    if (allowedForKey?.has(run)) return false;
+    if (allowedForKey instanceof Set && allowedForKey.has(run)) return false;
     if (/^[A-Z]{2,}-?$/.test(run)) return false; // prefix-like tokens (PAP-, ID)
     if (/^[A-Za-z]+-$/.test(run)) return false; // hyphenated compound prefix (Swarm-надзор)
     return true;
