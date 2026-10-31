@@ -329,6 +329,7 @@ describe("pool models behavior tests (1.6.6 OPE-9932)", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({ model: "pool-only-model" }),
       }),
+      expect.any(Object),
     );
 
     mockAgentService.update.mockClear();
