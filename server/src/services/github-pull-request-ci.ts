@@ -1,11 +1,9 @@
 import type { Db } from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
+import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import {
-  DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
-  resolveGitHubRepositoryToken,
-} from "./github-external-object-provider.js";
+import { resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 import {
   createPullRequestMergeDetailsResolver,
