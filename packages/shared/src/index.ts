@@ -3041,3 +3041,7 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+export * from "./installed-locales.js";
+
+
