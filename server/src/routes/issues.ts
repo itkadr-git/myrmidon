@@ -16274,8 +16274,18 @@ export function issueRoutes(
           },
         });
 
+        const supersededWakes: Array<{
+          agentId: string;
+          options: WakeupOptions;
+        }> = [];
         const expiredInteractions = await issueThreadInteractionService(
           db,
+          {
+            wakeup: (agentId, options) => {
+              supersededWakes.push({ agentId, options });
+              return Promise.resolve();
+            },
+          },
         ).expireRequestConfirmationsSupersededByComment(issue, comment, {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -16457,8 +16467,15 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
-          wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+          const key = `${agentId}:${wakeIssueId}`;
+          if (wakeups.has(key)) return;
+          wakeups.set(key, { agentId, wakeup });
         };
+        // Interactions superseded by this comment wake their assignee/author
+        // through the same merged enqueue as every other wake on this update.
+        for (const { agentId, options } of supersededWakes) {
+          addWakeup(agentId, options);
+        }
         const addDependencyResolvedWakeup = async (input: {
           agentId: string;
           dependentIssueId: string;
@@ -16614,6 +16631,7 @@ export function issueRoutes(
           // A completed prior run may explicitly resume, but the run that still
           // owns this issue is already executing the comment's work.
           const shouldWakeAssigneeForComment =
+            expiredInteractions.length > 0 ||
             shouldWakeAssigneeForIssueComment({
               selfComment,
               resumeRequested: resumeRequested === true,
@@ -18041,6 +18059,49 @@ export function issueRoutes(
                 agentId: interaction.addresseeAgentId,
               },
               "failed to wake addressee on issue interaction creation",
+            ),
+          );
+      } else if (
+        !interaction.addresseeAgentId &&
+        issue.assigneeAgentId &&
+        actor.actorType === "user"
+      ) {
+        void heartbeat
+          .wakeup(issue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "interaction_pending",
+            payload: {
+              issueId: issue.id,
+              interactionId: interaction.id,
+              interactionKind: interaction.kind,
+              sourceCommentId: interaction.sourceCommentId ?? null,
+              sourceRunId: interaction.sourceRunId ?? null,
+              mutation: "interaction",
+            },
+            idempotencyKey: `interaction-pending:${interaction.id}`,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              interactionId: interaction.id,
+              interactionKind: interaction.kind,
+              sourceCommentId: interaction.sourceCommentId ?? null,
+              sourceRunId: interaction.sourceRunId ?? null,
+              wakeReason: "interaction_pending",
+              source: "issue.interaction.created",
+            },
+          })
+          .catch((err) =>
+            logger.warn(
+              {
+                err,
+                issueId: issue.id,
+                interactionId: interaction.id,
+                agentId: issue.assigneeAgentId,
+              },
+              "failed to wake assignee on issue interaction creation",
             ),
           );
       }
@@ -20117,8 +20178,18 @@ export function issueRoutes(
         },
       });
 
+      const supersededWakes: Array<{
+        agentId: string;
+        options: WakeupOptions;
+      }> = [];
       const expiredInteractions = await issueThreadInteractionService(
         db,
+        {
+          wakeup: (agentId, options) => {
+            supersededWakes.push({ agentId, options });
+            return Promise.resolve();
+          },
+        },
       ).expireRequestConfirmationsSupersededByComment(currentIssue, comment, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -20212,6 +20283,11 @@ export function issueRoutes(
           if (wakeups.has(key)) return;
           wakeups.set(key, { agentId, wakeup });
         };
+        // Interactions superseded by this comment wake their assignee/author
+        // through the same merged enqueue as every other wake on this comment.
+        for (const { agentId, options } of supersededWakes) {
+          addWakeup(agentId, options);
+        }
         const addDependencyResolvedWakeup = async (input: {
           agentId: string;
           dependentIssueId: string;
@@ -20295,7 +20371,9 @@ export function issueRoutes(
         // to the returnAssignee for an already-completed issue.
         // An explicit resume from the run that still owns this issue is redundant;
         // explicit resume from a completed prior run remains a valid new turn.
-        const shouldWakeAssigneeForComment = shouldWakeAssigneeForIssueComment({
+        const shouldWakeAssigneeForComment =
+          expiredInteractions.length > 0 ||
+          shouldWakeAssigneeForIssueComment({
           selfComment,
           resumeRequested: resumeRequested === true,
           commentCreatedByRunId: comment.createdByRunId,

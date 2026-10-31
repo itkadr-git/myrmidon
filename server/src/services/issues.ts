@@ -13254,8 +13254,13 @@ export function issueService(db: Db) {
       ) {
         const { issueThreadInteractionService } =
           await import("./issue-thread-interactions.js");
+        const { heartbeatService } = await import("./heartbeat.js");
+        const hb = heartbeatService(dbOrTx as Db);
         const expiredInteractions = await issueThreadInteractionService(
           dbOrTx,
+          {
+            wakeup: (agentId, options) => hb.wakeup(agentId, options),
+          },
         ).expireRequestConfirmationsSupersededByComment(
           { id: issueId, companyId: issue.companyId },
           comment,
