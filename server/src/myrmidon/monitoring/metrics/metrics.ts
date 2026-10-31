@@ -30,9 +30,8 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
-import {
-  readSwarmClaimAttentionSignals,
-} from "./swarm-signals.js";
+import { createPgReviewRoutingStore } from "../../review-routing/store.js";
+import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
 import {
   resolveProcessMetricsSource,
   type ProcessMetricsSample,
@@ -108,6 +107,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
   "myrmidon_role_queue_tasks",
+  "myrmidon_review_tasks_without_reviewer",
+  "myrmidon_blocked_tasks_without_assignee",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
@@ -167,6 +168,13 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
+
+  // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
+  "myrmidon_readiness_ratio",
+  "myrmidon_queue_age_seconds",
+  "myrmidon_project_share",
+  "myrmidon_starvation_total",
+  "myrmidon_claim_rejection_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -176,6 +184,43 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 // ---------------------------------------------------------------------------
 
 /** The per-family values one scrape reads (the selfcheck probe shares them). */
+export const CLAIM_REJECTION_REASONS = [
+  "capacity_limit", "project_scope", "caste_scope", "assignment_conflict",
+  "dependency_blocked", "interaction_pending", "already_claimed", "not_ready", "other",
+] as const;
+
+export interface CapacityDashboardMetricsSnapshot {
+  readonly readinessRatio: number | null;
+  readonly queueAgeSeconds: number | null;
+  readonly projectShare: ReadonlyArray<{ readonly project: string; readonly share: number }> | null;
+  readonly starvationTotal: number | null;
+  readonly claimRejectionTotal: Readonly<Record<(typeof CLAIM_REJECTION_REASONS)[number], number>> | null;
+}
+
+export type CapacityDashboardMetricsProvider = () =>
+  | Promise<CapacityDashboardMetricsSnapshot | null>
+  | CapacityDashboardMetricsSnapshot
+  | null;
+
+function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnapshot): void {
+  const gauge = (key: "readinessRatio" | "queueAgeSeconds", value: number | null, max: number) => {
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > max)) throw new Error(`invalid capacity metric: ${key}`);
+  };
+  gauge("readinessRatio", snapshot.readinessRatio, 1);
+  gauge("queueAgeSeconds", snapshot.queueAgeSeconds, Number.MAX_VALUE);
+  if (snapshot.starvationTotal !== null && (!Number.isSafeInteger(snapshot.starvationTotal) || snapshot.starvationTotal < 0)) throw new Error("invalid capacity metric: starvationTotal");
+  if (snapshot.projectShare !== null) {
+    const seen = new Set<string>();
+    for (const row of snapshot.projectShare) {
+      if (!row.project || seen.has(row.project) || !Number.isFinite(row.share) || row.share < 0 || row.share > 1) throw new Error("invalid capacity metric: projectShare");
+      seen.add(row.project);
+    }
+  }
+  if (snapshot.claimRejectionTotal !== null) for (const reason of CLAIM_REJECTION_REASONS) {
+    const value = snapshot.claimRejectionTotal[reason];
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid capacity metric: claimRejectionTotal.${reason}`);
+  }
+}
 export interface MetricsSnapshotFields {
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
@@ -191,6 +236,8 @@ export interface MetricsSnapshotFields {
   runDurationSecondsP95: number | null;
   /** Issue counts per assignee role and status. */
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
+  reviewTasksWithoutReviewer: number;
+  blockedTasksWithoutAssignee: number;
   /** Live (not released, not expired) SWARM claims. */
   swarmClaimsActive: number;
   /** All SWARM claim rows ever written. */
@@ -246,6 +293,7 @@ export interface MetricsSnapshotFields {
    */
   fleetSites?: FleetSiteMetricsSample | null;
   blockerRoots?: BlockerRootMetrics | null;
+  capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
   /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
@@ -329,6 +377,9 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+
+  /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
+  capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -447,6 +498,23 @@ async function readRoleQueues(db: Db): Promise<Array<{ role: string; status: str
     status: row.status,
     count: Number(row.total),
   }));
+}
+
+async function readBlockedTasksWithoutAssignee(db: Db): Promise<number> {
+  const [row] = await db
+    .select({ total: count() })
+    .from(issues)
+    .where(and(eq(issues.status, "blocked"), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), isNull(issues.hiddenAt)));
+  return Number(row?.total ?? 0);
+}
+
+async function readReviewTasksWithoutReviewer(db: Db): Promise<number> {
+  const store = createPgReviewRoutingStore(db);
+  const companyIds = await store.listActiveCompanyIds();
+  const counts = await Promise.all(
+    companyIds.map((companyId) => store.countUnroutedReviewIssues(companyId)),
+  );
+  return counts.reduce((total, countValue) => total + countValue, 0);
 }
 
 /** SWARM claim counters — live claims and all rows ever. */
@@ -577,6 +645,21 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRoleQueues(deps.db),
     [] as Array<{ role: string; status: string; count: number }>,
   );
+  const issueStore = createPgReviewRoutingStore(deps.db);
+  const reviewTasksWithoutReviewer = await guarded(
+    "myrmidon_review_tasks_without_reviewer",
+    async () => {
+      const companyIds = await issueStore.listActiveCompanyIds();
+      const counts = await Promise.all(companyIds.map((id) => issueStore.countUnroutedReviewIssues(id, now)));
+      return counts.reduce((total, countValue) => total + countValue, 0);
+    },
+    0,
+  );
+  const blockedTasksWithoutAssignee = await guarded(
+    "myrmidon_blocked_tasks_without_assignee",
+    () => issueStore.countBlockedWithoutAssignee(),
+    0,
+  );
   const claimCounters = await guarded(
     "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
     () => readClaimCounters(deps.db, now),
@@ -670,6 +753,8 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
       corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
       roleQueueTasks: roleQueues,
+      reviewTasksWithoutReviewer,
+      blockedTasksWithoutAssignee,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
@@ -689,6 +774,15 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
         null as BlockerRootMetrics | null,
+      ),
+      capacityDashboard: await guarded(
+        "myrmidon_readiness_ratio|myrmidon_queue_age_seconds|myrmidon_project_share|myrmidon_starvation_total|myrmidon_claim_rejection_total",
+        async () => {
+          const value = deps.capacityDashboard ? await deps.capacityDashboard() : null;
+          if (value !== null) validateCapacityDashboardMetrics(value);
+          return value;
+        },
+        null as CapacityDashboardMetricsSnapshot | null,
       ),
     },
     errors,
@@ -928,6 +1022,22 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         (row) =>
           `myrmidon_role_queue_tasks{${R},assignee_role="${escapeLabelValue(row.role)}",status="${escapeLabelValue(row.status)}"} ${formatSampleValue(row.count)}`,
       ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_review_tasks_without_reviewer",
+      "Issues in review without an assigned reviewer participant.",
+      "gauge",
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_blocked_tasks_without_assignee",
+      "Blocked issues without an assignee.",
+      "gauge",
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
     ),
   );
   blocks.push(
@@ -1204,6 +1314,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     "gauge",
     scratch ? scratch.remainingBytes : null,
   );
+
+  // Provider-only contract. Null fields intentionally render no samples.
+  const capacity = snapshot.capacityDashboard ?? null;
+  blocks.push(familyBlock("myrmidon_readiness_ratio", "Ready eligible open issues divided by all open issues in one company snapshot.", "gauge", capacity?.readinessRatio == null ? [] : [`myrmidon_readiness_ratio{${R}} ${formatSampleValue(capacity.readinessRatio)}`]));
+  blocks.push(familyBlock("myrmidon_queue_age_seconds", "Maximum continuous ready-episode age among currently eligible issues.", "gauge", capacity?.queueAgeSeconds == null ? [] : [`myrmidon_queue_age_seconds{${R}} ${formatSampleValue(capacity.queueAgeSeconds)}`]));
+  blocks.push(familyBlock("myrmidon_project_share", "Share of active claim/run slots by project in the company snapshot.", "gauge", capacity?.projectShare == null ? [] : capacity.projectShare.map((row) => `myrmidon_project_share{${R},project="${escapeLabelValue(row.project)}"} ${formatSampleValue(row.share)}`)));
+  blocks.push(familyBlock("myrmidon_starvation_total", "Ready episodes crossing the starvation threshold since producer start.", "counter", capacity?.starvationTotal == null ? [] : [`myrmidon_starvation_total{${R}} ${formatSampleValue(capacity.starvationTotal)}`]));
+  const rejectionTotals = capacity?.claimRejectionTotal ?? null;
+  blocks.push(familyBlock("myrmidon_claim_rejection_total", "Authoritatively rejected claim attempts since producer start by closed reason.", "counter", rejectionTotals === null ? [] : CLAIM_REJECTION_REASONS.map((reason) => `myrmidon_claim_rejection_total{${R},reason="${reason}"} ${formatSampleValue(rejectionTotals[reason])}`)));
 
   // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites. A site renders from its first probe on;
   // every move result renders at zero too.
