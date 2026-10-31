@@ -35,6 +35,7 @@ import {
   type ModelProvidersView,
   type ModelProviderView,
 } from "./modelProvidersApi";
+import { HindsightModelGroupsPanel } from "../hindsight-models/HindsightModelGroupsPanel";
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -282,7 +283,10 @@ export function ModelProvidersScreenView({
         )}
       </section>
 
-      {/* 3. Change log */}
+      {/* 3. Hindsight Memory Models (write, summarize, search) */}
+      <HindsightModelGroupsPanel companyId={companyId} />
+
+      {/* 4. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">
         <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
         {view.changeLog.length === 0 ? (

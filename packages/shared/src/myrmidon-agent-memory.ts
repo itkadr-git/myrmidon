@@ -16,6 +16,87 @@ import { z } from "zod";
  */
 export const AGENT_MEMORY_SETTINGS_KEY = "agentMemory";
 
+export const HINDSIGHT_ROLES = ["write", "summarize", "search"] as const;
+export type HindsightRole = (typeof HINDSIGHT_ROLES)[number];
+
+export interface HindsightModelsConfig {
+  write?: string;
+  summarize?: string;
+  search?: string;
+}
+
+export const DEFAULT_HINDSIGHT_MODELS: Record<HindsightRole, string> = {
+  write: "gpt-4o-mini",
+  summarize: "gpt-4o-mini",
+  search: "gpt-4o-mini",
+};
+
+export const HINDSIGHT_ROLE_META: Record<
+  HindsightRole,
+  {
+    role: HindsightRole;
+    group: string;
+    name: string;
+    description: string;
+    defaultModel: string;
+  }
+> = {
+  write: {
+    role: "write",
+    group: "hindsight-write",
+    name: "Hindsight Write (память: запись)",
+    description: "Извлечение фактов, связывание сущностей и сохранение воспоминаний (retention).",
+    defaultModel: "gpt-4o-mini",
+  },
+  summarize: {
+    role: "summarize",
+    group: "hindsight-summarize",
+    name: "Hindsight Summarize (память: сведение)",
+    description: "Сведение разрозненных фактов и периодическая консолидация памяти (consolidation).",
+    defaultModel: "gpt-4o-mini",
+  },
+  search: {
+    role: "search",
+    group: "hindsight-search",
+    name: "Hindsight Search (память: поиск)",
+    description: "Семантический поиск, генерация запросов воспоминания и ранжирование (recall / search).",
+    defaultModel: "gpt-4o-mini",
+  },
+};
+
+export interface HindsightModelGroupView {
+  role: HindsightRole;
+  group: string;
+  name: string;
+  description: string;
+  model: string;
+  defaultModel: string;
+  source: "setting" | "default";
+  updatedAt?: string | null;
+}
+
+export interface HindsightApiLimitations {
+  runtimeDependency: "OPE-9469";
+  summary: string;
+  items: string[];
+}
+
+export interface HindsightModelCatalogView {
+  groups: HindsightModelGroupView[];
+  limitations: HindsightApiLimitations;
+  status: "mock_stored" | "ready";
+  hotReloadDependency: "OPE-9469";
+  hotReloadAvailable: boolean;
+}
+
+export const HINDSIGHT_API_LIMITATIONS = [
+  "Hot-reload in running Hindsight container depends on OPE-9469: configurations are saved in board settings without restart, but live container hot-reload requires the Hindsight reload API.",
+  "No secret or environment variable mutation: provider API keys and secrets cannot be edited through this interface and are managed securely via company secrets.",
+  "Vector embedding model compatibility: changing the search model on existing memory banks requires re-indexing, as embeddings from different models are mathematically incompatible.",
+  "Catalog availability: selected models must be configured in LiteLLM router groups or active provider endpoints.",
+  "Immediate board persistence: changes persist in instance settings and take effect immediately on subsequent reads without restarting the Myrmidon server.",
+] as const;
+
 export interface AgentMemorySettings {
   /** `false` switches the section off even when an address is configured. */
   enabled?: boolean;
@@ -23,6 +104,11 @@ export interface AgentMemorySettings {
   apiUrl?: string;
   /** Name of the company secret holding the service API key. */
   keySecretName?: string;
+  /** Configured models for Hindsight roles (write, summarize, search). */
+  hindsightModels?: HindsightModelsConfig;
+  writeModel?: string;
+  summarizeModel?: string;
+  searchModel?: string;
 }
 
 const httpUrl = z
@@ -38,11 +124,44 @@ const httpUrl = z
     }
   }, "Enter an http(s):// address");
 
+const modelNameSchema = z.string().trim().min(1).max(256);
+
+export const hindsightModelsSchema = z
+  .object({
+    write: modelNameSchema.optional(),
+    summarize: modelNameSchema.optional(),
+    search: modelNameSchema.optional(),
+  })
+  .strict();
+
+export const patchHindsightModelsSchema = z
+  .object({
+    role: z.enum(HINDSIGHT_ROLES).optional(),
+    model: modelNameSchema.optional(),
+    write: modelNameSchema.nullable().optional(),
+    summarize: modelNameSchema.nullable().optional(),
+    search: modelNameSchema.nullable().optional(),
+    models: z
+      .object({
+        write: modelNameSchema.nullable().optional(),
+        summarize: modelNameSchema.nullable().optional(),
+        search: modelNameSchema.nullable().optional(),
+      })
+      .optional(),
+  })
+  .strict();
+
+export type PatchHindsightModels = z.infer<typeof patchHindsightModelsSchema>;
+
 export const agentMemorySettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
     apiUrl: httpUrl.optional(),
     keySecretName: z.string().trim().min(1).max(256).optional(),
+    hindsightModels: hindsightModelsSchema.optional(),
+    writeModel: modelNameSchema.optional(),
+    summarizeModel: modelNameSchema.optional(),
+    searchModel: modelNameSchema.optional(),
   })
   .strict();
 
@@ -52,6 +171,17 @@ export const patchAgentMemorySettingsSchema = z
     enabled: z.boolean().nullable().optional(),
     apiUrl: httpUrl.nullable().optional(),
     keySecretName: z.string().trim().min(1).max(256).nullable().optional(),
+    hindsightModels: z
+      .object({
+        write: modelNameSchema.nullable().optional(),
+        summarize: modelNameSchema.nullable().optional(),
+        search: modelNameSchema.nullable().optional(),
+      })
+      .nullable()
+      .optional(),
+    writeModel: modelNameSchema.nullable().optional(),
+    summarizeModel: modelNameSchema.nullable().optional(),
+    searchModel: modelNameSchema.nullable().optional(),
   })
   .strict();
 
@@ -71,6 +201,34 @@ export function normalizeAgentMemorySettings(raw: unknown): AgentMemorySettings 
   if (apiUrl.success) out.apiUrl = apiUrl.data;
   const key = z.string().trim().min(1).max(256).safeParse(value.keySecretName);
   if (key.success) out.keySecretName = key.data;
+
+  const rawModels =
+    value.hindsightModels !== null && typeof value.hindsightModels === "object" && !Array.isArray(value.hindsightModels)
+      ? (value.hindsightModels as Record<string, unknown>)
+      : null;
+
+  const writeParsed = modelNameSchema.safeParse(rawModels?.write ?? value.writeModel);
+  const summarizeParsed = modelNameSchema.safeParse(rawModels?.summarize ?? value.summarizeModel);
+  const searchParsed = modelNameSchema.safeParse(rawModels?.search ?? value.searchModel);
+
+  const models: HindsightModelsConfig = {};
+  if (writeParsed.success) {
+    models.write = writeParsed.data;
+    out.writeModel = writeParsed.data;
+  }
+  if (summarizeParsed.success) {
+    models.summarize = summarizeParsed.data;
+    out.summarizeModel = summarizeParsed.data;
+  }
+  if (searchParsed.success) {
+    models.search = searchParsed.data;
+    out.searchModel = searchParsed.data;
+  }
+
+  if (Object.keys(models).length > 0) {
+    out.hindsightModels = models;
+  }
+
   return out;
 }
 
@@ -85,5 +243,76 @@ export function applyAgentMemoryPatch(
     if (patch[key] === null) delete next[key];
     else next[key] = patch[key];
   }
+
+  const existingModels: HindsightModelsConfig = { ...(stored.hindsightModels ?? {}) };
+  if (stored.writeModel && !existingModels.write) existingModels.write = stored.writeModel;
+  if (stored.summarizeModel && !existingModels.summarize) existingModels.summarize = stored.summarizeModel;
+  if (stored.searchModel && !existingModels.search) existingModels.search = stored.searchModel;
+
+  let modelsChanged = false;
+
+  if (patch.writeModel !== undefined) {
+    modelsChanged = true;
+    if (patch.writeModel === null) {
+      delete existingModels.write;
+      delete next.writeModel;
+    } else {
+      existingModels.write = patch.writeModel;
+      next.writeModel = patch.writeModel;
+    }
+  }
+
+  if (patch.summarizeModel !== undefined) {
+    modelsChanged = true;
+    if (patch.summarizeModel === null) {
+      delete existingModels.summarize;
+      delete next.summarizeModel;
+    } else {
+      existingModels.summarize = patch.summarizeModel;
+      next.summarizeModel = patch.summarizeModel;
+    }
+  }
+
+  if (patch.searchModel !== undefined) {
+    modelsChanged = true;
+    if (patch.searchModel === null) {
+      delete existingModels.search;
+      delete next.searchModel;
+    } else {
+      existingModels.search = patch.searchModel;
+      next.searchModel = patch.searchModel;
+    }
+  }
+
+  if (patch.hindsightModels !== undefined) {
+    modelsChanged = true;
+    if (patch.hindsightModels === null) {
+      delete next.hindsightModels;
+      delete next.writeModel;
+      delete next.summarizeModel;
+      delete next.searchModel;
+    } else {
+      for (const role of HINDSIGHT_ROLES) {
+        const val = patch.hindsightModels[role];
+        if (val === undefined) continue;
+        if (val === null) {
+          delete existingModels[role];
+          delete next[`${role}Model`];
+        } else {
+          existingModels[role] = val;
+          next[`${role}Model`] = val;
+        }
+      }
+    }
+  }
+
+  if (modelsChanged && patch.hindsightModels !== null) {
+    if (Object.keys(existingModels).length > 0) {
+      next.hindsightModels = existingModels;
+    } else {
+      delete next.hindsightModels;
+    }
+  }
+
   return next as AgentMemorySettings;
 }
