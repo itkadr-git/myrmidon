@@ -1002,3 +1002,4 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+export * from "./foraging.js";
