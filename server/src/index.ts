@@ -208,6 +208,7 @@ import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
+import { createGuardReturnScheduler } from "./myrmidon/guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { resolveRunScratchSweeperConfig, startRunScratchSweeper } from "./services/run-scratch-sweeper.js"; // myrmidon(1.6.6 TMP-HYGIENE)
@@ -1936,6 +1937,16 @@ async function startServerWithDatabaseTeardown(
       backgroundHeartbeat.wakeup(agentId, options as any)),
     track: trackHeartbeatSchedulerWork,
   });
+  // myrmidon(1.6.6 GUARD-RETURN): code tasks of dev projects must not stall on
+  // non-coding roles (reviewer, lead, operator). Automatically returns tasks with
+  // PR/changes_requested to the PR author or returnAssignee, puts them in in_progress,
+  // relays review remarks, and logs to activity_log. Runs every 5 minutes.
+  const { scheduleGuardReturnSweep } = createGuardReturnScheduler({
+    db: db as any,
+    wakeup: ((agentId: string, options: Record<string, unknown>) =>
+      backgroundHeartbeat.wakeup(agentId, options as any)),
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(1.6.1-WIP-LIMIT-A): the periodic WIP check — one pass per interval
   // per company behind its own settings gate (no limit set = no pass); the
   // attention feed needs no sweep, it recomputes on every list.
@@ -2641,6 +2652,7 @@ async function startServerWithDatabaseTeardown(
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
         scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
+        scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -2851,6 +2863,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
       scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
+      scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
