@@ -2529,6 +2529,13 @@
       "when": 1793037064000,
       "tag": "0423_project_development_process",
       "breakpoints": true
+    },
+    {
+      "idx": 424,
+      "version": "7",
+      "when": 1793037065000,
+      "tag": "0424_project_development_process",
+      "breakpoints": true
     }
   ]
 }
