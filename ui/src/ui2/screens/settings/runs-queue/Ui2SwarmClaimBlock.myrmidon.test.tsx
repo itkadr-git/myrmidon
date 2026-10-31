@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SwarmClaimSettingsView } from "@myrmidon/shared";
+import type { SwarmClaimSettingsView } from "../../../../components/myrmidon/swarmClaimSettingsApi";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 import { swarmClaimSettingsApi } from "../../../../components/myrmidon/swarmClaimSettingsApi";
 import { Ui2SwarmClaimBlock } from "./Ui2SwarmClaimBlock";

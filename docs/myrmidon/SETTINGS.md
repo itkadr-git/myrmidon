@@ -1566,7 +1566,8 @@ how this works and why a task waits:
 [guides/swarm-self-organization.md](guides/swarm-self-organization.md).
 
 Managed from the interface, without a restart: Instance → General →
-"Self-organization (swarm)" writes `instance_settings.general.swarm`
+"Self-organization (swarm)" (and in UI 2.0: Settings → Runs & queue →
+"Self-organization (swarm-claim)", OPE-10133) writes `instance_settings.general.swarm`
 (`GET`/`PATCH /api/myrmidon/swarm-claim`, board reads, instance-admin
 writes). The server re-resolves the settings on every match and sweep tick,
 so enabling applies within a minute, and disabling releases the live leases

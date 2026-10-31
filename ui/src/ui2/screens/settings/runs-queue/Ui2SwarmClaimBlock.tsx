@@ -156,11 +156,11 @@ export function Ui2SwarmClaimBlock() {
   });
 
   return (
-    <Ui2Section
-      title={t("ui2.settings.runs.swarmClaim.title")}
-      subtitle={t("ui2.settings.runs.swarmClaim.subtitle")}
-    >
+    <Ui2Section title={t("ui2.settings.runs.swarmClaim.title")}>
       <div className="ui2-swarm-claim flex flex-col gap-4">
+        <p className="ui2-swarm-claim-subtitle text-xs text-muted-foreground">
+          {t("ui2.settings.runs.swarmClaim.subtitle")}
+        </p>
         {/* Enable switch */}
         <div className="ui2-swarm-claim-field flex flex-wrap items-center justify-between gap-3">
           <div className="ui2-swarm-claim-label flex flex-col">
