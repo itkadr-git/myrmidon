@@ -30,6 +30,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -151,7 +153,13 @@ export function roleQueueRows(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ) {
+  const failedRunsJoin =
+    failedRunsMap !== undefined
+      ? failedRunsValuesSql(failedRunsMap)
+      : failedRunsDerivedSql(companyId, order?.now);
+
   return db
     .select({
       issueId: issues.id,
@@ -166,9 +174,8 @@ export function roleQueueRows(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map when provided (#OPE-10012)
+    .leftJoin(failedRunsJoin, failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -236,8 +243,11 @@ export async function listRoleQueue(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role, agentId, order);
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
+  const rows = await roleQueueRows(db, companyId, role, agentId, order, map);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
@@ -295,7 +305,10 @@ export async function listUnassignedQueue(
   db: Db,
   companyId: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -306,9 +319,8 @@ export async function listUnassignedQueue(
       queuedAt: issues.createdAt,
     })
     .from(issues)
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(map), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),

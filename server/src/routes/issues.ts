@@ -1521,6 +1521,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_review_participant_recovery",
   "execution_review_requested",
   "finish_successful_run_handoff",
+  "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
   "heartbeat.scheduling_suppressed",
@@ -3585,7 +3586,10 @@ async function coordinateIssueListGet(input: {
   }
 }
 
-function estimatedJsonBytes(value: unknown): number {
+export function estimatedJsonBytes(value: unknown): number {
+  if (!logger.isLevelEnabled("debug")) {
+    return 0;
+  }
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
@@ -3596,13 +3600,18 @@ function logIssueListRequest(input: {
   requestKey: ReturnType<typeof issueListRequestKey>;
   startedAt: number;
   cacheStatus: IssueListCacheStatus;
-  bodyBytes: number;
+  bodyBytes: number | (() => number);
   etagOutcome: "none" | "fresh" | "not_modified";
   identicalInFlightCount: number;
 }) {
+  if (!logger.isLevelEnabled("debug")) {
+    return;
+  }
   input.res.once("finish", () => {
     const contentEncoding = input.res.getHeader("content-encoding");
     const contentLength = Number(input.res.getHeader("content-length"));
+    const responseBytes =
+      typeof input.bodyBytes === "function" ? input.bodyBytes() : input.bodyBytes;
     logger.debug(
       {
         event: "safe_get_request_observed",
@@ -3616,7 +3625,7 @@ function logIssueListRequest(input: {
         requestCount: input.identicalInFlightCount,
         durationMs: Date.now() - input.startedAt,
         statusCode: input.res.statusCode,
-        responseBytes: input.bodyBytes,
+        responseBytes,
         compressedBytes:
           contentEncoding && Number.isFinite(contentLength)
             ? contentLength
@@ -3689,7 +3698,7 @@ export function issueRoutes(
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean }>;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3700,7 +3709,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
-  const insertReviewAdmissionWakeup =
+  const insertReviewAdmissionWakeup: NonNullable<typeof opts.insertReviewAdmissionWakeup> =
     opts.insertReviewAdmissionWakeup ??
     (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
       ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
@@ -8712,7 +8721,7 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: "retry",
-        bodyBytes: estimatedJsonBytes(body),
+        bodyBytes: () => estimatedJsonBytes(body),
         etagOutcome: "none",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8720,12 +8729,13 @@ export function issueRoutes(
       return;
     }
 
-    if (coordinated.response.kind === "compact") {
-      res.setHeader("Cache-Control", coordinated.response.cacheControl);
-      res.setHeader("ETag", coordinated.response.etag);
+    const coordinatedResponse = coordinated.response;
+    if (coordinatedResponse.kind === "compact") {
+      res.setHeader("Cache-Control", coordinatedResponse.cacheControl);
+      res.setHeader("ETag", coordinatedResponse.etag);
       const etagMatched = requestMatchesEtag(
         req.header("if-none-match"),
-        coordinated.response.etag,
+        coordinatedResponse.etag,
       );
       logIssueListRequest({
         req,
@@ -8734,9 +8744,10 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: coordinated.cacheStatus,
-        bodyBytes: etagMatched
-          ? 0
-          : estimatedJsonBytes(coordinated.response.body),
+        bodyBytes: () =>
+          etagMatched
+            ? 0
+            : estimatedJsonBytes(coordinatedResponse.body),
         etagOutcome: etagMatched ? "not_modified" : "fresh",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8744,7 +8755,7 @@ export function issueRoutes(
         res.status(304).end();
         return;
       }
-      res.json(coordinated.response.body);
+      res.json(coordinatedResponse.body);
       return;
     }
 
@@ -8755,11 +8766,11 @@ export function issueRoutes(
       requestKey,
       startedAt,
       cacheStatus: coordinated.cacheStatus,
-      bodyBytes: estimatedJsonBytes(coordinated.response.body),
+      bodyBytes: () => estimatedJsonBytes(coordinatedResponse.body),
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
-    res.json(coordinated.response.body);
+    res.json(coordinatedResponse.body);
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
@@ -9924,13 +9935,19 @@ export function issueRoutes(
             });
             Object.assign(updateFields, transition.patch);
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                lockedIssue.responsibleAgentId &&
+                (!actor.agentId || lockedIssue.responsibleAgentId !== actor.agentId)
+                  ? lockedIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 lockedIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   sourceRunId: actor.runId ?? undefined,
                   title: transition.recoveryInteraction.title,
@@ -14058,13 +14075,19 @@ export function issueRoutes(
         }
       }
       if (transition.recoveryInteraction) {
+        const targetAgentId =
+          existing.responsibleAgentId &&
+          (!actor.agentId || existing.responsibleAgentId !== actor.agentId)
+            ? existing.responsibleAgentId
+            : null;
         await issueThreadInteractionService(db).create(
           existing,
           {
             kind: "ask_user_questions",
             idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-            resolverPolicy: "human_only",
-            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            resolverPolicy: targetAgentId ? "anyone" : "human_only",
+            addresseeAgentId: targetAgentId,
+            addresseeUserId: targetAgentId ? null : (existing.responsibleUserId ?? existing.createdByUserId ?? null),
             continuationPolicy: "none",
             title: transition.recoveryInteraction.title,
             summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
@@ -15197,7 +15220,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
                   );
@@ -15224,7 +15247,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
@@ -19615,13 +19638,19 @@ export function issueRoutes(
             if (!updated) throw new AutoApprovalIssueMissingError();
 
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                currentIssue.responsibleAgentId &&
+                (!actor.agentId || currentIssue.responsibleAgentId !== actor.agentId)
+                  ? currentIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 currentIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   title: transition.recoveryInteraction.title,
                   summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,

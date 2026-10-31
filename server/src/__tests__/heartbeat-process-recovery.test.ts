@@ -239,7 +239,6 @@ import {
 import { logger } from "../middleware/logger.ts";
 import { secretService } from "../services/secrets.ts";
 import {
-  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   noticeMetadataReferencesRecoveryAction,
@@ -465,14 +464,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       db = createDb(tempDb.connectionString);
     }
-    // myrmidon(L4): this suite is about the vendor board-escalation plumbing
-    // itself (`escalateStrandedAssignedIssue` and friends), not about the L4
-    // auto-policy layered in front of it for a succeeded last run — that
-    // policy has its own coverage in stranded-autopolicy.myrmidon.test.ts.
-    // None of these fixtures configure a manager (`agents.reportsTo`) for
-    // the agents this suite exercises through that guard, so zero retries
-    // makes the L4 policy a no-op here and the suite keeps asserting the
-    // vendor's own behavior unchanged.
+    // myrmidon(L4): this suite mostly pins the vendor board-escalation plumbing
+    // itself (`escalateStrandedAssignedIssue` and friends). The two successful-
+    // run handoff cases below explicitly exercise L4 policy; their own assertions
+    // pin the ADM-owned disposition and ensure no board recovery action appears.
+    // Other fixtures do not configure a manager (`agents.reportsTo`) for the
+    // agents they exercise through that guard, so zero retries keeps L4 a no-op
+    // there and preserves the vendor behavior those cases cover.
     vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "0");
     const now = new Date();
     await db.insert(authUsers).values({
@@ -486,6 +484,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     // A recovery policy can stop before adapter dispatch; do not leak an
     // unused one-shot failure into the next test's otherwise healthy run.
@@ -922,14 +921,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
-  }) {
+    executionState?: Record<string, unknown> | null;
+    reportsToAdm?: boolean;
+    now?: Date;
+  }): Promise<{
+    companyId: string;
+    agentId: string;
+    runId: string;
+    wakeupRequestId: string;
+    rootIssueId: string;
+    issueId: string;
+    admAgentId: string | null;
+  }> {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
     const rootIssueId = randomUUID();
+    const admAgentId = input.reportsToAdm ? randomUUID() : null;
     const issueId = randomUUID();
-    const now = new Date("2026-03-19T00:00:00.000Z");
+    const now = input.now ?? new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
@@ -940,6 +951,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    if (admAgentId) {
+      await db.insert(agents).values({
+        id: admAgentId,
+        companyId,
+        name: "adm",
+        role: "admin",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -950,6 +974,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+      reportsTo: admAgentId,
     });
 
     await db.insert(agentWakeupRequests).values({
@@ -966,7 +991,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input.runStatus === "cancelled" ? "cancelled" : "failed",
       runId,
       claimedAt: now,
-      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      finishedAt: new Date(now.getTime() + 5_000),
       error:
         input.runStatus === "succeeded"
           ? null
@@ -994,8 +1019,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ...(input.runSource ? { source: input.runSource } : {}),
       },
       startedAt: now,
-      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
-      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      finishedAt: new Date(now.getTime() + 5_000),
+      updatedAt: new Date(now.getTime() + 5_000),
       errorCode:
         input.runStatus === "succeeded"
           ? null
@@ -1043,6 +1068,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
         monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+        executionState: input.executionState ?? null,
         responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
@@ -1061,7 +1087,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
+    return { companyId, agentId, admAgentId, runId, wakeupRequestId, issueId, rootIssueId };
   }
 
   async function bindChatConversation(input: {
@@ -5769,15 +5795,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activityDetailsText).not.toContain(apiKeySecret);
   });
 
+  it("finishes a routine issue after exhausted missing-disposition handoff", async () => {
+    const { issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress", runStatus: "failed", runErrorCode: "adapter_failed",
+    });
+    await db.update(issues).set({ originKind: "routine_execution", originId: randomUUID() })
+      .where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId, taskId: issueId, wakeReason: "finish_successful_run_handoff",
+        sourceRunId: randomUUID(), handoffRequired: true,
+        handoffReason: "successful_run_missing_state", missingDisposition: "clear_next_step",
+        handoffAttempt: 1, maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("done");
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+  });
+
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
-    const { companyId, agentId, runId, issueId } =
+    // This suite globally disables L4 retries to exercise vendor recovery.
+    // Restore the production retry cap only for this exhausted-policy case.
+    vi.stubEnv("MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "2");
+    const fixtureNow = new Date();
+    const { companyId, agentId, admAgentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
         runErrorCode: "adapter_failed",
-        runError: "Authorization: Bearer sk-test-successful-handoff-secret",
+        runError: "Authorization: Bearer ***",
+        reportsToAdm: true,
+        executionState: null,
+        now: fixtureNow,
       });
     const sourceRunId = randomUUID();
+    const correctiveRunCreatedAt = new Date(fixtureNow.getTime() - 1_000);
     await db
       .update(heartbeatRuns)
       .set({
@@ -5793,8 +5849,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           handoffAttempt: 1,
           maxHandoffAttempts: 1,
         },
+        createdAt: correctiveRunCreatedAt,
       })
       .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 2 }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation" as const,
+        status: "succeeded" as const,
+        createdAt: new Date(correctiveRunCreatedAt.getTime() - 4_000),
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          source: "myrmidon.stranded_autopolicy_retry",
+        },
+      })),
+    );
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -5803,51 +5875,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulRunHandoffEscalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
-      companyId,
-      agentId,
-      issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: null,
-      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-      kind: "missing_disposition",
-    });
-    expect(recoveryAction.evidence).toMatchObject({
-      sourceRunId,
-      missingDisposition: "clear_next_step",
-      latestRunStatus: "failed",
-      latestRunErrorCode: "adapter_failed",
-      recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-    });
-    expect(JSON.stringify(recoveryAction.evidence)).not.toContain(
-      "sk-test-successful-handoff-secret",
-    );
-
     const sourceIssue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.unblockDescriptor).toMatchObject({
+      owner: { agentId: admAgentId },
+      reasonRef: { kind: "event", eventKey: `stranded.disposition:${issueId}` },
+    });
+    expect(sourceIssue?.blockerMetadata).toMatchObject({
+      blockReason: "recovery",
+      owner: { agentId: admAgentId },
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
+    expect(sourceIssue?.blockerMetadata?.nextCheckAt).toEqual(expect.any(String));
+    expect(sourceIssue?.blockerMetadata?.timeoutAt).toEqual(expect.any(String));
+    const issueAfterRecovery = sourceIssue;
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual(
       [],
     );
+    const strandedRecoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(strandedRecoveryActions).toHaveLength(0);
+    if (!admAgentId) throw new Error("Expected an escalation agent in this fixture");
+    const dispositionWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, admAgentId),
+          eq(agentWakeupRequests.reason, "issue_unblock_requested"),
+        ),
+      );
+    expect(dispositionWakeups).toHaveLength(1);
+    expect(dispositionWakeups[0]?.payload).toMatchObject({
+      issueId,
+      action: expect.stringContaining("final status"),
+    });
+    const recoveryLivenessEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((events) => events.filter((event) => event.action.startsWith("recovery.liveness:")));
+    expect(recoveryLivenessEvents).toHaveLength(0);
+    expect(issueAfterRecovery?.status).toBe("blocked");
 
     const comments = await db
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
-    expect(comments[0]?.body).toBe(
-      SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
-    );
+    expect(comments[0]?.body).toContain("automatic continuation attempt(s)");
+    expect(comments[0]?.body).toContain("senior agent");
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
-      tone: "danger",
+      title: "Escalated to a senior agent",
+      tone: "warning",
       detailsDefaultOpen: false,
     });
-    expect(comments[0]?.presentation).not.toHaveProperty("density");
     expect(comments[0]?.metadata).toMatchObject({
       version: 1,
       sections: expect.arrayContaining([
@@ -5855,29 +5945,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           title: "Recovery",
           rows: expect.arrayContaining([
             expect.objectContaining({
-              type: "key_value",
-              label: "Recovery action",
-              value: recoveryAction.id,
-            }),
-            expect.objectContaining({
-              type: "key_value",
+              type: "agent_link",
               label: "Recovery owner",
-              value: "Board decision required",
-            }),
-          ]),
-        }),
-        expect.objectContaining({
-          title: "Run evidence",
-          rows: expect.arrayContaining([
-            expect.objectContaining({
-              type: "key_value",
-              label: "Normalized cause",
-              value: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-            }),
-            expect.objectContaining({
-              type: "key_value",
-              label: "Missing disposition",
-              value: "clear_next_step",
+              agentId: admAgentId,
             }),
           ]),
         }),
@@ -5896,18 +5966,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(activityLog.entityId, issueId));
     expect(
       activity.some(
-        (event) => event.action === "issue.successful_run_handoff_escalated",
+        (event) => event.action === "issue.stranded_autopolicy_disposition_blocked",
       ),
     ).toBe(true);
   });
 
-  it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
-    const { companyId, agentId, runId, issueId } =
-      await seedStrandedIssueFixture({
-        status: "in_progress",
-        runStatus: "succeeded",
-        livenessState: "advanced",
-      });
+  it("does not create a board recovery action for an exhausted successful handoff when auto-policy is disabled", async () => {
+    vi.stubEnv("MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "false");
+    const { runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      executionState: { status: "running" },
+    });
     const sourceRunId = randomUUID();
     await db
       .update(heartbeatRuns)
@@ -5933,21 +6004,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulContinuationObserved).toBe(0);
     expect(result.successfulRunHandoffEscalated).toBe(1);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
-      companyId,
-      agentId,
-      issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: null,
-      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-      kind: "missing_disposition",
-    });
-    expect(recoveryAction.evidence).toMatchObject({
-      sourceRunId,
-      latestRunStatus: "succeeded",
-      missingDisposition: "clear_next_step",
-    });
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.blockerMetadata).toBeNull();
+    expect(sourceIssue?.unblockDescriptor).toBeNull();
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+    const livenessEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((events) => events.filter((event) => event.action.startsWith("recovery.liveness:")));
+    expect(livenessEvents).toHaveLength(0);
   });
 
   it("converts a continuation parked for review into a dependency wait on explicitly linked open sub-tasks", async () => {

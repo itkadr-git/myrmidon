@@ -8,6 +8,7 @@ import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
+import { tryClaimContinuationKey } from "../../../services/continuation-dedupe.js";
 import { runContextPersistenceFields } from "@myrmidon/db";
 import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
@@ -218,6 +219,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .update(issues)
         .set({ executionRunId: null })
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
+    },
+    async claimContinuationKey({ companyId, issueId, key }): Promise<"created" | "deduped"> {
+      return tryClaimContinuationKey(tx, {
+        companyId,
+        issueId,
+        key,
+        ttl: 24 * 60 * 60 * 1_000,
+      });
     },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx

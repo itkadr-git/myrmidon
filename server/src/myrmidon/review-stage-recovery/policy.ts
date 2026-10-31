@@ -49,13 +49,25 @@ export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
   "the review decision now: PATCH status=in_progress with a comment to return it, or status=done with a comment to " +
   "approve it. If CI is still running, end the run without a decision; the board checks CI again.";
 
+/**
+ * Name of the aggregate check of the Myrmidon CI workflow (`ci-result` job of
+ * myrmidon-ci.yml). It is created only after every lane it needs has finished,
+ * so while it is missing the CI of the head is still running, however many
+ * other checks (`checks`, `freeze`, ...) have already failed.
+ */
+export const REVIEW_CI_FINAL_CHECK_NAME = "CI result";
+
 /** CI on the head of the issue's open pull request, as far as the board can read it. */
 export type ReviewPullRequestCiState =
-  /** At least one check run or commit status on the head is queued / in progress / pending. */
+  /** The final `CI result` check of the head is missing or not completed yet. */
   | "pending"
-  /** Every check and status on the head finished (whatever the conclusion). */
+  /** The final `CI result` check of the head is completed (whatever its conclusion). */
   | "complete"
-  /** The board could not read the head (no token, GitHub error); never treated as a wait. */
+  /**
+   * The board could not read the head (no token, network or GitHub error). It
+   * is treated like "pending": the review waits, bounded by the same attempts,
+   * and the reason is logged.
+   */
   | "unknown"
   /** The issue has no open pull request work product. */
   | "no_pull_request";
@@ -64,6 +76,8 @@ export interface ReviewPullRequestCiFacts {
   state: ReviewPullRequestCiState;
   pullRequestUrl: string | null;
   headSha: string | null;
+  /** Why the state is "unknown"; a short code, never a token or a header. */
+  reason?: string | null;
 }
 
 export interface StalledReviewRecoveryFacts {
@@ -79,8 +93,14 @@ export type StalledReviewRecoveryDecision =
   | { kind: "retry_decision"; attempt: number; maxAttempts: number }
   | { kind: "escalate"; reason: "ci_wait_exhausted" | "decision_retries_exhausted" };
 
+/** A CI the board cannot read is waited for exactly like a CI that is still running. */
+export function isReviewCiWaiting(ci: ReviewPullRequestCiState): boolean {
+  return ci === "pending" || ci === "unknown";
+}
+
 export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): StalledReviewRecoveryDecision {
-  if (facts.ci === "pending" && facts.ciWaitsUsed < REVIEW_CI_WAIT_MAX_ATTEMPTS) {
+  const waiting = isReviewCiWaiting(facts.ci);
+  if (waiting && facts.ciWaitsUsed < REVIEW_CI_WAIT_MAX_ATTEMPTS) {
     return { kind: "wait_for_ci", attempt: facts.ciWaitsUsed + 1, maxAttempts: REVIEW_CI_WAIT_MAX_ATTEMPTS };
   }
   if (facts.decisionRewakesUsed < REVIEW_DECISION_MAX_REWAKES) {
@@ -88,7 +108,7 @@ export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): 
   }
   return {
     kind: "escalate",
-    reason: facts.ci === "pending" ? "ci_wait_exhausted" : "decision_retries_exhausted",
+    reason: waiting ? "ci_wait_exhausted" : "decision_retries_exhausted",
   };
 }
 
@@ -148,27 +168,31 @@ export function selectOpenPullRequestWorkProduct<T extends PullRequestProductLik
 const FINISHED_CHECK_RUN_STATUS = "completed";
 
 /**
- * CI state of one head commit from the two GitHub reads: the check runs
- * (GitHub Actions and other apps) and the combined commit status (legacy
- * status API). Either read missing means "unknown" — the board never invents a
- * wait it cannot see. An empty combined status (`pending` with no statuses)
- * is GitHub's answer for "no status contexts", not a running check.
+ * Conclusions of a completed `CI result` that are not a verdict on the head.
+ * GitHub keeps the check runs of earlier, superseded workflow runs on the same
+ * head: a run cancelled by a newer one (or skipped by the label-only runs)
+ * reports `CI result` as completed/cancelled|skipped while the run that
+ * matters is still queued.
+ */
+const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "skipped", "stale"]);
+
+/**
+ * CI state of one head commit from its check runs. CI of the head is finished
+ * only when the final `CI result` check exists and is completed: the other
+ * checks are ignored, so a failed `checks` or `freeze` with `typecheck` and
+ * `tests` still queued is not a finished CI. A missing check list means the
+ * read failed: "unknown".
  */
 export function pullRequestHeadCiStateFromChecks(input: {
   checkRuns: readonly unknown[] | null;
-  combinedStatus: Record<string, unknown> | null;
 }): "pending" | "complete" | "unknown" {
-  if (!input.checkRuns || !input.combinedStatus) return "unknown";
-  const checkRunPending = input.checkRuns.some((entry) => {
+  if (!input.checkRuns) return "unknown";
+  const finished = input.checkRuns.some((entry) => {
     if (!entry || typeof entry !== "object") return false;
-    const status = (entry as Record<string, unknown>).status;
-    return typeof status === "string" && status !== FINISHED_CHECK_RUN_STATUS;
+    const run = entry as Record<string, unknown>;
+    if (run.name !== REVIEW_CI_FINAL_CHECK_NAME) return false;
+    if (run.status !== FINISHED_CHECK_RUN_STATUS) return false;
+    return !(typeof run.conclusion === "string" && NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion));
   });
-  if (checkRunPending) return "pending";
-  const statuses = Array.isArray(input.combinedStatus.statuses) ? input.combinedStatus.statuses : [];
-  const statusPending = statuses.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    return (entry as Record<string, unknown>).state === "pending";
-  });
-  return statusPending ? "pending" : "complete";
+  return finished ? "complete" : "pending";
 }
