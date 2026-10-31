@@ -22,13 +22,23 @@ vi.mock("../../../../components/myrmidon/swarmClaimSettingsApi", async () => {
   };
 });
 
-function createDefaultView(overrides: Partial<SwarmClaimSettingsView> = {}): SwarmClaimSettingsView {
+type SwarmClaimViewOverrides = Omit<
+  Partial<SwarmClaimSettingsView>,
+  "settings" | "sources" | "counters"
+> & {
+  settings?: Partial<SwarmClaimSettingsView["settings"]>;
+  sources?: Partial<SwarmClaimSettingsView["sources"]>;
+  counters?: Partial<NonNullable<SwarmClaimSettingsView["counters"]>>;
+};
+
+function createDefaultView(overrides: SwarmClaimViewOverrides = {}): SwarmClaimSettingsView {
   return {
     settings: {
       enabled: true,
       leaseTtlSec: 600,
       maxActiveTasks: 4,
       p0Preemption: false,
+      pheromone: {},
       sweepIntervalSec: 30,
       ...overrides.settings,
     },
@@ -37,6 +47,7 @@ function createDefaultView(overrides: Partial<SwarmClaimSettingsView> = {}): Swa
       leaseTtlSec: "default",
       maxActiveTasks: "default",
       p0Preemption: "default",
+      pheromone: "default",
       sweepIntervalSec: "default",
       ...overrides.sources,
     },
@@ -46,8 +57,7 @@ function createDefaultView(overrides: Partial<SwarmClaimSettingsView> = {}): Swa
       cancelledLastHour: 1,
       ...overrides.counters,
     },
-    recentAudit: overrides.recentAudit ?? [],
-    cooldown: overrides.cooldown ?? { remainingSec: 0, active: false },
+    journal: overrides.journal ?? [],
   };
 }
 

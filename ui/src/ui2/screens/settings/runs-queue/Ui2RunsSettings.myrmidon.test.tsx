@@ -152,6 +152,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         leaseTtlSec: 600,
         maxActiveTasks: 4,
         p0Preemption: false,
+        pheromone: {},
         sweepIntervalSec: 30,
       },
       sources: {
@@ -159,6 +160,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         leaseTtlSec: "default",
         maxActiveTasks: "default",
         p0Preemption: "default",
+        pheromone: "default",
         sweepIntervalSec: "default",
       },
       counters: {
@@ -166,8 +168,7 @@ describe("myrmidon(UI2) Ui2RunsSettings screen parity", () => {
         claimedLastHour: 7,
         cancelledLastHour: 1,
       },
-      recentAudit: [],
-      cooldown: { remainingSec: 0, active: false },
+      journal: [],
     });
     mockRuntimeLimitsApi.update.mockImplementation(async (_patch) => ({
       limits: {
