@@ -15,6 +15,7 @@ import {
 } from "./metrics.js";
 import { swarmClaimMetrics } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { guardrailTriggerMetrics } from "../../guardrails/metrics.js";
 import { BLOCKER_DASHBOARD_PANELS } from "@myrmidon/shared";
 import { computeBlockedMetrics } from "./blocked.js";
 
@@ -97,6 +98,41 @@ describe("prometheus exposition format", () => {
       expect(text).not.toContain('reason="run_finished"');
     } finally {
       swarmClaimMetrics.reset();
+    }
+  });
+
+  it("exposes guardrail triggers per rule and mode, including zeros and omission when unread", () => {
+    guardrailTriggerMetrics.reset();
+    try {
+      // the scrape collects the counter into the snapshot; the render itself
+      // is a pure function of the snapshot (adapter-fallback pattern)
+      const guardSnapshot = () => snapshot({ guardrailTriggers: guardrailTriggerMetrics.read() });
+      // zero state: every rule x mode renders, zeros included — a missing
+      // series would be indistinguishable from an unwired counter
+      let text = renderMetricsText(guardSnapshot());
+      expect(text).toContain("# TYPE myrmidon_guardrail_triggers_total counter");
+      for (const rule of ["secret", "pii", "injection"]) {
+        for (const mode of ["flag", "mask", "block"]) {
+          expect(text).toContain(`myrmidon_guardrail_triggers_total{role="all",rule="${rule}",mode="${mode}"} 0`);
+        }
+      }
+
+      guardrailTriggerMetrics.record("secret", "flag");
+      guardrailTriggerMetrics.record("secret", "flag");
+      guardrailTriggerMetrics.record("pii", "mask");
+      guardrailTriggerMetrics.record("injection", "block");
+      text = renderMetricsText(guardSnapshot());
+      expect(text).toContain('myrmidon_guardrail_triggers_total{role="all",rule="secret",mode="flag"} 2');
+      expect(text).toContain('myrmidon_guardrail_triggers_total{role="all",rule="pii",mode="mask"} 1');
+      expect(text).toContain('myrmidon_guardrail_triggers_total{role="all",rule="injection",mode="block"} 1');
+      expect(text).toContain('myrmidon_guardrail_triggers_total{role="all",rule="secret",mode="mask"} 0');
+
+      // when the counter could not be read, HELP/TYPE stay but no samples
+      const unreadable = renderMetricsText(snapshot({ guardrailTriggers: null }));
+      expect(unreadable).toContain("# HELP myrmidon_guardrail_triggers_total ");
+      expect(unreadable).not.toContain("myrmidon_guardrail_triggers_total{");
+    } finally {
+      guardrailTriggerMetrics.reset();
     }
   });
 

@@ -45,7 +45,8 @@ describe("metrics self-check probe", () => {
     // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
     // The continuation and claim counters are process-local too.
     // The five capacity-dashboard metrics remain available without database reads.
-    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5);
+    // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -62,7 +63,8 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&
         family !== "myrmidon_starvation_total" &&
-        family !== "myrmidon_claim_rejection_total",
+        family !== "myrmidon_claim_rejection_total" &&
+        family !== "myrmidon_guardrail_triggers_total",
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

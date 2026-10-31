@@ -11,6 +11,8 @@ import {
   injectionScoreThreshold,
   wrapUntrusted,
 } from "../../../myrmidon/guardrails/injection.js";
+// myrmidon(1.6.6 GUARDRAILS OPE-10182): injection flag counter for Prometheus
+import { guardrailTriggerMetrics } from "../../../myrmidon/guardrails/metrics.js";
 import type {
   QueuedCommentActivityPublication,
   QueuedCommentActor,
@@ -134,6 +136,10 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
             maskedBody,
             injectionScoreThreshold(),
           );
+          // myrmidon(1.6.6 GUARDRAILS OPE-10182): count the injection flag for
+          // Prometheus. Part B journals no event row, so the counter ticks
+          // here; flag-only, same as the payload annotation.
+          if (scan.flagged) guardrailTriggerMetrics.record("injection", "flag");
           guardrailsPayload = { // myrmidon(1.6-GRD)
             ...locked.wake.payload,
             commentBody: wrappedText,
