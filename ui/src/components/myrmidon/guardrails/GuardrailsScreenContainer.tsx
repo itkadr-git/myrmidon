@@ -25,9 +25,18 @@ function readable(error: unknown): string {
 function useResolvedModes(companyId: string, agents: GuardrailsAgentRow[]) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [resolved, setResolved] = useState<Record<string, ResolvedGuardrailMode[]>>({});
+  // Stable string dep: `agents` itself is a fresh array each render while the
+  // agents query is disabled/loading (`data ?? []`), which made the effect
+  // below re-run on every render and setResolved({}) with a new object each
+  // time — an unbounded setState loop that OOM'd the Vitest worker (4 GB heap
+  // on the no-company test). The joined agent ids change exactly when the
+  // agent set changes.
+  const agentsKey = agents.map((agent) => agent.agentId).join(",");
   useEffect(() => {
     if (companyId.length === 0 || agents.length === 0) {
-      setResolved({});
+      // Functional no-op update: keep the previous reference when already
+      // empty so React bails out instead of re-rendering forever.
+      setResolved((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       return;
     }
     let cancelled = false;
@@ -47,7 +56,7 @@ function useResolvedModes(companyId: string, agents: GuardrailsAgentRow[]) {
     return () => {
       cancelled = true;
     };
-  }, [companyId, agents]);
+  }, [companyId, agentsKey]);
   return resolved;
 }
 

@@ -50,6 +50,14 @@ export interface ChannelSettings {
   chatCrossChannelLookbackHours: ChannelSettingValue<number>;
   chatReconcileIntervalMs: ChannelSettingValue<number | null>;
   telegramApiBaseUrl: ChannelSettingValue<string | null>;
+  telegramPoolChatGptEnabled: ChannelSettingValue<boolean>;
+  telegramPoolChatGptChatId: ChannelSettingValue<string>;
+  telegramPoolChatGptModel: ChannelSettingValue<string>;
+  telegramPoolChatGptBotToken: ChannelSettingValue<string>;
+  telegramPoolGeminiEnabled: ChannelSettingValue<boolean>;
+  telegramPoolGeminiChatId: ChannelSettingValue<string>;
+  telegramPoolGeminiModel: ChannelSettingValue<string>;
+  telegramPoolGeminiBotToken: ChannelSettingValue<string>;
 }
 
 /** The keys the interface may change. `telegramApiBaseUrl` is deployment-only. */
@@ -68,6 +76,14 @@ export const CHANNEL_SETTING_KEYS: readonly ChannelSettingKey[] = [
   "chatCrossChannelTotalChars",
   "chatCrossChannelLookbackHours",
   "chatReconcileIntervalMs",
+  "telegramPoolChatGptEnabled",
+  "telegramPoolChatGptChatId",
+  "telegramPoolChatGptModel",
+  "telegramPoolChatGptBotToken",
+  "telegramPoolGeminiEnabled",
+  "telegramPoolGeminiChatId",
+  "telegramPoolGeminiModel",
+  "telegramPoolGeminiBotToken",
 ];
 
 /** A PATCH body: only the keys present are changed. */
@@ -83,6 +99,14 @@ export interface ChannelSettingsPatch {
   chatCrossChannelTotalChars?: number;
   chatCrossChannelLookbackHours?: number;
   chatReconcileIntervalMs?: number | null;
+  telegramPoolChatGptEnabled?: boolean;
+  telegramPoolChatGptChatId?: string;
+  telegramPoolChatGptModel?: string;
+  telegramPoolChatGptBotToken?: string;
+  telegramPoolGeminiEnabled?: boolean;
+  telegramPoolGeminiChatId?: string;
+  telegramPoolGeminiModel?: string;
+  telegramPoolGeminiBotToken?: string;
 }
 
 /** The stored document, exactly as it sits under `instance_settings.general`. */
@@ -117,6 +141,14 @@ export const CHAT_CROSS_CHANNEL_TOTAL_CHARS_ENV = "MYRMIDON_CHAT_CROSS_CHANNEL_T
 export const CHAT_CROSS_CHANNEL_LOOKBACK_HOURS_ENV = "MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS";
 export const CHAT_RECONCILE_INTERVAL_MS_ENV = "MYRMIDON_CHAT_RECONCILE_INTERVAL_MS";
 export const TELEGRAM_API_BASE_URL_ENV = "TELEGRAM_API_BASE_URL";
+export const TELEGRAM_POOL_CHATGPT_ENABLED_ENV = "MYRMIDON_TELEGRAM_POOL_CHATGPT_ENABLED";
+export const TELEGRAM_POOL_CHATGPT_CHAT_ID_ENV = "MYRMIDON_TELEGRAM_POOL_CHATGPT_CHAT_ID";
+export const TELEGRAM_POOL_CHATGPT_MODEL_ENV = "MYRMIDON_TELEGRAM_POOL_CHATGPT_MODEL";
+export const TELEGRAM_POOL_CHATGPT_BOT_TOKEN_ENV = "MYRMIDON_TELEGRAM_POOL_CHATGPT_BOT_TOKEN";
+export const TELEGRAM_POOL_GEMINI_ENABLED_ENV = "MYRMIDON_TELEGRAM_POOL_GEMINI_ENABLED";
+export const TELEGRAM_POOL_GEMINI_CHAT_ID_ENV = "MYRMIDON_TELEGRAM_POOL_GEMINI_CHAT_ID";
+export const TELEGRAM_POOL_GEMINI_MODEL_ENV = "MYRMIDON_TELEGRAM_POOL_GEMINI_MODEL";
+export const TELEGRAM_POOL_GEMINI_BOT_TOKEN_ENV = "MYRMIDON_TELEGRAM_POOL_GEMINI_BOT_TOKEN";
 
 /** Environment variable of every key, the read-only deployment key included. */
 export const CHANNEL_SETTING_ENV_NAMES: Readonly<
@@ -134,6 +166,14 @@ export const CHANNEL_SETTING_ENV_NAMES: Readonly<
   chatCrossChannelLookbackHours: CHAT_CROSS_CHANNEL_LOOKBACK_HOURS_ENV,
   chatReconcileIntervalMs: CHAT_RECONCILE_INTERVAL_MS_ENV,
   telegramApiBaseUrl: TELEGRAM_API_BASE_URL_ENV,
+  telegramPoolChatGptEnabled: TELEGRAM_POOL_CHATGPT_ENABLED_ENV,
+  telegramPoolChatGptChatId: TELEGRAM_POOL_CHATGPT_CHAT_ID_ENV,
+  telegramPoolChatGptModel: TELEGRAM_POOL_CHATGPT_MODEL_ENV,
+  telegramPoolChatGptBotToken: TELEGRAM_POOL_CHATGPT_BOT_TOKEN_ENV,
+  telegramPoolGeminiEnabled: TELEGRAM_POOL_GEMINI_ENABLED_ENV,
+  telegramPoolGeminiChatId: TELEGRAM_POOL_GEMINI_CHAT_ID_ENV,
+  telegramPoolGeminiModel: TELEGRAM_POOL_GEMINI_MODEL_ENV,
+  telegramPoolGeminiBotToken: TELEGRAM_POOL_GEMINI_BOT_TOKEN_ENV,
 };
 
 // Built-in defaults. The cross-channel numbers repeat the documented defaults
@@ -149,6 +189,14 @@ export const DEFAULT_CHAT_CROSS_CHANNEL_MESSAGE_CHARS = 600;
 export const DEFAULT_CHAT_CROSS_CHANNEL_TOTAL_CHARS = 4000;
 export const DEFAULT_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS = 168;
 export const DEFAULT_CHAT_RECONCILE_INTERVAL_MS: number | null = null;
+export const DEFAULT_TELEGRAM_POOL_CHATGPT_ENABLED = false;
+export const DEFAULT_TELEGRAM_POOL_CHATGPT_CHAT_ID = "";
+export const DEFAULT_TELEGRAM_POOL_CHATGPT_MODEL = "balanced";
+export const DEFAULT_TELEGRAM_POOL_CHATGPT_BOT_TOKEN = "";
+export const DEFAULT_TELEGRAM_POOL_GEMINI_ENABLED = false;
+export const DEFAULT_TELEGRAM_POOL_GEMINI_CHAT_ID = "";
+export const DEFAULT_TELEGRAM_POOL_GEMINI_MODEL = "gemini-2.0-flash";
+export const DEFAULT_TELEGRAM_POOL_GEMINI_BOT_TOKEN = "";
 /** A stored value that counts as "set": present, and not an empty string. */
 function isSet(value: unknown): boolean {
   if (value === undefined || value === null) return false;
@@ -323,6 +371,62 @@ export function getEffectiveChannelSettings(
       envName: TELEGRAM_API_BASE_URL_ENV,
       overridden: false,
     },
+    telegramPoolChatGptEnabled: resolve(
+      block.telegramPoolChatGptEnabled,
+      envRaw("telegramPoolChatGptEnabled"),
+      TELEGRAM_POOL_CHATGPT_ENABLED_ENV,
+      DEFAULT_TELEGRAM_POOL_CHATGPT_ENABLED,
+      readBoolean,
+    ),
+    telegramPoolChatGptChatId: resolve(
+      block.telegramPoolChatGptChatId,
+      envRaw("telegramPoolChatGptChatId"),
+      TELEGRAM_POOL_CHATGPT_CHAT_ID_ENV,
+      DEFAULT_TELEGRAM_POOL_CHATGPT_CHAT_ID,
+      readString,
+    ),
+    telegramPoolChatGptModel: resolve(
+      block.telegramPoolChatGptModel,
+      envRaw("telegramPoolChatGptModel"),
+      TELEGRAM_POOL_CHATGPT_MODEL_ENV,
+      DEFAULT_TELEGRAM_POOL_CHATGPT_MODEL,
+      readString,
+    ),
+    telegramPoolChatGptBotToken: resolve(
+      block.telegramPoolChatGptBotToken,
+      envRaw("telegramPoolChatGptBotToken"),
+      TELEGRAM_POOL_CHATGPT_BOT_TOKEN_ENV,
+      DEFAULT_TELEGRAM_POOL_CHATGPT_BOT_TOKEN,
+      readString,
+    ),
+    telegramPoolGeminiEnabled: resolve(
+      block.telegramPoolGeminiEnabled,
+      envRaw("telegramPoolGeminiEnabled"),
+      TELEGRAM_POOL_GEMINI_ENABLED_ENV,
+      DEFAULT_TELEGRAM_POOL_GEMINI_ENABLED,
+      readBoolean,
+    ),
+    telegramPoolGeminiChatId: resolve(
+      block.telegramPoolGeminiChatId,
+      envRaw("telegramPoolGeminiChatId"),
+      TELEGRAM_POOL_GEMINI_CHAT_ID_ENV,
+      DEFAULT_TELEGRAM_POOL_GEMINI_CHAT_ID,
+      readString,
+    ),
+    telegramPoolGeminiModel: resolve(
+      block.telegramPoolGeminiModel,
+      envRaw("telegramPoolGeminiModel"),
+      TELEGRAM_POOL_GEMINI_MODEL_ENV,
+      DEFAULT_TELEGRAM_POOL_GEMINI_MODEL,
+      readString,
+    ),
+    telegramPoolGeminiBotToken: resolve(
+      block.telegramPoolGeminiBotToken,
+      envRaw("telegramPoolGeminiBotToken"),
+      TELEGRAM_POOL_GEMINI_BOT_TOKEN_ENV,
+      DEFAULT_TELEGRAM_POOL_GEMINI_BOT_TOKEN,
+      readString,
+    ),
   };
 }
 
@@ -368,6 +472,17 @@ export function parseChannelSettingsPatch(input: unknown): ChannelSettingsPatch 
       if (typeof value !== "string") throw new Error("telegramDmConversations must be a string");
     } else if (typed === "telegramDmStatus") {
       if (typeof value !== "boolean") throw new Error("telegramDmStatus must be a boolean");
+    } else if (typed === "telegramPoolChatGptEnabled" || typed === "telegramPoolGeminiEnabled") {
+      if (typeof value !== "boolean") throw new Error(`${typed} must be a boolean`);
+    } else if (
+      typed === "telegramPoolChatGptChatId" ||
+      typed === "telegramPoolChatGptModel" ||
+      typed === "telegramPoolChatGptBotToken" ||
+      typed === "telegramPoolGeminiChatId" ||
+      typed === "telegramPoolGeminiModel" ||
+      typed === "telegramPoolGeminiBotToken"
+    ) {
+      if (typeof value !== "string") throw new Error(`${typed} must be a string`);
     } else if (typed === "chatReconcileIntervalMs") {
       if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) {
         throw new Error("chatReconcileIntervalMs must be a positive integer or null");

@@ -8,37 +8,36 @@
 // shaped after the evals routes. The layer is flag-only in 1.6.1: events
 // are recorded by the run-output hook, never mutated through the API.
 //
-// myrmidon(1.7-GRD-MODES) (OPE-4167): the settings and the filtered journal;
-// myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check.
+// myrmidon(1.7-GRD-MODES) (OPE-4167): the settings and the filtered journal.
 //
 //   GET /api/myrmidon/companies/:companyId/guardrails/settings -> settings
 //   PUT /api/myrmidon/companies/:companyId/guardrails/settings (board) -> settings
 //   GET /api/myrmidon/companies/:companyId/guardrails/resolve?agentId=&rule=
 //        -> the effective mode for one agent/rule, with its source
 //   GET /api/myrmidon/companies/:companyId/guardrails/events?limit&kind&severity&surface&runId&since
+//
+// Reads need company access; the settings PUT needs a board actor — the
+// blocking policy is the operator's control, so an agent never edits the
+// mode that governs its own runs. The settings live in
+// instance_settings.general.guardrailModes; a PUT takes effect on the next
+// guardrail evaluation, no restart.
+//
+// myrmidon(1.7 GUARDRAILS, OPE-10181): regex rule validator & ReDoS safety check.
+//
 //   POST /api/myrmidon/companies/:companyId/guardrails/validate-regex
 //   POST /api/myrmidon/guardrails/validate-regex
 //
-// Reads need company access; the settings PUT and the validator need a board
-// actor — the blocking policy is the operator's control, so an agent never
-// edits the mode that governs its own runs. The settings live in
-// instance_settings.general.guardrailModes; a PUT takes effect on the next
-// guardrail evaluation, no restart.
-
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import {
-  GUARDRAIL_RULES,
   guardrailModesSettingsSchema,
-  resolveGuardrailMode,
+  type GuardrailModesSettings,
   validateGuardrailRegex,
   validateGuardrailRegexRequestSchema,
-  type GuardrailModesSettings,
 } from "@myrmidon/shared";
 import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { validate } from "../../middleware/validate.js";
 import { listGuardrailEvents } from "./events.js";
 import {
   readGuardrailModesSettings,
@@ -47,6 +46,7 @@ import {
 import { loadGuardrailModes } from "./modes.js";
 import { resolveGuardrailMode } from "@myrmidon/shared";
 import { GUARDRAIL_RULES } from "@myrmidon/shared";
+import { validate } from "../../middleware/validate.js";
 import { badRequest } from "../../errors.js";
 
 export interface GuardrailRoutesDeps {

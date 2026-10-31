@@ -6,6 +6,7 @@
 // column with its source, and the error/loading/empty states are the
 // contract; exact value changes are exercised at the container tier.
 import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GuardrailsScreenView } from "./GuardrailsScreen";
@@ -31,8 +32,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => root.unmount());
+  flushSync(() => root?.unmount());
   container.remove();
+  document.body.innerHTML = "";
   vi.clearAllMocks();
 });
 

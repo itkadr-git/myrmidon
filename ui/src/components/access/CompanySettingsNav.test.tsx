@@ -52,6 +52,8 @@ async function act(callback: () => void | Promise<void>) {
 
 describe("CompanySettingsNav", () => {
   let container: HTMLDivElement;
+  let activeQueryClient: QueryClient | null = null;
+  let currentRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -60,6 +62,12 @@ describe("CompanySettingsNav", () => {
   });
 
   afterEach(() => {
+    if (currentRoot) {
+      flushSync(() => currentRoot?.unmount());
+      currentRoot = null;
+    }
+    activeQueryClient?.clear();
+    activeQueryClient = null;
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -100,6 +108,9 @@ describe("CompanySettingsNav", () => {
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
+    // myrmidon(1.7 GRD-MODES): the Guardrails tab
+    expect(getCompanySettingsTab("/company/settings/guardrails")).toBe("guardrails");
+    expect(getCompanySettingsTab("/PAP/company/settings/guardrails")).toBe("guardrails");
     expect(getCompanySettingsTab("/company/settings/models")).toBe("models");
   });
 
@@ -108,7 +119,8 @@ describe("CompanySettingsNav", () => {
     hiddenSettings?: string[],
     cloud?: { managed: boolean },
   ) {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    activeQueryClient = queryClient;
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       ...(hiddenSettings ? { hiddenSettings } : {}),
@@ -124,6 +136,7 @@ describe("CompanySettingsNav", () => {
   it("renders the active tab and navigates when a different tab is selected", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root);
@@ -183,6 +196,7 @@ describe("CompanySettingsNav", () => {
   it("filters operator-hidden tabs out of the tab bar", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, ["instance.plugins"]);
@@ -229,6 +243,7 @@ describe("CompanySettingsNav", () => {
   it("filters operator-hidden company tabs out of the tab bar", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, ["company.import", "company.secrets"]);
@@ -250,6 +265,7 @@ describe("CompanySettingsNav", () => {
   it("suppresses the Import tab on a Cloud-managed instance", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, undefined, { managed: true });

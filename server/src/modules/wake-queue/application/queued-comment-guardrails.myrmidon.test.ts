@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import type { IssueComment } from "@myrmidon/shared";
 import { createEditQueuedComment } from "./queued-comment-use-cases.js";
 import type {

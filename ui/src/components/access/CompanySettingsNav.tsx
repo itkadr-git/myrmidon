@@ -165,6 +165,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes("/company/settings/guardrails")) {
     return "guardrails";
   }
+
   // myrmidon(REVIEW-ROUTING): the review routing settings section
   if (pathname.includes("/company/settings/review-routing")) {
     return "review-routing";
