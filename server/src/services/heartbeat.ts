@@ -9605,14 +9605,19 @@ export async function finalizeHeartbeatRunResponseComment(input: {
     issueId: input.issueId,
     skipRunIssueComment: input.skipRunIssueComment,
     addComment: async (text) => {
+      let commentText = text;
       if (input.db) {
-        await guardrailsOnRunOutput({
+        const guardrailDecision = await guardrailsOnRunOutput({
           db: input.db,
           companyId: input.companyId,
           runId: input.runId,
           issueId: input.issueId!,
+          agentId: input.agentId,
           text,
         }).catch(() => null);
+        if (guardrailDecision?.text) {
+          commentText = guardrailDecision.text;
+        }
       }
       const presentationAuthorizationReason = input.db
         ? await resolveChatRunPresentationAuthorizationReason(input.db, {
@@ -9623,7 +9628,7 @@ export async function finalizeHeartbeatRunResponseComment(input: {
         : null;
       const comment = await input.issuesSvc.addComment(
         input.issueId!,
-        text,
+        commentText,
         { agentId: input.agentId, runId: input.runId },
         { authorizationReason: presentationAuthorizationReason },
       );
