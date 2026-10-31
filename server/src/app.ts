@@ -105,6 +105,7 @@ import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.
 import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
 import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
+import { boardJanitorRoutes } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
@@ -1143,6 +1144,7 @@ export async function createApp(
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonFeaturesRoutes(db)); // myrmidon(FEATURES): feature registry with live health
+  api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
   api.use(licensingRoutes({ installId: installIdProviderFor(db), installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
