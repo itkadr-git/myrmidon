@@ -1,0 +1,748 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  parseLsn,
+  calculateLag,
+  parseReplicationStatus,
+  generateStandbyConfig,
+  generateBasebackupCommand,
+  planFailover,
+  planSwitchback,
+  planRehearsal,
+  setupStandby,
+  checkLag,
+  executeFailover,
+  executeSwitchback,
+  executeRehearsal,
+  runCli,
+  DEFAULT_CONFIG,
+} from "./standby-ctl.mjs";
+
+test("parseLsn parses valid PostgreSQL LSN strings into BigInt", () => {
+  assert.equal(parseLsn("0/0"), 0n);
+  assert.equal(parseLsn("0/1"), 1n);
+  assert.equal(parseLsn("0/17FCA00"), 0x17fca00n);
+  assert.equal(parseLsn("1/0"), 0x100000000n);
+  assert.equal(parseLsn("1/17FCA00"), 0x100000000n + 0x17fca00n);
+});
+
+test("parseLsn returns null for invalid inputs", () => {
+  assert.equal(parseLsn(null), null);
+  assert.equal(parseLsn(""), null);
+  assert.equal(parseLsn("invalid"), null);
+  assert.equal(parseLsn("123/XYZ"), null);
+});
+
+test("calculateLag computes byte lag against primary and receive LSN", () => {
+  const result = calculateLag({
+    primaryLsn: "1/2000000",
+    receiveLsn: "1/1000000",
+    replayLsn: "1/0",
+  });
+  assert.equal(result.measuredAgainst, "primary");
+  assert.equal(result.byteLag, 0x2000000n);
+  assert.equal(result.receiveByteLag, 0x1000000n);
+});
+
+test("calculateLag handles boundaries and rpoMaxSeconds=0 correctly", () => {
+  const now = new Date("2026-10-30T12:00:00Z");
+
+  // Exact boundary when byte lag is present: lag === rpoMaxSeconds -> OK
+  const exact = calculateLag({
+    receiveLsn: "1/1000",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:45:00Z", // 900s ago
+    rpoMaxSeconds: 900,
+    now,
+  });
+  assert.equal(exact.timeLagSeconds, 900);
+  assert.equal(exact.rpoOk, true);
+  assert.equal(exact.rpoStatus, "ok");
+
+  // Over boundary by 1 second with byte lag: lag > rpoMaxSeconds -> lag_exceeded
+  const exceeded = calculateLag({
+    receiveLsn: "1/1000",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:44:59Z", // 901s ago
+    rpoMaxSeconds: 900,
+    now,
+  });
+  assert.equal(exceeded.timeLagSeconds, 901);
+  assert.equal(exceeded.rpoOk, false);
+  assert.equal(exceeded.rpoStatus, "lag_exceeded");
+
+  // Idle database test (byteLag === 0n): timeLag naturally grows but rpoOk remains true!
+  const idleDb = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T10:00:00Z", // 7200s ago (2 hours)
+    rpoMaxSeconds: 900,
+    now,
+  });
+  assert.equal(idleDb.timeLagSeconds, 7200);
+  assert.equal(idleDb.byteLag, 0n);
+  assert.equal(idleDb.rpoOk, true);
+  assert.equal(idleDb.rpoStatus, "ok");
+
+  // RPO max = 0 (zero tolerance)
+  const zeroRpoOk = calculateLag({
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T12:00:00Z", // 0s
+    rpoMaxSeconds: 0,
+    now,
+  });
+  assert.equal(zeroRpoOk.timeLagSeconds, 0);
+  assert.equal(zeroRpoOk.rpoOk, true);
+
+  const zeroRpoFailed = calculateLag({
+    primaryLsn: "1/10",
+    receiveLsn: "1/0",
+    replayLsn: "1/0",
+    lastXactReplayTimestamp: "2026-10-30T11:59:59Z", // 1s
+    rpoMaxSeconds: 0,
+    now,
+  });
+  assert.equal(zeroRpoFailed.timeLagSeconds, 1);
+  assert.equal(zeroRpoFailed.rpoOk, false);
+  assert.equal(zeroRpoFailed.rpoStatus, "lag_exceeded");
+});
+
+test("parseReplicationStatus parses standard and error psql outputs", () => {
+  const normal = parseReplicationStatus("t | 0/17FCA00 | 0/17FCA00 | 2026-10-30 10:00:00+00");
+  assert.equal(normal.inRecovery, true);
+  assert.equal(normal.receiveLsn, "0/17FCA00");
+  assert.equal(normal.replayLsn, "0/17FCA00");
+  assert.equal(normal.role, "standby");
+
+  const notStandby = parseReplicationStatus("f | | | ");
+  assert.equal(notStandby.inRecovery, false);
+  assert.equal(notStandby.role, "primary_or_standalone");
+
+  const connRefused = parseReplicationStatus("psql: error: connection to server on socket failed: Connection refused");
+  assert.equal(connRefused.inRecovery, false);
+  assert.equal(connRefused.role, "unreachable");
+
+  const empty = parseReplicationStatus("");
+  assert.equal(empty.inRecovery, false);
+  assert.equal(empty.role, "unknown");
+});
+
+test("generateStandbyConfig includes required streaming parameters and credentials via passfile", () => {
+  const cfg = generateStandbyConfig("board");
+  assert.match(cfg, /primary_conninfo = 'host=(?:10\.10\.100\.1|primary\.internal)/);
+  assert.match(cfg, /primary_slot_name = 'standby_board_slot'/);
+  assert.match(cfg, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
+  assert.doesNotMatch(cfg, /password=/);
+  assert.match(cfg, /hot_standby = 'on'/);
+  assert.match(cfg, /restore_command = /);
+  assert.match(cfg, /archive_cleanup_command = /);
+});
+
+test("generateBasebackupCommand generates slot and stream flags", () => {
+  const cmd = generateBasebackupCommand("board");
+  assert.equal(cmd.executable, "pg_basebackup");
+  assert.ok(cmd.args.includes("-R"));
+  assert.ok(cmd.args.includes("-Xs"));
+  assert.ok(cmd.args.includes("--slot=standby_board_slot"));
+  assert.ok(cmd.args.includes("-Fp"));
+});
+
+test("checkLag measures primary-to-standby lag and handles fail-closed errors", () => {
+  const now = new Date("2026-10-30T12:00:00Z");
+
+  // Normal lag check
+  const normalMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (sql.includes("pg_current_wal_lsn")) {
+      return { exitCode: 0, stdout: "1/2000000\n", stderr: "" };
+    }
+    return {
+      exitCode: 0,
+      stdout: "t | 1/1500000 | 1/1000000 | 2026-10-30 11:55:00+00\n",
+      stderr: "",
+    };
+  };
+
+  const normal = checkLag("board", { now, rpoMaxSeconds: 900 }, { runner: normalMock });
+  assert.equal(normal.success, true);
+  assert.equal(normal.role, "standby");
+  assert.equal(normal.byteLag, 0x1000000n);
+  assert.equal(normal.receiveByteLag, 0x500000n);
+  assert.equal(normal.timeLagSeconds, 300);
+  assert.equal(normal.rpoOk, true);
+
+  // Standby query failure -> fail-closed
+  const failStandbyMock = () => ({ exitCode: 2, stdout: "", stderr: "psql: error: connection refused" });
+  const failedStandby = checkLag("board", {}, { runner: failStandbyMock });
+  assert.equal(failedStandby.success, false);
+  assert.equal(failedStandby.rpoOk, false);
+  assert.equal(failedStandby.role, "unreachable");
+
+  // Primary unreachable -> fail-closed
+  const failPrimaryMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (sql.includes("pg_current_wal_lsn")) {
+      return { exitCode: 2, stdout: "", stderr: "psql: error: primary host down" };
+    }
+    return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 11:59:00+00\n", stderr: "" };
+  };
+  const failedPrimary = checkLag("board", {}, { runner: failPrimaryMock });
+  assert.equal(failedPrimary.success, false);
+  assert.equal(failedPrimary.rpoOk, false);
+  assert.equal(failedPrimary.rpoStatus, "primary_unreachable");
+});
+
+test("setupStandby executes directory setup, basebackup, and config writes", () => {
+  const fsWrites = [];
+  const dirs = [];
+  const mockFs = {
+    mkdirSync: (dir) => dirs.push(dir),
+    writeFileSync: (file, content) => fsWrites.push({ file, content }),
+    existsSync: () => true,
+    readdirSync: () => [],
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.streamingActive, true);
+
+  assert.ok(dirs.includes(DEFAULT_CONFIG.boardDataDir));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_basebackup"));
+  assert.ok(fsWrites.some((f) => f.file.endsWith("standby.signal")));
+  assert.ok(fsWrites.some((f) => f.file.endsWith("postgresql.auto.conf")));
+  assert.ok(fsWrites.some((f) => f.file.endsWith(".pgpass")));
+});
+
+test("setupStandby fails closed if data directory is non-empty without --force", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => ["PG_VERSION", "base", "global"],
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.match(res.error, /exists but is not empty/);
+  // Ensure pg_basebackup was NOT run
+  assert.equal(executedCmds.some((c) => c.cmd === "pg_basebackup"), false);
+});
+
+test("setupStandby with --force stops container, wipes dataDir, and sets up standby", () => {
+  let cleaned = false;
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => ["PG_VERSION", "base"],
+    readFileSync: () => "",
+    rmSync: () => { cleaned = true; },
+  };
+
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.streamingActive, true);
+  assert.equal(cleaned, true);
+  assert.ok(executedCmds.some((c) => c.cmd === "docker" && c.args.includes("stop")));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_basebackup"));
+});
+
+test("setupStandby fails if WAL receiver stream is not active (walReceivers === 0)", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => false,
+    readFileSync: () => "",
+    chmodSync: () => {},
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd) => {
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|0\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby(
+    "board",
+    { replicatorPassword: "test_secret" },
+    { runner: mockRunner, fsOps: mockFs }
+  );
+  assert.equal(res.success, false);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.walReceivers, 0);
+  assert.equal(res.streamingActive, false);
+  assert.match(res.error, /WAL streaming receiver is not active/);
+});
+
+test("executeFailover promotes standby, polls recovery exit, and restarts app", () => {
+  let recoveryPolls = 0;
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_promote")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (sql.includes("pg_is_in_recovery")) {
+        recoveryPolls++;
+        // returns 't' on first poll, 'f' on second
+        return { exitCode: 0, stdout: recoveryPolls > 1 ? "f\n" : "t\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeFailover("board", { restartApp: true, checkHealth: true }, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.promoted, true);
+  assert.equal(res.inRecovery, false);
+  assert.equal(res.appSwitched, true);
+  assert.equal(res.healthOk, true);
+  assert.equal(res.rtoOk, true);
+
+  assert.ok(executedCmds.some((c) => c.cmd === "docker"));
+  assert.ok(executedCmds.some((c) => c.cmd === "curl"));
+});
+
+test("executeSwitchback resynchronizes standby from active primary", () => {
+  const executedCmds = [];
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_stat_wal_receiver")) {
+        return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+      }
+      if (sql.includes("pg_is_in_recovery")) {
+        // Primary check returns 'f' (primary is active)
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => [],
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const res = executeSwitchback("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.resynchronized, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.streamingActive, true);
+});
+
+test("executeSwitchback fails closed without explicit force flag", () => {
+  const executedCmds = [];
+  let rmCalled = false;
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => ["existing_pg_file"],
+    readFileSync: () => "",
+    rmSync: () => {
+      rmCalled = true;
+    },
+  };
+
+  const res = executeSwitchback("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.match(res.error, /force/);
+  assert.equal(rmCalled, false);
+  // Ensure container stop was not called
+  const stopCmd = executedCmds.find((c) => c.cmd === "docker" && c.args.includes("stop"));
+  assert.equal(stopCmd, undefined);
+  // Ensure pg_basebackup was not called
+  const backupCmd = executedCmds.find((c) => c.cmd === "pg_basebackup");
+  assert.equal(backupCmd, undefined);
+});
+
+test("executeRehearsal conducts isolated drill, smoke tests both databases, and measures RTO", () => {
+  const executedCmds = [];
+  let drillCleaned = false;
+  const queriedDatabases = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => { drillCleaned = true; },
+  };
+
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      const dbIdx = args.indexOf("-d");
+      if (dbIdx !== -1) {
+        queriedDatabases.push(args[dbIdx + 1]);
+      }
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.equal(res.promoted, true);
+  assert.equal(res.smokeTestPassed, true);
+  assert.deepStrictEqual(res.verifiedDatabases, ["paperclip", "myrmidon_hindsight"]);
+  assert.ok(queriedDatabases.includes("paperclip"));
+  assert.ok(queriedDatabases.includes("myrmidon_hindsight"));
+  assert.equal(res.rtoOk, true);
+  assert.equal(drillCleaned, true);
+
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_basebackup"));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_ctl" && c.args.includes("start")));
+  assert.ok(executedCmds.some((c) => c.cmd === "pg_ctl" && c.args.includes("stop")));
+});
+
+test("runCli commands output structured JSON and return correct exit codes", () => {
+  let failoverPromoted = false;
+  const mockRunner = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (sql.includes("pg_promote")) {
+      failoverPromoted = true;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (sql.includes("pg_is_in_recovery")) {
+      if (failoverPromoted) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: `t|1/1000|1/1000|${new Date(Date.now() - 5000).toISOString()}\n`, stderr: "" };
+    }
+    if (sql.includes("pg_current_wal_lsn")) {
+      return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => [],
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  // check-lag within RPO -> exit 0
+  const codeCheck = runCli(["check-lag", "board", "--offline"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeCheck, 0);
+
+  // failover dry-run -> exit 0
+  const codeFailoverDry = runCli(["failover", "board", "--dry-run"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeFailoverDry, 0);
+
+  // failover real execution -> exit 0
+  const codeFailover = runCli(["failover", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeFailover, 0);
+
+  // rehearse real execution -> exit 0
+  const codeRehearse = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(codeRehearse, 0);
+});
+
+test("setupStandby uses credential path, sets PGPASSFILE env on basebackup, and omits password from config", () => {
+  const executedCmds = [];
+  const fsWrites = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: (file, content) => fsWrites.push({ file, content }),
+    existsSync: (p) => p === "/etc/standby/pgpass" || true,
+    readdirSync: () => [],
+    readFileSync: () => "primary.internal:5432:*:myr_replicator:secret123\n",
+    chmodSync: () => {},
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args, opts) => {
+    executedCmds.push({ cmd, args, env: opts?.env });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby(
+    "board",
+    { credentialPath: "/etc/standby/pgpass" },
+    { runner: mockRunner, fsOps: mockFs }
+  );
+
+  assert.equal(res.success, true);
+  assert.equal(res.inRecovery, true);
+  assert.equal(res.walReceivers, 1);
+
+  // Verify pg_basebackup was invoked with PGPASSFILE pointing to credential path
+  const basebackupCall = executedCmds.find((c) => c.cmd === "pg_basebackup");
+  assert.ok(basebackupCall);
+  assert.equal(basebackupCall.env?.PGPASSFILE, "/etc/standby/pgpass");
+
+  // Verify container .pgpass was written into dataDir
+  assert.ok(fsWrites.some((f) => f.file.endsWith(".pgpass")));
+
+  // Verify postgresql.auto.conf uses container passfile (/var/lib/postgresql/data/.pgpass)
+  // and does NOT use host credential path (/etc/standby/pgpass) nor embed raw password
+  const autoConf = fsWrites.find((f) => f.file.endsWith("postgresql.auto.conf"));
+  assert.ok(autoConf);
+  assert.match(autoConf.content, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
+  assert.doesNotMatch(autoConf.content, /\/etc\/standby\/pgpass/);
+  assert.doesNotMatch(autoConf.content, /password=/);
+});
+
+test("executeRehearsal fails closed if promotion verification fails (in_recovery is true)", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        // Promotion verification fails: node is still in recovery ('t')
+        return { exitCode: 0, stdout: "t\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.equal(res.promoted, false);
+  assert.match(res.error, /Promotion verification failed/);
+
+  // CLI exit code must be 1 (non-zero)
+  const cliCode = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(cliCode, 1);
+});
+
+test("executeRehearsal fails closed if smoke test fails for database", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        const dbIdx = args.indexOf("-d");
+        const db = dbIdx !== -1 ? args[dbIdx + 1] : "";
+        if (db === "myrmidon_hindsight") {
+          // Smoke test fails for hindsight DB
+          return { exitCode: 1, stdout: "", stderr: "psql: error: connection failed" };
+        }
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.equal(res.promoted, true);
+  assert.equal(res.smokeTestPassed, false);
+  assert.match(res.error, /Smoke test failed for database 'myrmidon_hindsight'/);
+
+  // CLI exit code must be 1 (non-zero)
+  const cliCode = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(cliCode, 1);
+});
+
+test("checkLag verifies both databases on shared standby cluster port 5433 without split ports", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return {
+          exitCode: 0,
+          stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5432\n",
+          stderr: "",
+        };
+      }
+      if (sql.includes("pg_current_wal_lsn")) {
+        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  // Run checkLag with target="all"
+  const res = checkLag("all", {}, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.rpoOk, true);
+  assert.equal(res.target, "all");
+  assert.equal(res.databases.length, 2);
+
+  // Both databases (paperclip and myrmidon_hindsight) must be queried
+  const queriedDbs = [];
+  const queriedPorts = [];
+  for (const call of calls) {
+    if (call.cmd === "psql") {
+      const pIdx = call.args.indexOf("-p");
+      if (pIdx !== -1) queriedPorts.push(call.args[pIdx + 1]);
+      const dIdx = call.args.indexOf("-d");
+      if (dIdx !== -1) queriedDbs.push(call.args[dIdx + 1]);
+    }
+  }
+
+  assert.ok(queriedDbs.includes("paperclip"));
+  assert.ok(queriedDbs.includes("myrmidon_hindsight"));
+  // All standby queries must use the single shared port 5433 (no separate 5434/etc)
+  const standbyPortQueries = queriedPorts.filter((p) => p === "5433");
+  assert.ok(standbyPortQueries.length >= 2, "Both databases queried on shared standby port 5433");
+  assert.ok(!queriedPorts.some((p) => p !== "5433" && p !== "5432"), "No divergent or split standby ports used");
+});
+
+test("checkLag respects unified custom standbyPort and primaryPort on single cluster", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      return {
+        exitCode: 0,
+        stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5434\n",
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const customStandbyPort = 5444;
+  const customPrimaryPort = 5422;
+  const res = checkLag("all", { standbyPort: customStandbyPort, primaryPort: customPrimaryPort }, { runner: mockRunner });
+  assert.equal(res.success, true);
+
+  const standbyCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === String(customStandbyPort));
+  assert.ok(standbyCalls.length >= 2, "Both databases queried using the unified custom standbyPort");
+});
+
+test("runCli check-lag defaults to checking both databases on shared cluster port 5433", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      return {
+        exitCode: 0,
+        stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5432\n",
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const code = runCli(["check-lag", "--offline"], {}, { runner: mockRunner });
+  assert.equal(code, 0);
+
+  const queriedDbs = calls
+    .filter((c) => c.cmd === "psql" && c.args.includes("-d"))
+    .map((c) => c.args[c.args.indexOf("-d") + 1]);
+  assert.ok(queriedDbs.includes("paperclip"), "Checks paperclip DB");
+  assert.ok(queriedDbs.includes("myrmidon_hindsight"), "Checks myrmidon_hindsight DB");
+
+  const ports = calls
+    .filter((c) => c.cmd === "psql" && c.args.includes("-p"))
+    .map((c) => c.args[c.args.indexOf("-p") + 1]);
+  assert.ok(ports.every((p) => p === "5433"), "All offline queries target shared standby port 5433");
+});
+
+test("runCli rehearse respects --drill-dir and --drill-port and executes successfully", () => {
+  const dirsCreated = [];
+  const mockFs = {
+    mkdirSync: (dir) => { dirsCreated.push(dir); },
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const code = runCli(["rehearse", "all", "--drill-dir=/tmp/test-drill-dir", "--drill-port=5599"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(code, 0);
+  assert.ok(dirsCreated.includes("/tmp/test-drill-dir"));
+
+  const drillCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === "5599");
+  assert.ok(drillCalls.length >= 2, "Smoke tests executed on custom drill port 5599");
+});

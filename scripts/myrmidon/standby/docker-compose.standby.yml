@@ -1,0 +1,27 @@
+# Docker Compose for Myrmidon center warm standby on myr-vm1 (T9).
+# Single PostgreSQL 18 standby cluster replicating vm-core myrmidon-pg
+# containing both 'paperclip' and 'myrmidon_hindsight' databases.
+# Standby data directory and authentication are provisioned by standby-ctl.mjs setup
+# (pg_basebackup + streaming replication passfile in /var/lib/postgresql/data/.pgpass).
+services:
+  myrmidon-pg-standby:
+    image: ghcr.io/itkadr-git/myrmidon-pg:18
+    container_name: myrmidon-pg-standby
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - /srv/standby/myrmidon-pg/data:/var/lib/postgresql/data
+      - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    command: >
+      postgres
+      -c hot_standby=on
+      -c restore_command='cp /srv/backups/wal/%f %p'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5432 -U paperclip && psql -U paperclip -d paperclip -c 'SELECT pg_is_in_recovery();' | grep -q t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
