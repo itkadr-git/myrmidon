@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createAdmKnowledgeAdapter,
+  AdmConnectorError,
   type AdmKnowledgeItem,
   type AdmKnowledgeRestPort,
   type AdmWriteResult,
@@ -351,6 +352,7 @@ describe("ADM knowledge REST adapter", () => {
         sourceRef: "OPE-9262",
         baseRevisionId: "rev-1",
         idempotencyKey: "ope-9262:rule:conflict-1",
+        onConflict: () => true,
       },
       "ope-9262:rule:conflict-2",
     );
@@ -400,6 +402,7 @@ describe("ADM knowledge REST adapter", () => {
         body: "New body",
         sourceRef: "OPE-9877",
         idempotencyKey: "ope-9877:retry-no-deliv:1",
+        onConflict: () => true,
       },
       "ope-9877:retry-no-deliv:2",
     );
