@@ -229,12 +229,24 @@ export async function inspectReplicationHealth(
   const warnings: ReplicationHealthWarning[] = [];
   let status: ReplicationHealthStatus = "ok";
 
+  const escalateStatus = (next: ReplicationHealthStatus) => {
+    const priority: Record<ReplicationHealthStatus, number> = {
+      ok: 0,
+      warning: 1,
+      critical: 2,
+      unknown: 3,
+    };
+    if (priority[next] > priority[status]) {
+      status = next;
+    }
+  };
+
   if (query?.role && query.role !== "any" && query.role !== role) {
     warnings.push({
       code: "replication_role_mismatch",
       message: `Expected replication role '${query.role}', but instance is running as '${role}'.`,
     });
-    status = "warning";
+    escalateStatus("warning");
   }
 
   if (inRecovery) {
@@ -243,9 +255,7 @@ export async function inspectReplicationHealth(
         code: "standby_not_streaming",
         message: `Standby WAL receiver is not streaming (current status: '${receiver?.status ?? "inactive"}').`,
       });
-      if (status !== "critical") {
-        status = "warning";
-      }
+      escalateStatus("warning");
     }
   }
 
@@ -255,15 +265,13 @@ export async function inspectReplicationHealth(
         code: "replication_lag_exceeded",
         message: `Replication lag (${lag.seconds}s) exceeds maximum threshold (${query.maxLagSeconds}s).`,
       });
-      status = "critical";
+      escalateStatus("critical");
     } else if (query?.warnLagSeconds !== undefined && lag.seconds > query.warnLagSeconds) {
       warnings.push({
         code: "replication_lag_warning",
         message: `Replication lag (${lag.seconds}s) exceeds warning threshold (${query.warnLagSeconds}s).`,
       });
-      if (status !== "critical") {
-        status = "warning";
-      }
+      escalateStatus("warning");
     }
   }
 

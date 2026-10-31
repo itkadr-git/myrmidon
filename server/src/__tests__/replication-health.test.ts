@@ -5,10 +5,39 @@ import type { Db } from "@myrmidon/db";
 import { healthRoutes } from "../routes/health.js";
 import { inspectReplicationHealth } from "../services/replication-health.js";
 
+function getSqlText(query: unknown): string {
+  if (!query) return "";
+  if (typeof query === "string") return query;
+  if (typeof query === "object") {
+    const obj = query as Record<string, unknown>;
+    if (Array.isArray(obj.strings)) return obj.strings.join(" ");
+    if (Array.isArray(obj.queryChunks)) {
+      return obj.queryChunks
+        .map((chunk) => {
+          if (typeof chunk === "string") return chunk;
+          if (chunk && typeof chunk === "object") {
+            const val = (chunk as Record<string, unknown>).value;
+            if (Array.isArray(val)) return val.join(" ");
+            if (typeof val === "string") return val;
+            if (val && typeof val === "object" && "queryChunks" in val) return getSqlText(val);
+          }
+          return "";
+        })
+        .join(" ");
+    }
+    try {
+      return JSON.stringify(query);
+    } catch {
+      return String(query);
+    }
+  }
+  return String(query);
+}
+
 describe("Replication Health Service", () => {
   it("inspects healthy standby with streaming receiver", async () => {
-    const mockExecute = vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-      const sqlText = query.strings.join(" ");
+    const mockExecute = vi.fn().mockImplementation(async (query: unknown) => {
+      const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: true }];
       }
@@ -59,8 +88,8 @@ describe("Replication Health Service", () => {
   });
 
   it("flags warning when standby receiver is not streaming", async () => {
-    const mockExecute = vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-      const sqlText = query.strings.join(" ");
+    const mockExecute = vi.fn().mockImplementation(async (query: unknown) => {
+      const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: true }];
       }
@@ -83,8 +112,8 @@ describe("Replication Health Service", () => {
   });
 
   it("flags critical when lag exceeds maxLagSeconds threshold", async () => {
-    const mockExecute = vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-      const sqlText = query.strings.join(" ");
+    const mockExecute = vi.fn().mockImplementation(async (query: unknown) => {
+      const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: true }];
       }
@@ -107,8 +136,8 @@ describe("Replication Health Service", () => {
   });
 
   it("inspects primary node with connected standbys", async () => {
-    const mockExecute = vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-      const sqlText = query.strings.join(" ");
+    const mockExecute = vi.fn().mockImplementation(async (query: unknown) => {
+      const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: false }];
       }
@@ -119,7 +148,7 @@ describe("Replication Health Service", () => {
         return [
           {
             application_name: "walreceiver_standby1",
-            client_addr: "10.0.0.2",
+            client_addr: "192.0.2.2",
             state: "streaming",
             sync_state: "sync",
             sync_priority: 1,
@@ -151,8 +180,8 @@ describe("Replication Health Service", () => {
   });
 
   it("detects role mismatch when query requests standby but node is primary", async () => {
-    const mockExecute = vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-      const sqlText = query.strings.join(" ");
+    const mockExecute = vi.fn().mockImplementation(async (query: unknown) => {
+      const sqlText = getSqlText(query);
       if (sqlText.includes("pg_is_in_recovery")) {
         return [{ in_recovery: false }];
       }
@@ -192,8 +221,8 @@ describe("GET /health/replication route", () => {
 
   it("returns 200 with full replication details in local_trusted mode", async () => {
     const mockDb = {
-      execute: vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-        const sqlText = query.strings.join(" ");
+      execute: vi.fn().mockImplementation(async (query: unknown) => {
+        const sqlText = getSqlText(query);
         if (sqlText.includes("pg_is_in_recovery")) {
           return [{ in_recovery: false }];
         }
@@ -204,7 +233,7 @@ describe("GET /health/replication route", () => {
           return [
             {
               application_name: "standby_node",
-              client_addr: "10.10.10.20",
+              client_addr: "192.0.2.20",
               state: "streaming",
               sync_state: "async",
               sync_priority: 0,
@@ -224,13 +253,13 @@ describe("GET /health/replication route", () => {
     expect(res.body.status).toBe("ok");
     expect(res.body.role).toBe("primary");
     expect(res.body.connectedStandbys).toBe(1);
-    expect(res.body.standbys[0].clientAddr).toBe("10.10.10.20");
+    expect(res.body.standbys[0].clientAddr).toBe("192.0.2.20");
   });
 
   it("redacts sensitive addresses for unauthenticated callers in authenticated mode", async () => {
     const mockDb = {
-      execute: vi.fn().mockImplementation(async (query: { strings: string[] }) => {
-        const sqlText = query.strings.join(" ");
+      execute: vi.fn().mockImplementation(async (query: unknown) => {
+        const sqlText = getSqlText(query);
         if (sqlText.includes("pg_is_in_recovery")) {
           return [{ in_recovery: false }];
         }
@@ -241,7 +270,7 @@ describe("GET /health/replication route", () => {
           return [
             {
               application_name: "standby_node",
-              client_addr: "10.10.10.20",
+              client_addr: "192.0.2.20",
               state: "streaming",
               sync_state: "async",
               sync_priority: 0,
