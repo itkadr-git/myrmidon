@@ -76,12 +76,14 @@ export async function loadGuardrailModes(
     rawSettings = undefined;
   }
   try {
-    const [agentRow] = await input.db
-      .select({ role: agents.role })
-      .from(agents)
-      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
-      .limit(1);
-    agentRole = agentRow?.role ?? null;
+    if (input.agentId) {
+      const [agentRow] = await input.db
+        .select({ role: agents.role })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+        .limit(1);
+      agentRole = agentRow?.role ?? null;
+    }
   } catch {
     agentRole = null;
   }
