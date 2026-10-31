@@ -1,13 +1,21 @@
-# OPE-9253: independent OOM observation boundary (part 1)
+# OPE-9934 / OPE-9253: OOM event transport & durable database counter
 
-This first delivery records Docker-confirmed container OOM termination during the existing inspect/reconcile path. It does not change recovery factory, run status, container limits, or production configuration.
+This document specifies the detection and transport of container Out-Of-Memory (OOM) events across Myrmidon, Dockergate, and fleetd.
 
-Docker State.OOMKilled and FinishedAt are retained in dockergate's existing trimmed inspect response. Exit 137 alone is never accepted as OOM evidence. Each event is persisted as activity_log action agent.container_oom with container identity, event time, configured memory limit, role, and resource.oom kind. A transaction-scoped advisory lock plus durable event-key lookup prevents duplicates across reconciliation, concurrent workers and board restarts. The durable counter is COUNT(*) of these events, not an in-memory counter. The run association is event-time based, company scoped, and only recorded when exactly one run spans the event; ambiguous/missing runs remain uncorrelated. Peak memory is null rather than fabricated.
+## Problem statement & scope (OPE-9934)
+Prior Docker inspect polling captured `State.OOMKilled` only when the container's main process (PID 1) died. When a child process (such as a compiler, test runner, or subshell) was killed by the kernel cgroup memory controller (`memory.events oom_kill`), PID 1 remained alive, and `docker inspect` reported `State.OOMKilled == false`. Furthermore, events occurring between reconciliation polls or across rapid container restarts could be lost.
 
-## Explicit delivery gates / limitations
+OPE-9934 implements the full event transport:
+1. **Dockergate event listener**: A background listener connects to the upstream Docker daemon socket (`/var/run/docker.sock`) filtering for `type=container,event=oom`. It buffers events in a thread-safe ring buffer and exposes them via Route A19 (`GET /myrmidon/events/oom[?since=<nano>]`).
+2. **fleetd event listener**: fleetd listens to `/var/run/docker.sock` for `oom` events and inspects cgroup v2 `memory.events oom_kill` on the host, exposing them via `GET /v1/events/oom[?since=<nano>]`.
+3. **Child-process OOM capture**: Both PID 1 kills and child-process kills (where PID 1 remains alive) generate kernel OOM events that Docker surfaces via `docker events oom` and cgroup `memory.events oom_kill`.
+4. **Agent & run correlation**: Events are tied to the agent by container botKey, and correlated with the heartbeat run active at `occurredAt` (`startedAt <= occurredAt <= finishedAt`). Ambiguous or missing runs are recorded with `runId: null`.
+5. **Durable database counter**: Events are recorded in `activity_log` with action `agent.container_oom` and entityType `container_oom`. The durable counter is `countAgentContainerOom(db, agentId, runId?)`, matching the OOM kill records in `journalctl -k`.
+6. **Deduplication**: Transactional advisory locks keyed by `containerId:occurredAt:source` prevent duplicate recordings across concurrent reconciliation runs and board restarts.
 
-Docker inspect does NOT capture child-process cgroup OOM kills while the container's PID 1 remains alive. It may also miss events between polls or after container replacement/restart. Therefore this counter is a lower bound, not the journalctl-equivalent total. A dockergate/fleetd event or cgroup counter transport is tracked in a follow-up subtask.
-
-Recovery factory resource.oom integration, fleet/agent UI, rolling-window thresholds, host-aware memory sizing, and actionable recommendations are tracked in follow-up subtasks; this part 1 PR only establishes the durable observation baseline without relabeling runs or modifying container limits.
-
-The existing affected-test CI lane exercises evidence validation and durable-store boundary behavior (mocked transaction); dockergate's existing Go CI lane exercises trimming.
+## Acceptance verification
+- Artificial OOM triggered in a test container (e.g. `tail /dev/zero` or Python memory allocation exceeding limit).
+- The kernel logs `Memory cgroup out of memory: Killed process` in `journalctl -k`.
+- Dockergate / fleetd event transport captures the `oom` event.
+- The board records the event in `activity_log`.
+- `countAgentContainerOom` matches the number of kernel OOM kills reported by `journalctl -k`.

@@ -39,6 +39,8 @@ import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
 import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
+import { containerOomRecorder } from "./container-oom-store.js";
+import { dockerEventOomObservation } from "./container-oom.js";
 import {
   reconcileBot,
   type BotContainerActivitySink,
@@ -577,6 +579,50 @@ async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<voi
   }
 }
 
+/**
+ * Synchronizes OOM events from dockergate/fleetd driver into activity_log.
+ * Never throws: failing OOM event sync must not break reconciliation.
+ */
+export async function syncOomEventsOfSweep(
+  agents: readonly BotContainerAgent[],
+  deps: BotContainerRuntimeDeps,
+  state: { lastSinceNano: number },
+): Promise<void> {
+  if (!deps.db || !deps.driver.getOomEvents) return;
+  try {
+    const events = await deps.driver.getOomEvents(state.lastSinceNano > 0 ? state.lastSinceNano : undefined);
+    if (!events || events.length === 0) return;
+    const recorder = containerOomRecorder(deps.db);
+    const botKeyToAgentId = new Map<string, string>();
+    for (const agent of agents) {
+      botKeyToAgentId.set(agent.agentId, agent.agentId);
+      const key = botKeyForAgent(agent.agentId);
+      if (key) {
+        botKeyToAgentId.set(key, agent.agentId);
+      }
+      if ((agent as any).botKey) {
+        botKeyToAgentId.set((agent as any).botKey, agent.agentId);
+      }
+    }
+    const sorted = [...events].sort((a, b) => (a.timeNano < b.timeNano ? -1 : a.timeNano > b.timeNano ? 1 : 0));
+    for (const ev of sorted) {
+      const agentId = botKeyToAgentId.get(ev.botKey) ?? ev.botKey;
+      const obs = dockerEventOomObservation(ev);
+      try {
+        await recorder(agentId, obs);
+        if (ev.timeNano > state.lastSinceNano) {
+          state.lastSinceNano = ev.timeNano;
+        }
+      } catch {
+        // Stop advancing watermark on record error so the event can be retried on next sweep.
+        break;
+      }
+    }
+  } catch {
+    // Never throws
+  }
+}
+
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 
 /**
@@ -636,6 +682,7 @@ export function startBotContainerReconciliation(
   if (!isBotContainersEnabled(opts.env)) return () => {};
   const intervalMs = opts.intervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
   let stopped = false;
+  const oomSyncState = { lastSinceNano: 0 };
 
   // One sweep at a time: a slow sweep is still running when the next tick fires.
   // (Two reconciles of the same bot are excluded by the per-bot lock anyway; this
@@ -665,6 +712,7 @@ export function startBotContainerReconciliation(
       // media ACL registry, so a token issued or revoked on a card reaches the
       // facade within one interval without a restart.
       await exportMediaAclOfSweep(deps);
+      await syncOomEventsOfSweep(agents, deps, oomSyncState);
       // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
       // instance-scoped reads behind the profiles (the skill catalogue, the
       // instance settings) were paid once per bot; inside one tick they are paid
