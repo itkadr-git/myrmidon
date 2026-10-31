@@ -412,6 +412,8 @@ export interface IssueSubtreeDiagnosticsResponse {
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
 
 export type IssueBlockerAttentionReason =
+  | "unassigned_blocked_issue_overdue"
+  | "blocked_by_unassigned_issue"
   | "active_child"
   | "active_dependency"
   | "stalled_review"
@@ -493,6 +495,7 @@ export type IssueBlockedInboxState =
 export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
 
 export type IssueBlockedInboxReason =
+  | "unassigned_blocked_issue_overdue"
   | "blocked_by_unassigned_issue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
