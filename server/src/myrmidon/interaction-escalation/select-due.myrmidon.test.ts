@@ -35,7 +35,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
   let companyId: string;
   let issueId: string;
   let agentId: string;
-
+  let projectId: string | null = null;
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("interaction-select-due-");
     db = createDb(tempDb.connectionString);
@@ -49,6 +49,11 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     await db.delete(interactionEscalations);
     await db.delete(issueThreadInteractions);
     await db.delete(issues);
+    if (projectId) {
+      await db.delete(projectMemberships).where(eq(projectMemberships.projectId, projectId));
+      await db.delete(projects).where(eq(projects.id, projectId));
+      projectId = null;
+    }
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -317,7 +322,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     await seedCompanyAndIssue();
     const architectId = randomUUID();
     const reviewerId = randomUUID();
-    const projectId = randomUUID();
+    projectId = randomUUID();
     await db.insert(agents).values([
       {
         id: architectId,
@@ -355,11 +360,9 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       { companyId, projectId, userId: reviewerId, state: "joined" },
     ]);
     await db.update(issues).set({ projectId }).where(eq(issues.id, issueId));
-
-    const interactionId = randomUUID();
+    let interactionId: string;
     const applyNow = new Date("2026-10-30T11:30:00Z");
-    await db.insert(issueThreadInteractions).values({
-      id: interactionId,
+    const [createdCard] = await db.insert(issueThreadInteractions).values({
       companyId,
       issueId,
       kind: "request_confirmation",
@@ -370,6 +373,8 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       requestedResolverPolicy: "anyone",
       effectiveResolverPolicy: "anyone",
       payload: {
+        version: 1,
+        prompt: "Approve the plan",
         routing: {
           routeType: "decision",
           projectRoles: {
@@ -382,10 +387,9 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
             stepDelayMinutes: 30,
           },
         },
-        version: 1,
-        prompt: "Approve the plan",
       },
-    });
+    }).returning({ id: issueThreadInteractions.id });
+    interactionId = createdCard.id;
 
     // Apply persists addressee + escalation_chain together
     const applyResult = await applyReaddress(db, { dryRun: false, now: applyNow });
