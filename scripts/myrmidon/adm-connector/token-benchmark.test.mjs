@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   runTokenBenchmark,
   estimateTokens,
@@ -36,7 +39,7 @@ test('Baseline generator produces exact byte budgets for Contract A', () => {
   assert.equal(BASELINE.memoryReadPerMessageBytes, 800);
 });
 
-test('Offline Token & Byte Benchmark on 50-message synthetic benchmark dataset satisfies Contract A', async () => {
+test('Offline Token & Byte Benchmark on 50-message synthetic benchmark dataset satisfies Contract A', { skip: !fs.existsSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'adm-sample-50.json')) ? 'dataset adm-sample-50.json was withdrawn (revoked synthetic origin, dataset-spec.md); benchmark runs only when an operator-supplied sanctioned dataset is present' : false }, async () => {
   const result = await runTokenBenchmark();
 
   assert.equal(result.dataset.totalMessages, 50, 'Must process exactly 50 messages');
