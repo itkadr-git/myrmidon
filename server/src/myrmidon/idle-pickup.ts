@@ -454,6 +454,62 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
 }
 
 /**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
+}
+
+/**
  * Wakes the agent's highest-priority ready issue when the agent has no live
  * run for it and no wake already in flight. One wake per pass: the next pass
  * (the next tick, or the next release) picks the next issue once this one has
@@ -559,62 +615,6 @@ export async function idlePickupForAgent(
     }
   }
 
-/**
- * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
- * When true, idle pickup should not wake the review participant.
- */
-export function isReviewPendingWaitingForCi(params: {
-  agentId: string;
-  executionState: unknown;
-  workProductMetadata?: Record<string, unknown> | null;
-  candidateCiState?: unknown;
-}): boolean {
-  const es =
-    params.executionState !== null && typeof params.executionState === "object"
-      ? (params.executionState as Record<string, unknown>)
-      : null;
-  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
-    return false;
-  }
-  const participant =
-    es.currentParticipant !== null && typeof es.currentParticipant === "object"
-      ? (es.currentParticipant as Record<string, unknown>)
-      : null;
-  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
-    return false;
-  }
-
-  const candidateCiState =
-    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
-    (typeof es.ciState === "string" ? es.ciState : null) ??
-    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
-      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
-      : null) ??
-    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
-      ? ((es.monitor as Record<string, unknown>).ciState as string)
-      : null) ??
-    (typeof es.ci === "string" ? es.ci : null);
-
-  const wpMeta = params.workProductMetadata;
-  const activeCi =
-    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
-      ? (wpMeta.activeCi as Record<string, unknown>)
-      : null;
-  const wpCiState =
-    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
-    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
-    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
-    (typeof activeCi?.status === "string" ? activeCi.status : null);
-
-  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
-  return (
-    detectedCiState === "pending" ||
-    detectedCiState === "unknown" ||
-    detectedCiState === "queued" ||
-    detectedCiState === "in_progress"
-  );
-}
-
   // Highest priority first, oldest blocked-transition breaks ties: the same
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
@@ -671,7 +671,7 @@ export function isReviewPendingWaitingForCi(params: {
         agentId: agent.id,
         executionState: candidate.executionState,
         workProductMetadata: prMetadataByIssueId.get(candidate.id),
-        candidateCiState: (candidate as Record<string, unknown>).ciState,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
       })
     ) {
       result.alreadyActive += 1;
@@ -977,7 +977,7 @@ export async function findTopReadyIssueForAgent(
         agentId: agent.id,
         executionState: candidate.executionState,
         workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
-        candidateCiState: (candidate as Record<string, unknown>).ciState,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
       })
     ) {
       continue;
