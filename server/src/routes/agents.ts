@@ -1209,7 +1209,10 @@ export function agentRoutes(
       if (!id || !companyId) return Promise.resolve({ allowed: false });
       return decideAgentRead(req, { id, companyId });
     }));
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return rows
+      .map((row, index) => ({ row, decision: decisions[index] }))
+      .filter(({ decision }) => decision?.allowed)
+      .map(({ row }) => row);
   }
 
   /**
@@ -4151,20 +4154,22 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const actorMemberships = Array.isArray(req.actor.onBehalfOfMemberships)
+      ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+      : null;
+    // Authorize/filter before considering a conditional response: access grants
+    // can change independently of the agent and membership rows, so the
+    // authorized result set travels inside the validator key.
+    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
       req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
-      Array.isArray(req.actor.onBehalfOfMemberships)
-        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
-        : null,
+      actorMemberships,
       canReadConfigs,
+      result.map((agent) => agent.id),
     ]);
-    // Compute the validator before the response query so a matching ETag
-    // avoids hydrating and filtering the full agent list.
     const vk = await svc.listSummariesVersionKey(companyId, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const sourceRows = await svc.listSummaries(companyId);
-    const result = await filterAgentsForActor(req, sourceRows);
     const responseRows = canReadConfigs
       ? result
       : result.map((agent) => redactAgentListItemForRestrictedView(agent));
