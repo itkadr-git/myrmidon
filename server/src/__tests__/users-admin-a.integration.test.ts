@@ -17,7 +17,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { authAccounts, authSessions, authUsers, createDb, instanceSettings } from "@paperclipai/db";
+import { authAccounts, authSessions, authUsers, createDb, instanceSettings } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -32,7 +32,7 @@ import {
 } from "../myrmidon/users-admin-a/service.js";
 import { setBlockedUser } from "../myrmidon/users-admin-a/store.js";
 import type { Config } from "../config.js";
-import { resolveAuthSelfSignUp } from "@paperclipai/shared";
+import { resolveAuthSelfSignUp } from "@myrmidon/shared";
 import express from "express";
 import request from "supertest";
 

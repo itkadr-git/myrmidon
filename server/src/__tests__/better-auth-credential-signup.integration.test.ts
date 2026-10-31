@@ -16,7 +16,7 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authAccounts, createDb, instanceSettings } from "@paperclipai/db";
+import { authAccounts, createDb, instanceSettings } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
