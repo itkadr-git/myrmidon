@@ -18454,6 +18454,7 @@ export function issueRoutes(
               userId: resolvedByUserId,
               issues: svc,
               heartbeat,
+              db,
             });
           }
           continuationInteraction =
