@@ -785,7 +785,17 @@ export function mergeSwarmClaimSettings(
     // subset wholesale (absent keys fall back to the design default, not to
     // the previous stored value — the panel always submits the full subset).
     pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
-  };
+    capacityPolicy:
+      patch.capacityPolicy === undefined
+        ? base.capacityPolicy
+        : capacityPolicySchema.parse({
+            ...base.capacityPolicy,
+            ...patch.capacityPolicy,
+            fairness: { ...base.capacityPolicy.fairness, ...patch.capacityPolicy.fairness },
+            aging: { ...base.capacityPolicy.aging, ...patch.capacityPolicy.aging },
+            limits: { ...base.capacityPolicy.limits, ...patch.capacityPolicy.limits },
+            starvation: { ...base.capacityPolicy.starvation, ...patch.capacityPolicy.starvation },
+          }),
 }
 
 /** Where the effective per-agent queue switch came from. */
