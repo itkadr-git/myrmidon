@@ -145,6 +145,7 @@ import {
 import {
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -7653,7 +7654,7 @@ export function issueService(db: Db) {
       }
 
       if (
-        lockedIssue.status !== "in_progress" ||
+        !["in_progress", "in_review"].includes(lockedIssue.status) ||
         lockedIssue.assigneeAgentId !== input.actorAgentId ||
         lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
       ) {
@@ -7700,7 +7701,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
+            inArray(issues.status, ["in_progress", "in_review"]),
             eq(issues.assigneeAgentId, input.actorAgentId),
             eq(issues.checkoutRunId, input.expectedCheckoutRunId),
           ),
@@ -7761,7 +7762,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
+            inArray(issues.status, ["in_progress", "in_review"]),
             eq(issues.assigneeAgentId, input.actorAgentId),
             isNull(issues.checkoutRunId),
             or(
@@ -11840,25 +11841,53 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
-      const issueCompany = await db
-        .select({ companyId: issues.companyId })
+      const issueRow = await db
+        .select({
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          startedAt: issues.startedAt,
+          executionState: issues.executionState,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
-      if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(db, issueCompany.companyId, agentId, {
+      if (!issueRow) throw notFound("Issue not found");
+      await assertAssignableAgent(db, issueRow.companyId, agentId, {
         kind: "work",
       });
 
+      const parsedExecutionState = parseIssueExecutionState(issueRow.executionState);
+      const isReviewStage =
+        issueRow.status === "in_review" ||
+        (parsedExecutionState?.status === "pending" &&
+          parsedExecutionState?.currentStageType === "review");
+      const isCurrentReviewParticipant =
+        isReviewStage &&
+        ((parsedExecutionState?.currentParticipant?.type === "agent" &&
+          parsedExecutionState?.currentParticipant?.agentId === agentId) ||
+          issueRow.assigneeAgentId === agentId);
+
+      if (issueRow.status === "in_review" && !isCurrentReviewParticipant) {
+        throw conflict(
+          "Issue is in review and can only be checked out by the current review participant",
+          {
+            issueId: id,
+            agentId,
+            currentParticipant: parsedExecutionState?.currentParticipant ?? null,
+          },
+        );
+      }
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
-        issueCompany.companyId,
+        issueRow.companyId,
         id,
       );
       if (
         activePauseHold &&
         !(await isTreeHoldInteractionCheckoutAllowed(
-          issueCompany.companyId,
+          issueRow.companyId,
           checkoutRunId,
           activePauseHold,
         ))
@@ -11881,7 +11910,7 @@ export function issueService(db: Db) {
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(
         db,
-        issueCompany.companyId,
+        issueRow.companyId,
         [id],
       );
       const readiness = dependencyReadiness.get(id);
@@ -11890,7 +11919,7 @@ export function issueService(db: Db) {
       if (unresolvedBlockerIssueIds.length > 0) {
         const unresolvedBlockers = await listUnresolvedBlockerDetails(
           db,
-          issueCompany.companyId,
+          issueRow.companyId,
           unresolvedBlockerIssueIds,
           readiness?.pendingFinalizeBlockerIssueIds,
         );
@@ -11918,6 +11947,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
+      const nextStatus = issueRow.status === "in_review" ? "in_review" : "in_progress";
       const updated = await db
         .update(issues)
         .set({
@@ -11925,8 +11955,8 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
+          status: nextStatus,
+          startedAt: issueRow.startedAt ?? now,
           updatedAt: now,
         })
         .where(
@@ -11961,7 +11991,7 @@ export function issueService(db: Db) {
 
       if (
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        (current.status === "in_progress" || current.status === "in_review") &&
         current.checkoutRunId == null &&
         (current.executionRunId == null ||
           current.executionRunId === checkoutRunId) &&
@@ -11977,7 +12007,7 @@ export function issueService(db: Db) {
           .where(
             and(
               eq(issues.id, id),
-              eq(issues.status, "in_progress"),
+              inArray(issues.status, ["in_progress", "in_review"]),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
               or(
@@ -11994,7 +12024,7 @@ export function issueService(db: Db) {
       if (
         checkoutRunId &&
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        (current.status === "in_progress" || current.status === "in_review") &&
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
       ) {
@@ -12036,10 +12066,10 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: "in_progress",
+            status: current.status === "in_review" ? "in_review" : "in_progress",
             updatedAt: now,
           };
-          if (current.status !== "in_progress") {
+          if (current.status !== "in_progress" && current.status !== "in_review") {
             adoptionSet.startedAt = now;
           }
           const adopted = await db
@@ -12065,10 +12095,10 @@ export function issueService(db: Db) {
         }
       }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
+      // If this run already owns it and it's in_progress or in_review, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
+        (current.status === "in_progress" || current.status === "in_review") &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
         const row = await db
@@ -12122,7 +12152,7 @@ export function issueService(db: Db) {
         executionRunId: string | null;
       }) => {
         if (
-          candidate.status === "in_progress" &&
+          (candidate.status === "in_progress" || candidate.status === "in_review") &&
           candidate.assigneeAgentId === actorAgentId &&
           sameRunLock(candidate.checkoutRunId, actorRunId)
         ) {
@@ -12138,7 +12168,7 @@ export function issueService(db: Db) {
         executionRunId: string | null;
       }) =>
         actorRunId &&
-        candidate.status === "in_progress" &&
+        (candidate.status === "in_progress" || candidate.status === "in_review") &&
         candidate.assigneeAgentId === actorAgentId &&
         candidate.checkoutRunId == null &&
         (candidate.executionRunId == null ||
@@ -12175,7 +12205,7 @@ export function issueService(db: Db) {
 
         if (
           actorRunId &&
-          candidate.status === "in_progress" &&
+          (candidate.status === "in_progress" || candidate.status === "in_review") &&
           candidate.assigneeAgentId === actorAgentId &&
           candidate.checkoutRunId &&
           candidate.checkoutRunId !== actorRunId
