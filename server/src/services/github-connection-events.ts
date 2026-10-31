@@ -3,7 +3,9 @@ import {
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
+  heartbeatRuns,
   issueWorkProducts,
+  issueComments,
   issues,
   toolConnections,
   type Db,
@@ -20,9 +22,11 @@ import {
   type PaperclipCloudConnector,
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
+import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -107,11 +111,18 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     senderLogin: boundedString(payload.senderLogin, 100),
   };
   if (event.event === "pull_request") {
+    const rawMergeable = payload.mergeable ?? payload.mergeableState ?? payload.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : boundedString(rawMergeable, 40);
     return compact({
       ...base,
       number: positiveInteger(payload.number),
       url: githubUrl(payload.url),
       state: boundedString(payload.state, 40),
+      mergeable,
       merged: payload.merged === true,
       mergedAt: isoDate(payload.mergedAt),
       updatedAt: isoDate(payload.updatedAt),
@@ -131,8 +142,8 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       ...base,
       action: boundedString(payload.action, 100),
       repository: boundedString(payload.repository, 300),
-      number: workflowPullRequestNumber ?? checkPullRequestNumber,
-      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber,
+      number: workflowPullRequestNumber ?? checkPullRequestNumber ?? positiveInteger(payload.number),
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkPullRequestNumber ?? workflowPullRequestNumber ?? positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number),
       headSha: commitSha(payload.headSha),
       conclusion: boundedString(payload.conclusion, 40),
       status: boundedString(payload.status, 40),
@@ -219,6 +230,7 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       number,
       state,
       merged,
+      ...(stringValue(payload.mergeable) ? { mergeable: stringValue(payload.mergeable) } : {}),
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
@@ -259,7 +271,7 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
+  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db) {
     if (event.event !== "workflow_run" && event.event !== "check_suite") return;
     const payload = event.payload;
     const status = stringValue(payload.status);
@@ -274,27 +286,57 @@ export function githubConnectionEventService(
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
     const currentTime = now();
-    const products = await db.select().from(issueWorkProducts)
+    const products = await database.select().from(issueWorkProducts)
       .where(and(
         eq(issueWorkProducts.companyId, companyId),
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.provider, "github"),
       ));
+
+    const matchingProduct = products.find((product) => {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      return productRepository?.toLowerCase() === repository.toLowerCase() && productNumber === pullRequestNumber;
+    });
+
+    if (!active && matchingProduct) {
+      const metadata = record(matchingProduct.metadata);
+      const lastCompleted = record(metadata.lastCompletedCi);
+      if (lastCompleted && lastCompleted.headSha === headSha && lastCompleted.conclusion === conclusion) {
+        return;
+      }
+    }
+
     for (const product of products) {
       const metadata = record(product.metadata);
       const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
       const productNumber = positiveInteger(metadata.number)
         ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
-      await db.update(issueWorkProducts).set({
-        metadata: { ...metadata, activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null },
+      await database.update(issueWorkProducts).set({
+        metadata: {
+          ...metadata,
+          activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null,
+          ...(active ? { lastCompletedCi: null } : {
+            lastCompletedCi: {
+              repository,
+              number: pullRequestNumber,
+              headSha,
+              conclusion,
+              runId,
+              completedAt: currentTime.toISOString(),
+            },
+          }),
+        },
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
     }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
 
-    const completionProducts = await db.select({ product: issueWorkProducts, issue: issues })
+    const completionProducts = await database.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
       .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
       .where(and(
@@ -311,7 +353,68 @@ export function githubConnectionEventService(
     });
     if (!matching?.issue.assigneeAgentId) return;
 
-    await options.assignmentWakeup(matching.issue.assigneeAgentId, {
+    // A PR work product is the opt-in boundary: unrelated task types keep their
+    // existing routing. Never let an old head failure undo a newer PR review.
+    const metadata = record(matching.product.metadata);
+    const expectedHead = commitSha(metadata.headSha) ?? commitSha(metadata.sha);
+    let assigneeAgentId = matching.issue.assigneeAgentId;
+    const htmlUrl = githubUrl(payload.htmlUrl);
+    if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion)
+      && (!expectedHead || expectedHead === headSha)) {
+      const publications: ActivityPublication[] = [];
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues).where(and(
+          eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+        )).for("update");
+        if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+        const state = parseIssueExecutionState(current.executionState);
+        if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+        const executor = state?.returnAssignee;
+        if (executor && executor.type !== "agent") return;
+        const executorId = executor?.agentId ?? current.assigneeAgentId;
+        if (!executorId) return;
+        assigneeAgentId = executorId;
+        const reason = `CI ${conclusion}: ${repository}#${pullRequestNumber}, head ${headSha}, ${event.event} ${runId}${htmlUrl ? ` — ${htmlUrl}` : ""}`;
+        await tx.update(issues).set({
+          status: "in_progress",
+          statusVersion: sql`${issues.statusVersion} + 1`,
+          assigneeAgentId: executorId,
+          assigneeUserId: null,
+          ...(state ? { executionState: {
+            ...state, status: "changes_requested", reviewRequest: null,
+            lastDecisionOutcome: "changes_requested",
+          } } : {}),
+          updatedAt: now(),
+        }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+        await tx.insert(issueComments).values({
+          companyId, issueId: current.id, authorType: "system", body: reason,
+        });
+        await logActivity(tx as unknown as Db, {
+          companyId, actorType: "system", actorId: "system:github-ci",
+          action: "issue.ci_failed", entityType: "issue", entityId: current.id,
+          details: { previousStatus: "in_review", status: "in_progress", conclusion,
+            repository, pullRequestNumber, headSha, runId, htmlUrl, deliveryId: event.id },
+        }, publications);
+      });
+      for (const publication of publications) {
+        try { publishActivity(publication); }
+        catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+      }
+    }
+
+    if (matching.issue.monitorNextCheckAt) {
+      await database.update(issues).set({
+        monitorNextCheckAt: null,
+        monitorWakeRequestedAt: null,
+        monitorLastTriggeredAt: currentTime,
+        executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', 'null'::jsonb)`,
+        executionState: sql`case when ${issues.executionState} is not null then jsonb_set(${issues.executionState}, '{monitor,status}', '"cleared"'::jsonb) else null end`,
+        updatedAt: currentTime,
+      }).where(eq(issues.id, matching.issue.id));
+    }
+
+    const idempotencyKey = `ci_completed:${repository}:${pullRequestNumber}:${headSha}`;
+    await options.assignmentWakeup(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "ci_completed",
@@ -322,10 +425,11 @@ export function githubConnectionEventService(
         headSha,
         conclusion,
         runId,
+        htmlUrl,
         event: event.event,
         deliveryId: event.id,
       },
-      idempotencyKey: `ci_completed:${event.event}:${runId}:${headSha}`,
+      idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "system:github-ci",
       contextSnapshot: {
@@ -340,11 +444,11 @@ export function githubConnectionEventService(
     });
   }
 
-  async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     const appliedAt = now();
-    await db.update(externalObjects).set({
+    await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
       statusCategory: snapshot.statusCategory,
@@ -366,13 +470,154 @@ export function githubConnectionEventService(
     await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
       .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
     if (snapshot.merged && event.action === "closed") {
-      await issueThreadInteractionService(db, { wakeup: options.wakeup })
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+      if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+        await database.update(issueWorkProducts).set({
+          status: "merged",
+          updatedAt: appliedAt,
+        }).where(and(
+          eq(issueWorkProducts.id, matching.product.id),
+          eq(issueWorkProducts.companyId, companyId),
+        ));
+        await issueService(db).update(matching.issue.id, {
+          status: "done",
+          completedAt: now(),
+          actorAgentId: null,
+          actorUserId: null,
+          companyGuard: companyId,
+        }, database);
+      }
+      await issueThreadInteractionService(database, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,
           owner: snapshot.owner,
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    }
+
+    const isConflicting = (
+      stringValue(event.payload.mergeable) === "CONFLICTING" ||
+      event.payload.mergeable === false ||
+      stringValue(event.payload.mergeableState) === "CONFLICTING" ||
+      stringValue(event.payload.mergeable_state) === "dirty" ||
+      snapshot.data.mergeable === "CONFLICTING"
+    );
+
+    if (isConflicting && snapshot.state !== "closed" && !snapshot.merged) {
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+
+      if (matching) {
+        let transitioned = false;
+        let returnedAssigneeId: string | null = null;
+        const publications: ActivityPublication[] = [];
+        await database.transaction(async (tx) => {
+          const [current] = await tx.select().from(issues).where(and(
+            eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+          )).for("update");
+          if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+          const state = parseIssueExecutionState(current.executionState);
+          if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+          const executor = state?.returnAssignee;
+          if (executor && executor.type !== "agent") return;
+          let executorId = executor?.agentId ?? null;
+          if (!executorId && matching.product.createdByRunId) {
+            const [run] = await tx.select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, matching.product.createdByRunId))
+              .limit(1);
+            if (run?.agentId) executorId = run.agentId;
+          }
+          if (!executorId) executorId = current.assigneeAgentId;
+          if (!executorId) return;
+
+          const commentBody = `PR ${snapshot.owner}/${snapshot.repo}#${snapshot.number}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
+          await tx.update(issues).set({
+            status: "in_progress",
+            statusVersion: sql`${issues.statusVersion} + 1`,
+            assigneeAgentId: executorId,
+            assigneeUserId: null,
+            ...(state ? { executionState: {
+              ...state, status: "changes_requested", reviewRequest: null,
+              lastDecisionOutcome: "changes_requested",
+            } } : {}),
+            updatedAt: appliedAt,
+          }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+          await tx.insert(issueComments).values({
+            companyId, issueId: current.id, authorType: "system", body: commentBody,
+          });
+          await logActivity(tx as unknown as Db, {
+            companyId, actorType: "system", actorId: "system:github-conflict",
+            action: "issue.merge_conflict", entityType: "issue", entityId: current.id,
+            details: { previousStatus: "in_review", status: "in_progress", mergeable: "CONFLICTING",
+              repository: snapshot.repository, pullRequestNumber: snapshot.number, deliveryId: event.id },
+          }, publications);
+          transitioned = true;
+          returnedAssigneeId = executorId;
+        });
+        if (transitioned) {
+          for (const publication of publications) {
+            try { publishActivity(publication); }
+            catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
+          }
+          if (options.assignmentWakeup && returnedAssigneeId) {
+            await options.assignmentWakeup(returnedAssigneeId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "pr_merge_conflict",
+              payload: {
+                issueId: matching.issue.id,
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+                mergeable: "CONFLICTING",
+                event: event.event,
+                deliveryId: event.id,
+              },
+              idempotencyKey: `pr_merge_conflict:${snapshot.repository}#${snapshot.number}:${matching.issue.id}`,
+              requestedByActorType: "system",
+              requestedByActorId: "system:github-conflict",
+              contextSnapshot: {
+                issueId: matching.issue.id,
+                source: "github_pr_conflict",
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+              },
+            });
+          }
+        }
+      }
     }
   }
 
@@ -477,8 +722,8 @@ export function githubConnectionEventService(
     const postCommitPublications: ActivityPublication[] = [];
     try {
       const applyAndFinalize = async (database: Db) => {
-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
-        await applyCiCompletionEvent(companyId, normalizedEvent);
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent);
+        await applyCiCompletionEvent(companyId, normalizedEvent, database);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {
@@ -530,7 +775,7 @@ export function githubConnectionEventService(
           },
         }, postCommitPublications);
       };
-      if (event.event === "installation" || event.event === "installation_repositories") {
+      if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "installation" || event.event === "installation_repositories") {
         await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
       } else {
         await applyAndFinalize(db);

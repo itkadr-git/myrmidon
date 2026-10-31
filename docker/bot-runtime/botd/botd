@@ -20,7 +20,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { execFile } = require("node:child_process");
+const { execFile, spawnSync } = require("node:child_process");
 
 // The board writes the bot's API key and URL (and the botd settings) into the hermes
 // .env, not into the container env botd inherits from the entrypoint: load the keys
@@ -49,6 +49,7 @@ const HOME = process.env.MYRMIDON_WS_HOME || "/data/hermes/.myrmidon";
 const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
 const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
 const BASE_DIR = path.join(HOME, "git-base");
+const WORKSPACE_DIR = process.env.MYRMIDON_WS_WORKSPACE_ROOT || "/workspace";
 const ARCHIVE_DIR = path.join(HOME, "archive");
 const ATTENTION_PATH = path.join(HOME, "botd-attention.json");
 const COOLDOWN_PATH = path.join(HOME, "botd-cooldown.json");
@@ -175,8 +176,24 @@ function listArchives() {
   return out;
 }
 
+function runGitMigration({ migrationEnabled, gitMigrationMod, idle, log }) {
+  if (!migrationEnabled || !gitMigrationMod || typeof gitMigrationMod.migrateIdleGitRepos !== "function") return;
+  try {
+    const res = gitMigrationMod.migrateIdleGitRepos({
+      baseDir: BASE_DIR,
+      workspacesDir: WORKSPACE_DIR,
+      idle,
+      enabled: migrationEnabled,
+      log,
+    });
+    if (res && res.migrated > 0) log(`botd: git migration repacked ${res.migrated} repos (idle-gated)`);
+  } catch (err) {
+    log(`botd: git migration warning: ${err.message}`);
+  }
+}
+
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -188,6 +205,7 @@ async function main() {
     import(path.join(__dirname, "lib", "remove.js")),
     import(path.join(__dirname, "lib", "cache.js")),
     tryImport("repair.js"),
+    tryImport("git-migration.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -310,58 +328,38 @@ async function main() {
       archiveRoot: ARCHIVE_DIR,
       nestedGit: legacyMod.findNestedGit,
     });
-  const executor = {
-    // E: the CLI owns worktree removal and the archive; G: files under a scratch root
-    remove: async (a) => {
-      if (isWorkspace(a.path)) {
-        if (!owned(a.path)) return legacyRemove(a);
-        const force = /pr-merged/.test(a.reason || "");
-        const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
-        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
-      }
-      // a scratch directory holding repositories is archived like a legacy one
-      if (legacyMod.findNestedGit(a.path).length > 0) {
-        return legacyMod.archiveThenRemove(a, {
-          archiveMod,
-          isGit: (p) => fs.existsSync(path.join(p, ".git")),
-          remove: (p) => removePath(p, SCRATCH_ROOTS),
-          probe: probeRemoval(SCRATCH_ROOTS),
-          archiveRoot: ARCHIVE_DIR,
-          nestedGit: legacyMod.findNestedGit,
-        });
-      }
-      return removePath(a.path, SCRATCH_ROOTS);
-    },
-    "archive-remove": async (a) => {
-      if (isWorkspace(a.path)) {
-        if (!owned(a.path)) return legacyRemove(a);
-        const r = await ws(["close", a.key, "--force"]);
-        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
-      }
-      return legacyMod.archiveThenRemove(a, {
-        archiveMod,
-        isGit: (p) => fs.existsSync(path.join(p, ".git")),
-        remove: (p) => removePath(p, SCRATCH_ROOTS),
-        probe: probeRemoval(SCRATCH_ROOTS),
-        archiveRoot: ARCHIVE_DIR,
-        nestedGit: legacyMod.findNestedGit,
-      });
-    },
-    prune: async () => {
-      for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);
-      return "worktree prune";
-    },
-    "delete-base": async (a) => removePath(a.path, [BASE_DIR]),
-    "delete-archive": async (a) => removePath(a.path, [ARCHIVE_DIR]),
-  };
+  const executor = createWorkspaceExecutor({
+    isWorkspace,
+    owned,
+    legacyRemove,
+    ws,
+    removePath,
+    legacyMod,
+    probeRemoval,
+    SCRATCH_ROOTS,
+    ARCHIVE_DIR,
+    archiveMod,
+    listBases,
+    run,
+    GIT_BIN,
+    BASE_DIR,
+  });
 
   // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
   // during this pass are never evicted: the only copy of someone's work outlives the quota.
-  const retention = async ({ startedAt }) => {
+  const retention = async ({ startedAt, desired: passDesired }) => {
     if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
-    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
+    // Verified retention enforces independent backup receipt verification before deletion.
+    // Unverified archives remain intact; deletion requires verified OneDrive receipt.
+    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt, requireVerifiedReceipt: true });
     if (!r.ok) throw new Error(r.reason);
     if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
+
+    // Idle git migration (OPE-9673):
+    // Repack repositories with alternates when bot is idle, gated by gitMigrationEnabled,
+    // serialized across fleet with nice/ionice and durable .repack-migrated marker.
+    const migrationEnabled = process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "1" || process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "true";
+    runGitMigration({ migrationEnabled, gitMigrationMod, idle: runProbe ? (runProbe.probe().live === false) : false, log });
   };
 
   const loop = loopMod.createLoop({
@@ -407,7 +405,70 @@ async function main() {
   process.on("SIGINT", bye);
 }
 
-main().catch((err) => {
-  log(`botd: fatal: ${String(err && err.message).slice(0, 300)}`);
-  process.exit(1);
-});
+function createWorkspaceExecutor(deps) {
+  const { isWorkspace, owned, legacyRemove, ws, removePath, legacyMod, probeRemoval, SCRATCH_ROOTS, ARCHIVE_DIR, archiveMod, listBases, run, GIT_BIN, BASE_DIR } = deps;
+  return {
+    remove: async (a) => {
+      if (isWorkspace && isWorkspace(a.path)) {
+        if (owned && !owned(a.path)) return legacyRemove ? legacyRemove(a) : undefined;
+        const isMerged = /pr-merged/.test(a.reason || "");
+        if (!isMerged && !/orphan/.test(a.reason || "")) {
+          return { deferred: "unmerged-pr", detail: `workspace ${a.key} requires closed + merged PR before cleanup` };
+        }
+        const force = isMerged;
+        const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
+        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
+      }
+      if (legacyMod && legacyMod.findNestedGit && legacyMod.findNestedGit(a.path).length > 0) {
+        return legacyMod.archiveThenRemove(a, {
+          archiveMod,
+          isGit: (p) => fs.existsSync(path.join(p, ".git")),
+          remove: (p) => removePath(p, SCRATCH_ROOTS),
+          probe: probeRemoval(SCRATCH_ROOTS),
+          archiveRoot: ARCHIVE_DIR,
+          nestedGit: legacyMod.findNestedGit,
+        });
+      }
+      return removePath(a.path, SCRATCH_ROOTS);
+    },
+    "archive-remove": async (a) => {
+      if (isWorkspace && isWorkspace(a.path)) {
+        if (owned && !owned(a.path)) return legacyRemove ? legacyRemove(a) : undefined;
+        const isMerged = /pr-merged/.test(a.reason || "");
+        if (!isMerged && !/orphan/.test(a.reason || "")) {
+          return { deferred: "unmerged-pr", detail: `workspace ${a.key} requires closed + merged PR before cleanup` };
+        }
+        const r = await ws(["close", a.key, "--force"]);
+        return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
+      }
+      if (legacyMod && legacyMod.findNestedGit) {
+        return legacyMod.archiveThenRemove(a, {
+          archiveMod,
+          isGit: (p) => fs.existsSync(path.join(p, ".git")),
+          remove: (p) => removePath(p, SCRATCH_ROOTS),
+          probe: probeRemoval(SCRATCH_ROOTS),
+          archiveRoot: ARCHIVE_DIR,
+          nestedGit: legacyMod.findNestedGit,
+        });
+      }
+      return removePath(a.path, SCRATCH_ROOTS);
+    },
+    prune: async () => {
+      if (listBases && run) {
+        for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);
+      }
+      return "worktree prune";
+    },
+    "delete-base": async (a) => removePath(a.path, [BASE_DIR]),
+    "delete-archive": async (a) => removePath(a.path, [ARCHIVE_DIR]),
+  };
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    log(`botd: fatal: ${String(err && err.message).slice(0, 300)}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { createWorkspaceExecutor, runGitMigration };

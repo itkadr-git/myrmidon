@@ -45,6 +45,15 @@ GET /api/companies/{companyId}/costs/by-project
 
 Returns per-project cost breakdown for the current month.
 
+## Costs by Day
+
+```
+GET /api/companies/{companyId}/costs/by-day?from={from}&to={to}
+```
+
+Returns daily cost breakdown in ascending date order for the specified period (or the last 30 days if omitted). Maximum period length is 93 days.
+Days with no cost activity within the period are returned with zero values.
+
 ## Budget Management
 
 ### Set Company Budget

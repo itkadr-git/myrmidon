@@ -49,6 +49,22 @@ export const activityLog = pgTable(
       table.action,
       table.createdAt.desc(),
     ),
+    // myrmidon(DB-CARE / 1.6.6 DEFECT): the chat-holds feature health leg
+    // also filters details->>'continuation' (ports.ts activity.latest), and
+    // the composite above still evaluated that residual per heap row — the
+    // rc.16 acceptance (25.10) measured 16k rows removed by filter, 36-52 ms
+    // warm, missing the <50 ms gate. This expression index carries the
+    // details key as an index column, so the leg reads the (company, action,
+    // continuation) slice directly with no heap residual. Not partial on the
+    // value: the production statement binds key and value as parameters, and
+    // a bound parameter never implies a partial-index predicate. See
+    // migration 0428_activity_log_company_action_continuation_idx.
+    companyActionContinuationIdx: index("activity_log_company_action_continuation_idx").on(
+      table.companyId,
+      table.action,
+      sql`((${table.details} ->> 'continuation'))`,
+      table.createdAt.desc(),
+    ),
     // myrmidon(DB-CARE): the attention feed resolves the issues whose assignee
     // left one agent by reading the audit rows' previous-assignee payload
     // (server/src/services/attention.ts, details->'_previous'). Persisted from

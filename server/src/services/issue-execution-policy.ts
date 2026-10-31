@@ -79,6 +79,11 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /**
+   * myrmidon(OPE-10045): internal — the participant of a stage whose id no
+   * longer exists in the policy; preferred when the replacement stage starts.
+   */
+  restartPreferredParticipant?: IssueExecutionStagePrincipal | null;
 };
 
 type TransitionResult = {
@@ -395,9 +400,26 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
   };
 }
 
+export function safeNormalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  if (input == null) return null;
+  try {
+    return normalizeIssueExecutionPolicy(input);
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Older persisted rows or legacy callers may contain `sequential`; normalize it to `normal`
+  // so existing policies with stages and monitor are preserved without failing validation.
+  const legacyCoerced =
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { mode?: unknown }).mode === "sequential"
+      ? { ...input, mode: "normal" }
+      : input;
+  const parsed = issueExecutionPolicySchema.safeParse(legacyCoerced);
   if (!parsed.success) {
     throw unprocessable("Invalid execution policy", parsed.error.flatten());
   }
@@ -877,6 +899,25 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    // myrmidon(OPE-10045): the stored stage id is gone from the policy (the
+    // policy was re-sent, e.g. by an operator returning a blocked task to
+    // review). A request for `in_review` must start the policy's stage, not
+    // leave the task in review with an idle state and no participant who could
+    // decide. The return assignee and the previous participant carry over.
+    if (requestedStatus === "in_review") {
+      return applyIssueExecutionStageTransition({
+        ...input,
+        issue: {
+          ...input.issue,
+          executionState: {
+            ...blankExecutionState(),
+            returnAssignee: existingState.returnAssignee ?? null,
+            monitor: existingState.monitor ?? null,
+          },
+        },
+        restartPreferredParticipant: existingState.currentParticipant ?? null,
+      });
+    }
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
@@ -1287,7 +1328,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
-        : explicitAssignee,
+        : explicitAssignee ?? input.restartPreferredParticipant ?? null,
     exclude: pendingStage.participants.length === 1 &&
       stageHasParticipant(pendingStage, participantExclusion) ? returnAssignee : participantExclusion,
   });
@@ -1345,7 +1386,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? safeNormalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,
@@ -1481,7 +1522,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       };
     } else {
       patch.executionPolicy = {
-        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        ...(input.policy ?? previousPolicy ?? { mode: "normal", commentRequired: false, stages: [] }),
         monitor: restoredMonitor,
       };
       patch.monitorNextCheckAt = new Date(nextCheckAt);

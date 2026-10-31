@@ -211,4 +211,103 @@ describeEmbeddedPostgres("heartbeat run context columns", () => {
     // No full snapshot travels to the feed: the projection carries two ids only.
     expect(rows.find((row) => row.id === newRunId)).not.toHaveProperty("contextSnapshot");
   });
+
+  it("list() filters by wakeReason across thin columns and legacy snapshot fallback", async () => {
+    const runOld = randomUUID();
+    const runNew = randomUUID();
+    const runOther = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: runOld,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { wakeReason: "timer" },
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runNew,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextWakeReason: "timer",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runOther,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextWakeReason: "issue_assigned",
+    });
+
+    const timerRuns = await heartbeatService(db).list(companyId, agentId, 50, {
+      wakeReason: "timer",
+    });
+    const ids = timerRuns.map((r) => r.id);
+    expect(ids).toContain(runOld);
+    expect(ids).toContain(runNew);
+    expect(ids).not.toContain(runOther);
+  });
+
+  it("list() filters by hasResult selecting only runs with resultJson populated", async () => {
+    const runWithResult = randomUUID();
+    const runWithoutResult = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: runWithResult,
+      companyId,
+      agentId,
+      status: "succeeded",
+      resultJson: { summary: "Finished work" },
+      contextWakeReason: "issue_commented",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runWithoutResult,
+      companyId,
+      agentId,
+      status: "succeeded",
+      resultJson: null,
+      contextWakeReason: "issue_commented",
+    });
+
+    const resultRuns = await heartbeatService(db).list(companyId, agentId, 50, {
+      hasResult: true,
+      wakeReason: "issue_commented",
+    });
+    const ids = resultRuns.map((r) => r.id);
+    expect(ids).toContain(runWithResult);
+    expect(ids).not.toContain(runWithoutResult);
+  });
+
+  it("listVersionKey produces distinct keys when filtered by wakeReason or hasResult", async () => {
+    const runA = randomUUID();
+    const runB = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: runA,
+      companyId,
+      agentId,
+      status: "succeeded",
+      resultJson: { summary: "Result A" },
+      contextWakeReason: "timer",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runB,
+      companyId,
+      agentId,
+      status: "succeeded",
+      resultJson: null,
+      contextWakeReason: "issue_assigned",
+    });
+
+    const keyAll = await heartbeatService(db).listVersionKey(companyId, agentId, 50);
+    const keyTimer = await heartbeatService(db).listVersionKey(companyId, agentId, 50, false, undefined, "timer");
+    const keyHasResult = await heartbeatService(db).listVersionKey(companyId, agentId, 50, false, undefined, undefined, true);
+
+    expect(keyTimer).not.toBe(keyAll);
+    expect(keyHasResult).not.toBe(keyAll);
+  });
 });
