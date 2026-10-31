@@ -72,6 +72,11 @@ function toRevisionSummary(revision: KnowledgeRevisionDto): KnowledgeRevisionSum
     at: revision.createdAt,
     by: revision.approvedBy ?? "",
     note: revision.changeSummary,
+    sources: revision.sources.map((source) => ({
+      kind: source.kind,
+      ref: source.ref,
+      label: source.note ?? undefined,
+    })),
   };
 }
 
