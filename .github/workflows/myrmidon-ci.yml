@@ -145,7 +145,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
-          # (same rule as rel/* PRs: only while the selection fits MAX_FAST_FILES_PER_PACKAGE; full-ci label keeps full).
+          # (full-ci label keeps full). rel/* PRs use the same lowering but escalate back to full above
+          # MAX_FAST_FILES_PER_PACKAGE; other PRs add --pr-light: a package over the limit runs its direct
+          # tests (changed, next to the source, direct importers, shared guards; capped, drops are logged)
+          # instead of going full. main, merge_group and tags never get either flag.
           PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
@@ -165,6 +168,8 @@ jobs:
             elif [[ "${PR_TITLE:-}" =~ (rc\.[0-9]+|release) ]] || [[ "${BASE_REF:-}" =~ ^rel/ ]] || [[ "${HEAD_REF:-}" =~ ^rel/ ]]; then
               echo "Release stream detected ($PR_TITLE / ${BASE_REF:-} / ${HEAD_REF:-}): applying --release-fast"
               args+=(--release-fast)
+            elif [ "$EVENT" = "pull_request" ] && [ "${PR_FAST:-}" = "true" ]; then
+              args+=(--release-fast --pr-light)
             fi
             if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
               pr_head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null || true)"
@@ -172,9 +177,6 @@ jobs:
                 echo "::warning title=Obsolete Run::Commit ${HEAD:-} is superseded by head $pr_head on PR #$PR_NUMBER. Running minimal docs tier."
                 args=(plan --out "$RUNNER_TEMP/plan.json" --tier docs)
               fi
-            fi
-            if [ "$EVENT" = "pull_request" ] && [ "${PR_FAST:-}" = "true" ]; then
-              args+=(--release-fast)
             fi
           fi
           is_rel="false"
@@ -559,6 +561,12 @@ jobs:
           mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
+
+      - name: Brand release audit (DEBRAND gate)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/myrmidon/docs-branding-guard.mjs
+          node scripts/myrmidon/brand-release-audit.mjs --gate
 
       - name: SQL template lint (myrmidon)
         if: ${{ !cancelled() }}
