@@ -465,8 +465,8 @@ describe("prometheus exposition format", () => {
       const help = /^# HELP (\S+) .+$/.exec(lines[0]);
       expect(help, `block must start with HELP: ${lines[0]}`).not.toBeNull();
       const name = help![1];
-      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary)$`));
-      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))).toBe(true);
+      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary|histogram)$`));
+      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `) || line.startsWith(`${name}_`))).toBe(true);
       return name;
     });
     expect(names.sort()).toEqual([...METRIC_FAMILIES].sort());
