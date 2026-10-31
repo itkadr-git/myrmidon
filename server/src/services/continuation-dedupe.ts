@@ -18,7 +18,6 @@ export async function tryClaimContinuationKeyInTransaction(
   input: { companyId: string; key: string; issueId: string; ttl: number },
 ): Promise<ContinuationDedupeOutcome> {
   const now = new Date();
-  await clearExpiredContinuationKeys(tx, input.companyId, now);
   let inserted: { key: string }[];
   try {
     inserted = await tx
@@ -29,7 +28,15 @@ export async function tryClaimContinuationKeyInTransaction(
         issueId: input.issueId,
         expiresAt: new Date(now.getTime() + input.ttl),
       })
-      .onConflictDoNothing({ target: [issueContinuationKeys.companyId, issueContinuationKeys.key] })
+      .onConflictDoUpdate({
+        target: [issueContinuationKeys.companyId, issueContinuationKeys.key],
+        set: {
+          expiresAt: new Date(now.getTime() + input.ttl),
+          issueId: input.issueId,
+          createdAt: now,
+        },
+        where: lt(issueContinuationKeys.expiresAt, now),
+      })
       .returning({ key: issueContinuationKeys.key });
   } catch (err) {
     if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) {

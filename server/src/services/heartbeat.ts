@@ -28750,7 +28750,7 @@ export function heartbeatService(
       }
     }
 
-    if (opts.failedRunId) {
+    if (opts.failedRunId && reason === "retry_failed_run") {
       const failed = await getRun(opts.failedRunId);
       if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
           reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
@@ -30896,17 +30896,29 @@ export function heartbeatService(
               .orderBy(desc(heartbeatRuns.finishedAt))
               .limit(1);
             const lastFinishedAt = lastRunRows[0]?.finishedAt ?? null;
+            const eventConditions = [
+              eq(activityLog.companyId, agent.companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+            ];
+            if (lastFinishedAt) {
+              eventConditions.push(gt(activityLog.createdAt, lastFinishedAt));
+            }
             const eventRows = continuationEventId
               ? [{ id: continuationEventId }]
-              : lastFinishedAt
-                ? await tx.select({ id: activityLog.id }).from(activityLog).where(and(
-                    eq(activityLog.companyId, agent.companyId),
-                    eq(activityLog.entityType, "issue"),
-                    eq(activityLog.entityId, issue.id),
-                    gt(activityLog.createdAt, lastFinishedAt),
-                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
-                  )).orderBy(desc(activityLog.createdAt), desc(activityLog.id))
-                : [];
+              : await tx
+                  .select({
+                    id: activityLog.id,
+                    action: activityLog.action,
+                    actorType: activityLog.actorType,
+                    actorId: activityLog.actorId,
+                    details: activityLog.details,
+                    createdAt: activityLog.createdAt,
+                  })
+                  .from(activityLog)
+                  .where(and(...eventConditions))
+                  .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
 
             if (!isRecovery && eventRows.length === 0) {
               await tx.insert(agentWakeupRequests).values({
@@ -30919,7 +30931,7 @@ export function heartbeatService(
               return { kind: "skipped" as const };
             }
 
-            const eventRevision = eventRows.map((row) => row.id).sort().join(",");
+            const eventRevision = eventRows.length > 0 ? eventRows[0]!.id : null;
             const revision = isRecovery
               ? eventRevision
                 ? `recovery:${recoveryToken}:${eventRevision}`
@@ -30932,9 +30944,10 @@ export function heartbeatService(
 
             if (!alreadyClaimedKey) {
               const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
-              if (await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+              const claimOutcome = await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
                 companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
-              }) === "deduped") {
+              });
+              if (claimOutcome === "deduped") {
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                   reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
