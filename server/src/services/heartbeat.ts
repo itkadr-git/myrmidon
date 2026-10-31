@@ -79,9 +79,11 @@ import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
+  buildContinuationKey,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
 } from "@myrmidon/shared";
+import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-dedupe.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -1197,6 +1199,9 @@ const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
+// Ten bounded attempts at the maximum five-minute delay fit in one hour.
+// The actual claim also covers a later dueAt supplied by retry policy.
+const CONTINUATION_RETRY_CLAIM_TTL_MS = 60 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
   "scheduled_retry",
   "queued",
@@ -16045,14 +16050,13 @@ export function heartbeatService(
       run,
       retryContextSnapshot,
     );
-    const continuationRetryIdempotencyKey =
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-        ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-        : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
-          ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-          : null;
+    const isContinuationRetry =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+    let continuationRetryIdempotencyKey: string | null = null;
 
     type ScheduledRetryTransactionResult =
+      | { outcome: "deduped" }
       | {
           outcome: "scheduled";
           run: typeof heartbeatRuns.$inferSelect;
@@ -16104,6 +16108,33 @@ export function heartbeatService(
               reusedExisting: true,
             };
         }
+        if (isContinuationRetry) {
+          if (issueId) {
+            await tx.execute(
+              sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+            );
+            const [humanComment] = await tx.select({ id: issueComments.id })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId),
+                isNotNull(issueComments.authorUserId),
+                isNull(issueComments.authorAgentId),
+                or(isNull(issueComments.authorType), eq(issueComments.authorType, "user")),
+                gt(issueComments.createdAt, run.startedAt ?? run.createdAt),
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+            continuationRetryIdempotencyKey = buildContinuationKey({
+              issueId, event: "issue_continuation_needed",
+              head: `${retryReason}:${humanComment?.id ?? run.id}`,
+            });
+          } else {
+            // Taskless retries have no issue registry row; keep their old path.
+            const prefix = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+              ? "max-turn-continuation" : "interaction-continuation";
+            continuationRetryIdempotencyKey = `${prefix}:${run.companyId}:no-issue:${run.id}:${schedule.attempt}`;
+          }
+        }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
             await tx.execute(
@@ -16124,6 +16155,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16191,6 +16225,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16344,6 +16381,18 @@ export function heartbeatService(
           }
         }
 
+        const claimInput = isContinuationRetry && issueId && continuationRetryIdempotencyKey
+          ? { companyId: run.companyId, issueId, key: continuationRetryIdempotencyKey,
+              ttl: Math.max(CONTINUATION_RETRY_CLAIM_TTL_MS,
+                Math.max(0, schedule.dueAt.getTime() - now.getTime()) * schedule.maxAttempts) }
+          : null;
+        if (claimInput && await tryClaimContinuationKey(tx as unknown as Db, claimInput) === "deduped") {
+          return { outcome: "deduped" };
+        }
+        // A savepoint rolls back partial wake/run writes before we release our
+        // claim. Never remove another producer's claim or scan its successors.
+        try {
+          return await tx.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -16391,6 +16440,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!wakeupRequest) throw new Error("continuation_retry_enqueue_null");
         const scheduledRun = await tx
           .insert(heartbeatRuns)
           .values({
@@ -16417,6 +16467,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!scheduledRun) throw new Error("continuation_retry_enqueue_null");
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -16551,9 +16602,26 @@ export function heartbeatService(
           run: scheduledRun,
           reusedExisting: false,
         };
+          });
+        } catch (error) {
+          if (claimInput) await releaseContinuationKey(tx as unknown as Db, claimInput);
+          if (error instanceof Error && error.message === "continuation_retry_enqueue_null") {
+            return { outcome: "not_scheduled", reason: "Continuation retry enqueue returned no run",
+              errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+          throw error;
+        }
       },
     );
 
+    if (scheduleResult.outcome === "deduped") {
+      await appendRunEvent(run, {
+        eventType: "lifecycle", stream: "system", level: "info",
+        message: "Reused existing continuation retry claim",
+        payload: { retryReason, idempotencyKey: continuationRetryIdempotencyKey, outcome: "deduped" },
+      });
+      return { outcome: "not_scheduled" as const, reason: "Continuation retry already claimed", issueId };
+    }
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",
