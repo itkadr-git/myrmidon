@@ -91,7 +91,10 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       expect(calledContext.wakeReason).toBe("security_incident");
       expect(calledContext.priority).toBe("P0");
 
-      const deliveredDigest = calledContext.eventDigest;
+      const deliveredDigest = calledContext.eventDigest as {
+        eventCount: number;
+        events: Array<{ type: string }>;
+      };
       expect(deliveredDigest).toBeDefined();
       expect(deliveredDigest.eventCount).toBe(3);
       expect(deliveredDigest.events).toHaveLength(3);
