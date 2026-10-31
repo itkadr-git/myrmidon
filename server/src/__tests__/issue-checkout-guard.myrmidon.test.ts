@@ -364,6 +364,7 @@ describeEmbeddedPostgres("issue checkout run-context gate and lock-owner status 
   it("checkout of in_review issue by current review participant preserves in_review status and takes execution lock (OPE-10082)", async () => {
     const { companyId, agentId, currentRunId } = await seed();
     const issueId = randomUUID();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, currentRunId));
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -400,6 +401,7 @@ describeEmbeddedPostgres("issue checkout run-context gate and lock-owner status 
       role: "engineer",
       status: "active",
     });
+    const issueId = randomUUID();
     const otherRunId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: otherRunId,
@@ -408,8 +410,8 @@ describeEmbeddedPostgres("issue checkout run-context gate and lock-owner status 
       status: "running",
       invocationSource: "assignment",
       startedAt: new Date(),
+      contextSnapshot: { issueId },
     });
-    const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId,

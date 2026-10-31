@@ -504,6 +504,8 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       issueId,
       type: "pull_request",
       provider: "github",
+      title: "PR #2078",
+      status: "open",
       metadata: {
         ciState: "unknown",
       },
