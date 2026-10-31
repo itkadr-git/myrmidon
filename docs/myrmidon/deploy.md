@@ -990,8 +990,8 @@ be published by hand.
 
 **How it works.** The **Myrmidon release publish** workflow (started by the
 `myr-vX.Y.Z` tag push) opens an issue titled `release-freeze: <tag>`; the
-issue being open IS the freeze. The **Release freeze gate** check (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+issue being open IS the freeze. The **Release freeze gate** check (integrated
+directly into the `plan` job of `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 fails on every PR into `main` while the freeze is active. As soon as
 `Myrmidon CI` is green on the tag, the same tag workflow closes the issue —
 freeze cleared. The state is derived from GitHub (newest tag + its CI + the

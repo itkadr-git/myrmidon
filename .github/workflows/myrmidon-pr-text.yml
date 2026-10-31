@@ -15,9 +15,12 @@ name: Myrmidon PR text
 # the `checks` job of myrmidon-ci.yml (scripts/myrmidon/ai-signature-scan.mjs).
 # See docs/myrmidon/publish-scan.md.
 
+# `edited` only: on push (opened/synchronize/reopened), the checks job in
+# myrmidon-ci.yml already scans title and description together with commits.
+# Triggering only on `edited` eliminates duplicate workflow runs on every push.
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize]
+    types: [edited]
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
   pr-text:
     name: PR text scan
     # Light gate: own pool (vars.CI_RUNNER_LIGHT, same as `plan`), the GitHub-hosted queue is hours long.
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || vars.MYR_RUNNER || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository
