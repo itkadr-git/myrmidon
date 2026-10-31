@@ -101,6 +101,7 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  failedBeforeModel?: boolean;
   usage?: UsageSummary;
   /**
    * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
