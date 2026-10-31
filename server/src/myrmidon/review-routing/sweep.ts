@@ -636,7 +636,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
               })
             : false);
 
-        if (hasBoardApproval && !head.labels?.includes("review-approved")) {
+        if (hasBoardApproval) {
           try {
             const propRes = await deps.approvalPropagator({
               companyId,
@@ -645,7 +645,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
               headSha: head.headSha,
               reviewedHeadSha: head.headSha,
             });
-            if (propRes.success) {
+            if (propRes.success && propRes.action !== "noop" && propRes.action !== "skipped") {
               result.prApprovalsPropagated += 1;
             }
           } catch (err) {
