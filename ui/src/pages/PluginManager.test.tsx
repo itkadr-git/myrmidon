@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { PluginRecord } from "@shared/types/plugin";
-import { queryKeys } from "../queryKeys";
+import type { PluginRecord } from "@myrmidon/shared";
+import { queryKeys } from "../lib/queryKeys";
 import { pluginsApi } from "../api/plugins";
 import { PluginManager } from "./PluginManager";
 

@@ -107,6 +107,10 @@ async function waitForReadiness(baseUrl, timeoutMs = 30_000) {
 
 function startServer(managedPlugins = ["kubernetes", "modal"]) {
   const managedConfig = JSON.stringify({
+    v: 1,
+    mode: "cloud",
+    catalogVersion: "1.6.6",
+    features: {},
     plugins: {
       autoInstall: managedPlugins,
     },
