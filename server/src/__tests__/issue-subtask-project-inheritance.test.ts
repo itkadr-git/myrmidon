@@ -6,9 +6,9 @@ const mockWakeup = vi.fn(async () => ({ queued: false }));
 const mockLogActivity = vi.fn(async () => undefined);
 
 const parentIssue = {
-  id: "parent-issue-1",
+  id: "a1111111-1111-4111-8111-111111111111",
   companyId: "company-1",
-  projectId: "proj-parent-123",
+  projectId: "b2222222-2222-4222-8222-222222222222",
   title: "Parent Issue",
   status: "in_progress",
   casteKey: "engineer",
@@ -169,18 +169,19 @@ describe("myrmidon(1.6.6 OPE-9996): Subtask inherits parent's projectId", () => 
 
   it("retains explicit projectId when provided on subtask create", async () => {
     const app = await createApp();
+    const explicitProjectId = "c3333333-3333-4333-8333-333333333333";
     const res = await request(app)
       .post("/api/companies/company-1/issues")
       .send({
         title: "Child task with explicit projectId",
         parentId: parentIssue.id,
-        projectId: "proj-different-456",
+        projectId: explicitProjectId,
       });
 
     expect(res.status).toBe(201);
     expect(capturedCreateInput).not.toBeNull();
     expect(capturedCreateInput?.parentId).toBe(parentIssue.id);
-    expect(capturedCreateInput?.projectId).toBe("proj-different-456");
+    expect(capturedCreateInput?.projectId).toBe(explicitProjectId);
   });
 
   it("does not set projectId when creating root task without projectId", async () => {
@@ -193,7 +194,7 @@ describe("myrmidon(1.6.6 OPE-9996): Subtask inherits parent's projectId", () => 
 
     expect(res.status).toBe(201);
     expect(capturedCreateInput).not.toBeNull();
-    expect(capturedCreateInput?.parentId).toBeNull();
-    expect(capturedCreateInput?.projectId).toBeNull();
+    expect(capturedCreateInput?.parentId ?? null).toBeNull();
+    expect(capturedCreateInput?.projectId ?? null).toBeNull();
   });
 });
