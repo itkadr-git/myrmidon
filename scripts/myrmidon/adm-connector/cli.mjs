@@ -51,7 +51,17 @@ export async function main() {
     load: restLoader({ baseUrl: process.env.PAPERCLIP_API_URL, companyId: process.env.PAPERCLIP_COMPANY_ID, token: process.env.PAPERCLIP_API_KEY }),
     log: metric => appendFile(`${dir}/metrics.jsonl`, JSON.stringify(metric) + '\n', { mode: 0o600 }),
   });
-  const result = await hooks.run(event);
+  let result;
+  try {
+    result = await hooks.run(event);
+  } catch (error) {
+    if (event.hook_event_name !== 'UserPromptSubmit') throw error;
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: event.hook_event_name,
+      additionalContext: 'knowledge degraded; connector unavailable; continue without ADM knowledge.',
+    } }));
+    return;
+  }
   if (rollout.mode === MODES.MAIN && result.context) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event.hook_event_name, additionalContext: result.context } }));
   }

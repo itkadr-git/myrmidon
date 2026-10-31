@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
 
 export const TRIGGERS = Object.freeze({
   ssh: /(?<![\p{L}\p{N}_])(?:ssh|sshd|scp)(?![\p{L}\p{N}_])/iu,
@@ -20,7 +20,7 @@ const summary = item => `${Array.from(`${item.title}: ${item.summary}`).slice(0,
 
 /** load is the validated cache/REST boundary; never accept an unchecked disk cache here. */
 export function createHooks({ stateDir, load, log = async () => {}, mode = 'main' }) {
-  return { async run(event) {
+  return { stateDir, async run(event) {
     const effectiveMode = event.mode ?? mode;
     if (effectiveMode === 'disabled') {
       return { context: '', bytes: 0, sessionBytes: 0, mode: 'disabled', shadow: false };
@@ -36,9 +36,21 @@ export function createHooks({ stateDir, load, log = async () => {}, mode = 'main
         await mkdir(lock, { mode: 0o700 });
         break;
       } catch (err) {
-        if (err.code === 'EEXIST' && Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, 25));
-          continue;
+        if (err.code === 'EEXIST') {
+          try {
+            const lockInfo = await stat(lock);
+            if (Date.now() - lockInfo.mtimeMs > 30_000) {
+              await rm(lock, { recursive: true, force: true });
+              continue;
+            }
+          } catch (lockError) {
+            if (lockError.code !== 'ENOENT') throw lockError;
+            continue;
+          }
+          if (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 25));
+            continue;
+          }
         }
         throw err;
       }

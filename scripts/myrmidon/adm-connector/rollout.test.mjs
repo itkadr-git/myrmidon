@@ -404,6 +404,19 @@ test('cli.mjs respects rollout mode: disabled exits 0 with no stdout, shadow emi
   }
 });
 
+test('UserPromptSubmit failure degrades without blocking the prompt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'adm-cli-degraded-'));
+  const cliPath = join(import.meta.dirname, 'cli.mjs');
+  const child = spawn(process.execPath, [cliPath], { env: { ...process.env, ADM_CONNECTOR_STATE_DIR: dir, PAPERCLIP_API_URL: 'http://127.0.0.1:1', PAPERCLIP_COMPANY_ID: 'test', ADM_CONNECTOR_MODE: 'main' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  child.stdout.on('data', data => { stdout += data; });
+  child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'degraded', prompt: 'ssh host' }));
+  const code = await new Promise(resolve => child.on('close', resolve));
+  assert.equal(code, 0);
+  assert.match(stdout, /knowledge degraded/);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('rollout.mjs CLI commands work as expected', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'adm-rollout-cli-'));
   const rolloutCliPath = join(import.meta.dirname, 'rollout.mjs');
