@@ -23,6 +23,7 @@ import {
   type BaselineWindow,
 } from "./metrics.js";
 import { baselineRoutes } from "./routes.js";
+import { computeLastCompleteWeeks } from "./service.js";
 import {
   BASELINE_WINDOW_DAYS,
   readBaselineSettings,
@@ -259,6 +260,72 @@ describe("myrmidon(1.6-BASELINE) metrics", () => {
     // Both bounds are inclusive; one millisecond past `to` is out.
     expect(boundary.byProject.find((g) => g.key === null)!.tasksCompleted).toBe(2);
   });
+
+  it("computes overall metrics aggregating all tasks in window and preserves byProject/byRole", () => {
+    const input = seededInput();
+    const metrics = computeBaselineMetrics(input, WINDOW);
+
+    // overall aggregates t1, t2, t3
+    expect(metrics.overall.key).toBe("overall");
+    expect(metrics.overall.tasksCompleted).toBe(3);
+
+    // Regression: byProject and byRole remain intact
+    expect(metrics.byProject).toHaveLength(2);
+    expect(metrics.byRole).toHaveLength(3);
+
+    // t1 cycle: 23, t2: 10, t3: 5 -> mean = 38/3 = 12.67, median = 10, p90 = 20.4
+    expect(metrics.overall.cycleTimeHours.mean).toBe(12.67);
+    expect(metrics.overall.cycleTimeHours.median).toBe(10);
+    // review: t1: 9, t2: 2, t3: 0 -> mean = 11/3 = 3.67, median = 2
+    expect(metrics.overall.timeInReviewHours.mean).toBe(3.67);
+    expect(metrics.overall.timeInReviewHours.median).toBe(2);
+    // runs: t1: 2, t2: 1, t3: 0 -> total = 3, mean = 1
+    expect(metrics.overall.runsPerTask).toEqual({ total: 3, mean: 1 });
+    // cost: t1: 50, t2: 0, t3: 0 -> total = 50, mean = 16.67
+    expect(metrics.overall.costPerTask).toEqual({ totalCents: 50, meanCents: 16.67 });
+    // returns: t1 returned, t2 no return -> entered: 2, returned: 1, rate: 0.5
+    expect(metrics.overall.returnRate).toEqual({ enteredReview: 2, returned: 1, rate: 0.5 });
+  });
+
+  it("handles zero tasks in overall with zeros and null/zero summaries without NaN", () => {
+    const empty: BaselineMetricsInput = {
+      tasks: [],
+      transitions: [],
+      blockers: [],
+      runs: [],
+      costs: [],
+      agents: [],
+      projects: [],
+    };
+    const metrics = computeBaselineMetrics(empty, WINDOW);
+    expect(metrics.overall).toEqual({
+      key: "overall",
+      tasksCompleted: 0,
+      cycleTimeHours: { mean: 0, median: 0, p90: 0 },
+      timeInReviewHours: { mean: 0, median: 0 },
+      returnRate: { enteredReview: 0, returned: 0, rate: 0 },
+      blockedHours: { total: 0, mean: 0, topCauses: [] },
+      runsPerTask: { total: 0, mean: 0 },
+      costPerTask: { totalCents: 0, meanCents: 0 },
+    });
+  });
+
+  it("computes last complete UTC weeks (Mon-Sun) chronologically", () => {
+    // 2026-10-21 is Wednesday
+    const wednesday = new Date("2026-10-21T15:30:00Z");
+    const weeks = computeLastCompleteWeeks(3, wednesday);
+    expect(weeks).toHaveLength(3);
+    expect(weeks[0]!.weekStart).toBe("2026-09-28");
+    expect(weeks[0]!.weekEnd).toBe("2026-10-04");
+    expect(weeks[0]!.from).toEqual(new Date("2026-09-28T00:00:00.000Z"));
+    expect(weeks[0]!.to).toEqual(new Date("2026-10-04T23:59:59.999Z"));
+
+    expect(weeks[1]!.weekStart).toBe("2026-10-05");
+    expect(weeks[1]!.weekEnd).toBe("2026-10-11");
+
+    expect(weeks[2]!.weekStart).toBe("2026-10-12");
+    expect(weeks[2]!.weekEnd).toBe("2026-10-18");
+  });
 });
 
 describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
@@ -315,6 +382,16 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
               costPerTask: { totalCents: 0, meanCents: 0 },
             },
           ],
+          overall: {
+            key: "overall",
+            tasksCompleted: 1,
+            cycleTimeHours: { mean: 1, median: 1, p90: 1 },
+            timeInReviewHours: { mean: 0, median: 0 },
+            returnRate: { enteredReview: 0, returned: 0, rate: 0 },
+            blockedHours: { total: 0, mean: 0, topCauses: [] },
+            runsPerTask: { total: 0, mean: 0 },
+            costPerTask: { totalCents: 0, meanCents: 0 },
+          },
         }),
         writeSnapshot: async (_db, row) => {
           written.push(row);
@@ -357,6 +434,16 @@ describe("myrmidon(1.6-BASELINE) snapshot settings and job", () => {
             source: { statusLog: "activity_log", costs: "none" },
             byProject: [],
             byRole: [],
+            overall: {
+              key: "overall",
+              tasksCompleted: 0,
+              cycleTimeHours: { mean: 0, median: 0, p90: 0 },
+              timeInReviewHours: { mean: 0, median: 0 },
+              returnRate: { enteredReview: 0, returned: 0, rate: 0 },
+              blockedHours: { total: 0, mean: 0, topCauses: [] },
+              runsPerTask: { total: 0, mean: 0 },
+              costPerTask: { totalCents: 0, meanCents: 0 },
+            },
           };
         },
         writeSnapshot: async (_db, row) => {
@@ -377,15 +464,22 @@ describe("myrmidon(1.6-BASELINE) metrics route", () => {
   const otherBoard = { ...board, companyIds: ["99999999-9999-4999-8999-999999999999"] };
   const anonymous = { type: "none" };
 
-  function app(actor: unknown, compute = vi.fn()) {
+  function app(actor: unknown, compute = vi.fn(), computeTrend = vi.fn()) {
     const server = express();
     server.use(express.json());
     server.use((req, _res, next) => {
       (req as unknown as { actor: unknown }).actor = actor;
       next();
     });
-    server.use("/api", baselineRoutes({} as Db, { now: () => new Date("2026-09-30T12:00:00Z"), compute }));
-    return { server, compute };
+    server.use(
+      "/api",
+      baselineRoutes({} as Db, {
+        now: () => new Date("2026-09-30T12:00:00Z"),
+        compute,
+        computeTrend,
+      }),
+    );
+    return { server, compute, computeTrend };
   }
 
   it("answers the six metrics for a board actor and passes the window through", async () => {
@@ -395,6 +489,16 @@ describe("myrmidon(1.6-BASELINE) metrics route", () => {
       source: { statusLog: "activity_log", costs: "litellm_cost_events" as const },
       byProject: [],
       byRole: [],
+      overall: {
+        key: "overall",
+        tasksCompleted: 0,
+        cycleTimeHours: { mean: 0, median: 0, p90: 0 },
+        timeInReviewHours: { mean: 0, median: 0 },
+        returnRate: { enteredReview: 0, returned: 0, rate: 0 },
+        blockedHours: { total: 0, mean: 0, topCauses: [] },
+        runsPerTask: { total: 0, mean: 0 },
+        costPerTask: { totalCents: 0, meanCents: 0 },
+      },
     }));
     const response = await request(app(board, compute).server)
       .get(`/api/myrmidon/companies/${COMPANY}/baseline/metrics`)
@@ -428,6 +532,74 @@ describe("myrmidon(1.6-BASELINE) metrics route", () => {
     const anon = await request(app(anonymous).server)
       .get(`/api/myrmidon/companies/${COMPANY}/baseline/metrics`)
       .query({ from: "2026-09-01T00:00:00Z", to: "2026-09-30T00:00:00Z" });
+    expect(anon.status).toBe(401);
+  });
+
+  it("returns weekly trend with default weeks=8 and explicit weeks=3", async () => {
+    const samplePoint = {
+      weekStart: "2026-09-07",
+      weekEnd: "2026-09-13",
+      tasksCompleted: 5,
+      cycleTimeMedianHours: 12.5,
+      reviewTimeMedianHours: 2,
+      returnRate: 0.2,
+      runsPerTask: 1.5,
+      costPerTask: 100,
+    };
+    const computeTrend = vi.fn(async (_db: Db, _companyId: string, weeks: number) => {
+      return Array.from({ length: weeks }, () => samplePoint);
+    });
+
+    const { server } = app(board, vi.fn(), computeTrend);
+
+    // Default weeks (8)
+    const defaultRes = await request(server).get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`);
+    expect(defaultRes.status).toBe(200);
+    expect(computeTrend).toHaveBeenCalledWith(expect.anything(), COMPANY, 8, expect.any(Date));
+    expect(defaultRes.body).toHaveLength(8);
+
+    // Explicit weeks=3
+    const customRes = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`)
+      .query({ weeks: "3" });
+    expect(customRes.status).toBe(200);
+    expect(computeTrend).toHaveBeenCalledWith(expect.anything(), COMPANY, 3, expect.any(Date));
+    expect(customRes.body).toHaveLength(3);
+  });
+
+  it("validates weeks parameter: 400 on weeks=0, weeks=13, or non-integer", async () => {
+    const { server, computeTrend } = app(board);
+
+    const zero = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`)
+      .query({ weeks: "0" });
+    expect(zero.status).toBe(400);
+
+    const thirteen = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`)
+      .query({ weeks: "13" });
+    expect(thirteen.status).toBe(400);
+
+    const nonInt = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`)
+      .query({ weeks: "abc" });
+    expect(nonInt.status).toBe(400);
+
+    const negative = await request(server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`)
+      .query({ weeks: "-1" });
+    expect(negative.status).toBe(400);
+
+    expect(computeTrend).not.toHaveBeenCalled();
+  });
+
+  it("refuses trend request from another company or anonymous caller", async () => {
+    const other = await request(app(otherBoard).server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`);
+    expect(other.status).toBe(403);
+
+    const anon = await request(app(anonymous).server)
+      .get(`/api/myrmidon/companies/${COMPANY}/baseline/trend`);
     expect(anon.status).toBe(401);
   });
 });
