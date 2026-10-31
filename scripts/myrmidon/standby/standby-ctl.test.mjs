@@ -713,3 +713,36 @@ test("runCli check-lag defaults to checking both databases on shared cluster por
     .map((c) => c.args[c.args.indexOf("-p") + 1]);
   assert.ok(ports.every((p) => p === "5433"), "All offline queries target shared standby port 5433");
 });
+
+test("runCli rehearse respects --drill-dir and --drill-port and executes successfully", () => {
+  const dirsCreated = [];
+  const mockFs = {
+    mkdirSync: (dir) => { dirsCreated.push(dir); },
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      if (sql.includes("SELECT 1;")) {
+        return { exitCode: 0, stdout: "1\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const code = runCli(["rehearse", "all", "--drill-dir=/tmp/test-drill-dir", "--drill-port=5599"], {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(code, 0);
+  assert.ok(dirsCreated.includes("/tmp/test-drill-dir"));
+
+  const drillCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === "5599");
+  assert.ok(drillCalls.length >= 2, "Smoke tests executed on custom drill port 5599");
+});
