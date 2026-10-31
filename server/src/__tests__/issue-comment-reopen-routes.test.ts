@@ -49,8 +49,18 @@ const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
+const mockTxSelectWhere = vi.hoisted(() => vi.fn(async () => []));
+const mockTxSelectFrom = vi.hoisted(() =>
+  vi.fn(() => ({
+    innerJoin: vi.fn(() => ({ where: mockTxSelectWhere })),
+  })),
+);
+const mockTxSelect = vi.hoisted(() =>
+  vi.fn(() => ({ from: mockTxSelectFrom })),
+);
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
+  select: mockTxSelect,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
@@ -366,6 +376,9 @@ describe.sequential("issue comment reopen routes", () => {
     mockCrossIssueInfluenceRunContextError.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
+    mockTxSelect.mockReset();
+    mockTxSelectFrom.mockReset();
+    mockTxSelectWhere.mockReset();
     mockDbSelect.mockReset();
     mockDbSelectFrom.mockReset();
     mockDbSelectWhere.mockReset();
@@ -373,6 +386,11 @@ describe.sequential("issue comment reopen routes", () => {
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockTxSelectWhere.mockResolvedValue([]);
+    mockTxSelectFrom.mockImplementation(() => ({
+      innerJoin: vi.fn(() => ({ where: mockTxSelectWhere })),
+    }));
+    mockTxSelect.mockImplementation(() => ({ from: mockTxSelectFrom }));
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
