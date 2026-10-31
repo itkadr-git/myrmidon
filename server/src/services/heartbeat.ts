@@ -8284,6 +8284,17 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage:
       Object.keys(executionStage).length > 0 ? executionStage : null,
+    reviewRecoveryInstruction: readNonEmptyString(
+      input.contextSnapshot.reviewRecoveryInstruction,
+    ),
+    reviewDecisionRetryAttempt:
+      typeof input.contextSnapshot.reviewDecisionRetryAttempt === "number"
+        ? input.contextSnapshot.reviewDecisionRetryAttempt
+        : null,
+    reviewDecisionMaxRetries:
+      typeof input.contextSnapshot.reviewDecisionMaxRetries === "number"
+        ? input.contextSnapshot.reviewDecisionMaxRetries
+        : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
@@ -11805,6 +11816,20 @@ export function heartbeatService(
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
+          ...(executionState
+            ? {
+                executionStage: {
+                  wakeRole: "reviewer" as const,
+                  stageId: executionState.currentStageId ?? null,
+                  stageType: executionState.currentStageType ?? null,
+                  currentParticipant: executionState.currentParticipant ?? null,
+                  returnAssignee: executionState.returnAssignee ?? null,
+                  reviewRequest: executionState.reviewRequest ?? null,
+                  lastDecisionOutcome: executionState.lastDecisionOutcome ?? null,
+                  allowedActions: ["approve", "request_changes"],
+                },
+              }
+            : {}),
           reviewRecoveryInstruction: isReviewCiWaitMonitor
             ? REVIEW_CI_WAIT_RECOVERY_INSTRUCTION
             : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
