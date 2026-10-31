@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -327,6 +327,15 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  // Load the route module graph once, outside any test's budget. It is huge
+  // (routes/*.ts and everything they import), and its cold load took 10-12 s
+  // on a GitHub runner and more on a slower one. It used to be paid inside the
+  // first test's 15 s budget, which timed it out on a slow runner. 60 s is about
+  // 2x the slowest cold load measured.
+  beforeAll(async () => {
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  }, 60_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();

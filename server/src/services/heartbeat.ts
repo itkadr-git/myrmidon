@@ -1,5 +1,10 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+// myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
+import {
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
+} from "../myrmidon/review-stage-recovery/policy.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -99,6 +104,7 @@ import {
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { processRole } from "./process-role.js"; // myrmidon(OPE-10011): role default of `executesRuns`
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
@@ -601,7 +607,6 @@ import {
 } from "./recovery/service.js";
 import {
   createRunDispatch,
-  type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
@@ -613,6 +618,9 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  createCancelStaleQueuedRun,
+  type RunDispatch,
+  type PostCommitEffect,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -755,6 +763,9 @@ import {
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
+import { pickupNextReview } from "../myrmidon/review-routing/pickup.js";
+import { issueHasNoExecutionHold } from "../myrmidon/settled-holds/ready-predicate.js";
+import { buildReviewRoutingWakeContext } from "../myrmidon/review-routing/policy.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
 // myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
 // release path below hands the freed agent to it (design §3.5).
@@ -11674,22 +11685,31 @@ export function heartbeatService(
     const isProviderQuotaReviewMonitor =
       monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       Boolean(reviewParticipantAgentId);
-    const targetAgentId = isProviderQuotaReviewMonitor
+    // myrmidon(OPE-10045): the review waited for CI on the PR head; the wake
+    // goes to the stage participant as a review-recovery run, so a run that
+    // again ends without a decision goes back through the bounded recovery.
+    const isReviewCiWaitMonitor =
+      monitor?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+      Boolean(reviewParticipantAgentId);
+    const isReviewRecoveryMonitor =
+      isProviderQuotaReviewMonitor || isReviewCiWaitMonitor;
+    const targetAgentId = isReviewRecoveryMonitor
       ? reviewParticipantAgentId
       : claimed.assigneeAgentId;
     if (!targetAgentId) {
       throw conflict("Issue monitor has no agent target");
     }
-    const wakeReason = isProviderQuotaReviewMonitor
+    const wakeReason = isReviewRecoveryMonitor
       ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
       : input.wakeReason;
-    const reviewRecoveryContext = isProviderQuotaReviewMonitor
+    const reviewRecoveryContext = isReviewRecoveryMonitor
       ? {
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
-          reviewRecoveryInstruction:
-            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+          reviewRecoveryInstruction: isReviewCiWaitMonitor
+            ? REVIEW_CI_WAIT_RECOVERY_INSTRUCTION
+            : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
         }
       : {};
 
@@ -11787,7 +11807,7 @@ export function heartbeatService(
           requestedByActorId: input.actorId,
           contextSnapshot: {
             issueId: claimed.id,
-            source: isProviderQuotaReviewMonitor
+            source: isReviewRecoveryMonitor
               ? "issue.execution_review_recovery"
               : "issue.monitor",
             wakeReason,
@@ -18786,9 +18806,82 @@ export function heartbeatService(
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
+    let woken = 0;
+    const handled = await pickupNextReview({
+      serialize: async (work) => {
+        const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.executionRunId),
+          sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+          sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+        )).limit(1);
+        if (!candidateExists) return false;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
+          return work();
+        });
+      },
+      hasWorkInFlight: async () => {
+        const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        )).limit(1);
+        if (live) return true;
+        const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        )).limit(1);
+        return Boolean(pending);
+      },
+      candidates: () => db.select({
+        id: issues.id, updatedAt: issues.updatedAt, executionState: issues.executionState,
+      }).from(issues).where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.status, "in_review"),
+        isNull(issues.executionRunId),
+        issueHasNoExecutionHold(db),
+        sql`not exists (
+          select 1
+          from issue_relations ir
+            join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
+          where ir.company_id = ${issues.companyId}
+            and ir.related_issue_id = ${issues.id}
+            and ir.type = 'blocks'
+            and ${blockerOpenSql('blocker.status')}
+        )`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+      )),
+      wake: async (candidate) => {
+        if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
+        const result = await enqueueWakeup(agent.id, {
+          source: "automation", triggerDetail: "system", reason: "execution_review_requested",
+          requestedByActorType: "system", requestedByActorId: "review_pickup",
+          idempotencyKey: `review-pickup:${candidate.id}:${parseObject(candidate.executionState).currentStageId ?? "review"}`,
+          contextSnapshot: {
+            issueId: candidate.id, taskKey: candidate.id, source: "review_pickup",
+            executionStage: { ...buildReviewRoutingWakeContext(parseObject(candidate.executionState)) },
+          },
+        });
+        if (result) woken += 1;
+        return result;
+      },
+    }, { excludeIssueId });
+    return { handled, woken };
+  }
+
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
@@ -20621,8 +20714,31 @@ export function heartbeatService(
     error: (fields: Record<string, unknown>, message: string) => logger.error(fields, message),
   };
   const runStartDispatcher = createRunStartDispatcher({
-    listQueuedAgents: (options) => listAgentsWithQueuedRunsAndNoRunningRun(db, options),
+    listQueuedAgents: async ({ cutoff }) => listAgentsWithQueuedRunsAndNoRunningRun(db, { cutoff }),
     startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
+    listStaleQueuedRuns: async ({ executionCutoff, staleAfterMs }) => {
+      const staleRuns = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, new Date(Date.now() - staleAfterMs)), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
+      return staleRuns;
+    },
+    createCancelStaleQueuedRun: async (run, staleAfterMs) => {
+      const outcome = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id, companyId: run.companyId, expectedStatus: "queued",
+        staleAfterMs, now: new Date(),
+      });
+      if (outcome.outcome !== "cancelled") return false;
+      applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
+      return true;
+    },
+    wakeAgent: async (agentId, companyId) => {
+      await enqueueWakeup(agentId, {
+        source: "automation",
+        reason: "queued_run_stale_timeout",
+        payload: { companyId },
+        contextSnapshot: { taskId: "system:queued-run-stale-timeout" },
+      });
+    },
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),
     // The role gate of T1.1 and the bus publish of the `notify` mode.
@@ -20649,8 +20765,14 @@ export function heartbeatService(
   // The worker-side listener of the `notify` mode: a process that executes runs
   // subscribes to `run_queued` and starts locally; every bus (re-)listen runs
   // the resweep dogon. An api process never subscribes.
+  // myrmidon(OPE-10011): absent `executesRuns` follows THIS process's role
+  // (T1.1). Only the heartbeat index.ts builds passes it; the ~30 others that
+  // routes and services build did not, so in an api child each of them armed
+  // its own resweep, which then dispatched and admitted runs in the api process.
+  const roleExecutesRuns =
+    options.executesRuns ?? processRole(runtimeEnv as NodeJS.ProcessEnv).executesRuns;
   const runQueuedBusListener =
-    options.processBus && (options.executesRuns ?? true)
+    options.processBus && roleExecutesRuns
       ? createRunQueuedBusListener(options.processBus, {
           startNextQueuedRunForAgent: (agentId) => startNextQueuedRunForAgent(agentId),
           sweepQueuedWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
@@ -20663,7 +20785,7 @@ export function heartbeatService(
   // under a test runner and switchable with MYRMIDON_QUEUED_RESWEEP=0 — see
   // queuedResweepArmDecision.
   const queuedResweepArming = queuedResweepArmDecision(runtimeEnv, {
-    runsBackground: options.executesRuns ?? true,
+    runsBackground: roleExecutesRuns,
   });
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
@@ -28314,6 +28436,20 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
+          const releasedSnapshot = parseObject(releasedRun.contextSnapshot);
+          const isReviewerRun =
+            releasedAgent?.role === "reviewer" ||
+            readNonEmptyString(releasedSnapshot.wakeReason) === "execution_review_requested" ||
+            readNonEmptyString(parseObject(releasedSnapshot.executionStage).stageType) === "review" ||
+            readNonEmptyString(releasedSnapshot.source) === "review_pickup";
+          // OPE-9676: participants in review are not issue assignees. Select
+          // their waiting review queue before the general development queues.
+          if (pickupAllowed && releasedAgent && isReviewerRun) {
+            const { handled: reviewHandled } = await pickupReviewForAgent(
+              { id: releasedRun.agentId, companyId: releasedRun.companyId }, releasedIssueId ?? undefined,
+            );
+            if (reviewHandled) return;
+          }
           // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
           // swarm on, the agent that just became free is paired by the board
           // itself — its own assigned ready task first, otherwise the top ready
