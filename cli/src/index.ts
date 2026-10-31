@@ -159,6 +159,7 @@ program
   .description("Print environment variables for deployment")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--reveal-secrets", "Reveal secret values instead of masking them")
   .action(envCommand);
 
 program
