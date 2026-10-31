@@ -15,9 +15,9 @@
 Используйте транспорт, реально доступный в текущем прогоне. Если `myrmidonMessageOwner` есть в текущем каталоге инструментов, вызовите его один раз со всеми открытыми необъяснёнными решениями владельца, которые создали вы. Если инструмента нет, не угадывайте имена и не повторяйте попытки. Используйте REST fallback только если текущий runtime предоставляет аутентифицированные базовый URL Paperclip API, API key и run ID:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+curl -sS -X POST "$MYRMIDON_API_URL/api/myrmidon/owner-message" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  -H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID" \
   -H 'Content-Type: application/json' \
   --data '{"interactionIds":["<interaction-id>"],"text":"<plain-language explanation>"}'
 ```
@@ -27,9 +27,9 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \
 Сохраните JSON-ответ и его `publicationId`:
 
 ```sh
-response="$(curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \\
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \\
+response="$(curl -sS -X POST "$MYRMIDON_API_URL/api/myrmidon/owner-message" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \\
+  -H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID" \\
   -H 'Content-Type: application/json' \\
   --data '{"interactionIds":["<interaction-id>"],"text":"<plain-language explanation>"}')"
 printf '%s\n' "$response"
@@ -41,12 +41,12 @@ publication_id="$(printf '%s' "$response" | jq -r '.publicationId')"
 Оператор должен выполнить read-back с доступом к доске: сначала получить binding задачи, затем запросить статус публикации. `<task-id>` и `<publication-id>` замените фактическими значениями:
 
 ```sh
-binding="$(curl -sS "$PAPERCLIP_API_URL/api/issues/<task-id>/chat-binding" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY")"
+binding="$(curl -sS "$MYRMIDON_API_URL/api/issues/<task-id>/chat-binding" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY")"
 endpoint_id="$(printf '%s' "$binding" | jq -r '.endpointId')"
 conversation_id="$(printf '%s' "$binding" | jq -r '.conversationId')"
-curl -sS "$PAPERCLIP_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conversation_id/publications/<publication-id>/status" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$MYRMIDON_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conversation_id/publications/<publication-id>/status" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY"
 ```
 
 Для POST используйте identity того же прогона; не занимайте чужой ключ и не выдавайте себя за владельца. Binding lookup и status GET могут требовать board-authorized key оператора, потому что owner-message не возвращает IDs binding. Если в runtime нет нужного credential или run ID, остановитесь и сообщите точное ограничение. Успешный POST или статус `pending` не доказывает доставку: принимайте только статус, где `publication.state` равен `published`, а `publishedAt` не равен null (либо эквивалентный provider delivery receipt). Никогда не отправляйте настоящее сообщение владельцу для теста.
@@ -73,3 +73,14 @@ curl -sS "$PAPERCLIP_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conv
 - Interaction закрывается от имени OWNER; вы никогда не закрываете human-only interaction от своего имени.
 
 Сервер отклоняет resolve, если `ownerReplyCommentId` не принадлежит владельцу и этому direct chat после объяснения (`403 no_owner_reply`), если вы не автор interaction или действие не соответствует виду interaction (`422 action_kind_mismatch`). Молчание, ваши рассуждения и слова другого человека не закрывают решение. Подтверждения действий инструментов, предложения секретов и авторизация подключений остаются явными решениями на доске.
+
+## Идеи владельца (проект «Идеи», 1.6.7 IDEAS)
+
+Любая мысль Alex («надо бы», «было бы здорово», соображение, гипотеза), не ставшая задачей сразу в текущем выпуске, фиксируется карточкой в проекте «Идеи» в тот же ход:
+- Проект: «Идеи» (на доске Paperclip).
+- Статус: «идея» (без исполнителя и без срока).
+- Обязательное поле «откуда» в описании задачи:
+  * Сессия / чат: идентификатор или ссылка на сессию/диалог.
+  * Дата: дата разговора (ГГГГ-ММ-ДД).
+  * Кто сказал: Alex (или имя агента).
+Не теряйте идеи владельца в диалоге и не засоряйте ими текущий выпуск. Раз в неделю идеи разбирают лид или архитектор: в выпуск (задача с исполнителем), отклонить с причиной или оставить.

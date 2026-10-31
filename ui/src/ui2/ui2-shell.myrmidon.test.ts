@@ -108,11 +108,23 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
   });
 
-  it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
+  it("Ui2Root exists and mounts the shell", async () => {
     const mod = await import("./Ui2Root");
     expect(typeof mod.Ui2Root).toBe("function");
     const root = mod.Ui2Root({} as never);
     expect(root).toBeTruthy();
+    const { Ui2I18nProvider } = await import("./i18n/Ui2I18n");
+    const { Ui2Shell } = await import("./shell/Ui2Shell");
+    expect(root.type).toBe(Ui2I18nProvider);
+    expect((root.props as { children?: { type?: unknown } })?.children?.type).toBe(Ui2Shell);
+  });
+
+  it("does not wrap Ui2Shell in a second PluginLauncherProvider", () => {
+    const rootSource = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
+    const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
+    expect(rootSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).toContain("PluginLauncherProvider is installed at the application root");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
@@ -181,6 +193,20 @@ describe("ui2 personal override (?ui=1|2)", () => {
 });
 
 describe("ui2 i18n", () => {
+  it("carries interface switch keys in en and ru", () => {
+    const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
+    const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));
+    for (const messages of [en, ru]) {
+      expect(messages.uiSwitch).toBeDefined();
+      expect(messages.uiSwitch.label).toBeTruthy();
+      expect(messages.uiSwitch.new).toBeTruthy();
+      expect(messages.uiSwitch.legacy).toBeTruthy();
+      expect(messages.uiSwitch.instanceDefault).toBeTruthy();
+    }
+    expect(ru.uiSwitch.new).toBe("Новая");
+    expect(ru.uiSwitch.legacy).toBe("Прежняя");
+    expect(ru.uiSwitch.instanceDefault).toBe("По настройке экземпляра");
+  });
   it("has the ui2 namespace in en and ru with the shell and screen keys", () => {
     const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
     const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));

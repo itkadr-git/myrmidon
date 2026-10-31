@@ -8,6 +8,7 @@ import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
+import { tryClaimContinuationKey } from "../../../services/continuation-dedupe.js";
 import { runContextPersistenceFields } from "@myrmidon/db";
 import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
@@ -123,6 +124,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     parentId: row.parentId,
     originId: row.originId,
     originRunId: row.originRunId,
+    issueRole: row.casteKey,
   };
 }
 
@@ -218,6 +220,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .set({ executionRunId: null })
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
     },
+    async claimContinuationKey({ companyId, issueId, key }): Promise<"created" | "deduped"> {
+      return tryClaimContinuationKey(tx, {
+        companyId,
+        issueId,
+        key,
+        ttl: 24 * 60 * 60 * 1_000,
+      });
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -226,7 +236,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .then((rows) => rows[0] ?? null);
       if (!agent) return null;
       const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
-      return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
+      return { id: agent.id, companyId: agent.companyId, name: agent.name, role: agent.role, invokable: invokability.invokable };
     },
 
     async findNextDeferredWake({ companyId, issueId, excludedWakeIds }) {
@@ -645,8 +655,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               retryOfRunId: finishingRun.id,
               currentStageId: executionState?.currentStageId ?? null,
               currentStageType: executionState?.currentStageType ?? null,
+              // myrmidon(OPE-10045): name both decisions explicitly (same text as
+              // REVIEW_DECISION_RECOVERY_INSTRUCTION in myrmidon/review-stage-recovery).
               reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+                "The previous reviewer run ended while this execution-review stage was still pending. " +
+                "Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, " +
+                "or with status=done and a comment to approve it. An approval given before the pull request is merged is recorded " +
+                "and the task closes after the merge. A verdict written only as a comment is not a decision. " +
+                "If you cannot decide, mark the issue blocked with the exact unblock action.",
             },
             "normal_model",
           )),

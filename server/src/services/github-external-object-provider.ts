@@ -209,6 +209,12 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
+  const rawMergeable = body.mergeable ?? body.mergeable_state ?? body.mergeableState;
+  const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+    ? "CONFLICTING"
+    : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+      ? "MERGEABLE"
+      : asString(rawMergeable);
   const additions = asNonNegativeInteger(body.additions);
   const deletions = asNonNegativeInteger(body.deletions);
   const changedFiles = asNonNegativeInteger(body.changed_files);
@@ -265,6 +271,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       state,
       merged,
       draft,
+      ...(mergeable ? { mergeable } : {}),
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
@@ -327,13 +334,19 @@ async function safeJson(response: Response) {
 /** Audit identity of the resolver's secret reads (system consumer, no agent/run). */
 const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
 
-/** The resolver reads PR/issue state only: a read-only, single-repository token. */
+/**
+ * The resolver reads PR/issue state only: a read-only, single-repository token.
+ * `checks: read`: the review-stage recovery reads the check runs of the PR head
+ * with this token (review-stage-recovery/github-ci.ts). Without it GitHub answers
+ * 403, the read falls back to anonymous, and the anonymous per-IP limit runs out,
+ * so a reviewer that waits for CI is blocked as a stalled review (OPE-10246).
+ */
 const READ_ONLY_APP_PERMISSIONS = {
   contents: "read",
   pull_requests: "read",
   issues: "none",
   actions: "none",
-  checks: "none",
+  checks: "read",
   deployments: "none",
   environments: "none",
   workflows: "none",
@@ -348,7 +361,7 @@ const READ_ONLY_APP_PERMISSIONS = {
  *   3. null (anonymous), as before.
  * Neither a token nor an App key is logged or returned in an error.
  */
-async function defaultTokenProvider(
+export async function defaultTokenProvider(
   db: Db,
   companyId: string,
   repository: string,

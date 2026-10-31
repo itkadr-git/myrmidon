@@ -220,3 +220,14 @@ export {
   type RemoteAgentProfileInput,
   type RemoteAgentService,
 } from "./remote-agent-profiles.js";
+export {
+  tryClaimContinuationKey,
+  clearExpiredContinuationKeys,
+  type ContinuationDedupeOutcome,
+} from "./continuation-dedupe.js";
+export {
+  sessionService,
+  revokeAllUserSessions,
+  setSessionDb,
+  getSessionDb,
+} from "./session-service.js";

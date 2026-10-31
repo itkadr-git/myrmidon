@@ -313,10 +313,10 @@ function pathWithoutGit(sb) {
   return `${sb.bin}:${tools}`;
 }
 
-function run(sb, script, args, input) {
+function run(sb, script, args, input, extraEnv = {}) {
   const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}) },
+    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
     input,
   });
@@ -353,6 +353,31 @@ describe("deploy.sh", () => {
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
     assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // OPE-9318 (1.6.6 DEBRAND): the compose project must be pinnable to the new
+  // board name without changing anything for an install that does not set it.
+  // Unset → the deploy keeps the directory-derived project (no --project-name
+  // flag, identity of volumes/networks untouched); set → every compose call
+  // carries the pin, and the rendered boot unit stays byte-identical so an
+  // existing verify_boot_unit comparison does not flag a unit change.
+  it("keeps the directory-derived compose project when COMPOSE_PROJECT_NAME is unset", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(calls(sb), /--project-name/, "unset must not add a project pin");
+  });
+
+  it("pins the compose project when COMPOSE_PROJECT_NAME is set", () => {
+    const sb = sandbox();
+    const before = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      COMPOSE_PROJECT_NAME: "myrmidon-board",
+    });
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker compose --project-directory \S+ --project-name myrmidon-board /);
+    const after = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    assert.equal(before, after, "the boot unit must render identically with a project pin");
   });
 
   // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on

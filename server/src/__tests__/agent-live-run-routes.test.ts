@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -27,6 +27,16 @@ const mockIssueService = vi.hoisted(() => ({
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
   executionProjectionsForRuns: vi.fn(async () => new Map()),
+  sanitizeExecutionProjectionForActor: vi.fn((proj: any, actor: any) => {
+    if (!proj) return null;
+    if (actor?.type === "agent") {
+      const { operatorActions: _omitted, ...forAgent } = proj;
+      delete forAgent.permittedActions;
+      return forAgent;
+    }
+    const { permittedActions: _omitted, ...clean } = proj;
+    return clean;
+  }),
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
@@ -161,6 +171,9 @@ function registerModuleMocks() {
     budgetService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => ({}),
@@ -308,8 +321,13 @@ async function requestApp(
 }
 
 describe("agent live run routes", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
@@ -322,6 +340,10 @@ describe("agent live run routes", () => {
     vi.doUnmock("../myrmidon/idle-pickup.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
     registerModuleMocks();
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js");
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     // myrmidon(WAKE-BIND): default — the agent has no ready task, so an
     // issue-less manual wake is refused unless a test seeds a ready task.
@@ -1139,6 +1161,8 @@ describe("agent live run routes", () => {
   });
 
   describe("exact failed chat run retry", () => {
+    const retryIssueRevision = new Date("2026-10-26T00:00:00.000Z");
+    const retryIssueRevisionIso = retryIssueRevision.toISOString();
     const retryBody = {
       failedRunId: failedChatRunId,
       reason: "retry_failed_run",
@@ -1166,6 +1190,7 @@ describe("agent live run routes", () => {
       mockIssueService.getById.mockResolvedValue({
         id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
         assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+        updatedAt: retryIssueRevision,
       });
       mockChatRunRetries.prepareFailedChatRunRetry.mockResolvedValue({
         actionId: retryActionId,
@@ -1198,7 +1223,7 @@ describe("agent live run routes", () => {
       }));
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
         requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
-        payload: { issueId: failedChatIssueId },
+        payload: { issueId: failedChatIssueId, eventRevision: retryIssueRevisionIso },
       }));
     });
 
@@ -1542,6 +1567,25 @@ describe("agent live run routes", () => {
       expect(fixture.db.transaction).not.toHaveBeenCalled();
     });
 
+    it("adds the issue revision to a non-chat retry payload", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({
+        ...selectedRun,
+        contextSnapshot: { ...selectedRun.contextSnapshot, source: "board" },
+      });
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+        updatedAt: retryIssueRevision,
+      });
+      const res = await requestApp(
+        await createApp(createFailedChatRetryDb(false).db, undefined, { chatRunRetries: mockChatRunRetries }),
+        (url) => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId,
+        expect.objectContaining({ payload: expect.objectContaining({ eventRevision: retryIssueRevisionIso }) }));
+    });
+
     it("preserves non-chat retry using only the selected run's server task fields", async () => {
       const fixture = createFailedChatRetryDb(false);
       mockHeartbeatService.getRun.mockResolvedValue({
@@ -1573,6 +1617,7 @@ describe("agent live run routes", () => {
             issueId: failedChatIssueId,
             taskId: failedChatIssueId,
             taskKey: "PAP-FAILED-CHAT",
+            eventRevision: retryIssueRevisionIso,
           },
         }),
       );
@@ -1972,5 +2017,117 @@ describe("agent live run routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+  });
+
+  it("omits permittedActions and operatorActions in GET /issues/:id/execution for an agent actor", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: "run-1",
+    });
+    const runRow = {
+      id: "run-1",
+      agentId: "agent-1",
+    };
+    mockExecutionProjection.executionProjectionForRun.mockResolvedValueOnce({
+      phase: "working",
+      label: "Working",
+      cause: null,
+      lastConfirmedActivityAt: null,
+      retryAt: null,
+      attempt: 1,
+      maxAttempts: 3,
+      recoveryOwner: null,
+      nextAction: null,
+      operatorActions: ["inspect_run"],
+      predecessorRunId: null,
+      successorRunId: null,
+    } as any);
+
+    const dbStub = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn(async () => [runRow]),
+        }),
+      })),
+    };
+
+    const res = await requestApp(
+      await createApp(
+        dbStub as any,
+        {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          runId: "run-1",
+          source: "agent_key",
+        },
+      ),
+      (baseUrl) => request(baseUrl).get("/api/issues/issue-1/execution"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.execution).toBeDefined();
+    expect(res.body.execution).not.toHaveProperty("permittedActions");
+    expect(res.body.execution).not.toHaveProperty("operatorActions");
+    expect(res.body.execution.phase).toBe("working");
+  });
+
+  it("includes operatorActions and omits permittedActions in GET /issues/:id/execution for a board actor", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: "run-1",
+    });
+    const runRow = {
+      id: "run-1",
+      agentId: "agent-1",
+    };
+    mockExecutionProjection.executionProjectionForRun.mockResolvedValueOnce({
+      phase: "working",
+      label: "Working",
+      cause: null,
+      lastConfirmedActivityAt: null,
+      retryAt: null,
+      attempt: 1,
+      maxAttempts: 3,
+      recoveryOwner: null,
+      nextAction: null,
+      operatorActions: ["inspect_run"],
+      predecessorRunId: null,
+      successorRunId: null,
+    } as any);
+
+    const dbStub = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn(async () => [runRow]),
+        }),
+      })),
+    };
+
+    const res = await requestApp(
+      await createApp(
+        dbStub as any,
+        {
+          type: "board",
+          userId: "local-board",
+          companyIds: ["company-1"],
+          source: "local_implicit",
+          isInstanceAdmin: false,
+        },
+      ),
+      (baseUrl) => request(baseUrl).get("/api/issues/issue-1/execution"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.execution).toBeDefined();
+    expect(res.body.execution).not.toHaveProperty("permittedActions");
+    expect(res.body.execution.operatorActions).toEqual(["inspect_run"]);
+    expect(res.body.execution.phase).toBe("working");
   });
 });

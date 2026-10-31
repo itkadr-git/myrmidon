@@ -197,6 +197,20 @@ zero or several memberships without the parameter answer 422.
 Secret values never travel back over this API: records carry no value field,
 and the one write-only value the operator types is never echoed in a response.
 
+## Disabled-module behavior
+
+With the module enabled, the list endpoints return access and host arrays. With
+the module disabled, they return HTTP 200 with `enabled: false` and empty
+arrays. The UI shows the "not available yet" notice instead of the access list.
+This response means the feature flag is off; it does not mean that the API
+failed.
+
+If the notice appears, check `GET /api/myrmidon/access-hub/status` and the
+`MYRMIDON_ACCESS_HUB_ENABLED` setting. A disabled status confirms the module is
+off. If status says enabled but a list request fails, or returns an invalid
+payload, investigate the API/service. A 5xx response or invalid payload is not
+the disabled-feature response.
+
 ## Questions and answers
 
 **I lost a value. Can I read it back?**

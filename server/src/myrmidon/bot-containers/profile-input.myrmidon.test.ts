@@ -1112,8 +1112,12 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
     return fileContent(compileHermesProfile(input), "hermes/config.yaml");
   }
 
-  it("gives a coding role the limited mode", () => {
-    const { input } = buildHermesProfileInput(source({ role: "engineer" }), settings());
+  it("gives a coding role the limited mode with adaptive heap for container memory", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
     expect(input.lsp).toEqual({
       enabled: true,
       idleTimeout: 120,
@@ -1121,18 +1125,116 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
         typescript: {
           initialization_options: {
             disableAutomaticTypingAcquisition: true,
-            maxTsServerMemory: 1024,
+            maxTsServerMemory: 409,
             tsserver: { useSyntaxServer: "never" },
           },
         },
       },
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
-    const yaml = configYaml({ role: "engineer" });
+    const yaml = configYaml({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } });
     expect(yaml).toContain("lsp:");
     expect(yaml).toContain("idle_timeout: 120");
-    expect(yaml).toContain("maxTsServerMemory: 1024");
+    expect(yaml).toContain("maxTsServerMemory: 409");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
     expect(yaml).toContain('useSyntaxServer: "never"');
     expect(yaml).toContain("disableAutomaticTypingAcquisition: true");
+  });
+
+  it("adapts default heap to container memory limit when no explicit heap is configured", () => {
+    for (const [memoryMb, expectedHeap] of [
+      [768, 307],
+      [1024, 409],
+      [1536, 614],
+      [2048, 819],
+    ] as const) {
+      const { input, warnings } = buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb } } }),
+        settings(),
+      );
+      expect(warnings).toHaveLength(0);
+      const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+      const opts = servers?.initialization_options as Record<string, unknown> | undefined;
+      expect(opts?.maxTsServerMemory).toBe(expectedHeap);
+    }
+  });
+
+  it("safely disables limited LSP when container memory is unknown", () => {
+    const { input: noContainer, warnings: warningsNoContainer } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: {} }),
+      settings(),
+    );
+    expect(noContainer.lsp).toEqual({ enabled: false });
+    expect(warningsNoContainer.some((w) => w.includes("unknown"))).toBe(true);
+
+    const { input: disabledContainer, warnings: warningsDisabled } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: false, memoryMb: 1024 } } }),
+      settings(),
+    );
+    expect(disabledContainer.lsp).toEqual({ enabled: false });
+    expect(warningsDisabled.some((w) => w.includes("unknown"))).toBe(true);
+  });
+
+  it("safely disables limited LSP when container memory is insufficient", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 512 } } }),
+      settings(),
+    );
+    expect(input.lsp).toEqual({ enabled: false });
+    expect(warnings.some((w) => w.includes("insufficient"))).toBe(true);
+  });
+
+  it("clamps limited LSP startup heap to the card container's 40% budget", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 308,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
+  });
+
+  it("allows heap at the 40% container-memory boundary", () => {
+    const { input, warnings } = buildHermesProfileInput(
+      source({
+        role: "engineer",
+        adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+        botLspSettings: {
+          codingRoles: ["engineer"],
+          idleTimeoutSeconds: 120,
+          tsserverMemoryMb: 307,
+          excludeRoots: ["**/node_modules/**", "**/dist/**"],
+        },
+      }),
+      settings(),
+    );
+    expect(warnings).toHaveLength(0);
+    expect(input.lsp?.servers).toMatchObject({
+      typescript: { initialization_options: { maxTsServerMemory: 307 } },
+    });
+  });
+
+  it("handles transition: clamps saved heap with warning when container memory is reduced", () => {
+    const { input, warnings } = buildHermesProfileInput(source({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 768 } },
+      botLspSettings: { tsserverMemoryMb: 409 },
+    }), settings());
+    const servers = input.lsp?.servers?.typescript as Record<string, unknown> | undefined;
+    const initializationOptions = servers?.initialization_options as Record<string, unknown> | undefined;
+    expect(initializationOptions?.maxTsServerMemory).toBe(307);
+    expect(warnings.some((w) => w.includes("safely clamped to 307 MB"))).toBe(true);
   });
 
   it("turns language servers off for a role that does not write code, and for no role", () => {
@@ -1148,18 +1250,30 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
       buildHermesProfileInput(source({ role: "engineer", adapterConfig: { lsp: { mode: "off" } } }), settings()).input.lsp,
     ).toEqual({ enabled: false });
     expect(
-      buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings()).input
-        .lsp?.enabled,
+      buildHermesProfileInput(
+        source({ role: "general", adapterConfig: { container: { enabled: true, memoryMb: 1024 }, lsp: { mode: "limited" } } }),
+        settings(),
+      ).input.lsp?.enabled,
     ).toBe(true);
-    // Full = the runtime's defaults: no lsp block at all.
+    // Pinning limited mode without container memory safely disables it with a warning.
+    const unconfigured = buildHermesProfileInput(source({ role: "general", adapterConfig: { lsp: { mode: "limited" } } }), settings());
+    expect(unconfigured.input.lsp).toEqual({ enabled: false });
+    expect(unconfigured.warnings).toContain("lsp: limited language server disabled because container memory limit is unknown");
+    // Full keeps Hermes server defaults and writes the exclusion-only block.
+    const { input } = buildHermesProfileInput(source({ role: "full", adapterConfig: { lsp: { mode: "full" } } }), settings());
+    expect(input.lsp).toMatchObject({ enabled: true, excludeRoots: ["**/node_modules/**", "**/dist/**"] });
+    expect(input.lsp?.servers).toBeUndefined();
     const yaml = configYaml({ role: "engineer", adapterConfig: { lsp: { mode: "full" } } });
-    expect(yaml).not.toContain("lsp:");
+    expect(yaml).toContain("lsp:\n  enabled: true");
+    expect(yaml).toContain('"**/node_modules/**"');
+    expect(yaml).toContain('"**/dist/**"');
   });
 
   it("follows the instance policy", () => {
     const { input } = buildHermesProfileInput(
       source({
         role: "dev-lead",
+        adapterConfig: { container: { enabled: true, memoryMb: 5120 } },
         botLspSettings: { codingRoles: ["dev-lead"], idleTimeoutSeconds: 300, tsserverMemoryMb: 2048, excludeRoots: ["/srv/big"] },
       }),
       settings(),
@@ -1169,8 +1283,18 @@ describe("myrmidon(BOT-LSP-DEFAULTS) buildHermesProfileInput — language server
   });
 
   it("is deterministic: the same role and settings give the same hashes", () => {
-    const one = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
-    const two = compileHermesProfile(buildHermesProfileInput(source({ role: "engineer" }), settings()).input);
+    const one = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
+    const two = compileHermesProfile(
+      buildHermesProfileInput(
+        source({ role: "engineer", adapterConfig: { container: { enabled: true, memoryMb: 1024 } } }),
+        settings(),
+      ).input,
+    );
     expect(one.restartHash).toBe(two.restartHash);
     expect(one.filesHash).toBe(two.filesHash);
   });

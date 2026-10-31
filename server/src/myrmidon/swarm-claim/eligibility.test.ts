@@ -3,6 +3,7 @@ import {
   SWARM_QUOTA_DEFAULT_HOLD_MS,
   SWARM_QUOTA_MAX_HOLD_MS,
   isAgentPaused,
+  isIssueReady,
   openLoadOf,
   quotaHoldUntil,
   type SwarmQuotaFailureFact,
@@ -10,6 +11,30 @@ import {
 
 const NOW = new Date("2026-10-20T12:00:00.000Z");
 const MIN = 60_000;
+
+describe("isIssueReady", () => {
+  const readyFacts = { hasOpenBlocker: false, onHold: false, hasProjectOrCaste: true, assignmentCompatible: true };
+  const cases = [
+    ["ready", readyFacts, true, null],
+    ["open blocker", { ...readyFacts, hasOpenBlocker: true }, false, "open_blocker"],
+    ["hold", { ...readyFacts, onHold: true }, false, "on_hold"],
+    ["missing project and caste", { ...readyFacts, hasProjectOrCaste: false }, false, "missing_project_or_caste"],
+    ["incompatible assignment", { ...readyFacts, assignmentCompatible: false }, false, "incompatible_assignment"],
+    ["blocker takes precedence", { ...readyFacts, hasOpenBlocker: true, onHold: true }, false, "open_blocker"],
+    ["hold takes precedence", { ...readyFacts, onHold: true, hasProjectOrCaste: false }, false, "on_hold"],
+    ["no project despite compatible assignment", { ...readyFacts, hasProjectOrCaste: false }, false, "missing_project_or_caste"],
+    ["assignment mismatch despite project", { ...readyFacts, assignmentCompatible: false }, false, "incompatible_assignment"],
+    ["capacity allowed", { ...readyFacts, capacity: { allowed: true, reason: "allowed" } }, true, null],
+    ["capacity project_limit", { ...readyFacts, capacity: { allowed: false, reason: "project_limit" } }, false, "project_limit"],
+    ["capacity caste_limit", { ...readyFacts, capacity: { allowed: false, reason: "caste_limit" } }, false, "caste_limit"],
+    ["blocker takes precedence over capacity", { ...readyFacts, hasOpenBlocker: true, capacity: { allowed: false, reason: "project_limit" } }, false, "open_blocker"],
+    ["blocker among all failures", { hasOpenBlocker: true, onHold: true, hasProjectOrCaste: false, assignmentCompatible: false }, false, "open_blocker"],
+    ["all later failures", { hasOpenBlocker: false, onHold: false, hasProjectOrCaste: true, assignmentCompatible: false }, false, "incompatible_assignment"],
+  ] as const;
+  it.each(cases)("%s", (_name, facts, ready, reason) => {
+    expect(isIssueReady(facts)).toEqual({ ready, reason });
+  });
+});
 
 function quota(overrides: Partial<SwarmQuotaFailureFact> = {}): SwarmQuotaFailureFact {
   return {
@@ -25,6 +50,10 @@ describe("openLoadOf", () => {
   it("counts a task once when it is both assigned and leased", () => {
     expect(openLoadOf(["a", "b"], ["b", "c"])).toBe(3);
     expect(openLoadOf([], [])).toBe(0);
+  });
+
+  it("releases only an assigned CI-waiting task while retaining live leases", () => {
+    expect(openLoadOf(["ci", "active"], ["ci"], new Set(["ci"]))).toBe(2);
   });
 });
 

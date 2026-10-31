@@ -19,13 +19,20 @@ export interface RoutingIssue {
   // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
   // an agent reviewer — the verdict belongs to a person by policy.
   reviewPolicy?: string | null;
+  /** Explicit recovery evaluation; omitted by callers that do not evaluate age. */
+  reviewPathRecoveryEligible?: boolean;
+  /** Current evaluation clock and issue timestamp, supplied by recovery callers. */
+  reviewRecoveryNow?: Date;
+  reviewRecoveryUpdatedAt?: Date;
 }
 
 export interface ReviewerCandidate {
   id: string;
   role: string;
+  model?: string | null;
   /** Tasks the agent holds in flight (in progress + in review). */
   load: number;
+  readonly invokable?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -54,6 +61,11 @@ export function issueNeedsReviewer(issue: RoutingIssue): boolean {
   // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
   if (issue.reviewPolicy === "human_only") return false;
   if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
+  if (issue.reviewPathRecoveryEligible === false) return false;
+  if (issue.reviewPathRecoveryEligible === true) {
+    if (!issue.reviewRecoveryNow || !issue.reviewRecoveryUpdatedAt) return false;
+    if (issue.reviewRecoveryUpdatedAt.getTime() > issue.reviewRecoveryNow.getTime() - 15 * 60 * 1000) return false;
+  }
   const state = asRecord(issue.executionState);
   if (state) {
     if (typeof state.status === "string" && state.status !== "idle") return false;
@@ -109,14 +121,45 @@ export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string>
  * Least-loaded eligible reviewer. Candidates at or above `maxLoad` and
  * excluded ids are skipped; ties break by id so the choice is deterministic.
  */
+export interface ReviewerAvailability {
+  selected: ReviewerCandidate | null;
+}
+
+/** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
+export function evaluateReviewerAvailability(input: {
+  reviewers: readonly { id: string; role: string; invokable?: boolean; model?: string | null }[];
+  loadByAgent: ReadonlyMap<string, number>;
+  issue: RoutingIssue;
+  maxLoad: number;
+  authorModel?: string | null;
+}): ReviewerAvailability {
+  return {
+    selected: pickReviewer({
+      candidates: input.reviewers.map((reviewer) => ({
+        id: reviewer.id,
+        role: reviewer.role,
+        invokable: reviewer.invokable,
+        model: reviewer.model,
+        load: input.loadByAgent.get(reviewer.id) ?? 0,
+      })),
+      excluded: excludedReviewerIds(input.issue),
+      maxLoad: input.maxLoad,
+      authorModel: input.authorModel,
+    }),
+  };
+}
+
 export function pickReviewer(input: {
   candidates: readonly ReviewerCandidate[];
   excluded: ReadonlySet<string>;
   maxLoad: number;
+  authorModel?: string | null;
 }): ReviewerCandidate | null {
-  const eligible = input.candidates.filter(
-    (candidate) => !input.excluded.has(candidate.id) && candidate.load < input.maxLoad,
-  );
+  const eligible = input.candidates.filter((candidate) => {
+    if (candidate.invokable === false) return false;
+    if (input.authorModel != null && candidate.model === input.authorModel) return false;
+    return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
+  });
   if (eligible.length === 0) return null;
   return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
 }

@@ -1,47 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import {
-  applyCompanyPrefix,
-  extractCompanyPrefixFromPath,
-  isBoardPathWithoutPrefix,
-  toCompanyRelativePath,
-} from "./company-routes";
+import { applyCompanyPrefix, extractCompanyPrefixFromPath, isBoardPathWithoutPrefix, toCompanyRelativePath } from "./company-routes";
 
 describe("company routes", () => {
   it("keeps board route roots in sync with the company-prefixed route tree", () => {
-    const appSource = readFileSync(fileURLToPath(new URL("../App.tsx", import.meta.url)), "utf8");
-    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
-    expect(routeBlock).toBeDefined();
-    const roots = (block: string) => new Set(
-      [...block.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!),
-    );
-    const routeRoots = roots(routeBlock!);
-    const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
-    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
-      boardRouteRoots.delete(root);
-    }
+    const routesSource = readFileSync(fileURLToPath(new URL("../ui2/routes.tsx", import.meta.url)), "utf8");
+    const routePaths = [...routesSource.matchAll(/\bpath:\s*"([^"]+)"/g)].map(([, path]) => path!);
+    const boardRouteRoots = new Set(routePaths.map((path) => path.split("/")[0]!));
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
-
-    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
-    expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
+    const expectedRouteRoots = new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge"]);
+    expect(boardRouteRoots).toEqual(expectedRouteRoots);
+    expect([...expectedRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
-  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack", "wiki"])(
-    "scopes the Myrmidon %s menu route to the current company",
-    (root) => {
-      const pathname = `/${root}`;
-      const path = `${pathname}?view=all#details`;
-      expect(isBoardPathWithoutPrefix(pathname)).toBe(true);
-      expect(extractCompanyPrefixFromPath(pathname)).toBeNull();
-      expect(applyCompanyPrefix(path, "OPE")).toBe(`/OPE${path}`);
-      expect(applyCompanyPrefix(`/OPE${path}`, "OPE")).toBe(`/OPE${path}`);
-      expect(toCompanyRelativePath(`/OPE${path}`)).toBe(path);
-    },
-  );
+  it("does not treat any registered route root as a company prefix", () => {
+    const routesSource = readFileSync(fileURLToPath(new URL("../ui2/routes.tsx", import.meta.url)), "utf8");
+    const routePaths = [...routesSource.matchAll(/\bpath:\s*"([^"]+)"/g)].map(([, path]) => path!);
+    const routeRoots = new Set(routePaths.map((path) => path.split("/")[0]!));
+    expect(routeRoots).toEqual(new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge"]));
+    for (const root of routeRoots) expect(extractCompanyPrefixFromPath(`/${root}`), `/${root}`).toBeNull();
+  });
+
+  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack", "wiki"])("scopes the Myrmidon %s menu route to the current company", (root) => {
+    const pathname = `/${root}`;
+    const path = `${pathname}?view=all#details`;
+    expect(isBoardPathWithoutPrefix(pathname)).toBe(true);
+    expect(extractCompanyPrefixFromPath(pathname)).toBeNull();
+    expect(applyCompanyPrefix(path, "OPE")).toBe(`/OPE${path}`);
+    expect(applyCompanyPrefix(`/OPE${path}`, "OPE")).toBe(`/OPE${path}`);
+    expect(toCompanyRelativePath(`/OPE${path}`)).toBe(path);
+  });
 
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
@@ -53,21 +45,13 @@ describe("company routes", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
     expect(extractCompanyPrefixFromPath("/execution-workspaces/workspace-123")).toBeNull();
-    expect(applyCompanyPrefix("/execution-workspaces/workspace-123", "PAP")).toBe(
-      "/PAP/execution-workspaces/workspace-123",
-    );
-    expect(applyCompanyPrefix("/execution-workspaces/workspace-123/routines", "PAP")).toBe(
-      "/PAP/execution-workspaces/workspace-123/routines",
-    );
+    expect(applyCompanyPrefix("/execution-workspaces/workspace-123", "PAP")).toBe("/PAP/execution-workspaces/workspace-123");
+    expect(applyCompanyPrefix("/execution-workspaces/workspace-123/routines", "PAP")).toBe("/PAP/execution-workspaces/workspace-123/routines");
   });
 
   it("normalizes prefixed execution workspace paths back to company-relative paths", () => {
-    expect(toCompanyRelativePath("/PAP/execution-workspaces/workspace-123")).toBe(
-      "/execution-workspaces/workspace-123",
-    );
-    expect(toCompanyRelativePath("/PAP/execution-workspaces/workspace-123/routines")).toBe(
-      "/execution-workspaces/workspace-123/routines",
-    );
+    expect(toCompanyRelativePath("/PAP/execution-workspaces/workspace-123")).toBe("/execution-workspaces/workspace-123");
+    expect(toCompanyRelativePath("/PAP/execution-workspaces/workspace-123/routines")).toBe("/execution-workspaces/workspace-123/routines");
   });
 
   it("treats /search as a board route that needs a company prefix", () => {
@@ -89,9 +73,7 @@ describe("company routes", () => {
   });
 
   it("normalizes prefixed company export file URLs for parsing", () => {
-    expect(toCompanyRelativePath("/NEU/company/export/files/agents/ceo/AGENTS.md")).toBe(
-      "/company/export/files/agents/ceo/AGENTS.md",
-    );
+    expect(toCompanyRelativePath("/NEU/company/export/files/agents/ceo/AGENTS.md")).toBe("/company/export/files/agents/ceo/AGENTS.md");
   });
 
   it("treats /artifacts as a board route that needs a company prefix", () => {
@@ -122,7 +104,6 @@ describe("company routes", () => {
     expect(isBoardPathWithoutPrefix("/decisions")).toBe(true);
     expect(extractCompanyPrefixFromPath("/decisions")).toBeNull();
     expect(applyCompanyPrefix("/decisions", "PAP")).toBe("/PAP/decisions");
-
     expect(isBoardPathWithoutPrefix("/attention")).toBe(false);
     expect(extractCompanyPrefixFromPath("/attention")).toBe("ATTENTION");
   });
@@ -137,22 +118,13 @@ describe("company routes", () => {
   it("treats Skill Studio create mode as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/skills/studio/new")).toBe(true);
     expect(extractCompanyPrefixFromPath("/skills/studio/new")).toBeNull();
-    expect(applyCompanyPrefix("/skills/studio/new?forkFrom=skill-1", "PAP")).toBe(
-      "/PAP/skills/studio/new?forkFrom=skill-1",
-    );
-    expect(toCompanyRelativePath("/PAP/skills/studio/new?forkFrom=skill-1")).toBe(
-      "/skills/studio/new?forkFrom=skill-1",
-    );
+    expect(applyCompanyPrefix("/skills/studio/new?forkFrom=skill-1", "PAP")).toBe("/PAP/skills/studio/new?forkFrom=skill-1");
+    expect(toCompanyRelativePath("/PAP/skills/studio/new?forkFrom=skill-1")).toBe("/skills/studio/new?forkFrom=skill-1");
   });
 
   it("preserves artifact deep-link anchors when applying the company prefix", () => {
-    expect(applyCompanyPrefix("/issues/PAP-10205#work-product-wp-1", "PAP")).toBe(
-      "/PAP/issues/PAP-10205#work-product-wp-1",
-    );
-    expect(applyCompanyPrefix("/issues/PAP-10306#attachment-att-1", "PAP")).toBe(
-      "/PAP/issues/PAP-10306#attachment-att-1",
-    );
-    // Already-prefixed paths are returned untouched.
+    expect(applyCompanyPrefix("/issues/PAP-10205#work-product-wp-1", "PAP")).toBe("/PAP/issues/PAP-10205#work-product-wp-1");
+    expect(applyCompanyPrefix("/issues/PAP-10306#attachment-att-1", "PAP")).toBe("/PAP/issues/PAP-10306#attachment-att-1");
     expect(applyCompanyPrefix("/PAP/artifacts", "PAP")).toBe("/PAP/artifacts");
   });
 });

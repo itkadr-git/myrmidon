@@ -18,6 +18,8 @@
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  * @see PLUGIN_SPEC.md §19.0.3 — Bundle Serving
  */
+import { i18n, useTranslation } from "@/i18n"; // myrmidon(OPE-9352)
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import {
   Component,
   createElement,
@@ -796,6 +798,7 @@ export function slotContextToHostContext(
   userId: string | null,
   isInstanceAdmin = false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
 ): PluginHostContext {
+  const currentLang = i18n.language || "en";
   return {
     companyId: pluginSlotContext.companyId ?? null,
     companyPrefix: pluginSlotContext.companyPrefix ?? null,
@@ -806,6 +809,8 @@ export function slotContextToHostContext(
     userId,
     isInstanceAdmin, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     renderEnvironment: null,
+    locale: currentLang,
+    language: currentLang,
   };
 }
 
@@ -815,14 +820,14 @@ export function slotContextToHostContext(
  * This ensures that `usePluginData()`, `usePluginAction()`, and `useHostContext()`
  * have access to the current plugin ID and host context during the render phase.
  */
-function PluginBridgeScope({
+export function PluginBridgeScope({
   pluginId,
   context,
   children,
 }: {
   pluginId: string;
   context: PluginSlotContext;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -836,9 +841,10 @@ function PluginBridgeScope({
     retry: false,
   });
   const isInstanceAdmin = Boolean(boardAccess?.isInstanceAdmin || boardAccess?.source === "local_implicit");
+  const { i18n: activeI18n } = useTranslation();
   const hostContext = useMemo(
     () => slotContextToHostContext(context, userId, isInstanceAdmin),
-    [context, userId, isInstanceAdmin],
+    [context, userId, isInstanceAdmin, activeI18n.language],
   );
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 
@@ -855,6 +861,7 @@ export function PluginSlotMount({
   className,
   missingBehavior = "hidden",
 }: PluginSlotMountProps) {
+  const { t } = useTranslation(); // myrmidon(OPE-9352)
   usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
   const component = resolveRegisteredComponent(slot);
@@ -880,7 +887,7 @@ export function PluginSlotMount({
     if (missingBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
-        {slot.pluginDisplayName}: {slot.displayName}
+        {pluginLabel(t, slot.pluginKey, null, slot.pluginDisplayName)}: {pluginLabel(t, slot.pluginKey, slot.id, slot.displayName)} {/* myrmidon(OPE-9352) */}
       </div>
     );
   }
