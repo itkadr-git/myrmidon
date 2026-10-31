@@ -735,7 +735,7 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 // myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
-import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -804,6 +804,8 @@ import { tryDevReviewContinuationOnRelease, devProcessProjectIds } from "../myrm
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
+  invalidateFailedRunsCache,
+  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
@@ -13135,6 +13137,15 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
+    invalidateLastRunRowsCache(updated.companyId);
+    if (
+      updated.status === "failed" ||
+      updated.status === "timed_out" ||
+      (updated.status as string) === "blocked" ||
+      (updated.status as string) === "needs_followup"
+    ) {
+      invalidateFailedRunsCache(updated.companyId);
+    }
     void emitAgentTaskRun(db, updated);
     void reportRunFailure(db, updated);
   }

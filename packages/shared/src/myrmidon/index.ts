@@ -47,6 +47,7 @@ export * from "../myrmidon-features.js";
 export * from "../myrmidon-foraging-idle-gate.js";
 export * from "../myrmidon-foraging-pass-journal.js";
 export * from "../myrmidon-foraging.js";
+export * from "../myrmidon-guardrail-regex.js";
 export * from "../myrmidon-host-disk.js";
 export * from "../myrmidon-idle-stop.js";
 export * from "../myrmidon-isolation-scope.js";

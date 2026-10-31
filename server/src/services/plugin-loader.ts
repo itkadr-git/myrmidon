@@ -410,16 +410,15 @@ export interface PluginRuntimeServices {
    * scoped to its capabilities and plugin ID.
    */
   buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => WorkerToHostHandlers;
-  /**
-   * Host instance information passed to the worker during initialization.
-   * Includes the instance ID and host version.
-   */
+  /** Host instance information passed to the worker during initialization. */
   instanceInfo: {
     instanceId: string;
     hostVersion: string;
     deploymentMode?: "local_trusted" | "authenticated";
     deploymentExposure?: "private" | "public";
   };
+  /** Optional callback invoked when runtime activation succeeds. */
+  onPluginReady?: (plugin: { id: string; pluginKey: string }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -2077,7 +2076,9 @@ export function pluginLoader(
       );
 
       const loadResults = results.map((r, i) => {
-        if (r.status === "fulfilled") return r.value;
+        if (r.status === "fulfilled") {
+          return r.value;
+        }
         return {
           plugin: pluginsToLoad[i]!,
           success: false,
@@ -2587,6 +2588,8 @@ export function pluginLoader(
         },
         "plugin-loader: plugin activated successfully",
       );
+
+      runtimeServices?.onPluginReady?.({ id: pluginId, pluginKey });
 
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {
