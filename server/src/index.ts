@@ -62,6 +62,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { startBrowserBridge } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 import {
   PROCESS_ROLE_ENV,
+  primaryListenReusesPort, // myrmidon(OPE-10011)
   processRole,
   type ProcessRoleProfile,
 } from "./services/process-role.js"; // myrmidon(PROCS-1.1)
@@ -855,6 +856,14 @@ async function startServerWithDatabaseTeardown(
   // single↔split and emergency-single transitions. The shutdown path closes
   // it; the supervisor's own handle keeps the same server alive in between.
   let publicListener: HttpServer | null = null;
+  // myrmidon(OPE-10011): settles once the startup listener is bound — and so
+  // once `app` exists. The supervisor's first apply runs before createApp
+  // (startProcessesSettings below); its openPublicListener waits on this
+  // instead of reaching `app` in the temporal dead zone.
+  let markStartupListenerReady: () => void = () => undefined;
+  const startupListenerReady = new Promise<void>((resolveReady) => {
+    markStartupListenerReady = resolveReady;
+  });
   let liveEventsClients: ReadonlySet<{ close(code?: number, reason?: string): void }> = new Set();
   function toSupervisorListener(server: HttpServer): SupervisorListenerHandle & { server: HttpServer } {
     return {
@@ -1166,6 +1175,7 @@ async function startServerWithDatabaseTeardown(
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
         openPublicListener: async () => {
+          await startupListenerReady; // myrmidon(OPE-10011): no `app` before this
           if (publicListener?.listening) return toSupervisorListener(publicListener);
           const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
           // reusePort: the api children may still hold :3100 when the worker
@@ -1367,13 +1377,15 @@ async function startServerWithDatabaseTeardown(
     const onBound = () => {
       server.off("error", onError);
       logger.info(
-        `Server listener bound on ${primaryListenHost}:${listenPort}${roleListen.reusePort ? " (reusePort)" : ""}; startup recovery in progress`,
+        `Server listener bound on ${primaryListenHost}:${listenPort}${primaryListenReusesPort(processRoleProfile) ? " (reusePort)" : ""}; startup recovery in progress`,
       );
       resolveListen();
     };
     // myrmidon(PROCS-1.1): a reusable-port listener joins its siblings on the
     // same port instead of taking the next free one.
-    if (roleListen.reusePort) {
+    // myrmidon(OPE-10011): the worker's listener too — Linux shares a port only
+    // when EVERY socket on it, the first one included, sets SO_REUSEPORT.
+    if (primaryListenReusesPort(processRoleProfile)) {
       server.listen({ port: listenPort, host: primaryListenHost, reusePort: true }, onBound);
     } else {
       server.listen(listenPort, primaryListenHost, onBound);
@@ -1439,6 +1451,14 @@ async function startServerWithDatabaseTeardown(
     // first apply (startProcessesSettings above ran before createApp — the
     // fork+ready+drain cycle) closes it as soon as the children are ready.
     publicListener = server;
+    // myrmidon(OPE-10011): hand it to the supervisor — without this a stored
+    // split never closed it and the worker kept sharing :3100 with the children.
+    markStartupListenerReady();
+    if (processSupervisor) {
+      void processSupervisor.adoptPublicListener(toSupervisorListener(server)).catch((err) => {
+        logger.error({ err }, "myrmidon(OPE-10011): supervisor could not adopt the worker startup listener");
+      });
+    }
   }
 
   /**
