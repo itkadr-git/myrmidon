@@ -28,9 +28,16 @@ import {
   isAgentStatusInvokable,
 } from "@myrmidon/shared";
 import { setImmediateNoReviewerSignal } from "../myrmidon/review-routing/attention.js";
+import { triggerReviewApprovalPropagation } from "../services/pull-request-approval-propagation.js";
 import {
+  buildReviewRoutingAssignPatch,
   evaluateReviewerAvailability,
+  excludedReviewerIds,
   issueNeedsReviewer,
+  pickReviewer,
+  policyHasReviewerParticipant,
+  readPendingAgentReview,
+  type ReviewerCandidate,
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
@@ -73,6 +80,7 @@ import type { Db } from "@myrmidon/db";
 import { withDefaultEscalationChain } from "../services/review-escalation-chain.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
+import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import {
   companies,
   activityLog,
@@ -100,6 +108,7 @@ import {
   pipelineCases,
   pipelineStages,
   pipelines,
+  projects,
   projectWorkspaces,
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
@@ -192,6 +201,9 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
+  validateIdeasProjectConstraints,
+  checkIdeasWeeklySLA,
+  isIdeasProjectName,
 } from "@myrmidon/shared";
 import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -354,6 +366,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  safeNormalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
@@ -1172,7 +1185,7 @@ function hasScheduledMonitor(input: {
     input.existingMonitorNextCheckAt
   )
     return true;
-  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  const policy = safeNormalizeIssueExecutionPolicy(input.executionPolicy ?? null);
   return Boolean(policy?.monitor?.nextCheckAt);
 }
 
@@ -1516,7 +1529,9 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "approval_approved",
   "budget.blocked",
   "company.inactive",
+  "dev_project_queue_empty",
   "email_received",
+  "execution_changes_requested",
   "execution_reconciliation_required",
   "execution_review_participant_recovery",
   "execution_review_requested",
@@ -3745,6 +3760,42 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
+  const resolveProjectName = async (projectId: string): Promise<string | null> => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId));
+        if (rows[0]?.name) return rows[0].name;
+      }
+    } catch {
+      // ignore db error
+    }
+    try {
+      if (projectsSvc && typeof projectsSvc.getById === "function") {
+        const proj = await projectsSvc.getById(projectId);
+        if (proj?.name) return proj.name;
+      }
+    } catch {
+      // ignore service error
+    }
+    return null;
+  };
+  const listCompanyProjects = async (companyId: string) => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+        if (rows.length > 0) return rows;
+      }
+    } catch {}
+    try {
+      if (projectsSvc && typeof projectsSvc.list === "function") {
+        return await projectsSvc.list(companyId);
+      }
+    } catch {}
+    return [];
+  };
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -3802,21 +3853,117 @@ export function issueRoutes(
         "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
       );
     }
-    if (
-      requiresEngineer({
-        labels: issueLabelNames,
-        casteKey,
-        projectDefaultCasteKey,
-        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
-        executionWorkspacePreference:
-          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
-      })
-    ) {
-      throw unprocessable("This issue requires an engineer", {
-        code: "issue_requires_engineer",
-        issueId: input.issue?.id ?? null,
-        assigneeAgentId: input.assigneeAgentId,
-      });
+    let isCode = requiresEngineer({
+      labels: issueLabelNames,
+      casteKey,
+      projectDefaultCasteKey,
+      harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+      executionWorkspacePreference:
+        input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+    });
+
+    if (!isCode && input.issue?.id) {
+      try {
+        const [pr] = await db
+          .select({ id: issueWorkProducts.id })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, input.companyId),
+              eq(issueWorkProducts.issueId, input.issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+          .limit(1);
+        if (pr) isCode = true;
+      } catch {
+        // fail-open
+      }
+    }
+
+    if (!isCode && (input.issue as any)?.executionState?.stages) {
+      isCode = true;
+    }
+
+    if (isCode) {
+      let suggested: { id: string; name: string } | null = null;
+      try {
+        const issueExecutionState = (input.issue as any)?.executionState;
+        const returnAgentId = issueExecutionState?.returnAssignee?.agentId;
+        if (returnAgentId && returnAgentId !== input.assigneeAgentId) {
+          const returnAgent = await agentsSvc.getById(returnAgentId);
+          if (returnAgent && returnAgent.role === "engineer") {
+            suggested = { id: returnAgent.id, name: returnAgent.name };
+          }
+        }
+
+        if (!suggested && input.issue?.id) {
+          const prs = await db
+            .select({
+              id: issueWorkProducts.id,
+              createdByRunId: issueWorkProducts.createdByRunId,
+            })
+            .from(issueWorkProducts)
+            .where(
+              and(
+                eq(issueWorkProducts.companyId, input.companyId),
+                eq(issueWorkProducts.issueId, input.issue.id),
+                eq(issueWorkProducts.type, "pull_request"),
+              ),
+            )
+            .limit(1);
+          if (prs.length > 0 && prs[0].createdByRunId) {
+            const [run] = await db
+              .select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, prs[0].createdByRunId))
+              .limit(1);
+            if (run?.agentId && run.agentId !== input.assigneeAgentId) {
+              const runAgent = await agentsSvc.getById(run.agentId);
+              if (runAgent && runAgent.role === "engineer") {
+                suggested = { id: runAgent.id, name: runAgent.name };
+              }
+            }
+          }
+        }
+
+        if (!suggested) {
+          const [activeEng] = await db
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, input.companyId),
+                eq(agents.role, "engineer"),
+                ne(agents.status, "retired"),
+              ),
+            )
+            .limit(1);
+          if (activeEng) {
+            suggested = activeEng;
+          }
+        }
+      } catch {
+        // fail-open for suggestion lookup
+      }
+
+      const roleStr = agent?.role ?? "non-engineer";
+      const hint = suggested
+        ? `Assign this code task to engineer ${suggested.name} (${suggested.id}) or return to PR author.`
+        : "Assign this code task to an agent with the engineer role or return to PR author.";
+
+      throw unprocessable(
+        `This issue requires an engineer. Cannot assign or keep in progress on non-coding role "${roleStr}". Suggested assignee: ${suggested ? `${suggested.name} (${suggested.id})` : "an agent with role engineer"}.`,
+        {
+          code: "issue_requires_engineer",
+          issueId: input.issue?.id ?? null,
+          assigneeAgentId: input.assigneeAgentId,
+          assigneeRole: roleStr,
+          suggestedAssigneeAgentId: suggested?.id ?? null,
+          suggestedAssigneeName: suggested?.name ?? null,
+          hint,
+        },
+      );
     }
   }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
@@ -4649,7 +4796,7 @@ export function issueRoutes(
 
     const monitor = summarizeIssueMonitor(
       issue,
-      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
     );
     if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
       return "Recovery action became stale because the source issue now has a scheduled monitor.";
@@ -5051,7 +5198,7 @@ export function issueRoutes(
         ? input.existing.assigneeAgentId
         : input.updateFields.assigneeAgentId;
     const executionReviewParticipants = summarizeExecutionParticipants(
-      normalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
       "review",
     );
     if (
@@ -8882,6 +9029,96 @@ export function issueRoutes(
     res.json({ count });
   });
 
+  router.get("/companies/:companyId/ideas/sla", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await listCompanyProjects(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+    res.json({
+      companyId,
+      projectId: ideasProject.id,
+      projectName: ideasProject.name,
+      sla,
+      staleIssues,
+    });
+  });
+
+  router.post("/companies/:companyId/ideas/sla/audit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyProjects = await listCompanyProjects(companyId);
+    const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
+    if (!ideasProject) {
+      res.status(404).json({ error: "Ideas project not found" });
+      return;
+    }
+    const issuesList = await svc.list(companyId, { projectId: ideasProject.id });
+    const sla = checkIdeasWeeklySLA(issuesList);
+    const staleIssues = issuesList
+      .filter((i) => sla.staleIssueIds.includes(i.id))
+      .map((i) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+
+    let notificationSent = false;
+    let triageIssueId: string | null = null;
+
+    if (sla.staleCount > 0) {
+      const staleListFormatted = staleIssues
+        .map((i) => `- [${i.identifier}] ${i.title} (создана ${new Date(i.createdAt).toISOString().slice(0, 10)})`)
+        .join("\n");
+
+      const existingTriage = await svc.list(companyId, {
+        status: ["todo", "in_progress"],
+      });
+      const activeTriageIssue = existingTriage.find(
+        (i) => i.title.includes("SLA: разбор просроченных идей") && i.status !== "done" && i.status !== "cancelled",
+      );
+
+      if (!activeTriageIssue) {
+        const newIssue = await svc.create(companyId, {
+          title: `[SLA: разбор просроченных идей] ${sla.staleCount} карточек старше 7 дней`,
+          description: `Автоматический аудит SLA проекта «Идеи» (OPE-9760):\nОбнаружено ${sla.staleCount} карточек старше 7 дней без решения:\n\n${staleListFormatted}\n\nНеобходимо разобрать их: перевести в выпуск с исполнителем, отклонить с причиной или оставить.`,
+          priority: "high",
+          status: "todo",
+        });
+        triageIssueId = newIssue.id;
+        notificationSent = true;
+      } else {
+        triageIssueId = activeTriageIssue.id;
+        notificationSent = true;
+      }
+    }
+
+    res.json({
+      audited: true,
+      compliant: sla.staleCount === 0,
+      sla,
+      staleIssues,
+      notificationSent,
+      triageIssueId,
+    });
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -9198,10 +9435,52 @@ export function issueRoutes(
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
+      ciResult: null as unknown,
+      pullRequestsCi: [] as unknown[],
     };
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const prs = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      response.pullRequestsCi = prs;
+      response.ciResult = prs[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
     res.json(
       await runRedactions.redactForIssue(issue.companyId, issue.id, response),
     );
+  });
+
+  router.get("/issues/:id/ci-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const ciResolver = createPullRequestCiResolver(db);
+      const pullRequests = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(issue.companyId, issue.id),
+        [],
+      );
+      return res.json({
+        issueId: issue.id,
+        pullRequests,
+        primaryCiResult: pullRequests[0] ?? null,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
   });
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
@@ -9916,7 +10195,7 @@ export function issueRoutes(
               actorAgentId: actor.agentId,
               actorRunId: actor.runId,
             });
-            const executionPolicy = normalizeIssueExecutionPolicy(
+            const executionPolicy = safeNormalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
@@ -12444,6 +12723,23 @@ export function issueRoutes(
           typeof effectiveParentId === "string" ? effectiveParentId : null,
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
+      if (rawCreateBody.projectId) {
+        const projName = await resolveProjectName(rawCreateBody.projectId as string);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
+            dueDate: (rawCreateBody as Record<string, unknown>).dueDate,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+            metadata: (rawCreateBody as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
+        }
+      }
       const actor = getActorInfo(req);
       const runWorkspaceInheritanceSourceIssueId =
         hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -13418,6 +13714,19 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (req.actor.type === "agent") {
+        throw forbidden(
+          `Board access required. Решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+          {
+            hint: `решение этапа — PATCH /api/issues/${id} со status и comment в одном запросе`,
+            decisionEndpoint: `PATCH /api/issues/${id}`,
+            actions: {
+              approve: { status: "done", commentRequired: true },
+              request_changes: { status: "in_progress", commentRequired: true },
+            },
+          },
+        );
+      }
       assertBoard(req);
 
       if (req.actor.source !== "local_implicit") {
@@ -13601,18 +13910,24 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
-      // Only a change of assignee is gated. A non-engineer who already holds the
-      // issue must still be able to move it (blocked, in_progress, todo, labels):
-      // refusing that would be a new silent stall (fail-open, Q1).
-      if (
+      // 1.6.6 GUARD-RETURN (OPE-9962): A code task of a dev project cannot be put into
+      // or kept in in_progress on a non-coding role. Changes of assignee to non-engineer
+      // on non-exempt statuses are also gated. Non-engineers who already hold the issue
+      // may only move it to blocked, todo, or cancelled.
+      const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
+      const targetAssigneeAgentId = requestedAssigneeAgentId;
+      const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
-        normalizedAssigneeAgentId !== existing.assigneeAgentId
-      ) {
+        normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      const movingToOrKeptInCodeInProgress =
+        targetStatus === "in_progress" && targetAssigneeAgentId != null;
+
+      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,
-          status: typeof req.body.status === "string" ? req.body.status : existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
+          status: targetStatus,
+          assigneeAgentId: targetAssigneeAgentId,
           projectId: existing.projectId,
           labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
           casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
@@ -13622,6 +13937,44 @@ export function issueRoutes(
               ? req.body.executionWorkspacePreference
               : null,
         });
+      }
+      const targetProjectId =
+        req.body.projectId !== undefined ? (req.body.projectId as string | null) : existing.projectId;
+      const touchesIdeasConstraints =
+        req.body.projectId !== undefined ||
+        req.body.assigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined ||
+        (req.body as Record<string, unknown>).dueDate !== undefined ||
+        req.body.description !== undefined ||
+        (req.body as Record<string, unknown>).metadata !== undefined;
+      if (targetProjectId && touchesIdeasConstraints) {
+        const projName = await resolveProjectName(targetProjectId);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: requestedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId !== undefined
+                ? (req.body.assigneeUserId as string | null)
+                : existing.assigneeUserId,
+            dueDate:
+              (req.body as Record<string, unknown>).dueDate !== undefined
+                ? (req.body as Record<string, unknown>).dueDate
+                : (existing as Record<string, unknown>).dueDate,
+            description:
+              req.body.description !== undefined
+                ? (req.body.description as string | null)
+                : existing.description,
+            metadata:
+              (req.body as Record<string, unknown>).metadata !== undefined
+                ? (req.body as Record<string, unknown>).metadata
+                : (existing as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
+        }
       }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
@@ -13952,7 +14305,7 @@ export function issueRoutes(
           actor.actorType,
         );
       }
-      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
+      const previousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
       const nextExecutionPolicy =
@@ -15143,8 +15496,74 @@ export function issueRoutes(
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
+            let reviewRoutingAssignment: { reviewerId: string; patch: Record<string, unknown> } | null = null;
+            const lockedForReviewRouting = enteringReviewRequested
+              ? await svc.getByIdForUpdate(id, tx)
+              : null;
+            const targetPolicy = updateFields.executionPolicy !== undefined
+              ? updateFields.executionPolicy
+              : lockedForReviewRouting?.executionPolicy;
+            const targetReviewPolicy = updateFields.reviewPolicy !== undefined
+              ? updateFields.reviewPolicy
+              : lockedForReviewRouting?.reviewPolicy;
+            const hasExistingReviewer = policyHasReviewerParticipant(targetPolicy);
+            if (
+              enteringReviewRequested &&
+              lockedForReviewRouting &&
+              lockedForReviewRouting.status !== "in_review" &&
+              targetReviewPolicy !== "human_only" &&
+              !hasExistingReviewer &&
+              !readPendingAgentReview(lockedForReviewRouting as never)
+            ) {
+              const routingIssue = lockedForReviewRouting as typeof existing;
+              const settings = await readReviewRoutingSettings(instanceSettings);
+              const storeDb = (typeof (tx as any)?.select === "function" ? tx : db) as unknown as Db;
+              if (settings.enabled && typeof (storeDb as any)?.select === "function") {
+                const txReviewRoutingStore = createPgReviewRoutingStore(storeDb);
+                try {
+                  const authorModel = routingIssue.createdByAgentId
+                    ? await txReviewRoutingStore.getAgentModel?.(routingIssue.companyId, routingIssue.createdByAgentId) ?? null
+                    : null;
+                  const [candidateRows, loads] = await Promise.all([
+                    txReviewRoutingStore.listReviewerAgents(routingIssue.companyId, settings.reviewerRoles),
+                    txReviewRoutingStore.loadByAgent(routingIssue.companyId),
+                  ]);
+                  const candidates: ReviewerCandidate[] = candidateRows.map((candidate) => ({
+                    ...candidate,
+                    load: loads.get(candidate.id) ?? 0,
+                  }));
+                  const reviewer = pickReviewer({
+                    candidates,
+                    excluded: excludedReviewerIds(routingIssue),
+                    maxLoad: settings.maxLoadPerReviewer,
+                    authorModel,
+                  });
+                  if (reviewer) {
+                    reviewRoutingAssignment = {
+                      reviewerId: reviewer.id,
+                      patch: buildReviewRoutingAssignPatch({ issue: routingIssue, reviewerAgentId: reviewer.id }),
+                    };
+                  }
+                } catch (err) {
+                  logger.warn({ err, issueId: id }, "failed to compute immediate review routing assignment");
+                }
+              }
+            }
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (reviewRoutingAssignment && updated.status === "in_review") {
+              const routed = await svc.update(
+                id,
+                reviewRoutingAssignment.patch,
+                tx,
+                undefined,
+                postCommitIssueActions,
+              );
+              if (routed) {
+                Object.assign(updated, routed);
+                reviewRoutingAssignment = null;
+              }
+            }
             if (handoffGuarded && handoffLockedRow) {
               // Fresh-revision invariant: a committed handoff always moves
               // statusVersion by one. The DB trigger
@@ -15375,6 +15794,27 @@ export function issueRoutes(
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
+
+      const currentIssue = issue;
+      if (
+        decision?.outcome === "approved" ||
+        (existing.status === "in_review" && currentIssue.status === "done")
+      ) {
+        void triggerReviewApprovalPropagation(db, {
+          companyId: currentIssue.companyId,
+          issueId: currentIssue.id,
+          decisionOutcome: decision?.outcome ?? "approved",
+          verdictBody: decision?.body ?? null,
+          actor: {
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId: currentIssue.id }, "failed to propagate PR review approval");
+        });
+      }
 
       // myrmidon(HOLD-READY): re-plan the wakes parked on the cleared hold.
       const committedUnblock = humanUnblock as HumanUnblockResult | null;
@@ -15809,7 +16249,7 @@ export function issueRoutes(
         });
       }
 
-      const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(
+      const nextStoredExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         issue.executionPolicy ?? null,
       );
       const previousMonitor = summarizeIssueMonitor(
@@ -16767,19 +17207,31 @@ export function issueRoutes(
         let unavailable = false;
         if (needsReviewer) {
           const reviewRoutingSettings = await readReviewRoutingSettings(instanceSettings);
-          if (reviewRoutingSettings.enabled && issue.reviewPolicy !== "human_only") {
-            const routingStore = createPgReviewRoutingStore(db);
-            const [reviewerRows, loadByAgent] = await Promise.all([
-              routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
-              routingStore.loadByAgent(issue.companyId),
-            ]);
-            unavailable =
-              evaluateReviewerAvailability({
-                reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true })),
-                loadByAgent,
-                issue: reviewerSignalIssue!,
-                maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
-              }).selected === null;
+          if (
+            reviewRoutingSettings.enabled &&
+            issue.reviewPolicy !== "human_only" &&
+            typeof (db as any)?.select === "function"
+          ) {
+            try {
+              const routingStore = createPgReviewRoutingStore(db);
+              const [reviewerRows, loadByAgent] = await Promise.all([
+                routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
+                routingStore.loadByAgent(issue.companyId),
+              ]);
+              const authorModel = reviewerSignalIssue?.createdByAgentId
+                ? await routingStore.getAgentModel?.(issue.companyId, reviewerSignalIssue.createdByAgentId) ?? null
+                : null;
+              unavailable =
+                evaluateReviewerAvailability({
+                  reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true, model: agent.model })),
+                  loadByAgent,
+                  issue: reviewerSignalIssue!,
+                  maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
+                  authorModel,
+                }).selected === null;
+            } catch (err) {
+              logger.warn({ err, issueId: issue.id }, "failed to evaluate post-update reviewer availability");
+            }
           }
         }
         setImmediateNoReviewerSignal(
@@ -19499,7 +19951,7 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = normalizeIssueExecutionPolicy(
+      const currentExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =
@@ -19721,6 +20173,26 @@ export function issueRoutes(
               source: "auto_approval_comment",
               _previous: { status: issueBeforeCommentDecision.status },
             },
+          });
+        }
+
+        if (
+          transition.decision?.outcome === "approved" ||
+          (issueBeforeCommentDecision.status === "in_review" && currentIssue.status === "done")
+        ) {
+          void triggerReviewApprovalPropagation(db, {
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+            decisionOutcome: transition.decision?.outcome ?? "approved",
+            verdictBody: transition.decision?.body ?? req.body?.body ?? null,
+            actor: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+            },
+          }).catch((err) => {
+            logger.warn({ err, issueId: currentIssue.id }, "failed to propagate PR review approval");
           });
         }
         commentDecisionStageWakeup = buildExecutionStageWakeup({

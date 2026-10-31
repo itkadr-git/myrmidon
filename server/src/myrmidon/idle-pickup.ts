@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
@@ -365,6 +365,9 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const isReviewParticipant =
+    sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
     .select({
       id: issues.id,
@@ -378,14 +381,16 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
-        eq(issues.assigneeAgentId, agentId),
-        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
-        // assigned to this agent (by hand or by a gated claim) stays theirs —
-        // the scope applies where a task is handed out (matcher, role queue).
-        isNull(issues.assigneeUserId),
+        or(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          ),
+          isReviewParticipant,
+        ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
-        inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
         // Not blocked by an unresolved blocker: no `blocks` edge whose blocker
         // is anything other than `done`. This mirrors the board's readiness
         // rule (only a done blocker resolves its dependent): an open blocker
@@ -461,6 +466,62 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     )
     .orderBy(asc(issues.createdAt))
     .limit(200);
+}
+
+/**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
 }
 
 /**
@@ -573,6 +634,27 @@ export async function idlePickupForAgent(
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
 
+  const candidateIds = ordered.map((c) => c.id);
+  const prProducts =
+    candidateIds.length > 0
+      ? await deps.db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, agent.companyId),
+              inArray(issueWorkProducts.issueId, candidateIds),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+      : [];
+  const prMetadataByIssueId = new Map(
+    prProducts.map((p) => [p.issueId, p.metadata as Record<string, unknown> | null]),
+  );
+
   // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
   // automatic run ended stale and that has not moved since is not woken again
   // until the exponential window (base*2^(n-1), ceiling 24 h) elapses — this
@@ -595,6 +677,27 @@ export async function idlePickupForAgent(
     }
     if (liveIssueIds.has(candidate.id)) {
       result.alreadyActive += 1;
+      continue;
+    }
+    // OPE-10082: idle_pickup does not wake a review participant for an issue whose
+    // review stage is pending and waiting for CI (ciState pending/unknown).
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prMetadataByIssueId.get(candidate.id),
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      result.alreadyActive += 1;
+      logger.info(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+        },
+        "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
       continue;
     }
     const recentRun = recentRunsByIssueId.get(candidate.id);
@@ -873,6 +976,27 @@ export async function findTopReadyIssueForAgent(
   for (const candidate of orderIdlePickupCandidates(candidates)) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
+    const prProduct = await db
+      .select({ metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, agent.companyId),
+          eq(issueWorkProducts.issueId, candidate.id),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      continue;
+    }
     return candidate;
   }
   return null;
