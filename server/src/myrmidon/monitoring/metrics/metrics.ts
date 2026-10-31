@@ -58,7 +58,6 @@ import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
-import { failedBeforeModelMetrics } from "../../../services/failed-before-model-metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 
@@ -453,14 +452,9 @@ export async function readAgentFailedBeforeModel(
         result[row.agentId] = Number(row.total);
       }
     }
-    for (const [agentId, count] of Object.entries(
-      failedBeforeModelMetrics.getAll(),
-    )) {
-      result[agentId] = Math.max(result[agentId] ?? 0, count);
-    }
     return result;
   } catch {
-    return failedBeforeModelMetrics.getAll();
+    return {};
   }
 }
 

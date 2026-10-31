@@ -47,7 +47,6 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
-import { failedBeforeModelMetrics } from "./failed-before-model-metrics.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 // myrmidon(L2): an explicitly authorized wake ignores a settled "do not
 // replay" hold; see docs/myrmidon/DIVERGENCE.md "L2".
@@ -27098,14 +27097,6 @@ export function heartbeatService(
           }),
           adapterResult.summary ?? null,
         );
-
-        if (
-          persistedResultJson &&
-          (persistedResultJson.failedBeforeModel ||
-            persistedResultJson.failed_before_model)
-        ) {
-          failedBeforeModelMetrics.recordFailure(agent.id);
-        }
 
         const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
           finishedAt: new Date(),

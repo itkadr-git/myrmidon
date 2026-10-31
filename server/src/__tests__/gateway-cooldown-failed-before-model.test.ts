@@ -10,10 +10,6 @@ import {
 } from "@myrmidon/db";
 import { mapFinalResultForTest } from "@myrmidon/hermes-paperclip-adapter/gateway/server";
 import {
-  failedBeforeModelMetrics,
-  createFailedBeforeModelMetricsRegistry,
-} from "../services/failed-before-model-metrics.js";
-import {
   METRIC_FAMILIES,
   renderMetricsText,
   readAgentFailedBeforeModel,
@@ -30,9 +26,9 @@ import {
 } from "../services/heartbeat.js";
 
 describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
-  it("classifies LiteLLM deployment cooldown as provider_quota with cooldown delay and failedBeforeModel", () => {
+  it("classifies LiteLLM deployment cooldown as provider_quota with cooldown delay and failedBeforeModel when structured retry hint is provided", () => {
     const cooldownMessage =
-      "RateLimitError: No deployments available. All deployments (openai/chatgpt) are in cooldown. Retry after 60s.";
+      "RateLimitError: No deployments available. All deployments (openai/chatgpt) are in cooldown.";
     const result = mapFinalResultForTest({
       terminal: {
         runId: "run-cooldown-1",
@@ -40,6 +36,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
         payload: {
           status: "failed",
           error: cooldownMessage,
+          retry_after: 60,
         },
       },
       outputChunks: [],
@@ -63,14 +60,15 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
     });
   });
 
-  it("extracts custom retry-after delay from cooldown error message", () => {
+  it("extracts custom retry-after delay from structured retry_after metadata", () => {
     const result = mapFinalResultForTest({
       terminal: {
         runId: "run-cooldown-custom",
         status: "failed",
         payload: {
           status: "failed",
-          error: "No deployments available. All deployments in cooldown. Retry after 45s.",
+          error: "No deployments available. All deployments in cooldown.",
+          retry_after: 45,
         },
       },
       outputChunks: [],
@@ -84,6 +82,30 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
     const diffSec = Math.round((retryDate - Date.now()) / 1000);
     expect(diffSec).toBeGreaterThanOrEqual(40);
     expect(diffSec).toBeLessThanOrEqual(50);
+  });
+
+  it("does not synthesize retryNotBefore when cooldown error has no structured retry hint", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-cooldown-no-hint",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "RateLimitError: No deployments available. All deployments (openai/chatgpt) are in cooldown.",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key-3",
+      strategy: "issue",
+    });
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.retryNotBefore).toBeNull();
+    expect(result.resultJson).toMatchObject({
+      failedBeforeModel: true,
+      cooldown: true,
+    });
   });
 
   it("does not mark failure as failedBeforeModel if model output chunks arrived", () => {
@@ -127,20 +149,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
     expect(result.resultJson?.modelResponseStarted).toBe(true);
   });
 
-  it("tracks failed_before_model counter per agent in metrics registry and Prometheus exposition", () => {
-    const registry = createFailedBeforeModelMetricsRegistry();
-    registry.recordFailure("agent-alpha");
-    registry.recordFailure("agent-alpha");
-    registry.recordFailure("agent-beta");
-
-    expect(registry.get("agent-alpha")).toBe(2);
-    expect(registry.get("agent-beta")).toBe(1);
-    expect(registry.get("agent-gamma")).toBe(0);
-
-    failedBeforeModelMetrics.reset();
-    failedBeforeModelMetrics.recordFailure("agent-adm");
-    expect(failedBeforeModelMetrics.get("agent-adm")).toBe(1);
-
+  it("tracks failed_before_model counter per agent in Prometheus exposition and schema", () => {
     expect(METRIC_FAMILIES).toContain("myrmidon_agent_failed_before_model_total");
 
     const sampleSnapshot: MetricsSnapshot = {
@@ -358,13 +367,8 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
 
     it("simulates full write-to-scrape lifecycle: heartbeat failure persists failedBeforeModel and is exposed in Prometheus scrape", async () => {
       const agentId = "agent-lifecycle-test";
-      const registry = createFailedBeforeModelMetricsRegistry();
 
-      // 1. Production heartbeat records in-memory metric
-      registry.recordFailure(agentId);
-      expect(registry.get(agentId)).toBe(1);
-
-      // 2. Production heartbeat writes resultJson to DB heartbeat_runs
+      // 1. Production heartbeat writes resultJson to DB heartbeat_runs
       const persistedRun = {
         agentId,
         status: "failed",
@@ -375,7 +379,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
         },
       };
 
-      // 3. Database aggregation reads from heartbeat_runs
+      // 2. Database aggregation reads from heartbeat_runs
       const mockDb = {
         select: () => ({
           from: () => ({
@@ -392,7 +396,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       const dbCounts = await readAgentFailedBeforeModel(mockDb);
       expect(dbCounts[agentId]).toBe(1);
 
-      // 4. Prometheus scrape collector queries DB counts and formats metrics
+      // 3. Prometheus scrape collector queries DB counts and formats metrics
       const snapshot = await collectMetricsSnapshot({
         db: mockDb,
         now: () => new Date(),

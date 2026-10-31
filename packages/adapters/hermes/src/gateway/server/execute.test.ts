@@ -3709,6 +3709,46 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.resultJson?.failedBeforeModel).toBe(true);
   });
 
+  it("handles real event stream: rate limit failure without retry hint produces no retryNotBefore", async () => {
+    const runId = "run-cooldown-no-hint-stream";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":{"message":"RateLimitError: No deployments available. All deployments in cooldown","type":"rate_limit_error","code":429}}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeUndefined();
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+  });
+
   it("marks failedBeforeModel: false when errorResult is invoked after modelResponseStarted: true", () => {
     const error = new Error("Gateway stream broke mid-generation");
     const state = { modelResponseStarted: true };

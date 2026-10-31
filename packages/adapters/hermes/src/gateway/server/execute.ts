@@ -1513,8 +1513,8 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
-const HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE =
-  /\b(no deployments available|in cooldown|deployments are in cooldown|deployments.*cooldown|ratelimiterror|rate limit|too many requests|429)\b/i;
+const LITELLM_DEPLOYMENT_COOLDOWN_RE =
+  /\b(?:no deployments available|deployments are in cooldown)\b/i;
 
 function parseRetryAfterSeconds(value: unknown): number | null {
   if (typeof value === "number" && !Number.isNaN(value) && value > 0) return value;
@@ -1525,18 +1525,7 @@ function parseRetryAfterSeconds(value: unknown): number | null {
   return null;
 }
 
-function parseRetryAfterFromText(text: string | null): number | null {
-  if (!text) return null;
-  const match = /(?:retry after|cooldown(?: for)?|retry in|wait) (\d+(?:\.\d+)?)\s*(?:s|sec|seconds)?/i.exec(text);
-  if (match?.[1]) {
-    const parsed = Number(match[1]);
-    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
-  }
-  return null;
-}
-
 function extractCooldownRetryNotBefore(
-  errorMessage: string | null,
   payload: Record<string, unknown>,
 ): string | null {
   const errorRecord = asRecord(payload.error);
@@ -1562,8 +1551,7 @@ function extractCooldownRetryNotBefore(
   const msToSec = typeof rawMs === "number" ? rawMs / 1000 : null;
   const retryAfterSec =
     parseRetryAfterSeconds(rawSeconds) ??
-    (msToSec !== null && msToSec > 0 ? msToSec : null) ??
-    parseRetryAfterFromText(errorMessage);
+    (msToSec !== null && msToSec > 0 ? msToSec : null);
   if (retryAfterSec !== null && retryAfterSec > 0) {
     return new Date(Date.now() + retryAfterSec * 1000).toISOString();
   }
@@ -1590,7 +1578,7 @@ function isCooldownOrRateLimit(
   }
   return (
     errorMessage !== null &&
-    HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE.test(errorMessage)
+    LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage)
   );
 }
 
@@ -1694,7 +1682,7 @@ export function mapFinalResultForTest(input: {
             : null;
 
   const retryNotBefore = isCooldown
-    ? extractCooldownRetryNotBefore(errorMessage, payload)
+    ? extractCooldownRetryNotBefore(payload)
     : null;
 
   return {
@@ -2014,7 +2002,7 @@ export function errorResult(
     nestedError?.code === 429 ||
     nestedError?.code === "rate_limit_error" ||
     nestedError?.type === "rate_limit_error" ||
-    (errorMessage !== null && HERMES_GATEWAY_COOLDOWN_SIGNATURE_RE.test(errorMessage));
+    (errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage));
 
   const rawRetryNotBefore =
     hermesError.retryNotBefore ??
@@ -2025,9 +2013,7 @@ export function errorResult(
     (errorBody?.retry_after ? String(errorBody.retry_after) : null) ??
     (nestedError?.retry_after ? String(nestedError.retry_after) : null);
 
-  const parsedRetryNotBefore =
-    parseRetryAfterToIso(rawRetryNotBefore) ??
-    (errorMessage ? parseRetryAfterToIso(parseRetryAfterFromText(errorMessage)?.toString()) : null);
+  const parsedRetryNotBefore = parseRetryAfterToIso(rawRetryNotBefore);
 
   const retryNotBefore = parsedRetryNotBefore ?? null;
   const errorFamily =
