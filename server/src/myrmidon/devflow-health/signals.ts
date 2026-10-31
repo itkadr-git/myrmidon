@@ -132,6 +132,8 @@ export function approvedPrSince(
     product.reviewState === "approved" ||
     product.status === "approved" ||
     meta.reviewApproved === true ||
+    typeof meta.reviewApprovedAt === "string" ||
+    meta.reviewApprovedAt instanceof Date ||
     (Array.isArray(meta.labels) && meta.labels.includes("review-approved"));
 
   const isProductRejected =
@@ -213,7 +215,7 @@ export function approvedPrSince(
     }
     // If reviewerAgentIds is specified, comment author must be an assigned reviewer
     if (options.reviewerAgentIds && options.reviewerAgentIds.length > 0) {
-      if (!options.reviewerAgentIds.includes(comment.authorAgentId)) {
+      if (!comment.authorAgentId || !options.reviewerAgentIds.includes(comment.authorAgentId)) {
         continue;
       }
     }
