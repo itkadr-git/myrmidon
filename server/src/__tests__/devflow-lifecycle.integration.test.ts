@@ -57,27 +57,48 @@ function createDevflowMockDb(initial: Partial<MockDbContext> = {}) {
     comments: initial.comments ?? [],
     events: initial.events ?? [],
     agents: initial.agents ?? [],
-    settings: initial.settings ?? [{ general: { devflowHealth: { ...DEFAULT_DEVFLOW_THRESHOLDS_MS } } }],
+    settings: initial.settings ?? [
+      {
+        id: "mock-instance-settings-id",
+        singletonKey: "default",
+        general: { censorUsernameInLogs: false, devflowHealth: { ...DEFAULT_DEVFLOW_THRESHOLDS_MS } },
+        experimental: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ],
   };
 
   const db: any = {
     _state: state,
     select: vi.fn((fields?: any) => ({
       from: vi.fn((table: any) => {
+        const isSettings = Boolean(
+          table?.singletonKey !== undefined ||
+          (table as any)?.[Symbol.for("drizzle:Name")] === "instance_settings" ||
+          (table as any)?.[Symbol.for("drizzle:OriginalName")] === "instance_settings"
+        );
         const queryBuilder: any = {
           innerJoin: vi.fn(() => queryBuilder),
           where: vi.fn(() => queryBuilder),
+          orderBy: vi.fn(() => queryBuilder),
           limit: vi.fn(() => {
             // Check if selecting from instanceSettings
-            if (fields && fields.general !== undefined) {
+            if (isSettings || (fields && fields.general !== undefined)) {
               return Promise.resolve(state.settings);
             }
             return Promise.resolve(state.issues.slice(0, 1));
           }),
           then: (resolve: any) => {
             // Determine result based on query context
-            if (fields && fields.general !== undefined) {
+            if (isSettings || (fields && fields.general !== undefined)) {
               return Promise.resolve(state.settings).then(resolve);
+            }
+            if (fields && fields.defaultResponsibleUserId !== undefined) {
+              return Promise.resolve([{ defaultResponsibleUserId: null }]).then(resolve);
+            }
+            if (fields && (fields.responsibleUserId !== undefined || fields.createdByUserId !== undefined)) {
+              return Promise.resolve(state.issues.slice(0, 1)).then(resolve);
             }
             if (fields && fields.product !== undefined && fields.issue !== undefined) {
               // Join between workProducts and issues
@@ -115,12 +136,27 @@ function createDevflowMockDb(initial: Partial<MockDbContext> = {}) {
         return queryBuilder;
       }),
     })),
-    insert: vi.fn(() => ({
-      values: vi.fn((vals: any) => {
-        state.activityEntries.push(vals);
-        return Promise.resolve();
-      }),
-    })),
+    insert: vi.fn((table: any) => {
+      const isSettings = Boolean(
+        table?.singletonKey !== undefined ||
+        (table as any)?.[Symbol.for("drizzle:Name")] === "instance_settings" ||
+        (table as any)?.[Symbol.for("drizzle:OriginalName")] === "instance_settings"
+      );
+      const builder: any = {
+        values: vi.fn((vals: any) => {
+          if (isSettings) {
+            state.settings = [vals];
+          } else {
+            state.activityEntries.push(vals);
+          }
+          return builder;
+        }),
+        onConflictDoUpdate: vi.fn(() => builder),
+        returning: vi.fn(() => Promise.resolve([{ id: "mock-id" }])),
+        then: (resolve: any) => Promise.resolve([{ id: "mock-id" }]).then(resolve),
+      };
+      return builder;
+    }),
     update: vi.fn(() => ({
       set: vi.fn((patch: any) => ({
         where: vi.fn((condition: any) => {

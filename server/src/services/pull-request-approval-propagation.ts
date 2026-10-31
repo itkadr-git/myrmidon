@@ -358,7 +358,7 @@ export async function propagateReviewApprovalToPullRequest(
   const tokenProvider = deps.tokenProvider ?? ((c, r) => resolveGitHubTokenForApproval(deps.db, c, r));
 
   // Requirement 3: Negative path verification
-  if (input.decisionOutcome && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) {
+  if (!isApprovalOutcome(input.decisionOutcome, input.verdictBody)) {
     if (input.issueId) {
       await logActivity(deps.db, {
         companyId: input.companyId,
@@ -371,7 +371,7 @@ export async function propagateReviewApprovalToPullRequest(
         entityId: input.issueId,
         details: {
           reason: "non_approval",
-          decisionOutcome: input.decisionOutcome,
+          decisionOutcome: input.decisionOutcome ?? null,
         },
       }).catch(() => {});
     }
