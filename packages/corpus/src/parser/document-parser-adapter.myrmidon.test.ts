@@ -258,9 +258,9 @@ describe("DocumentParser HTTP adapter", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.job.status).toBe("succeeded");
-        expect(result.job.text).toContain("Testing createDocumentParserClient integration");
-        expect(result.job.pages).toHaveLength(1);
+        expect(result.result.jobId).toBeDefined();
+        expect(result.result.text).toContain("Testing createDocumentParserClient integration");
+        expect(result.result.pages).toHaveLength(1);
       }
     });
   });
