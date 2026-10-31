@@ -18,6 +18,10 @@ import {
 } from "./service.js";
 import { getEffectiveChannelSettings, parseChannelSettingsPatch } from "./settings.js";
 
+interface StoredChannelSettings {
+  channel?: Record<string, unknown>;
+}
+
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 
 const member = {
@@ -39,7 +43,7 @@ interface HarnessOptions {
 function harness(options: HarnessOptions = {}) {
   const audits: Array<Record<string, unknown>> = [];
   const writes: unknown[] = [];
-  const current = { document: options.stored };
+  const current: { document: StoredChannelSettings | undefined } = { document: options.stored as StoredChannelSettings | undefined };
 
   const deps: Partial<ChannelSettingsServiceDeps> = {
     settings: {

@@ -25,9 +25,10 @@ function createMockPoolChatService(
     replayed: false,
   }),
 ): PoolChatService {
+  const submit = vi.fn(handler) as unknown as PoolChatService["submit"];
   return {
     capabilities: vi.fn() as unknown as PoolChatService["capabilities"],
-    submit: vi.fn(handler) as unknown as PoolChatService["submit"],
+    submit,
     status: vi.fn() as unknown as PoolChatService["status"],
   };
 }
@@ -124,7 +125,7 @@ describe("Telegram Pool Bridge", () => {
       // Subsequent retry of the same update returns deduplicated and does not resubmit to pool
       const retry = await bridge.processUpdate("chatgpt", update);
       expect(retry.status).toBe("deduplicated");
-      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -179,7 +180,7 @@ describe("Telegram Pool Bridge", () => {
       const result = await bridge.processUpdate("chatgpt", update);
       expect(result.status).toBe("refused");
       expect(result.reason).toBe("chat_not_allowed");
-      expect(poolService.submit).not.toHaveBeenCalled();
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
       expect(mockSender).not.toHaveBeenCalled();
       expect(bridge.getOutbox().length).toBe(0);
     });
@@ -217,7 +218,7 @@ describe("Telegram Pool Bridge", () => {
       const result = await bridge.processUpdate("google", update);
       expect(result.status).toBe("refused");
       expect(result.reason).toBe("user_not_allowed");
-      expect(poolService.submit).not.toHaveBeenCalled();
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
       expect(mockSender).not.toHaveBeenCalled();
     });
 
@@ -251,7 +252,7 @@ describe("Telegram Pool Bridge", () => {
 
       const result = await bridge.processUpdate("chatgpt", update);
       expect(result.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
       expect(mockSender).toHaveBeenCalledTimes(1);
     });
 
@@ -265,6 +266,7 @@ describe("Telegram Pool Bridge", () => {
             enabled: true,
             moduleId: "mod-chatgpt",
             provider: "chatgpt",
+            model: "balanced",
             allowedChatId: "",
           },
         },
@@ -282,7 +284,7 @@ describe("Telegram Pool Bridge", () => {
 
       expect(result.status).toBe("refused");
       expect(result.reason).toBe("chat_not_allowed");
-      expect(poolService.submit).not.toHaveBeenCalled();
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
       expect(mockSender).not.toHaveBeenCalled();
     });
   });
@@ -318,14 +320,14 @@ describe("Telegram Pool Bridge", () => {
 
       const first = await bridge.processUpdate("chatgpt", update);
       expect(first.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
       expect(mockSender).toHaveBeenCalledTimes(1);
 
       // Re-send same update (e.g. Telegram webhook retry)
       const second = await bridge.processUpdate("chatgpt", update);
       expect(second.status).toBe("deduplicated");
       expect(second.reason).toBe("update_already_processed");
-      expect(poolService.submit).toHaveBeenCalledTimes(1); // not called again
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1); // not called again
       expect(mockSender).toHaveBeenCalledTimes(1); // not sent again
     });
 
@@ -377,14 +379,14 @@ describe("Telegram Pool Bridge", () => {
       resolveSubmit!({});
 
       const [res1, res2] = await Promise.all([call1, call2]);
-      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
       expect(res1.status).toBe("delivered");
       expect(res2.status).toBe("deduplicated");
     });
 
     it("does not cache submit error in processedUpdates so retry can succeed", async () => {
       const poolService = createMockPoolChatService();
-      poolService.submit
+      (poolService.submit as ReturnType<typeof vi.fn>)
         .mockRejectedValueOnce(new Error("Temporary submit error"))
         .mockResolvedValueOnce({
           request: { id: "req-retry", status: "completed", result: { text: "Success on retry" } },
@@ -399,6 +401,7 @@ describe("Telegram Pool Bridge", () => {
             enabled: true,
             moduleId: "mod-chatgpt",
             provider: "chatgpt",
+            model: "balanced",
             allowedChatId: "chat-1",
           },
         },
@@ -421,7 +424,7 @@ describe("Telegram Pool Bridge", () => {
       // Retry delivery
       const res2 = await bridge.processUpdate("chatgpt", update);
       expect(res2.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledTimes(2);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(2);
       expect(mockSender).toHaveBeenCalledTimes(1);
     });
 
@@ -443,6 +446,7 @@ describe("Telegram Pool Bridge", () => {
             enabled: true,
             moduleId: "mod-chatgpt",
             provider: "chatgpt",
+            model: "balanced",
             allowedChatId: "chat-1",
           },
         },
@@ -460,7 +464,7 @@ describe("Telegram Pool Bridge", () => {
 
       const res = await bridge.processUpdate("chatgpt", update);
       expect(res.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
       expect(mockSender).toHaveBeenCalledTimes(2);
     });
 
@@ -493,7 +497,7 @@ describe("Telegram Pool Bridge", () => {
       };
 
       await bridge.processUpdate("chatgpt", update1);
-      const firstCall = vi.mocked(poolService.submit).mock.calls[0][0];
+      const firstCall = vi.mocked((poolService.submit as ReturnType<typeof vi.fn>)).mock.calls[0][0];
       expect(firstCall.body.clientMessageId).toBe("tg-upd-9901");
       const expectedIdempotencyKey = createHash("sha256")
         .update("tg-bridge:chatgpt:chat-1:update:9901")
@@ -533,7 +537,7 @@ describe("Telegram Pool Bridge", () => {
 
       const result = await bridge.processUpdate("chatgpt", update);
       expect(result.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledWith(
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
         expect.objectContaining({
           moduleId: "chatgpt-main",
           channel: "telegram",
@@ -583,7 +587,7 @@ describe("Telegram Pool Bridge", () => {
 
       const result = await bridge.processUpdate("google", update);
       expect(result.status).toBe("delivered");
-      expect(poolService.submit).toHaveBeenCalledWith(
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
         expect.objectContaining({
           moduleId: "gemini-main",
           channel: "telegram",
@@ -687,7 +691,7 @@ describe("Telegram Pool Bridge", () => {
       const result = await bridge.processUpdate("chatgpt", update);
       expect(result.status).toBe("ignored");
       expect(result.reason).toBe("bridge_disabled");
-      expect(poolService.submit).not.toHaveBeenCalled();
+      expect((poolService.submit as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
       expect(mockSender).not.toHaveBeenCalled();
     });
   });

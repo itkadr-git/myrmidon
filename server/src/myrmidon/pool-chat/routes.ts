@@ -9,7 +9,7 @@ import {
 } from "../channel-settings/service.js";
 import { authorizePoolChatInvocation } from "./access.js";
 import { validateIdempotencyKey, validateRequestBody } from "./protocol.js";
-import { poolChatService, type PoolChatTransportResolver } from "./service.js";
+import { poolChatService, type PoolChatService, type PoolChatTransportResolver } from "./service.js";
 import {
   createTelegramPoolBridge,
   resolveTelegramPoolBotToken,
