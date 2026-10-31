@@ -322,7 +322,8 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     await seedCompanyAndIssue();
     const architectId = randomUUID();
     const reviewerId = randomUUID();
-    projectId = randomUUID();
+    const testProjectId = randomUUID();
+    projectId = testProjectId;
     await db.insert(agents).values([
       {
         id: architectId,
@@ -351,15 +352,15 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     // Resolver only accepts project members; attach the issue to a project
     // with joined memberships for architect and secondary reviewer.
     await db.insert(projects).values({
-      id: projectId,
+      id: testProjectId,
       companyId,
       name: "Escalation project",
     });
     await db.insert(projectMemberships).values([
-      { companyId, projectId, userId: architectId, state: "joined" },
-      { companyId, projectId, userId: reviewerId, state: "joined" },
+      { companyId, projectId: testProjectId, userId: architectId, state: "joined" },
+      { companyId, projectId: testProjectId, userId: reviewerId, state: "joined" },
     ]);
-    await db.update(issues).set({ projectId }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ projectId: testProjectId }).where(eq(issues.id, issueId));
     let interactionId: string;
     const applyNow = new Date("2026-10-30T11:30:00Z");
     const [createdCard] = await db.insert(issueThreadInteractions).values({
@@ -388,7 +389,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
           },
         },
       },
-    }).returning({ id: issueThreadInteractions.id });
+    } as typeof issueThreadInteractions.$inferInsert).returning({ id: issueThreadInteractions.id });
     interactionId = createdCard.id;
 
     // Apply persists addressee + escalation_chain together
