@@ -7,7 +7,7 @@
  */
 
 export const CORPUS_EMBEDDING_DIMENSIONS = 1024;
-export const CORPUS_DEFAULT_EMBEDDING_MODEL = "dashscope-text-embedding-v4";
+export const CORPUS_DEFAULT_EMBEDDING_MODEL = "hindsight-embed-bge-m3";
 export const CORPUS_DEFAULT_PARSER_VERSION = "v1";
 
 export const CORPUS_PARSE_STATUSES = [

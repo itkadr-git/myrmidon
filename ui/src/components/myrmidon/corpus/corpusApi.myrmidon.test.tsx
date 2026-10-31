@@ -31,7 +31,7 @@ const BASE = "/myrmidon/companies/c-1/corpus";
 const SETTINGS: CorpusSettings = {
   enabled: true,
   parsingServiceBaseUrl: "http://parsers.internal:8080",
-  embedderModel: "text-embedding-v4",
+  embedderModel: "hindsight-embed-bge-m3",
   limits: { maxUploadMb: 25, maxDocumentsPerDataset: 500, searchTopK: 5 },
 };
 

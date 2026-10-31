@@ -472,7 +472,7 @@ describe("corpus module: off by default and silent while off", () => {
       env: {
         MYRMIDON_CORPUS_ENABLED: "true",
         MYRMIDON_CORPUS_PARSER_BASE_URL: "http://parser:8080",
-        MYRMIDON_CORPUS_EMBEDDER_MODEL: "text-embedding-v4",
+        MYRMIDON_CORPUS_EMBEDDER_MODEL: "hindsight-embed-bge-m3",
       },
     });
     const view = await h.service.readSettings();
@@ -548,7 +548,7 @@ describe("corpus settings: the instance block drives the module", () => {
     enabled: true,
     parserBaseUrl: "http://parser:8080",
     parserTimeoutMs: 45_000,
-    embedderModel: "text-embedding-v4",
+    embedderModel: "hindsight-embed-bge-m3",
     embedderDimensions: 1024,
     embedderBaseUrl: "http://litellm:4000",
     maxDocumentBytes: 5 * 1024 * 1024,
