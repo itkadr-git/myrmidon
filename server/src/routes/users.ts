@@ -6,7 +6,7 @@ import { accessService } from "../services/access.js";
 import { assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 import { forbidden, notFound, unauthorized } from "../errors.js";
-import { setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
+import { getUser, setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
 import { logActivity } from "../services/activity-log.js";
 
 function assertAdmin(req: import("express").Request) {
