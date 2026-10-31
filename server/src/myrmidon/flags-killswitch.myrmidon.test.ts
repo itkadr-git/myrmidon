@@ -248,7 +248,9 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_RUN_MEMORY_ESTIMATE_MB",
     "MYRMIDON_PROCESS_ROLE",
     // Devflow queue health thresholds introduced on main without settings classification
+    "MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS",
     "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS",
+    "MYRMIDON_DEVFLOW_NO_MERGES_MS",
     "MYRMIDON_DEVFLOW_RED_CI_MS",
     "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS",
   ]);

@@ -4,6 +4,7 @@
 // (kind, severity, runId), the empty state and the error state are the
 // contract.
 import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,8 +64,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => root?.unmount());
+  flushSync(() => root?.unmount());
+  root = null;
+  queryClient.clear();
   container.remove();
+  document.body.innerHTML = "";
   vi.clearAllMocks();
 });
 
