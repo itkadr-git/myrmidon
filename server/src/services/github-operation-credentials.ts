@@ -152,26 +152,6 @@ export async function resolveGitHubOperationCredentials(
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
 
-  const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
-  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
-  const cached = githubCredentialCache.get(cacheKey);
-  if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
-    if (cached.result.connectionId || cached.result.grantId) {
-      const active = await isCachedCredentialStillActive(
-        db,
-        cached.result.connectionId,
-        cached.result.grantId,
-      );
-      if (!active) {
-        githubCredentialCache.delete(cacheKey);
-      } else {
-        return cached.result;
-      }
-    } else {
-      return cached.result;
-    }
-  }
-
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};
   // A sponsored guest's responsible person is an internal accountability field,
@@ -194,6 +174,26 @@ export async function resolveGitHubOperationCredentials(
       ...summary,
       env,
     };
+  }
+
+  const normalizedRepo = normalizeGitHubRepository(input.repository) ?? "";
+  const cacheKey = `${input.companyId}:${input.agentId}:${input.runId}:${context.id}:${context.revision}:${context.responsibleUserId ?? "none"}:${normalizedRepo}`;
+  const cached = githubCredentialCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+    if (cached.result.connectionId || cached.result.grantId) {
+      const active = await isCachedCredentialStillActive(
+        db,
+        cached.result.connectionId,
+        cached.result.grantId,
+      );
+      if (!active) {
+        githubCredentialCache.delete(cacheKey);
+      } else {
+        return cached.result;
+      }
+    } else {
+      return cached.result;
+    }
   }
   try {
     const resolved = await resolveManagedGitHubCredential(

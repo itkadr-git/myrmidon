@@ -15,7 +15,8 @@ export const GENERIC_DENIAL: {
   reason: string;
 } = {
   allowed: false,
-  reason: "Run policy forbids GitHub credential export",
+  reason:
+    "GitHub credentials are not available to low-trust or unverified executions; use authorized read-only tools.",
 };
 
 export type GitHubCredentialDenial =
@@ -26,7 +27,7 @@ export function quarantinedIssueDenial(
   identifier: string | null | undefined,
   issueId: string,
 ): { allowed: false; reason: string } {
-  const label = identifier ?? issueId;
+  const label = identifier ?? "this issue";
   return {
     allowed: false,
     reason:

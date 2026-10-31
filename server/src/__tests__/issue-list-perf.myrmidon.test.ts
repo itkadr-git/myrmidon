@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from 'vitest';
 import { agents, issues } from "@myrmidon/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
