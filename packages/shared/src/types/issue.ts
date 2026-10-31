@@ -46,7 +46,15 @@ import type {
 
 export type { IssueWorkMode };
 
-export interface IssueBlockerMetadata {
+export interface IssueRewakeFreeze {
+  agentId: string;
+  frozenAt: string;
+  noProgressStreak: number;
+  statusVersion?: number;
+  assigneeAgentId?: string | null;
+}
+
+export interface IssueActiveBlockerMetadata {
   blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
   owner: { agentId: string } | { userId: string };
   blockedByIssueIds?: string[];
@@ -54,7 +62,21 @@ export interface IssueBlockerMetadata {
   nextCheckAt: string;
   timeoutAt: string;
   escalationPolicy: string;
+  issueRewakeFreeze?: IssueRewakeFreeze | null;
 }
+
+export interface IssueFreezeOnlyMetadata {
+  blockReason?: never;
+  owner?: never;
+  blockedByIssueIds?: never;
+  externalRef?: never;
+  nextCheckAt?: never;
+  timeoutAt?: never;
+  escalationPolicy?: never;
+  issueRewakeFreeze: IssueRewakeFreeze;
+}
+
+export type IssueBlockerMetadata = IssueActiveBlockerMetadata | IssueFreezeOnlyMetadata;
 
 export interface IssueAncestorProject {
   id: string;

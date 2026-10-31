@@ -46,6 +46,7 @@ import {
   MAX_PHEROMONE_STRENGTH,
   MIN_PHEROMONE_STRENGTH,
 } from "../myrmidon-swarm-claim.js";
+import type { IssueBlockerMetadata } from "../types/issue.js";
 
 // 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
 // integer the swarm queue orders by inside the P0 band. Shared between the
@@ -454,7 +455,15 @@ export const issueBlockReasonSchema = z.enum([
   "resource",
 ]);
 
-export const issueBlockerMetadataSchema = z.object({
+export const issueRewakeFreezeSchema = z.object({
+  agentId: z.string().uuid(),
+  frozenAt: z.string().datetime(),
+  noProgressStreak: z.number().int().positive(),
+  statusVersion: z.number().int().nonnegative().optional(),
+  assigneeAgentId: z.string().uuid().nullable().optional(),
+});
+
+export const realIssueBlockerMetadataSchema = z.object({
   blockReason: issueBlockReasonSchema,
   owner: z.union([
     z.object({ agentId: z.string().uuid() }).strict(),
@@ -465,13 +474,37 @@ export const issueBlockerMetadataSchema = z.object({
   nextCheckAt: z.string().datetime(),
   timeoutAt: z.string().datetime(),
   escalationPolicy: z.string().trim().min(1).max(120),
+  issueRewakeFreeze: issueRewakeFreezeSchema.nullable().optional(),
 }).strict().refine(
-  (value: {
-    blockedByIssueIds?: string[];
-    externalRef?: string;
-  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  (value) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
   { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
 );
+
+export const issueFreezeOnlyMetadataSchema = z.object({
+  issueRewakeFreeze: issueRewakeFreezeSchema,
+}).strict();
+
+export const issueBlockerMetadataSchema: z.ZodType<IssueBlockerMetadata> = z
+  .unknown()
+  .superRefine((val, ctx) => {
+    if (!val || typeof val !== "object" || Array.isArray(val)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Expected object",
+      });
+      return;
+    }
+    const isFreezeOnly = !("blockReason" in val) && "issueRewakeFreeze" in val;
+    const targetSchema = isFreezeOnly
+      ? issueFreezeOnlyMetadataSchema
+      : realIssueBlockerMetadataSchema;
+    const parsed = targetSchema.safeParse(val);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue(issue as any);
+      }
+    }
+  }) as unknown as z.ZodType<IssueBlockerMetadata>;
 
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),

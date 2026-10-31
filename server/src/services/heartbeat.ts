@@ -77,7 +77,11 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
-import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidon/shared";
+import {
+  aiConnectionBindingSchema,
+  type AiConnectionBinding,
+  type IssueBlockerMetadata,
+} from "@myrmidon/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -197,6 +201,7 @@ import {
   activityLog,
   approvals,
   assets,
+  authUsers,
   chatActions,
   chatConversations,
   chatDeliveries,
@@ -439,9 +444,22 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  ISSUE_REWAKE_FREEZE_THRESHOLD,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+
+let cachedFreezeThreshold: { value: number; expiresAt: number } | null = null;
+async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ issueRewakeFreezeThreshold?: number | null }> }): Promise<number> {
+  const now = Date.now();
+  if (cachedFreezeThreshold && cachedFreezeThreshold.expiresAt > now) {
+    return cachedFreezeThreshold.value;
+  }
+  const general = await settings.getGeneral().catch(() => null);
+  const value = general?.issueRewakeFreezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
+  cachedFreezeThreshold = { value, expiresAt: now + 30_000 };
+  return value;
+}
 // myrmidon(WAKE-GUARD): admission-side half of TASK-PR-SYNC — skips a run for a
 // task whose delivering PRs are all merged and settles it instead.
 import {
@@ -29557,6 +29575,7 @@ export function heartbeatService(
               conversationState: issues.conversationState,
               status: issues.status,
               statusVersion: issues.statusVersion,
+              executionState: issues.executionState,
               projectId: issues.projectId,
               casteKey: issues.casteKey,
               harnessKind: issues.harnessKind,
@@ -29565,6 +29584,10 @@ export function heartbeatService(
               executionWorkspacePreference: issues.executionWorkspacePreference,
               executionWorkspaceSettings: issues.executionWorkspaceSettings,
               assigneeAgentId: issues.assigneeAgentId,
+              createdByAgentId: issues.createdByAgentId,
+              createdByUserId: issues.createdByUserId,
+              responsibleUserId: issues.responsibleUserId,
+              blockerMetadata: issues.blockerMetadata,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
               createdAt: issues.createdAt,
@@ -30654,7 +30677,75 @@ export function heartbeatService(
           // so external pollers/reconcilers can't storm full-price sessions.
           // Server-side recovery retries insert runs directly and never reach
           // this gate.
-          if (
+          const rewakeState = (issue.blockerMetadata?.issueRewakeFreeze ?? null) as
+            | { agentId: string; frozenAt: string; statusVersion?: number; assigneeAgentId?: string | null }
+            | null;
+          const issueStateChanged = rewakeState?.agentId === agentId &&
+            (rewakeState.statusVersion !== issue.statusVersion ||
+              rewakeState.assigneeAgentId !== issue.assigneeAgentId);
+          const explicitRewake = opts.requestedByActorType === "user" ||
+            Boolean(explicitResumeSession && opts.requestedByActorType !== "agent") ||
+            reason === "ci_completed";
+
+          if (rewakeState?.agentId === agentId) {
+            let shouldThaw = explicitRewake || issueStateChanged;
+            if (!shouldThaw) {
+              const newInputRows = await tx
+                .select({ id: activityLog.id })
+                .from(activityLog)
+                .where(
+                  and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, new Date(rewakeState.frozenAt)),
+                    or(
+                      and(
+                        eq(activityLog.actorType, "user"),
+                        ne(activityLog.actorId, agentId),
+                      ),
+                      and(
+                        eq(activityLog.actorType, "system"),
+                        inArray(activityLog.action, [
+                          "issue.blockers_resolved_wake_emitted",
+                          "issue.work_product_updated",
+                          "myrmidon.task_pr_sync.settled",
+                          "myrmidon.task_pr_sync.returned",
+                        ]),
+                      ),
+                    ),
+                    inArray(activityLog.action, [
+                      "issue.comment_added",
+                      "issue.updated",
+                      "issue.assigned",
+                      "issue.blockers_resolved_wake_emitted",
+                      "issue.work_product_updated",
+                      "myrmidon.task_pr_sync.settled",
+                      "myrmidon.task_pr_sync.returned",
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (newInputRows.length > 0) {
+                shouldThaw = true;
+              }
+            }
+
+            if (shouldThaw) {
+              const nextBlocker = issue.blockerMetadata?.blockReason
+                ? { ...issue.blockerMetadata, issueRewakeFreeze: null }
+                : null;
+              await tx
+                .update(issues)
+                .set({ blockerMetadata: nextBlocker })
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+              issue.blockerMetadata = nextBlocker;
+              // Thawed: proceed to normal admission below
+            } else {
+              // Strictly sticky freeze: remain frozen until an explicit thaw event occurs
+              return { kind: "skipped" as const };
+            }
+          } else if (
             isThrottleCandidateIssueRewake({
               reason,
               wakeCommentId: wakeCommentId ?? null,
@@ -30670,6 +30761,9 @@ export function heartbeatService(
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
                 finishedAt: heartbeatRuns.finishedAt,
+                stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+                stderrExcerpt: heartbeatRuns.stderrExcerpt,
+                responsibleUserId: heartbeatRuns.responsibleUserId,
               })
               .from(heartbeatRuns)
               .where(
@@ -30718,10 +30812,7 @@ export function heartbeatService(
                         eq(activityLog.entityType, "issue"),
                         eq(activityLog.entityId, issue.id),
                         gt(activityLog.createdAt, lastRunFinishedAt),
-                        inArray(
-                          activityLog.action,
-                          ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
-                        ),
+                        inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
@@ -30730,8 +30821,10 @@ export function heartbeatService(
                     .limit(1)
                 : [];
 
+              const freezeThreshold = await getCachedFreezeThreshold(instanceSettings);
               const throttleDecision = evaluateIssueRewakeThrottle({
                 now: throttleNow,
+                freezeThreshold,
                 recentTerminalRuns,
                 runIdsWithIssueProgress: new Set(
                   progressRows
@@ -30745,8 +30838,114 @@ export function heartbeatService(
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
-              if (throttleDecision.blocked) {
-                await tx.insert(agentWakeupRequests).values({
+              if (throttleDecision.blocked && !explicitRewake) {
+                if (throttleDecision.frozen) {
+                  await tx
+                    .select({ id: issues.id })
+                    .from(issues)
+                    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+                    .for("update");
+
+                  const nextBlocker: IssueBlockerMetadata =
+                    issue.blockerMetadata && "blockReason" in issue.blockerMetadata
+                      ? {
+                          ...issue.blockerMetadata,
+                          issueRewakeFreeze: {
+                            agentId,
+                            frozenAt: throttleDecision.frozenAt.toISOString(),
+                            noProgressStreak: throttleDecision.noProgressStreak,
+                            statusVersion: issue.statusVersion,
+                            assigneeAgentId: issue.assigneeAgentId,
+                          },
+                        }
+                      : {
+                          issueRewakeFreeze: {
+                            agentId,
+                            frozenAt: throttleDecision.frozenAt.toISOString(),
+                            noProgressStreak: throttleDecision.noProgressStreak,
+                            statusVersion: issue.statusVersion,
+                            assigneeAgentId: issue.assigneeAgentId,
+                          },
+                        };
+                  await tx.update(issues).set({
+                    blockerMetadata: nextBlocker,
+                  }).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+                  issue.blockerMetadata = nextBlocker;
+
+                  const [project] = issue.projectId
+                    ? await tx
+                        .select({ leadAgentId: projects.leadAgentId })
+                        .from(projects)
+                        .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+                    : [];
+
+                  let recipientAgentId: string | null = null;
+                  let recipientUserId: string | null = null;
+
+                  if (project?.leadAgentId && project.leadAgentId !== agentId) {
+                    recipientAgentId = project.leadAgentId;
+                  } else if (issue.createdByAgentId && issue.createdByAgentId !== agentId) {
+                    recipientAgentId = issue.createdByAgentId;
+                  } else if (issue.createdByUserId) {
+                    recipientUserId = issue.createdByUserId;
+                  } else if (issue.responsibleUserId) {
+                    recipientUserId = issue.responsibleUserId;
+                  } else if (recentTerminalRuns[0]?.responsibleUserId) {
+                    recipientUserId = recentTerminalRuns[0].responsibleUserId;
+                  }
+
+                  const [recipientAgent] = recipientAgentId
+                    ? await tx.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.id, recipientAgentId))
+                    : [];
+                  const [recipientUser] = recipientUserId
+                    ? await tx.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(eq(authUsers.id, recipientUserId))
+                    : [];
+                  const [currentAgentRow] = await tx
+                    .select({ id: agents.id, name: agents.name })
+                    .from(agents)
+                    .where(eq(agents.id, agentId));
+
+                  const agentLabel = currentAgentRow?.name ?? `агент ${agentId}`;
+                  const recipientMention = recipientAgent?.name
+                    ? `@${recipientAgent.name}`
+                    : recipientAgentId
+                      ? `@${recipientAgentId}`
+                      : recipientUser?.name
+                        ? `@${recipientUser.name}`
+                        : "Оператор доски";
+
+                  const lastRunId = recentTerminalRuns[0]?.id;
+                  const lastRunRef = lastRunId ? `/runs/${lastRunId}` : "нет завершенных прогонов";
+
+                  const commentBody = `${recipientMention}: ${agentLabel} выполнил ${throttleDecision.noProgressStreak} прогонов по задаче без прогресса. Последний прогон: ${lastRunRef}. Что нужно, чтобы продолжить?`;
+
+                  const [createdComment] = await tx
+                    .insert(issueComments)
+                    .values({
+                      companyId: issue.companyId,
+                      issueId: issue.id,
+                      authorType: "system",
+                      body: commentBody,
+                    })
+                    .returning();
+
+                  if (recipientAgentId && createdComment) {
+                    await tx.insert(agentWakeupRequests).values({
+                      companyId: issue.companyId,
+                      agentId: recipientAgentId,
+                      source: "automation",
+                      triggerDetail: "system",
+                      reason: "issue_commented",
+                      payload: {
+                        issueId: issue.id,
+                        commentId: createdComment.id,
+                      },
+                      status: "queued",
+                    });
+                  }
+                }
+                if (!throttleDecision.frozen) {
+                  await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
                   companyId: agent.companyId,
                   agentId,
@@ -30773,6 +30972,8 @@ export function heartbeatService(
                   idempotencyKey: opts.idempotencyKey ?? null,
                   finishedAt: throttleNow,
                 });
+                  return { kind: "skipped" as const };
+                }
                 return { kind: "skipped" as const };
               }
             }
