@@ -107,6 +107,7 @@ import {
   pipelineCases,
   pipelineStages,
   pipelines,
+  projects,
   projectWorkspaces,
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
@@ -3758,6 +3759,42 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
+  const resolveProjectName = async (projectId: string): Promise<string | null> => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId));
+        if (rows[0]?.name) return rows[0].name;
+      }
+    } catch {
+      // ignore db error
+    }
+    try {
+      if (projectsSvc && typeof projectsSvc.getById === "function") {
+        const proj = await projectsSvc.getById(projectId);
+        if (proj?.name) return proj.name;
+      }
+    } catch {
+      // ignore service error
+    }
+    return null;
+  };
+  const listCompanyProjects = async (companyId: string) => {
+    try {
+      if (db && typeof db.select === "function") {
+        const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+        if (rows.length > 0) return rows;
+      }
+    } catch {}
+    try {
+      if (projectsSvc && typeof projectsSvc.list === "function") {
+        return await projectsSvc.list(companyId);
+      }
+    } catch {}
+    return [];
+  };
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -8994,7 +9031,7 @@ export function issueRoutes(
   router.get("/companies/:companyId/ideas/sla", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const companyProjects = await projectsSvc.list(companyId);
+    const companyProjects = await listCompanyProjects(companyId);
     const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
     if (!ideasProject) {
       res.status(404).json({ error: "Ideas project not found" });
@@ -9023,7 +9060,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/ideas/sla/audit", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const companyProjects = await projectsSvc.list(companyId);
+    const companyProjects = await listCompanyProjects(companyId);
     const ideasProject = companyProjects.find((p) => isIdeasProjectName(p.name));
     if (!ideasProject) {
       res.status(404).json({ error: "Ideas project not found" });
@@ -12644,18 +12681,20 @@ export function issueRoutes(
         assigneeAgentId: normalizedAssigneeAgentId ?? null,
       });
       if (rawCreateBody.projectId) {
-        const proj = await projectsSvc.getById(rawCreateBody.projectId as string);
-        const check = validateIdeasProjectConstraints({
-          projectName: proj?.name,
-          assigneeAgentId: normalizedAssigneeAgentId,
-          assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
-          dueDate: (rawCreateBody as Record<string, unknown>).dueDate,
-          description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
-          metadata: (rawCreateBody as Record<string, unknown>).metadata,
-        });
-        if (!check.valid) {
-          res.status(400).json({ error: check.error });
-          return;
+        const projName = await resolveProjectName(rawCreateBody.projectId as string);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId: (rawCreateBody.assigneeUserId as string | null | undefined) ?? null,
+            dueDate: (rawCreateBody as Record<string, unknown>).dueDate,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+            metadata: (rawCreateBody as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
         }
       }
       const actor = getActorInfo(req);
@@ -13845,25 +13884,40 @@ export function issueRoutes(
       }
       const targetProjectId =
         req.body.projectId !== undefined ? (req.body.projectId as string | null) : existing.projectId;
-      if (targetProjectId) {
-        const proj = await projectsSvc.getById(targetProjectId);
-        const check = validateIdeasProjectConstraints({
-          projectName: proj?.name,
-          assigneeAgentId: requestedAssigneeAgentId,
-          assigneeUserId:
-            req.body.assigneeUserId !== undefined
-              ? (req.body.assigneeUserId as string | null)
-              : existing.assigneeUserId,
-          dueDate: (req.body as Record<string, unknown>).dueDate,
-          description:
-            req.body.description !== undefined
-              ? (req.body.description as string | null)
-              : existing.description,
-          metadata: (req.body as Record<string, unknown>).metadata,
-        });
-        if (!check.valid) {
-          res.status(400).json({ error: check.error });
-          return;
+      const touchesIdeasConstraints =
+        req.body.projectId !== undefined ||
+        req.body.assigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined ||
+        (req.body as Record<string, unknown>).dueDate !== undefined ||
+        req.body.description !== undefined ||
+        (req.body as Record<string, unknown>).metadata !== undefined;
+      if (targetProjectId && touchesIdeasConstraints) {
+        const projName = await resolveProjectName(targetProjectId);
+        if (projName && isIdeasProjectName(projName)) {
+          const check = validateIdeasProjectConstraints({
+            projectName: projName,
+            assigneeAgentId: requestedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId !== undefined
+                ? (req.body.assigneeUserId as string | null)
+                : existing.assigneeUserId,
+            dueDate:
+              (req.body as Record<string, unknown>).dueDate !== undefined
+                ? (req.body as Record<string, unknown>).dueDate
+                : (existing as Record<string, unknown>).dueDate,
+            description:
+              req.body.description !== undefined
+                ? (req.body.description as string | null)
+                : existing.description,
+            metadata:
+              (req.body as Record<string, unknown>).metadata !== undefined
+                ? (req.body as Record<string, unknown>).metadata
+                : (existing as Record<string, unknown>).metadata,
+          });
+          if (!check.valid) {
+            res.status(400).json({ error: check.error });
+            return;
+          }
         }
       }
       const titleOrDescriptionChanged =
