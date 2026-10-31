@@ -1391,6 +1391,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     expect(secondBoundTask.assigneeAgentId).toBe(fixture.assignedAgentId);
 
     const agentApp = express();
+    const agentRunId = randomUUID();
     agentApp.use(express.json());
     agentApp.use((req, _res, next) => {
       req.actor = {
@@ -1398,7 +1399,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         agentId: fixture.assignedAgentId,
         companyId: fixture.companyId,
         source: "agent_key",
-        runId: randomUUID(),
+        runId: agentRunId,
       };
       next();
     });
@@ -1417,6 +1418,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     // Agent attempts to reassign the task -> 409 chat_binding_agent_locked
     const reassignRes = await request(agentApp)
       .patch(`/api/issues/${secondBoundTask.id}`)
+      .set("X-Paperclip-Run-Id", agentRunId)
       .send({ assigneeAgentId: fixture.replacementAgentId });
     expect(reassignRes.status).toBe(409);
     expect(reassignRes.body).toMatchObject({
@@ -1428,6 +1430,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     // Agent closes its own Telegram-born task status-only via PATCH -> 200 done
     const closeRes = await request(agentApp)
       .patch(`/api/issues/${secondBoundTask.id}`)
+      .set("X-Paperclip-Run-Id", agentRunId)
       .send({ status: "done" });
     expect(closeRes.status).toBe(200);
     expect(closeRes.body.status).toBe("done");
