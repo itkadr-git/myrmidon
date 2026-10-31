@@ -614,3 +614,102 @@ test("executeRehearsal fails closed if smoke test fails for database", () => {
   const cliCode = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(cliCode, 1);
 });
+
+test("checkLag verifies both databases on shared standby cluster port 5433 without split ports", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) {
+        return {
+          exitCode: 0,
+          stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5432\n",
+          stderr: "",
+        };
+      }
+      if (sql.includes("pg_current_wal_lsn")) {
+        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  // Run checkLag with target="all"
+  const res = checkLag("all", {}, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.rpoOk, true);
+  assert.equal(res.target, "all");
+  assert.equal(res.databases.length, 2);
+
+  // Both databases (paperclip and myrmidon_hindsight) must be queried
+  const queriedDbs = [];
+  const queriedPorts = [];
+  for (const call of calls) {
+    if (call.cmd === "psql") {
+      const pIdx = call.args.indexOf("-p");
+      if (pIdx !== -1) queriedPorts.push(call.args[pIdx + 1]);
+      const dIdx = call.args.indexOf("-d");
+      if (dIdx !== -1) queriedDbs.push(call.args[dIdx + 1]);
+    }
+  }
+
+  assert.ok(queriedDbs.includes("paperclip"));
+  assert.ok(queriedDbs.includes("myrmidon_hindsight"));
+  // All standby queries must use the single shared port 5433 (no separate 5434/etc)
+  const standbyPortQueries = queriedPorts.filter((p) => p === "5433");
+  assert.ok(standbyPortQueries.length >= 2, "Both databases queried on shared standby port 5433");
+  assert.ok(!queriedPorts.some((p) => p !== "5433" && p !== "5432"), "No divergent or split standby ports used");
+});
+
+test("checkLag respects unified custom standbyPort and primaryPort on single cluster", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      return {
+        exitCode: 0,
+        stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5434\n",
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const customStandbyPort = 5444;
+  const customPrimaryPort = 5422;
+  const res = checkLag("all", { standbyPort: customStandbyPort, primaryPort: customPrimaryPort }, { runner: mockRunner });
+  assert.equal(res.success, true);
+
+  const standbyCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === String(customStandbyPort));
+  assert.ok(standbyCalls.length >= 2, "Both databases queried using the unified custom standbyPort");
+});
+
+test("runCli check-lag defaults to checking both databases on shared cluster port 5433", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      return {
+        exitCode: 0,
+        stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00|1|127.0.0.1:5432\n",
+        stderr: "",
+      };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const code = runCli(["check-lag", "--offline"], {}, { runner: mockRunner });
+  assert.equal(code, 0);
+
+  const queriedDbs = calls
+    .filter((c) => c.cmd === "psql" && c.args.includes("-d"))
+    .map((c) => c.args[c.args.indexOf("-d") + 1]);
+  assert.ok(queriedDbs.includes("paperclip"), "Checks paperclip DB");
+  assert.ok(queriedDbs.includes("myrmidon_hindsight"), "Checks myrmidon_hindsight DB");
+
+  const ports = calls
+    .filter((c) => c.cmd === "psql" && c.args.includes("-p"))
+    .map((c) => c.args[c.args.indexOf("-p") + 1]);
+  assert.ok(ports.every((p) => p === "5433"), "All offline queries target shared standby port 5433");
+});

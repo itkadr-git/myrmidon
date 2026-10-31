@@ -13,19 +13,26 @@ import path from "node:path";
 
 export const DEFAULT_CONFIG = {
   primaryHost: process.env.PRIMARY_PG_HOST || "primary.internal",
+  primaryPort: 5432,
+  standbyHost: "127.0.0.1",
+  standbyPort: 5433,
+  // Single-cluster aliases for backwards compatibility
   primaryBoardPort: 5432,
   primaryHindsightPort: 5432,
-  standbyHost: "127.0.0.1",
   standbyBoardPort: 5433,
   standbyHindsightPort: 5433,
-  boardReplUser: "myr_replicator",
-  hindsightReplUser: "myr_replicator",
-  boardReplSlot: "standby_board_slot",
-  hindsightReplSlot: "standby_board_slot",
+  dataDir: "/srv/standby/myrmidon-pg/data",
   boardDataDir: "/srv/standby/myrmidon-pg/data",
   hindsightDataDir: "/srv/standby/myrmidon-pg/data",
+  walArchiveDir: "/srv/backups/wal/myrmidon-pg",
   boardWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
   hindsightWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
+  replUser: "myr_replicator",
+  boardReplUser: "myr_replicator",
+  hindsightReplUser: "myr_replicator",
+  replSlot: "standby_board_slot",
+  boardReplSlot: "standby_board_slot",
+  hindsightReplSlot: "standby_board_slot",
   boardDbUser: "paperclip",
   boardDbName: "paperclip",
   hindsightDbUser: "myrmidon_hindsight",
@@ -37,6 +44,28 @@ export const DEFAULT_CONFIG = {
   rpoMaxSeconds: 900, // RPO <= 15 min
   rtoTargetSeconds: 1800, // RTO <= 30 min
 };
+
+export function resolvePrimaryPort(options = {}, target = "board") {
+  return (
+    options.primaryPort ||
+    DEFAULT_CONFIG.primaryPort ||
+    (target === "board"
+      ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+      : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort) ||
+    5432
+  );
+}
+
+export function resolveStandbyPort(options = {}, target = "board") {
+  return (
+    options.standbyPort ||
+    DEFAULT_CONFIG.standbyPort ||
+    (target === "board"
+      ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
+      : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort) ||
+    5433
+  );
+}
 
 export const defaultFsOps = {
   mkdirSync: fs.mkdirSync,
@@ -213,9 +242,7 @@ export function parseReplicationStatus(sqlOutput) {
 export function generateStandbyConfig(target = "board", overrides = {}) {
   const isBoard = target === "board";
   const primaryHost = overrides.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? overrides.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : overrides.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const primaryPort = resolvePrimaryPort(overrides, target);
   const replUser = isBoard
     ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
@@ -252,18 +279,16 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
 export function generateBasebackupCommand(target = "board", overrides = {}) {
   const isBoard = target === "board";
   const primaryHost = overrides.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? overrides.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : overrides.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const primaryPort = resolvePrimaryPort(overrides, target);
   const replUser = isBoard
     ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
   const replSlot = isBoard
     ? overrides.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
     : overrides.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
-  const dataDir = isBoard
+  const dataDir = overrides.dataDir || (isBoard
     ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   const args = [
     "-h", primaryHost,
@@ -286,18 +311,16 @@ export function generateBasebackupCommand(target = "board", overrides = {}) {
 
 export function planFailover(target = "board", overrides = {}) {
   const isBoard = target === "board";
-  const port = isBoard
-    ? overrides.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : overrides.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const port = resolveStandbyPort(overrides, target);
   const user = isBoard
     ? overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser
     : overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
   const db = isBoard
     ? overrides.boardDbName || DEFAULT_CONFIG.boardDbName
     : overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-  const dataDir = isBoard
+  const dataDir = overrides.dataDir || (isBoard
     ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   return {
     target,
@@ -315,9 +338,9 @@ export function planSwitchback(target = "board", overrides = {}) {
   const basebackup = generateBasebackupCommand(target, overrides);
   const config = generateStandbyConfig(target, overrides);
   const isBoard = target === "board";
-  const dataDir = isBoard
+  const dataDir = overrides.dataDir || (isBoard
     ? overrides.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+    : overrides.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   return {
     target,
@@ -335,9 +358,7 @@ export function planRehearsal(target = "board", overrides = {}) {
   const isBoard = target === "board";
   const drillPort = overrides.drillPort || 5533;
   const drillDir = overrides.drillDir || `/srv/standby/drill-cluster`;
-  const standbyPort = isBoard
-    ? overrides.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : overrides.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const standbyPort = resolveStandbyPort(overrides, target);
   const boardUser = overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = overrides.boardDbName || DEFAULT_CONFIG.boardDbName;
   const hindsightUser = overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
@@ -384,20 +405,16 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   const fsOps = deps.fsOps || defaultFsOps;
   const isBoard = target === "board";
 
-  const dataDir = isBoard
+  const dataDir = options.dataDir || (isBoard
     ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const primaryPort = resolvePrimaryPort(options, target);
   const replUser = isBoard
     ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
-  const standbyPort = isBoard
-    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const standbyPort = resolveStandbyPort(options, target);
   const dbUser = isBoard
     ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
     : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
@@ -611,18 +628,40 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
  * Measure replication lag between primary and standby.
  * Implements fail-closed checks against primary LSN and standby replay LSN.
  */
-export function checkLag(target = "board", options = {}, deps = {}) {
+export function checkLag(target = "all", options = {}, deps = {}) {
   const runner = deps.runner || defaultRunner;
+
+  if (target === "all") {
+    const boardRes = checkLag("board", options, deps);
+    const hindsightRes = checkLag("hindsight", options, deps);
+    const allOk = boardRes.success && hindsightRes.success;
+    const allRpoOk = boardRes.rpoOk && hindsightRes.rpoOk;
+    return {
+      target: "all",
+      success: allOk,
+      rpoOk: allRpoOk,
+      role: boardRes.role === hindsightRes.role ? boardRes.role : "mixed",
+      inRecovery: boardRes.inRecovery && hindsightRes.inRecovery,
+      measuredAgainst: boardRes.measuredAgainst || hindsightRes.measuredAgainst,
+      primaryLsn: boardRes.primaryLsn || hindsightRes.primaryLsn,
+      receiveLsn: boardRes.receiveLsn || hindsightRes.receiveLsn,
+      replayLsn: boardRes.replayLsn || hindsightRes.replayLsn,
+      byteLag: boardRes.byteLag ?? hindsightRes.byteLag,
+      receiveByteLag: boardRes.receiveByteLag ?? hindsightRes.receiveByteLag,
+      timeLagSeconds: Math.max(boardRes.timeLagSeconds ?? 0, hindsightRes.timeLagSeconds ?? 0),
+      rpoMaxSeconds: options.rpoMaxSeconds || DEFAULT_CONFIG.rpoMaxSeconds,
+      rpoStatus: allRpoOk ? "ok" : (boardRes.rpoStatus !== "ok" ? boardRes.rpoStatus : hindsightRes.rpoStatus),
+      error: [boardRes.error, hindsightRes.error].filter(Boolean).join("; ") || undefined,
+      databases: [boardRes, hindsightRes],
+    };
+  }
+
   const isBoard = target === "board";
 
   const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const primaryPort = resolvePrimaryPort(options, target);
   const standbyHost = options.standbyHost || DEFAULT_CONFIG.standbyHost;
-  const standbyPort = isBoard
-    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const standbyPort = resolveStandbyPort(options, target);
   const dbUser = isBoard
     ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
     : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
@@ -742,9 +781,7 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
   }
 
   const startTime = Date.now();
-  const standbyPort = isBoard
-    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const standbyPort = resolveStandbyPort(options, target);
   const dbUser = isBoard
     ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
     : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
@@ -824,18 +861,16 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
   const fsOps = deps.fsOps || defaultFsOps;
   const isBoard = target === "board";
   const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const primaryPort = resolvePrimaryPort(options, target);
   const dbUser = isBoard
     ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
     : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
   const dbName = isBoard
     ? options.boardDbName || DEFAULT_CONFIG.boardDbName
     : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-  const dataDir = isBoard
+  const dataDir = options.dataDir || (isBoard
     ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
-    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
 
   const composeService = "myrmidon-pg-standby";
   const composeFile = path.resolve(
@@ -925,9 +960,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const startTime = Date.now();
   const drillDir = plan.drillDir;
   const drillPort = plan.drillPort;
-  const standbyPort = isBoard
-    ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
-    : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const standbyPort = resolveStandbyPort(options, target);
   const boardUser = options.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = options.boardDbName || DEFAULT_CONFIG.boardDbName;
   const hindsightUser = options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
@@ -1090,6 +1123,15 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   }
   if (flags["credential-path"] !== undefined) {
     flags.credentialPath = flags["credential-path"];
+  }
+  if (flags["standby-port"] !== undefined) {
+    flags.standbyPort = Number(flags["standby-port"]);
+  }
+  if (flags["primary-port"] !== undefined) {
+    flags.primaryPort = Number(flags["primary-port"]);
+  }
+  if (flags.port !== undefined) {
+    flags.standbyPort = Number(flags.port);
   }
 
   switch (command) {
