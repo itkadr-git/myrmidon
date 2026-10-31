@@ -37,7 +37,6 @@ import {
   type AgentApiKeyScope,
   // myrmidon(PERF-DIET-G): the slim list row of GET /companies/:id/agents
   type AgentListItem,
-  type AgentListFilters,
 } from "@myrmidon/shared";
 import {
   normalizePaperclipRunnerAdapterConfig,
