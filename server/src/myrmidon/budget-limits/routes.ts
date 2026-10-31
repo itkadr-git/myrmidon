@@ -27,15 +27,24 @@ import type { Db } from "@myrmidon/db";
 import {
   BUDGET_LIMIT_LEVELS,
   budgetLimitUpsertSchema,
+  budgetLimitWarningThresholdSchema,
   budgetLimitsSignalOnlySchema,
+  getBudgetLimitWarningThreshold,
   isBudgetLimitOver,
   type BudgetLimitLevel,
+  type BudgetLimitPeriod,
+  type BudgetLimitWarningThreshold,
 } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { createBudgetLimitStore, validateBudgetLimitRef, validateBudgetLimitScope } from "./store.js";
+import {
+  createBudgetLimitStore,
+  validateBudgetLimitRef,
+  validateBudgetLimitScope,
+  type BudgetLimitStore,
+} from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
 import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly } from "./settings.js";
 
@@ -51,11 +60,18 @@ export interface BudgetLimitRoutesDeps {
   foragingBudgetState?: (companyId: string) => Promise<{ spentCents: number }>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  store?: BudgetLimitStore;
+  computeUsage?: (
+    companyId: string,
+    level: BudgetLimitLevel,
+    ref: string,
+    period: BudgetLimitPeriod,
+  ) => Promise<{ spentCents: number; events: number }>;
 }
 
 export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
   const router = Router();
-  const store = createBudgetLimitStore({ db, now: deps.now });
+  const store = deps.store ?? createBudgetLimitStore({ db, now: deps.now });
   const settings = instanceSettingsService(db);
   const base = "/myrmidon/companies/:companyId/budget-limits";
 
@@ -69,25 +85,46 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
   router.get(`${base}/usage`, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const limits = await store.list(companyId);
+    let thresholdFilter: BudgetLimitWarningThreshold | undefined;
+    if (req.query.threshold !== undefined) {
+      const parsed = budgetLimitWarningThresholdSchema.safeParse(req.query.threshold);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid threshold: must be 80 or 95" });
+        return;
+      }
+      thresholdFilter = parsed.data;
+    }
+    const levelParam = typeof req.query.level === "string" ? asLevel(req.query.level) : undefined;
+    if (typeof req.query.level === "string" && !levelParam) {
+      res.status(400).json({ error: `Unknown level '${req.query.level}'` });
+      return;
+    }
+    const limits = await store.list(companyId, levelParam ?? undefined);
     const rows = await Promise.all(
       limits.map(async (limit) => {
-        const usage = await computeBudgetLimitUsage(
-          { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
-          companyId,
-          limit.level,
-          limit.ref,
-          limit.period,
-        );
+        const usage = deps.computeUsage
+          ? await deps.computeUsage(companyId, limit.level, limit.ref, limit.period)
+          : await computeBudgetLimitUsage(
+              { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
+              companyId,
+              limit.level,
+              limit.ref,
+              limit.period,
+            );
+        const warningThreshold = getBudgetLimitWarningThreshold(limit, usage.spentCents);
         return {
           ...limit,
           spentCents: usage.spentCents,
           events: usage.events,
           overLimit: isBudgetLimitOver(limit, usage.spentCents),
+          warningThreshold,
         };
       }),
     );
-    res.json({ usage: rows });
+    const filteredRows = thresholdFilter !== undefined
+      ? rows.filter((r) => r.warningThreshold !== null && r.warningThreshold >= thresholdFilter!)
+      : rows;
+    res.json({ usage: filteredRows });
   });
 
   router.get(`${base}/journal`, async (req, res) => {

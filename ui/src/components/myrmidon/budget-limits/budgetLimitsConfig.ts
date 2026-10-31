@@ -19,6 +19,7 @@ import {
   type BudgetLimitPeriod,
   type BudgetLimitUsageRow,
   type BudgetLimitView,
+  type BudgetLimitWarningThreshold,
 } from "./budgetLimitsApi";
 
 /** UI sanity bound for one amount, mirroring the API schema (1_000_000_000 cents). */
@@ -41,6 +42,8 @@ export interface BudgetLimitNode {
   /** Spend in the row's period, or null when the row has no stored limit. */
   spentCents: number | null;
   overLimit: boolean;
+  /** Active warning threshold crossed (80 or 95) or null when under 80% / no limit. */
+  warningThreshold: BudgetLimitWarningThreshold | null;
 }
 
 export interface BudgetLimitTree {
@@ -83,6 +86,7 @@ function node(
     refLabel?: string | null;
     spentCents?: number | null;
     overLimit?: boolean;
+    warningThreshold?: BudgetLimitWarningThreshold | null;
   },
 ): BudgetLimitNode {
   return {
@@ -95,6 +99,7 @@ function node(
     refLabel: extras.refLabel ?? null,
     spentCents: extras.spentCents ?? null,
     overLimit: extras.overLimit ?? false,
+    warningThreshold: extras.warningThreshold ?? null,
   };
 }
 
@@ -123,10 +128,14 @@ export function buildBudgetLimitTree({
     const limit = limitsByKey.get(key) ?? null;
     const usageRow = usageByKey.get(key) ?? null;
     const spentCents = limit ? (usageRow?.spentCents ?? 0) : null;
+    const warningThreshold = limit
+      ? (usageRow?.warningThreshold ?? warningThresholdFromUsage(spentCents, limit.amountCents))
+      : null;
     return node(level, ref, limit, {
       depth,
       spentCents,
       overLimit: limit ? (usageRow?.overLimit ?? false) : false,
+      warningThreshold,
       ...extras,
     });
   };
@@ -294,4 +303,22 @@ export function nodeRefText(nodeNode: BudgetLimitNode): { key: string } | { text
 export function usagePercent(spentCents: number | null, amountCents: number | null | undefined): number | null {
   if (typeof amountCents !== "number" || amountCents <= 0 || spentCents === null) return null;
   return Math.min(100, Math.round((spentCents / amountCents) * 100));
+}
+
+/** Warning threshold crossed (80 or 95) based on spend and amount, or null. */
+export function warningThresholdFromUsage(
+  spentCents: number | null | undefined,
+  amountCents: number | null | undefined,
+): BudgetLimitWarningThreshold | null {
+  if (typeof amountCents !== "number" || amountCents <= 0) return null;
+  if (typeof spentCents !== "number" || spentCents <= 0) return null;
+  const percent = (spentCents / amountCents) * 100;
+  if (percent >= 95) return 95;
+  if (percent >= 80) return 80;
+  return null;
+}
+
+/** i18n key of an active warning threshold (80% or 95%). */
+export function warningLabelKey(threshold: BudgetLimitWarningThreshold): string {
+  return threshold >= 95 ? "budgetLimits.warning95" : "budgetLimits.warning80";
 }
