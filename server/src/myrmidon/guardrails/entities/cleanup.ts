@@ -1,6 +1,6 @@
 import { lte } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { redactionSubstitutions } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { redactionSubstitutions } from "@myrmidon/db";
 
 export function startRedactionSubstitutionCleanup(db: Db, intervalMs = 60_000): () => void {
   const cleanup = async () => {

@@ -1,7 +1,7 @@
 import { and, eq, gt, lte } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
-import { redactionSubstitutions } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { redactionSubstitutions } from "@myrmidon/db";
 
 export type RedactionMode = "reversible" | "irreversible" | "flag";
 export interface DetectedRedactionEntity {
