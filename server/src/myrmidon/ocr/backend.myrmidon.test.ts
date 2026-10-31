@@ -7,6 +7,7 @@
 // request, and the request carries the company's key on the header).
 
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_OCR_MODEL, readOcrSettings } from "./settings.js";
 import { createLitellmBackend, createOcrBackend, createRagflowBackend, type OcrBackendDeps } from "./backend.js";
 import { OcrError } from "./types.js";
 
@@ -44,9 +45,14 @@ async function failure(promise: Promise<unknown>): Promise<OcrError> {
 }
 
 describe("litellm backend", () => {
+  it("defaults OCR to the replacement vision model", () => {
+    expect(DEFAULT_OCR_MODEL).toBe("chatgpt-pool/gpt-6-luna");
+    expect(readOcrSettings({} as NodeJS.ProcessEnv).model).toBe(DEFAULT_OCR_MODEL);
+  });
+
   it("sends the document as a file content part to the chat endpoint", async () => {
     const fetchImpl = mockFetch(async () => jsonResponse({ choices: [{ message: { content: "recognized text" } }] }));
-    const backend = createLitellmBackend(deps(fetchImpl, { model: "ocr-model" }));
+    const backend = createLitellmBackend(deps(fetchImpl, { model: DEFAULT_OCR_MODEL }));
     const result = await backend.recognize({ name: "tender.pdf", mimeType: "application/pdf", bytes: PDF_BYTES });
 
     expect(result.text).toBe("recognized text");
@@ -57,7 +63,8 @@ describe("litellm backend", () => {
       model: string;
       messages: Array<{ content: Array<{ type: string; file?: { filename: string; file_data: string } }> }>;
     };
-    expect(body.model).toBe("ocr-model");
+    expect(body.model).toBe(DEFAULT_OCR_MODEL);
+    expect(body.model).toBe("chatgpt-pool/gpt-6-luna");
     const filePart = body.messages[0]!.content.find((part) => part.type === "file");
     expect(filePart?.file?.filename).toBe("tender.pdf");
     expect(filePart?.file?.file_data.startsWith("data:application/pdf;base64,")).toBe(true);
@@ -157,6 +164,11 @@ describe("ragflow backend", () => {
 });
 
 describe("createOcrBackend", () => {
+  it("defaults the OCR model to the replacement vision model", () => {
+    expect(readOcrSettings({} as NodeJS.ProcessEnv).model).toBe(DEFAULT_OCR_MODEL);
+    expect(DEFAULT_OCR_MODEL).toBe("chatgpt-pool/gpt-6-luna");
+  });
+
   it("builds the backend the settings name", () => {
     const fetchImpl = vi.fn<FetchImpl>();
     expect(
