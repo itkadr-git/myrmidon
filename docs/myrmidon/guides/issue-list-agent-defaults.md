@@ -28,13 +28,14 @@ PATCH /api/instance/settings/general
 The change is read live in the list handler
 (`instanceSettingsService(db).getGeneral()`); no restart or deploy needed.
 
-## What changes for agent actors
+## What changes for agent actors and integration board keys
 
-Applies only to requests authenticated as an agent. Board (human/UI)
-requests are untouched — see the next section.
+Applies to requests authenticated as an agent (`req.actor.type === "agent"`)
+as well as non-agent integration board keys (`req.actor.source === "board_key"`,
+added in 1.6.6 OPE-9997). Board (human/UI) requests are untouched — see the next section.
 
-| Agent request | Response |
-|---------------|----------|
+| Agent / Board Key request | Response |
+|---------------------------|----------|
 | No `view` parameter | answered as `view=compact` |
 | `limit` absent | default **200** rows |
 | `limit` ≤ 500 | compact rows, that many per page |
@@ -42,7 +43,7 @@ requests are untouched — see the next section.
 | `view=full&limit=N`, N ≤ 100 | full rows including `description` |
 | `view=full` without `limit`, or limit > 100 | **400** with the same hint |
 
-In a compact response for an agent actor the `description` field is
+In a compact response for an agent or board key actor the `description` field is
 **omitted** from each row. Get it for the task you pick with
 `GET /api/issues/{issueId}` — the detail endpoint always returns the full
 record regardless of the setting.
