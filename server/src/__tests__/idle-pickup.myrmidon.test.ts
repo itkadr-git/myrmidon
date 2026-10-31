@@ -404,6 +404,38 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("wakes an agent who is the current review participant on an in_review issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const other = await seedAgent({ companyId });
+    const issueId = await seedIssue({
+      companyId,
+      agentId: other.agentId,
+      status: "in_review",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ issueId }),
+      }),
+    );
+  });
+
   it("does not wake a blocked issue (an unresolved blocker relation)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });

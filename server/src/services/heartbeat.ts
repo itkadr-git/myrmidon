@@ -8375,7 +8375,7 @@ function decorateHeartbeatRunRuntimeStatus<
 
   const context = run.contextSnapshot ? parseObject(run.contextSnapshot) : {};
   const queuedReason =
-    typeof context.waitReason === "string" ? context.waitReason : null;
+    run.status === "queued" && typeof context.waitReason === "string" ? context.waitReason : null;
 
   return {
     ...run,

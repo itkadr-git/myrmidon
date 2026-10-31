@@ -236,8 +236,8 @@ describeEmbeddedPostgres("queued run resweep (part A of T1.4)", () => {
     const queuedRunId = await seedQueuedRun(companyId, agentId);
     await seedRunningRun(companyId, agentId);
 
-    const started = await heartbeat.resumeQueuedRuns();
-    expect(started.length).toBeGreaterThanOrEqual(1);
-    expect(started.map((r: any) => r.id)).toContain(queuedRunId);
+    await heartbeat.resumeQueuedRuns();
+    const run = await waitForRunToLeaveQueue(queuedRunId);
+    expect(["running", "succeeded"]).toContain(run?.status);
   });
 });

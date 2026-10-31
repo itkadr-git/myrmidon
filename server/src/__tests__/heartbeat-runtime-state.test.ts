@@ -280,11 +280,14 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
 
   it("decorates queued runs with queuedReason from contextSnapshot.waitReason", () => {
     const heartbeat = heartbeatService(db);
+    const testCompanyId = randomUUID();
+    const testAgentId = randomUUID();
+    const testIssueId = randomUUID();
     const queuedRun = {
       id: "run-queued-1",
-      companyId,
-      agentId,
-      issueId,
+      companyId: testCompanyId,
+      agentId: testAgentId,
+      issueId: testIssueId,
       status: "queued" as const,
       contextSnapshot: { waitReason: "global_cap" },
     };
@@ -293,9 +296,9 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
 
     const unqueuedRun = {
       id: "run-running-1",
-      companyId,
-      agentId,
-      issueId,
+      companyId: testCompanyId,
+      agentId: testAgentId,
+      issueId: testIssueId,
       status: "running" as const,
       contextSnapshot: {},
     };

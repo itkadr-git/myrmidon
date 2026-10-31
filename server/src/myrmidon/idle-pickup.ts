@@ -365,6 +365,9 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const isReviewParticipant =
+    sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
     .select({
       id: issues.id,
@@ -378,14 +381,16 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
-        eq(issues.assigneeAgentId, agentId),
-        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
-        // assigned to this agent (by hand or by a gated claim) stays theirs —
-        // the scope applies where a task is handed out (matcher, role queue).
-        isNull(issues.assigneeUserId),
+        or(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          ),
+          isReviewParticipant,
+        ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
-        inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
         // Not blocked by an unresolved blocker: no `blocks` edge whose blocker
         // is anything other than `done`. This mirrors the board's readiness
         // rule (only a done blocker resolves its dependent): an open blocker
