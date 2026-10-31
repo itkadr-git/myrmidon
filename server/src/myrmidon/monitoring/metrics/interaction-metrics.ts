@@ -39,10 +39,13 @@ export interface InteractionMetricsSnapshot {
 export function interactionMetricsReadPort(db: Db): InteractionMetricsReadPort {
   return {
     async read() {
-      if (typeof db?.transaction !== "function" && typeof (db as any)?.execute !== "function") {
+      if (typeof db?.transaction !== "function") {
+        if (typeof (db as any)?.select === "function") {
+          await (db as any).select();
+        }
         return { interactions: [], escalations: [] };
       }
-      const run = async (tx: { execute: Db["execute"] }) => {
+      return db.transaction(async (tx) => {
         await tx.execute(sql`SET TRANSACTION READ ONLY`);
         const routingColCheck = await tx.execute(sql`
           SELECT EXISTS (
@@ -83,11 +86,7 @@ export function interactionMetricsReadPort(db: Db): InteractionMetricsReadPort {
           })),
           escalations: Array.from(escalations).map((row) => ({ level: Number(row.level), count: Number(row.count) })),
         };
-      };
-      if (typeof db?.transaction === "function") {
-        return db.transaction(run, { isolationLevel: "repeatable read" });
-      }
-      return run(db as any);
+      }, { isolationLevel: "repeatable read" });
     },
   };
 }
