@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -157,11 +157,10 @@ function registerModuleMocks() {
   }));
 }
 
+let issueRoutes: typeof import("../routes/issues.js").issueRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
 async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -187,11 +186,24 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
 }
 
 describe("document annotation routes", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // routes/issues.ts is a ~20k-line module with a very large import graph, and
+  // loading it cold costs several seconds to tens of seconds depending on the
+  // runner. It used to be reset and re-imported inside every test, so the first
+  // test paid the whole transform inside its 15 s budget and every other test
+  // paid a full re-evaluation. The mocks below are hoisted module-level
+  // objects, so nothing depends on a module reset: register the module mocks
+  // and import the routes once. 90 s is about 2x the slowest measured cold load.
+  beforeAll(async () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 90_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,

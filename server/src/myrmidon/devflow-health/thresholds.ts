@@ -3,8 +3,14 @@ export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
   engineerIdleMs: 60 * 60_000,
   reviewQueueAgeMs: 24 * 60 * 60_000,
   redCiMs: 60 * 60_000,
+<<<<<<< HEAD
   approvedNotMergedMs: 2 * 60 * 60_000,
   noMergesMs: 6 * 60 * 60_000,
+=======
+  staleMarkerMs: 60 * 60_000,
+  stalledMergeMs: 60 * 60_000,
+  stalledRouterMs: 60 * 60_000,
+>>>>>>> origin/main
 } as const;
 
 export type DevflowMetric = keyof typeof DEFAULT_DEVFLOW_THRESHOLDS_MS;
@@ -16,6 +22,7 @@ export interface DevflowHealthSettings {
   engineerIdleMs?: number;
   reviewQueueAgeMs?: number;
   redCiMs?: number;
+<<<<<<< HEAD
   approvedNotMergedMs?: number;
   noMergesMs?: number;
 }
@@ -29,10 +36,23 @@ export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
     ? Number(process.env.MYRMIDON_DEVFLOW_NO_MERGES_MS)
     : undefined;
 
+=======
+  staleMarkerMs?: number;
+  approvalMarkerMs?: number;
+  stalledMergeMs?: number;
+  autoMergeMs?: number;
+  stalledRouterMs?: number;
+  reviewRouterMs?: number;
+}
+
+export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
+  const value = settings && typeof settings === "object" ? (settings as DevflowHealthSettings) : {};
+>>>>>>> origin/main
   return {
     engineerIdleMs: validThreshold(value.engineerIdleMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.engineerIdleMs),
     reviewQueueAgeMs: validThreshold(value.reviewQueueAgeMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.reviewQueueAgeMs),
     redCiMs: validThreshold(value.redCiMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.redCiMs),
+<<<<<<< HEAD
     approvedNotMergedMs: validThreshold(
       value.approvedNotMergedMs ?? envApprovedNotMerged,
       DEFAULT_DEVFLOW_THRESHOLDS_MS.approvedNotMergedMs,
@@ -41,6 +61,11 @@ export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
       value.noMergesMs ?? envNoMerges,
       DEFAULT_DEVFLOW_THRESHOLDS_MS.noMergesMs,
     ),
+=======
+    staleMarkerMs: validThreshold(value.staleMarkerMs ?? value.approvalMarkerMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.staleMarkerMs),
+    stalledMergeMs: validThreshold(value.stalledMergeMs ?? value.autoMergeMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.stalledMergeMs),
+    stalledRouterMs: validThreshold(value.stalledRouterMs ?? value.reviewRouterMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.stalledRouterMs),
+>>>>>>> origin/main
   };
 }
 
@@ -66,8 +91,14 @@ export interface DevflowTimestampSnapshot {
   engineerLastHeartbeatAt?: Date | string | null;
   reviewEnteredAt?: Date | string | null;
   ciRedSince?: Date | string | null;
+<<<<<<< HEAD
   approvedNotMergedSince?: Date | string | null;
   noMergesSince?: Date | string | null;
+=======
+  staleMarkerSince?: Date | string | null;
+  stalledMergeSince?: Date | string | null;
+  stalledRouterSince?: Date | string | null;
+>>>>>>> origin/main
 }
 
 /** Derives persisted event ages. Missing timestamps remain absent, never zero. */
@@ -82,7 +113,13 @@ export function collectDevflowDurations(snapshot: DevflowTimestampSnapshot, now 
     engineerIdleMs: age(snapshot.engineerLastHeartbeatAt),
     reviewQueueAgeMs: age(snapshot.reviewEnteredAt),
     redCiMs: age(snapshot.ciRedSince),
+<<<<<<< HEAD
     approvedNotMergedMs: age(snapshot.approvedNotMergedSince),
     noMergesMs: age(snapshot.noMergesSince),
+=======
+    staleMarkerMs: age(snapshot.staleMarkerSince),
+    stalledMergeMs: age(snapshot.stalledMergeSince),
+    stalledRouterMs: age(snapshot.stalledRouterSince),
+>>>>>>> origin/main
   };
 }
