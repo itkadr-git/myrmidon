@@ -100,6 +100,7 @@ function fakeSync(): Mocked<LitellmSyncService> {
     reconcileWithLitellm: vi.fn(async () => {}),
     handleProviderCredentialRotation: vi.fn(async () => {}),
     unregisterModels: vi.fn(async () => {}),
+    listChannels: vi.fn(async () => []),
   } as unknown as Mocked<LitellmSyncService>;
 }
 
@@ -247,5 +248,58 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       .post(`${base}/provider-1/models`)
       .send({ models: [{ modelName: "model-a", enabled: false }] })
       .expect(200);
+  });
+
+  describe("GET /model-providers/litellm/channels (OPE-9853)", () => {
+    it("returns channel list when sync is configured", async () => {
+      const channelViews = [
+        {
+          id: "c-1",
+          group: "gpt-4o",
+          provider: "openai",
+          providerModel: "gpt-4o-mini",
+          order: 1,
+          weight: 5,
+        },
+      ];
+      sync.listChannels.mockResolvedValueOnce(channelViews);
+      const { server } = app({ sync });
+
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(200);
+
+      expect(res.body).toEqual({
+        enabled: true,
+        channels: channelViews,
+      });
+    });
+
+    it("returns enabled: false when sync is null", async () => {
+      const { server } = app({ sync: null });
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(200);
+
+      expect(res.body.enabled).toBe(false);
+      expect(res.body.channels).toEqual([]);
+    });
+
+    it("masks secret tokens in error responses", async () => {
+      sync.listChannels.mockRejectedValueOnce(
+        new Error("LiteLLM upstream failed with sk-live-secret-key-123456 and Bearer pcp_top_secret"),
+      );
+      const { server } = app({ sync });
+
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(502);
+
+      expect(res.body.enabled).toBe(true);
+      expect(res.body.channels).toEqual([]);
+      expect(res.body.error).not.toContain("sk-live-secret-key-123456");
+      expect(res.body.error).not.toContain("pcp_top_secret");
+      expect(res.body.error).toContain("<redacted>");
+    });
   });
 });

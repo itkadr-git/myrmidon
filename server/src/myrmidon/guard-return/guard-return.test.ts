@@ -130,40 +130,19 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(
       hasChangesRequestedVerdict(
         { status: "changes_requested" },
-        [],
       ),
     ).toBe(true);
 
     expect(
       hasChangesRequestedVerdict(
         { lastDecisionOutcome: "changes_requested" },
-        [],
       ),
     ).toBe(true);
 
-    const comments: CommentSummary[] = [
-      {
-        id: "c-1",
-        body: "REQUEST CHANGES: fix type error in routes.ts",
-        createdAt: new Date(),
-      },
-    ];
-    expect(hasChangesRequestedVerdict(null, comments)).toBe(true);
+    expect(hasChangesRequestedVerdict(null)).toBe(false);
 
-    // Strictly respects the latest verdict: if subsequent comment is approved, changes_requested is false
-    const approvedComments: CommentSummary[] = [
-      {
-        id: "c-2",
-        body: "VERDICT: APPROVED LGTM!",
-        createdAt: new Date(Date.now() + 1000),
-      },
-      {
-        id: "c-1",
-        body: "REQUEST CHANGES: fix type error in routes.ts",
-        createdAt: new Date(),
-      },
-    ];
-    expect(hasChangesRequestedVerdict(null, approvedComments)).toBe(false);
+    // Comments are explanatory text, not execution verdicts.
+    expect(hasChangesRequestedVerdict(null)).toBe(false);
   });
 
   it("extracts reviewer remarks and formats return comment", () => {
@@ -226,6 +205,38 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.commentBody).toContain("Задача возвращена автору");
   });
 
+  it("skips pending review assigned to its participant even with an engineer PR", () => {
+    const agentMap = new Map<string, AgentSummary>([
+      [engineerAgent.id, engineerAgent],
+      [reviewerAgent.id, reviewerAgent],
+    ]);
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-review",
+      identifier: "OPE-10324",
+      title: "Review a change",
+      companyId: "comp-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgent.id,
+      assigneeRole: reviewerAgent.role,
+      projectId: "proj-1",
+      casteKey: "engineer",
+      labels: [],
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgent.id },
+      },
+      prWorkProducts: [{ id: "pr-review", type: "pull_request", status: "open", creatorAgentId: engineerAgent.id }],
+      comments: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    expect(decideGuardReturn(candidate, agentMap).action).toBe("skip");
+  });
+
+  it("does not treat engineer comments mentioning remarks as a verdict", () => {
+    expect(hasChangesRequestedVerdict(null)).toBe(false);
+  });
   it("skips return when task is already assigned to an engineer", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],

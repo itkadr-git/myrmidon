@@ -2269,6 +2269,32 @@ export function recoveryService(
       continuationClaimKey = key;
     }
 
+    const extraContext = { ...(input.extraContext ?? {}) };
+    if (
+      (input.reason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+        input.retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+      !extraContext.executionStage
+    ) {
+      const [issueRow] = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+      const parsed = parseIssueExecutionState(issueRow?.executionState);
+      if (parsed) {
+        extraContext.executionStage = {
+          wakeRole: "reviewer" as const,
+          stageId: parsed.currentStageId ?? null,
+          stageType: parsed.currentStageType ?? null,
+          currentParticipant: parsed.currentParticipant ?? null,
+          returnAssignee: parsed.returnAssignee ?? null,
+          reviewRequest: parsed.reviewRequest ?? null,
+          lastDecisionOutcome: parsed.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        };
+      }
+    }
+
     let queued: typeof heartbeatRuns.$inferSelect | null;
     try {
       queued = await deps.enqueueWakeup(input.agentId, {
@@ -2291,7 +2317,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -2305,7 +2331,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -4402,6 +4428,18 @@ export function recoveryService(
       entityId: input.issue.id,
       details: activityDetails,
     });
+    const executionStage = state
+      ? {
+          wakeRole: "reviewer" as const,
+          stageId,
+          stageType: state.currentStageType ?? null,
+          currentParticipant: state.currentParticipant ?? null,
+          returnAssignee: state.returnAssignee ?? null,
+          reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        }
+      : null;
     const queued = await enqueueStrandedIssueRecovery({
       issueId: input.issue.id,
       companyId: input.issue.companyId,
@@ -4413,6 +4451,7 @@ export function recoveryService(
       extraContext: {
         currentStageId: stageId,
         currentStageType: state.currentStageType ?? null,
+        ...(executionStage ? { executionStage } : {}),
         reviewRecoveryInstruction:
           `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
         reviewDecisionRetryAttempt: decision.attempt,
@@ -6554,6 +6593,19 @@ export function recoveryService(
           continue;
         }
 
+        const executionStage = pendingExecutionState
+          ? {
+              wakeRole: "reviewer" as const,
+              stageId: pendingExecutionState.currentStageId ?? null,
+              stageType: pendingExecutionState.currentStageType ?? null,
+              currentParticipant: pendingExecutionState.currentParticipant ?? null,
+              returnAssignee: pendingExecutionState.returnAssignee ?? null,
+              reviewRequest: pendingExecutionState.reviewRequest ?? null,
+              lastDecisionOutcome: pendingExecutionState.lastDecisionOutcome ?? null,
+              allowedActions: ["approve", "request_changes"],
+            }
+          : null;
+
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
@@ -6566,6 +6618,7 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            ...(executionStage ? { executionStage } : {}),
             // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
               `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
