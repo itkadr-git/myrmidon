@@ -580,13 +580,16 @@ describe("myrmidon(1.6.6 OPE-9996): Scent gateway baseUrl normalization", () => 
         apiKey: "test-key",
       },
       {
+        model: "test-model",
         title: "Test bug",
         description: "Fix problem",
-        castes: ["engineer"],
+        casteKeys: ["engineer"],
+        timeoutSec: 5,
       },
     );
 
-    expect(result.ok).toBe(true);
+    expect(result.scent).not.toBeNull();
+    expect(result.scent?.tags).toEqual(["fix"]);
     expect(fetchedUrls[0]).toBe("http://192.0.2.1:4000/v1/chat/completions");
   });
 });

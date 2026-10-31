@@ -38,9 +38,14 @@ const mockIssueService = {
   touchRunActivity: vi.fn(async () => undefined),
 };
 
-vi.mock("../services/index.js", () => ({
-  accessRequestService: () => ({}),
-  agentService: () => ({
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    accessService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+    agentService: () => ({
     getById: vi.fn(async () => ({
       id: "agent-1",
       companyId: "company-1",
