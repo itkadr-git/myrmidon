@@ -112,7 +112,7 @@ describe("interaction readdress report", () => {
     expect(csv).toContain('"OPE,""1"');
     const csvLines = csv.trim().split("\n");
     expect(csvLines).toHaveLength(2);
-    const cells = csvLines[1].split(",");
+    const cells = csvLines[1].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
     // fields: id,issueIdentifier,kind,createdByAgentId,createdByUserId,requestedResolverPolicy,effectiveResolverPolicy,proposedRecipient,reason,escalationChain
     expect(cells[4]).toBe(""); // createdByUserId
     expect(cells[8]).toBe(""); // reason
@@ -186,7 +186,7 @@ describe("interaction readdress report", () => {
           },
         } : { prompt: `item-${n}` };
         return sql`(
-          ${id(n)}::uuid, ${companyId}::uuid, ${issueId}::uuid, 'request_confirmation', 'pending', ${id(1)}::uuid,
+          ${id(n)}::uuid, ${companyId}::uuid, ${issueId}::uuid, 'request_confirmation', 'pending', ${n >= 8 ? id(10) : id(1)}::uuid,
           ${addressed ? id(2) : null}::uuid, ${null}::text, ${policy}, ${policy}, ${JSON.stringify(payload)}::jsonb
         )`;
       });
