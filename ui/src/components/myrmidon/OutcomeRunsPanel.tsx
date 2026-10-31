@@ -92,7 +92,7 @@ export function getRunTelemetryMetrics(run: HeartbeatRun): RunTelemetryMetrics {
 
   const outcomeCategory = typeof telemetry?.outcomeCategory === "string"
     ? telemetry.outcomeCategory
-    : (run.status === "succeeded" || run.status === "failed" || run.status === "canceled")
+    : (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled")
       ? "nothing"
       : null;
 

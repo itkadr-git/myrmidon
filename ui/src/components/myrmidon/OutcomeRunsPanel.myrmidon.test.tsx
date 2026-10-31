@@ -263,7 +263,7 @@ describe("OutcomeRunsPanel component DOM rendering", () => {
           cachedInputTokens: 300,
           outputTokens: 200,
           gatewaySpendCents: 20,
-          apiEquivalentCostUsd: 0.004,
+          apiEquivalentCostUsd: 0.002,
         },
       }),
       makeRun({
