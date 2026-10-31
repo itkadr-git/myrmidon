@@ -106,7 +106,14 @@ export function createLitellmChannelsClient(deps: LitellmChannelsClientDeps): Li
     const rawWeight = modelInfo.weight ?? litellmParams.weight ?? 1;
     const weight = Number.isFinite(Number(rawWeight)) ? Number(rawWeight) : 1;
 
-    const disabled = Boolean(modelInfo.disabled ?? (modelInfo.mode === "disabled") ?? litellmParams.disabled ?? false);
+    let disabled = false;
+    if (modelInfo.disabled !== undefined) {
+      disabled = Boolean(modelInfo.disabled);
+    } else if (modelInfo.mode !== undefined) {
+      disabled = modelInfo.mode === "disabled";
+    } else if (litellmParams.disabled !== undefined) {
+      disabled = Boolean(litellmParams.disabled);
+    }
 
     return {
       id,
