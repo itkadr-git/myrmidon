@@ -5,9 +5,9 @@
 #   docling-serve: document conversion engine (PDF, DOCX, XLSX, HTML, images)
 #   document-parser: HTTP adapter implementing POST /v1/parse and GET /v1/parse/{jobId}
 #
-# Published endpoints (reachable from paperclip_default network and host at 172.22.0.1 without localhost):
-#   - Embeddings:      http://172.22.0.1:8090/v1
-#   - Document parser: http://172.22.0.1:5001
+# Published endpoints (reachable from paperclip_default network and host gateway without localhost):
+#   - Embeddings:      http://${CORPUS_HOST_GATEWAY}:8090/v1
+#   - Document parser: http://${CORPUS_HOST_GATEWAY}:5001
 #
 # Startup:
 #   docker compose -f docker/corpus/docker-compose.yml up -d
@@ -32,7 +32,7 @@ services:
       - "--port"
       - "80"
     ports:
-      # Bound to 0.0.0.0:8090 (accessible via host gateway 172.22.0.1:8090 from paperclip_default)
+      # Bound to 0.0.0.0:8090 (accessible via host gateway ${CORPUS_HOST_GATEWAY}:8090 from paperclip_default)
       - "0.0.0.0:8090:80"
     environment:
       - RUST_LOG=info
@@ -79,7 +79,7 @@ services:
       docling-serve:
         condition: service_healthy
     ports:
-      # Bound to 0.0.0.0:5001 (accessible via host gateway 172.22.0.1:5001 from paperclip_default)
+      # Bound to 0.0.0.0:5001 (accessible via host gateway ${CORPUS_HOST_GATEWAY}:5001 from paperclip_default)
       - "0.0.0.0:5001:5001"
     environment:
       - PORT=5001

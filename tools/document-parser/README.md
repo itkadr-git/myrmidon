@@ -30,5 +30,5 @@ HTTP DocumentParser adapter for Docling-serve and knowledge corpus ingestion.
 ## Production TEI & Parser Topology
 
 In production (`docker/corpus/docker-compose.yml`), services are configured at:
-- Parser: `http://172.22.0.1:5001`
-- TEI Embeddings: `http://172.22.0.1:8090/v1` (with `--auto-truncate`, `--max-client-batch-size 2048`, `dimensions=1024`)
+- Parser: `http://${CORPUS_HOST_GATEWAY}:5001` (или `<адрес шлюза docker-сети paperclip_default>`)
+- TEI Embeddings: `http://${CORPUS_HOST_GATEWAY}:8090/v1` (with `--auto-truncate`, `--max-client-batch-size 2048`, `dimensions=1024`)

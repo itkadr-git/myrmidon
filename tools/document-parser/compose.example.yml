@@ -2,8 +2,8 @@
 # Standalone compose stack for DocumentParser + Docling-Serve + TEI embeddings
 #
 # Endpoints:
-#   Embeddings:      http://172.22.0.1:8090/v1 (or http://tei:80/v1)
-#   DocumentParser:  http://172.22.0.1:5001 (or http://document-parser:5001)
+#   Embeddings:      http://${CORPUS_HOST_GATEWAY}:8090/v1 (or http://tei:80/v1)
+#   DocumentParser:  http://${CORPUS_HOST_GATEWAY}:5001 (or http://document-parser:5001)
 
 name: document-parser-stack
 

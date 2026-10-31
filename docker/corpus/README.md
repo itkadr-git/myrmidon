@@ -4,15 +4,15 @@ Production runtime configuration for knowledge corpus ingestion and search (1.6.
 
 ## Architecture & Addresses
 
-Services run in Docker and are published to host/bridge gateway `172.22.0.1` and `paperclip_default` network:
+Services run in Docker and are published to host/bridge gateway `${CORPUS_HOST_GATEWAY}` (шлюз docker-сети `paperclip_default`) and `paperclip_default` network:
 
 | Service | Address | Purpose |
 |---|---|---|
-| **TEI (Embeddings)** | `http://172.22.0.1:8090/v1` | OpenAI-compatible `/v1/embeddings`, dimensions=1024, auto-truncate, batch >= 2048 |
-| **DocumentParser Adapter** | `http://172.22.0.1:5001` | HTTP adapter: `POST /v1/parse`, `GET /v1/parse/{jobId}`, docling proxy, chunk <= 1500 chars |
+| **TEI (Embeddings)** | `http://${CORPUS_HOST_GATEWAY}:8090/v1` | OpenAI-compatible `/v1/embeddings`, dimensions=1024, auto-truncate, batch >= 2048 |
+| **DocumentParser Adapter** | `http://${CORPUS_HOST_GATEWAY}:5001` | HTTP adapter: `POST /v1/parse`, `GET /v1/parse/{jobId}`, docling proxy, chunk <= 1500 chars |
 | **Docling-Serve** | `http://docling-serve:5001` (internal) | Internal document converter behind adapter (PDF, DOCX, XLSX, HTML, images) |
 
-> **Note on Addresses:** Services are reachable by the board application from the `paperclip_default` container network via `http://172.22.0.1:8090/v1` and `http://172.22.0.1:5001` without `localhost`.
+> **Note on Addresses:** Services are reachable by the board application from the `paperclip_default` container network via `http://${CORPUS_HOST_GATEWAY}:8090/v1` and `http://${CORPUS_HOST_GATEWAY}:5001` without `localhost` (где `${CORPUS_HOST_GATEWAY}` — адрес шлюза docker-сети `paperclip_default`, задаваемый в конфигурации deployment).
 
 ---
 
@@ -50,9 +50,14 @@ docker compose -f docker/corpus/docker-compose.yml up -d
 
 ## Verification Commands (No Secrets)
 
+Set the gateway address for verification (e.g. `export CORPUS_HOST_GATEWAY="<адрес шлюза docker-сети paperclip_default>"`):
+```bash
+CORPUS_HOST_GATEWAY="${CORPUS_HOST_GATEWAY:-corpus-gateway}"
+```
+
 ### 1. DocumentParser Health
 ```bash
-curl -s http://172.22.0.1:5001/health | jq .
+curl -s "http://${CORPUS_HOST_GATEWAY}:5001/health" | jq .
 ```
 Expected output:
 ```json
@@ -68,7 +73,7 @@ Expected output:
 ### 2. TEI Embeddings Verification (1024 Dimensions & 1000+ Batch)
 ```bash
 # Verify single embedding dimensions
-curl -s http://172.22.0.1:8090/v1/embeddings \
+curl -s "http://${CORPUS_HOST_GATEWAY}:8090/v1/embeddings" \
   -H "Content-Type: application/json" \
   -d '{"model": "BAAI/bge-m3", "input": ["тестовый документ"], "dimensions": 1024}' \
   | jq '{object: .object, count: (.data | length), dimensions: (.data[0].embedding | length)}'
@@ -85,9 +90,10 @@ Expected output:
 ```bash
 # Verify batch >= 1000 items without 256 batch error
 python3 -c '
-import json, urllib.request
+import os, json, urllib.request
+gateway = os.environ.get("CORPUS_HOST_GATEWAY", "corpus-gateway")
 payload = json.dumps({"model": "BAAI/bge-m3", "input": ["chunk test"] * 1050, "dimensions": 1024}).encode("utf-8")
-req = urllib.request.Request("http://172.22.0.1:8090/v1/embeddings", data=payload, headers={"Content-Type": "application/json"})
+req = urllib.request.Request(f"http://{gateway}:8090/v1/embeddings", data=payload, headers={"Content-Type": "application/json"})
 with urllib.request.urlopen(req) as resp:
     data = json.loads(resp.read().decode("utf-8"))
     print("Batch size:", len(data["data"]), "Dimensions:", len(data["data"][0]["embedding"]))
@@ -101,7 +107,7 @@ Batch size: 1050 Dimensions: 1024
 ### 3. Parse Document Submission & Chunking (< 1500 chars)
 ```bash
 # Submit document via POST /v1/parse
-curl -s http://172.22.0.1:5001/v1/parse \
+curl -s "http://${CORPUS_HOST_GATEWAY}:5001/v1/parse" \
   -H "Content-Type: application/json" \
   -d '{
     "submissionId": "test-sub-001",
@@ -127,7 +133,7 @@ Expected output:
 
 ### 4. Unsupported Format Rejection (EPUB / FB2)
 ```bash
-curl -s http://172.22.0.1:5001/v1/parse \
+curl -s "http://${CORPUS_HOST_GATEWAY}:5001/v1/parse" \
   -H "Content-Type: application/json" \
   -d '{
     "submissionId": "test-sub-epub",
