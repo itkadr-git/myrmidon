@@ -124,6 +124,10 @@ type ExecutionState = {
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
   modelResponseStarted: boolean;
+  /** Raw tool args are ephemeral and only passed to RunGuard's hash-only signature. */
+  guardToolArguments: Map<string, unknown[]>;
+  guardModelTurnObserved: boolean;
+  guardPendingToolCalls: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -835,6 +839,9 @@ function createExecutionState(runId: string): ExecutionState {
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
     modelResponseStarted: false,
+    guardToolArguments: new Map(),
+    guardModelTurnObserved: false,
+    guardPendingToolCalls: 0,
   };
 }
 
@@ -889,7 +896,19 @@ function toolNameFromEvent(record: Record<string, unknown> | null): string {
 
 function toolPreviewFromEvent(record: Record<string, unknown> | null, redactText: TextRedactor): string {
   const preview = nonEmpty(record?.preview) ?? nonEmpty(record?.detail) ?? "";
-  return preview ? redactText(preview) : "";
+  if (!preview) return "";
+
+  // Tool arguments may contain arbitrary secrets; redact structured values by
+  // key before rendering the preview into persistent run logs.
+  try {
+    const parsed: unknown = JSON.parse(preview);
+    if (parsed !== null && typeof parsed === "object") {
+      return redactText(JSON.stringify(redactForLog(parsed, [], 0, redactText)));
+    }
+  } catch {
+    // Keep non-JSON previews, while still applying the text redactor below.
+  }
+  return redactText(preview);
 }
 
 function toolDurationSeconds(record: Record<string, unknown> | null): number | null {
@@ -940,6 +959,77 @@ function pushToolPreview(state: ExecutionState, name: string, preview: string): 
 function popToolPreview(state: ExecutionState, name: string): string {
   const queue = state.toolPreviews.get(name);
   return queue?.shift() ?? "";
+}
+
+function pushGuardToolArguments(state: ExecutionState, name: string, args: unknown): void {
+  const queue = state.guardToolArguments.get(name);
+  if (queue) queue.push(args);
+  else state.guardToolArguments.set(name, [args]);
+}
+
+function popGuardToolArguments(state: ExecutionState, name: string): unknown {
+  const queue = state.guardToolArguments.get(name);
+  if (!queue) return undefined;
+  const args = queue.shift();
+  if (queue.length === 0) state.guardToolArguments.delete(name);
+  return args;
+}
+
+async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+  if (!ctx.runGuard || state.guardModelTurnObserved) return;
+  state.guardModelTurnObserved = true;
+  const decision = ctx.runGuard.modelCall();
+  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+}
+
+async function observeRunGuardEvent(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  eventName: string | null;
+  record: Record<string, unknown> | null;
+}): Promise<void> {
+  const { ctx, state, eventName, record } = input;
+  const guard = ctx.runGuard;
+  if (!guard) return;
+  if (eventName === "tool.started") {
+    state.guardPendingToolCalls += 1;
+    if (state.guardPendingToolCalls === 1) {
+      guard.pauseIdle();
+    }
+    await observeModelTurn(ctx, state);
+    const name = toolNameFromEvent(record);
+    const args = record?.input ?? record?.arguments ?? record?.preview;
+    if (args !== undefined) pushGuardToolArguments(state, name, args);
+    guard.event();
+    return;
+  }
+  if (eventName === "tool.completed") {
+    state.guardPendingToolCalls = Math.max(0, state.guardPendingToolCalls - 1);
+    if (state.guardPendingToolCalls === 0) {
+      guard.resumeIdle();
+    }
+    const name = toolNameFromEvent(record);
+    const args = popGuardToolArguments(state, name);
+    const decision = toolHasError(record)
+      ? guard.toolFailure(name, args)
+      : guard.toolSuccess();
+    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
+    return;
+  }
+  if (
+    (eventName === "message.delta" ||
+      eventName === "reasoning.available" ||
+      eventName === "content" ||
+      eventName === "model.request" ||
+      eventName === "model.started" ||
+      eventName === "llm.request" ||
+      eventName === "llm.started") &&
+    state.guardPendingToolCalls === 0
+  ) {
+    await observeModelTurn(ctx, state);
+  }
+  guard.event();
 }
 
 /** `  [tool] <name> <preview>` — real hermes chat prints this per agent/display.py's
@@ -1153,6 +1243,7 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
+  await observeRunGuardEvent({ ctx, state, eventName, record });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);

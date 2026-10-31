@@ -31,7 +31,10 @@ import {
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
-import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
+import { readFeatureAttentionSignals } from "../../features/attention.js";
+import {
+  readSwarmClaimAttentionSignals,
+} from "./swarm-signals.js";
 import {
   resolveProcessMetricsSource,
   type ProcessMetricsSample,
@@ -99,9 +102,20 @@ const LATENCY_SAMPLE_CAP = 5000;
  * Metric families the endpoint serves. Every family renders HELP and TYPE
  * once, followed by its samples; unknown label values are escaped.
  */
+import {
+  INTERACTION_METRIC_FAMILIES,
+  collectInteractionMetrics,
+  interactionMetricsReadPort,
+  renderInteractionMetricBlocks,
+  renderInteractionMetrics,
+  type InteractionMetricsReadPort,
+  type InteractionMetricsSnapshot,
+} from "./interaction-metrics.js";
+
 export const METRIC_FAMILIES = [
   "blocked_age_seconds",
   "blocked_missing_fields_total",
+  ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
   "myrmidon_runs_queued_over_30m",
@@ -227,6 +241,7 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
   }
 }
 export interface MetricsSnapshotFields {
+  interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
   runsActive: number;
@@ -320,6 +335,7 @@ export interface MetricsSnapshotFields {
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
 export interface MetricsSnapshot extends MetricsSnapshotFields {
+  interactions?: InteractionMetricsSnapshot | null;
   /**
    * myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the process role
    * (`api` | `worker` | `all`) of the process that answered this scrape. It is
@@ -340,6 +356,7 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // ---------------------------------------------------------------------------
 
 export interface MetricsCollectorDeps {
+  interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
   now(): Date;
@@ -601,6 +618,7 @@ async function readAgentErrorSignals(db: Db): Promise<number> {
     signals += readStaleBlockSignals(row.id).length;
     signals += readSwarmClaimAttentionSignals(row.id).length;
   }
+  signals += readFeatureAttentionSignals().length;
   return signals;
 }
 
@@ -651,6 +669,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   const latencyWindowStart = new Date(now.getTime() - deps.latencyWindowSec * 1000);
 
   const errors: string[] = [];
+  let interactions: InteractionMetricsSnapshot | null = null;
+  try {
+    interactions = await collectInteractionMetrics(deps.interactions ?? interactionMetricsReadPort(deps.db), now);
+  } catch {
+    errors.push(INTERACTION_METRIC_FAMILIES.join("|"));
+  }
   async function guarded<T>(family: string, read: () => Promise<T>, fallback: T): Promise<T> {
     try {
       return await read();
@@ -855,6 +879,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         },
         null as CapacityDashboardMetricsSnapshot | null,
       ),
+      interactions,
     },
     errors,
     now,
@@ -1005,6 +1030,8 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       blockedMissingFieldsSamples,
     ),
   );
+
+  blocks.push(...renderInteractionMetricBlocks(snapshot.interactions ?? null, role));
 
   blocks.push(
     familyBlock(

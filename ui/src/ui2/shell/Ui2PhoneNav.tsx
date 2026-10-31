@@ -6,6 +6,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "@/i18n";
 import { useUi2I18n } from "../i18n/Ui2I18n";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
@@ -98,10 +99,15 @@ function PhoneTab({
 import type { Gauge as GaugeIcon } from "lucide-react";
 
 export function Ui2PhoneHeader() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const { t: tUi2 } = useUi2I18n();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = tUi2(key as never, values);
+    return val && val !== key ? val : tApp(key, values);
+  };
   return (
     <div
-      className="myr-ui2__phone-header"
+      className="myr-ui2__phone-header myr-ui2-phone-header"
       style={{
         height: "var(--myr-phone-topbar-height)",
         display: "flex",
@@ -113,9 +119,12 @@ export function Ui2PhoneHeader() {
       }}
     >
       <MyrmidonLockup className="max-h-6 w-auto" decorative />
-      <span style={{ marginLeft: "auto", fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-        {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
-      </span>
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+        <LanguageSwitch compact />
+        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
+          {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
+        </span>
+      </div>
     </div>
   );
 }
@@ -129,8 +138,12 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
 }
 
 export function Ui2PhoneTabBar() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
   const { t: tUi2 } = useUi2I18n();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = tUi2(key as never, values);
+    return val && val !== key ? val : tApp(key, values);
+  };
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
   const { selectedCompany } = useCompany();

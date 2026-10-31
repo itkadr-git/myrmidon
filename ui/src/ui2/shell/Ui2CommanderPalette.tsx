@@ -10,9 +10,15 @@ import { useEffect, useRef } from "react";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { useNavigate } from "@/lib/router";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 
 export function Ui2CommanderPalette({ onClose }: { onClose: () => void }) {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number | undefined>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values as Record<string, string | number>);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
