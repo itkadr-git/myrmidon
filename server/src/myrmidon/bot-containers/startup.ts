@@ -52,6 +52,8 @@ import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import {
   createFleetClientManager,
+  setActiveFleetClientManager,
+  getActiveFleetClientManager,
   bootstrapFleetSitesFromEnv,
   type FleetClientManager,
   type FleetClientManagerDeps,
@@ -203,6 +205,7 @@ export function startBotContainers(
   const started = build(db, env, intervalMs, ports);
   if (!started) return () => {};
   const { runtime, stopSweep, clientManager } = started;
+  setActiveFleetClientManager(clientManager);
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
@@ -215,7 +218,7 @@ export function startBotContainers(
     ports.log.error({ err }, "failed to start clone hygiene report collection");
   }
   // myrmidon(1.6.6 REMOTE-SITES-T5): after the runtime is registered, because a move uses it.
-  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env }) ?? null;
+  const stopSiteScheduler = ports.startSiteScheduler?.(db, { env, clientManager }) ?? null;
   // myrmidon(1.6.6 REMOTE-SITES-T4): next to the scheduler; it reads the client manager's transports.
   const stopSiteHealth = ports.startSiteHealth?.(db, { env, clientManager }) ?? null;
 
@@ -226,6 +229,7 @@ export function startBotContainers(
     stopSweep();
     stopCollector?.();
     clientManager.close();
+    if (getActiveFleetClientManager() === clientManager) setActiveFleetClientManager(null);
     stopSiteScheduler?.();
     stopSiteHealth?.();
     // Only clear the registry entry this run put there.

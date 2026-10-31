@@ -8,6 +8,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+import { getActiveFleetClientManager } from "./myrmidon/bot-containers/site-registry.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -1235,6 +1236,7 @@ async function startServerWithDatabaseTeardown(
   await startProcessesSettings(db as any, processSupervisor);
   configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
+    fleetClientManager: getActiveFleetClientManager,
     uiMode,
     serverPort: listenPort,
     // myrmidon(PROCS-1.1): an api process serves the board surface and nothing
