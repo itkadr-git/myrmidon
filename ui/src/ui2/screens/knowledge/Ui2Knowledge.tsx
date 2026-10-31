@@ -309,10 +309,12 @@ function RevisionsPanel({
   companyId,
   item,
   t,
+  basePath,
 }: {
   companyId: string;
   item: KnowledgeItemDetail;
   t: Translate;
+  basePath: string;
 }) {
   const revisions = useMemo(
     () => [...(item.revisions ?? [])].sort((left, right) => left.revision - right.revision),
@@ -388,7 +390,13 @@ function RevisionsPanel({
             {(revision.sources ?? []).length > 0 ? (
               <span className="ui2-knowledge-revision-sources flex items-center gap-1">
                 {(revision.sources ?? []).map((source, index) => {
-                  const link = knowledgeSourceLink(source);
+                  const link =
+                    source.kind === "page" && source.ref
+                      ? ({
+                          kind: "internal",
+                          to: knowledgeHref({ spaceKey: source.space ?? item.spaceKey, slug: source.ref, anchor: null }, basePath),
+                        } as const)
+                      : knowledgeSourceLink(source);
                   const label = source.label ?? source.ref;
                   if (!link) {
                     return (
@@ -533,7 +541,7 @@ function KnowledgePagePane({
         basePath={basePath}
         t={t}
       />
-      <RevisionsPanel companyId={companyId} item={item} t={t} />
+      <RevisionsPanel companyId={companyId} item={item} t={t} basePath={basePath} />
     </div>
   );
 }
