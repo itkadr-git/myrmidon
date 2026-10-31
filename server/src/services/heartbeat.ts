@@ -29422,7 +29422,8 @@ export function heartbeatService(
         if (
           isExplicitlyClassified &&
           isDigestAccumulatedPriority(priority) &&
-          normalizedReason !== "heartbeat_timer"
+          normalizedReason !== "heartbeat_timer" &&
+          normalizedReason !== "timer"
         ) {
           getSharedEventDigestService().recordEvent({
             agentId,
