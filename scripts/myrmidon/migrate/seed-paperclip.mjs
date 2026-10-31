@@ -567,8 +567,6 @@ export async function seedPaperclip(options = {}) {
         description: spec.description,
         status: spec.status,
         priority: spec.priority,
-        titleNeedsGeneration: spec.titleNeedsGeneration,
-        title_needs_generation: spec.title_needs_generation,
         allowDuplicate: true,
       },
     });

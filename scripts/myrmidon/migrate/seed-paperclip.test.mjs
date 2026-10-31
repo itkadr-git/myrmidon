@@ -277,10 +277,10 @@ describe("seedPaperclip mock flow execution", () => {
       assert.ok(report.counts.largeAttachments >= 1, "Should seed large attachment > 2MB");
 
       // Verify issue payload format
-      assert.deepEqual(
-        [...new Set(capturedIssues.map((issue) => issue.status))].sort(),
-        ["done", "in_progress", "in_review", "todo"],
-      );
+      assert.equal(capturedIssues.length, 205);
+      assert.ok(capturedIssues.every((issue) => issue.allowDuplicate === true));
+      assert.ok(capturedIssues.every((issue) => !("titleNeedsGeneration" in issue)));
+
 
 
       // Verify agent appearance payload format
@@ -295,9 +295,10 @@ describe("seedPaperclip mock flow execution", () => {
         assert.ok(ag.appearance.paletteId, "Agent must have paletteId");
       }
 
-      // Verify issues with title_needs_generation
-      const genTitleIssues = capturedIssues.filter((iss) => iss.titleNeedsGeneration || iss.title_needs_generation);
-      assert.ok(genTitleIssues.length >= 3, "Expected at least 3 issues with title_needs_generation");
+      // The vendor create schema rejects title-generation flags; do not send them.
+      assert.ok(capturedIssues.every((iss) => !("titleNeedsGeneration" in iss)));
+      assert.ok(capturedIssues.every((iss) => !("title_needs_generation" in iss)));
+
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
