@@ -809,7 +809,26 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
-type PaperclipWakePayload = {
+export type PaperclipWakeBufferedEvent = {
+  id: string;
+  agentId: string;
+  issueId: string | null;
+  type: string;
+  priority: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+};
+
+export type PaperclipWakeEventDigest = {
+  agentId: string;
+  issueId: string | null;
+  events: PaperclipWakeBufferedEvent[];
+  eventCount: number;
+  oldestEventAt: string;
+  newestEventAt: string;
+};
+
+export type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
@@ -851,6 +870,7 @@ type PaperclipWakePayload = {
   requestedCount: number;
   includedCount: number;
   missingCount: number;
+  eventDigest: PaperclipWakeEventDigest | null;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
 };
@@ -1729,6 +1749,48 @@ function normalizePaperclipExternalChatQuestionResponse(
   };
 }
 
+export function normalizePaperclipWakeEventDigest(
+  value: unknown,
+): PaperclipWakeEventDigest | null {
+  const digest = parseObject(value);
+  const agentId = asString(digest.agentId, "").trim();
+  if (!agentId) return null;
+  const rawEvents = Array.isArray(digest.events) ? digest.events : [];
+  const events: PaperclipWakeBufferedEvent[] = rawEvents
+    .map((raw) => {
+      const e = parseObject(raw);
+      const type = asString(e.type, "").trim();
+      if (!type) return null;
+      const id = asString(e.id, "").trim() || randomUUID();
+      const priority = asString(e.priority, "").trim() || "P4";
+      const timestamp = e.timestamp ? String(e.timestamp) : new Date().toISOString();
+      return {
+        id,
+        agentId: asString(e.agentId, "").trim() || agentId,
+        issueId: asString(e.issueId, "").trim() || null,
+        type,
+        priority,
+        payload: parseObject(e.payload),
+        timestamp,
+      };
+    })
+    .filter((e): e is PaperclipWakeBufferedEvent => e !== null);
+
+  return {
+    agentId,
+    issueId: asString(digest.issueId, "").trim() || null,
+    events,
+    eventCount:
+      typeof digest.eventCount === "number" ? digest.eventCount : events.length,
+    oldestEventAt: digest.oldestEventAt
+      ? String(digest.oldestEventAt)
+      : (events[0]?.timestamp ?? new Date().toISOString()),
+    newestEventAt: digest.newestEventAt
+      ? String(digest.newestEventAt)
+      : (events[events.length - 1]?.timestamp ?? new Date().toISOString()),
+  };
+}
+
 export function normalizePaperclipWakePayload(
   value: unknown,
 ): PaperclipWakePayload | null {
@@ -1920,6 +1982,7 @@ export function normalizePaperclipWakePayload(
     ),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
+    eventDigest: normalizePaperclipWakeEventDigest(payload.eventDigest),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
