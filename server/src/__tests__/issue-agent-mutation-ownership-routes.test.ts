@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
@@ -475,8 +475,13 @@ function boardActor() {
 }
 
 describe("agent issue mutation checkout ownership", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("@myrmidon/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
@@ -495,6 +500,13 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../myrmidon/review-routing/store.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
@@ -1845,14 +1857,22 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference, so the descriptor carries one;
-    // the ownership rule under test is still the owner field.
+    // Keep the transition valid so this assertion isolates owner authorization.
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "ownership-route-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
     });
 
@@ -1863,7 +1883,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
@@ -1883,20 +1903,30 @@ describe("agent issue mutation checkout ownership", () => {
       ...patch,
     }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
+    const blockerMetadata = {
+      blockReason: "dependency",
+      owner: { userId: "00000000-0000-4000-8000-000000000002" },
+      externalRef: "ownership-route-test",
+      nextCheckAt: "2026-10-20T00:00:00.000Z",
+      timeoutAt: "2026-10-21T00:00:00.000Z",
+      escalationPolicy: "notify_owner",
+    };
+    const unblockDescriptor = {
+      owner: "board",
+      action: "Review the blocker",
+      reasonRef: { kind: "issue", issueId },
+    };
     const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
-      unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata,
+      unblockDescriptor,
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
-      expect.objectContaining({
-        status: "blocked",
-        // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
-        unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
-      }),
+      expect.objectContaining({ status: "blocked", blockerMetadata, unblockDescriptor }),
     );
   });
 

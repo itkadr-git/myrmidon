@@ -2,7 +2,7 @@ import express from "express";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -239,13 +239,25 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent routes adapter validation", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
