@@ -388,13 +388,7 @@ function RevisionsPanel({
             {(revision.sources ?? []).length > 0 ? (
               <span className="ui2-knowledge-revision-sources flex items-center gap-1">
                 {(revision.sources ?? []).map((source, index) => {
-                  const link =
-                    source.kind === "page" && source.ref
-                      ? ({
-                          kind: "internal",
-                          to: knowledgeHref({ spaceKey: source.space ?? "", slug: source.ref, anchor: null }, basePath),
-                        } as const)
-                      : knowledgeSourceLink(source);
+                  const link = knowledgeSourceLink(source);
                   const label = source.label ?? source.ref;
                   if (!link) {
                     return (
