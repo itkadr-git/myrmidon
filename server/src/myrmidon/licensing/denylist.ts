@@ -104,6 +104,42 @@ export interface DenyListReader {
   revoked(who: { licenseId?: string | null; instanceId?: string | null; kid?: string | null }): boolean;
 }
 
+export function storedDenyStateSerial(statePath: string): number | null {
+  try {
+    const raw = readFileSync(statePath, "utf8").trim();
+    return /^[0-9]{1,15}$/.test(raw) ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function currentDenyFileSerial(
+  filePath: string,
+  trustedKeys: readonly TrustedIssuerKey[],
+): number | null {
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    if (raw.length > MAX_DENY_BYTES) return null;
+    const data = parseDenyList(raw, trustedKeys);
+    return data.serial;
+  } catch {
+    return null;
+  }
+}
+
+export function highestAcceptedDenySerial(
+  env: NodeJS.ProcessEnv,
+  trustedKeys: readonly TrustedIssuerKey[],
+): number | null {
+  const statePath = denyStatePath(env);
+  const filePath = denyListPath(env);
+  const seen = [
+    storedDenyStateSerial(statePath),
+    currentDenyFileSerial(filePath, trustedKeys),
+  ].filter((n): n is number => n !== null);
+  return seen.length > 0 ? Math.max(...seen) : null;
+}
+
 export function createDenyListReader(input: {
   env: () => NodeJS.ProcessEnv;
   trustedKeys: readonly TrustedIssuerKey[];
@@ -116,15 +152,6 @@ export function createDenyListReader(input: {
     warned.add(key);
     input.warn?.(`license deny-list ignored: ${message}`);
   };
-
-  function storedSerial(statePath: string): number | null {
-    try {
-      const raw = readFileSync(statePath, "utf8").trim();
-      return /^[0-9]{1,15}$/.test(raw) ? Number(raw) : null;
-    } catch {
-      return null;
-    }
-  }
 
   function load(): DenyList | null {
     const env = input.env();
@@ -148,7 +175,7 @@ export function createDenyListReader(input: {
       return null;
     }
     const statePath = denyStatePath(env);
-    const seen = [maxSerial, storedSerial(statePath)].filter((n): n is number => n !== null);
+    const seen = [maxSerial, storedDenyStateSerial(statePath)].filter((n): n is number => n !== null);
     const highest = seen.length > 0 ? Math.max(...seen) : null;
     if (highest !== null && data.serial < highest) {
       warnOnce(`rollback:${data.serial}<${highest}`, `serial ${data.serial} is lower than the seen ${highest}`);

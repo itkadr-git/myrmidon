@@ -242,6 +242,71 @@ describe("POST /api/licensing/deny-list endpoint", () => {
     expect(readFileSync(denyTarget, "utf8")).toBe(denyContent2.trim() + "\n");
   });
 
+  it("rejects rollback serial with 409 deny_list_rollback without modifying file or revoked status, and accepts equal serial idempotently", async () => {
+    const k = keys();
+    const licenseTarget = path.join(dir, "license.key");
+    const denyTarget = path.join(dir, "license.deny.json");
+    const licenseText = license(k.privateKey, k.publicKey, "lic-test-1");
+    writeFileSync(licenseTarget, licenseText);
+
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: licenseTarget,
+      MYR_LICENSE_DENY_PATH: denyTarget,
+      PAPERCLIP_BUILD_VERSION: "1.6.6",
+    };
+    const application = app(admin, env, [k.publicKey]);
+
+    // 1. Deliver deny-list with serial 2 revoking lic-test-1
+    const denyContent2 = denyFile(k.privateKey, { ids: ["lic-test-1"], serial: 2 });
+    const postRes1 = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent2 });
+    expect(postRes1.status).toBe(200);
+
+    const fileContentAfterSerial2 = readFileSync(denyTarget, "utf8");
+    expect(fileContentAfterSerial2).toBe(denyContent2.trim() + "\n");
+
+    const statusAfterSerial2 = await request(application).get("/api/licensing/status");
+    const googleAfterSerial2 = statusAfterSerial2.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterSerial2).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // 2. Deliver deny-list with serial 1 (rollback) -> 409 deny_list_rollback
+    const denyContent1 = denyFile(k.privateKey, { ids: [], serial: 1 });
+    const rollbackRes = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent1 });
+    expect(rollbackRes.status).toBe(409);
+    expect(rollbackRes.body.code).toBe("deny_list_rollback");
+
+    // 3. File remains unchanged
+    expect(readFileSync(denyTarget, "utf8")).toBe(fileContentAfterSerial2);
+
+    // 4. Module remains revoked
+    const statusAfterRollback = await request(application).get("/api/licensing/status");
+    const googleAfterRollback = statusAfterRollback.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterRollback).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+
+    // 5. Equal serial 2 -> idempotent 200, module remains revoked
+    const equalRes = await request(application)
+      .post("/api/licensing/deny-list")
+      .send({ value: denyContent2 });
+    expect(equalRes.status).toBe(200);
+    expect(readFileSync(denyTarget, "utf8")).toBe(fileContentAfterSerial2);
+
+    const statusAfterEqual = await request(application).get("/api/licensing/status");
+    const googleAfterEqual = statusAfterEqual.body.modules.find((m: { module: string }) => m.module === "google-ai");
+    expect(googleAfterEqual).toMatchObject({
+      state: "invalid",
+      reason: "revoked",
+    });
+  });
+
   it("refuses invalid or foreign-signed deny-lists with 422 deny_list_invalid", async () => {
     const k = keys();
     const foreign = keys();

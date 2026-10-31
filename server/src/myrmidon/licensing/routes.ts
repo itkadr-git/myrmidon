@@ -37,7 +37,14 @@ import {
   writeLicenseFile,
   type HostShareOptions,
 } from "./client-license.js";
-import { createDenyListReader, denyListPath, parseDenyList, writeDenyListFile } from "./denylist.js";
+import {
+  createDenyListReader,
+  denyListPath,
+  highestAcceptedDenySerial,
+  parseDenyList,
+  writeDenyListFile,
+  type DenyList,
+} from "./denylist.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 // `value`, not `license`: the request logger redacts `value` in 4xx lines, so
@@ -208,10 +215,18 @@ export function licensingRoutes(options: LicensingRoutesOptions): Router {
     router.post(`${prefix}/deny-list`, instanceAdminOnly, validate(saveDenyListBody), async (req, res, next) => {
       try {
         const text = (req.body as z.infer<typeof saveDenyListBody>).value.trim();
+        let parsed: DenyList;
         try {
-          parseDenyList(text, trustedKeys);
+          parsed = parseDenyList(text, trustedKeys);
         } catch (err) {
           throw unprocessable((err as Error).message, { code: "deny_list_invalid" });
+        }
+        const highest = highestAcceptedDenySerial(env(), trustedKeys);
+        if (highest !== null && parsed.serial < highest) {
+          throw conflict(
+            `Deny-list serial ${parsed.serial} is lower than highest accepted serial ${highest}`,
+            { code: "deny_list_rollback" },
+          );
         }
         const file = denyListPath(env());
         try {
