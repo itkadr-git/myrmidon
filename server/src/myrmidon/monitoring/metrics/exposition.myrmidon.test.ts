@@ -210,7 +210,6 @@ describe("prometheus exposition format", () => {
     expect(unknownQueue).not.toContain("myrmidon_project_share{");
     expect(unknownQueue).not.toContain("myrmidon_claim_rejection_total{");
   });
-  });
 
   it("renders exactly one HELP and one TYPE line per family", () => {
     const text = renderMetricsText(snapshot());
