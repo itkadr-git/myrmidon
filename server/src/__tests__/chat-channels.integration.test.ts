@@ -5974,6 +5974,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(1);
 
     deferred.shift()?.();
+    // The GitHub drain owns a fixed reorder window; running its scheduled
+    // task is not the same as advancing the window to its deadline.
+    await new Promise((resolve) => setTimeout(resolve, 800));
     await vi.waitFor(async () => {
       const rows = await db
         .select()

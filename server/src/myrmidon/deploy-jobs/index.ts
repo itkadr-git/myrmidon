@@ -19,6 +19,11 @@ import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmi
 export { digestProblem, parseDigest, verifyCiImage } from "./domain.js";
 export { deployJobsService } from "./service.js";
 export type { DeployJobsService } from "./service.js";
+// myrmidon(1.7-AUTO-UPDATE-B): the update policy screen. Mounted next to the
+// deploy jobs and deliberately *not* behind MYRMIDON_DEPLOY_ENABLED: an
+// instance that has deploys switched off must still be able to set the window
+// and the mode, so the settings are ready before the first deploy.
+export { myrmidonAutoUpdateRoutes } from "./auto-update-routes.js";
 
 const SYSTEM_ACTOR = { actorType: "system", actorId: "myrmidon-deploy-jobs" } as const;
 
