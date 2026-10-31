@@ -3480,8 +3480,50 @@ describe("eventDigest in PaperclipWakePayload", () => {
       eventDigest: null,
     };
     const normalized = normalizePaperclipWakePayload(rawPayload);
+    // A payload with no meaningful content stays fail-closed (null); a null
+    // digest never fabricates content. Digest-bearing payloads are covered by
+    // the digest-only test above and the structured digest test.
+    expect(normalized).toBeNull();
+
+    const withDigestAndComments = {
+      reason: "routine_wake",
+      eventDigest: null,
+      commentIds: ["comment-1"],
+    };
+    const normalizedWithContent = normalizePaperclipWakePayload(
+      withDigestAndComments,
+    );
+    expect(normalizedWithContent).not.toBeNull();
+    expect(normalizedWithContent?.eventDigest).toBeNull();
+  });
+
+  it("keeps a digest-only wake payload non-empty (digest is meaningful content)", () => {
+    const rawPayload = {
+      reason: "security_incident",
+      eventDigest: {
+        agentId: "agent-test-1",
+        issueId: null,
+        events: [
+          {
+            id: "evt-1",
+            agentId: "agent-test-1",
+            issueId: null,
+            type: "heartbeat",
+            priority: "P4",
+            payload: { status: "alive" },
+            timestamp: "2026-10-30T10:00:00.000Z",
+          },
+        ],
+        eventCount: 1,
+        oldestEventAt: "2026-10-30T10:00:00.000Z",
+        newestEventAt: "2026-10-30T10:00:00.000Z",
+      },
+    };
+    const normalized = normalizePaperclipWakePayload(rawPayload);
     expect(normalized).not.toBeNull();
-    expect(normalized?.eventDigest).toBeNull();
+    expect(normalized?.eventDigest).not.toBeNull();
+    expect(normalized?.eventDigest?.eventCount).toBe(1);
+    expect(normalized?.eventDigest?.events[0]?.type).toBe("heartbeat");
   });
 });
 

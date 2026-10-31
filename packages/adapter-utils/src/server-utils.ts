@@ -1938,6 +1938,7 @@ export function normalizePaperclipWakePayload(
   );
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
   const issue = normalizePaperclipWakeIssue(payload.issue);
+  const eventDigest = normalizePaperclipWakeEventDigest(payload.eventDigest);
   const skillTest =
     issue?.workMode === "skill_test" ||
     payload.skillTest === true ||
@@ -1963,7 +1964,8 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
-    !issue
+    !issue &&
+    !eventDigest
   ) {
     return null;
   }
@@ -2030,7 +2032,7 @@ export function normalizePaperclipWakePayload(
     ),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
-    eventDigest: normalizePaperclipWakeEventDigest(payload.eventDigest),
+    eventDigest,
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
