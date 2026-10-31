@@ -4459,8 +4459,14 @@ export function recoveryService(
     // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
     // transitions to in_review at the current assignee (review in parallel with CI),
     // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
     if (
       openPrProduct &&
+      isProductiveContinuationRecovery &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
     ) {
       const prCi = await resolvePrCiState(
