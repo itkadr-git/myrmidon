@@ -1538,7 +1538,7 @@ function parseRetryAfterFromText(text: string | null): number | null {
 function extractCooldownRetryNotBefore(
   errorMessage: string | null,
   payload: Record<string, unknown>,
-): string {
+): string | null {
   const errorRecord = asRecord(payload.error);
   const explicitIso = parseRetryAfterToIso(
     nonEmpty(payload.retry_not_before) ??
@@ -1567,7 +1567,7 @@ function extractCooldownRetryNotBefore(
   if (retryAfterSec !== null && retryAfterSec > 0) {
     return new Date(Date.now() + retryAfterSec * 1000).toISOString();
   }
-  return new Date(Date.now() + 60_000).toISOString();
+  return null;
 }
 
 function isCooldownOrRateLimit(
@@ -2029,9 +2029,7 @@ export function errorResult(
     parseRetryAfterToIso(rawRetryNotBefore) ??
     (errorMessage ? parseRetryAfterToIso(parseRetryAfterFromText(errorMessage)?.toString()) : null);
 
-  const retryNotBefore =
-    parsedRetryNotBefore ??
-    (isCooldown ? new Date(Date.now() + 60_000).toISOString() : null);
+  const retryNotBefore = parsedRetryNotBefore ?? null;
   const errorFamily =
     classified?.family ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);

@@ -3738,4 +3738,27 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.resultJson?.cooldown).toBeUndefined();
     expect(result.errorFamily).not.toBe("provider_quota");
   });
+
+  it("does not synthesize 60s retryNotBefore when cooldown has no retry hint", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-cooldown-no-hint",
+        status: "failed",
+        payload: {
+          error_code: 429,
+          error: {
+            type: "rate_limit_error",
+            message: "RateLimitError: No deployments available in cooldown",
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-2",
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.cooldown).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeUndefined();
+  });
 });

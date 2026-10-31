@@ -17,6 +17,7 @@ import {
   METRIC_FAMILIES,
   renderMetricsText,
   readAgentFailedBeforeModel,
+  collectMetricsSnapshot,
   type MetricsSnapshot,
 } from "../myrmidon/monitoring/metrics/metrics.js";
 import {
@@ -392,19 +393,14 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       expect(dbCounts[agentId]).toBe(1);
 
       // 4. Prometheus scrape collector queries DB counts and formats metrics
-      const snapshot: MetricsSnapshot = {
-        scrapedAt: new Date().toISOString(),
-        agents: [
-          {
-            agentId,
-            companyId: "company-1",
-            agentRole: "engineer",
-            agentStatus: "idle",
-            heartbeatEnabled: true,
-          },
-        ],
-        failedBeforeModel: dbCounts,
-      };
+      const snapshot = await collectMetricsSnapshot({
+        db: mockDb,
+        now: () => new Date(),
+        errorWindowSec: 60,
+        latencyWindowSec: 60,
+        role: "all",
+      });
+      expect(snapshot.failedBeforeModel?.[agentId]).toBe(1);
 
       const scrapeText = renderMetricsText(snapshot);
       expect(scrapeText).toContain("myrmidon_agent_failed_before_model_total");
