@@ -2362,7 +2362,7 @@ export function computeTransientRetryDelayMs(params: {
         validHint.getTime() -
           (validFinished?.getTime() ??
             validStarted?.getTime() ??
-            validNow.getTime() - 60_000),
+            validNow.getTime()),
       );
       const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
       const expDelayMs = Math.min(

@@ -3758,6 +3758,8 @@ describe("model input limit (OPE-6168)", () => {
 });
 
 describe("OPE-9476: cooldown, structured rate-limits, model response start lifecycle and failed-before-model", () => {
+  const wsBaseConfig = { apiBaseUrl: "http://hermes:8642", apiKey: "test-key" };
+
   it("extracts structured cooldown and retry-after from HTTP 429 create response and marks failedBeforeModel", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);

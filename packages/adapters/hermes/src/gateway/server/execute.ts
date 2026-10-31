@@ -1847,7 +1847,7 @@ export function mapFinalResultForTest(input: {
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
     failedBeforeModel,
-    retryNotBefore: isCooldown ? (retryNotBefore ?? null) : undefined,
+    retryNotBefore: retryNotBefore ?? undefined,
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
@@ -2165,7 +2165,7 @@ export function errorResult(
 
   const parsedRetryNotBefore = parseRetryAfterToIso(rawRetryNotBefore);
 
-  const retryNotBefore = parsedRetryNotBefore ?? null;
+  const retryNotBefore = parsedRetryNotBefore ?? undefined;
   const errorFamily =
     classified?.family ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
