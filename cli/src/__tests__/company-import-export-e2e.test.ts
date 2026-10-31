@@ -15,6 +15,19 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
+// The CLI entry that the root `paperclipai` script runs. The test starts it
+// with the current node binary, not through `pnpm paperclipai`: pnpm adds its
+// own startup (and a wrapper process between the test and the server) to the
+// server start and to each of the CLI calls below, which is time a slow runner
+// spends for nothing.
+const CLI_ENTRY_ARGS = ["cli/node_modules/tsx/dist/cli.mjs", "cli/src/index.ts"];
+
+// Time the CLI-started server may take to answer /api/health. Starting it
+// loads the whole server module graph through tsx, so it is a cold start of a
+// large program, not a quick listen: ~25 s on a GitHub runner and ~50 s on a
+// loaded 4-core machine. 90 s leaves about 2x the slowest measured start.
+const SERVER_HEALTH_TIMEOUT_MS = 90_000;
+
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -219,7 +232,7 @@ async function runCliJson<T>(
   opts: TestPaperclipEnv & { apiBase?: string; includeConfigArg?: boolean },
 ) {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-  const cliArgs = ["--silent", "paperclipai", ...args];
+  const cliArgs = [...CLI_ENTRY_ARGS, ...args];
   if (opts.apiBase) {
     cliArgs.push("--api-base", opts.apiBase);
   }
@@ -228,7 +241,7 @@ async function runCliJson<T>(
   }
   cliArgs.push("--json");
   const result = await execFileAsync(
-    "pnpm",
+    process.execPath,
     cliArgs,
     {
       cwd: repoRoot,
@@ -250,7 +263,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < SERVER_HEALTH_TIMEOUT_MS) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -302,8 +315,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
     const child = spawn(
-      "pnpm",
-      ["paperclipai", "run", "--config", configPath],
+      process.execPath,
+      [...CLI_ENTRY_ARGS, "run", "--config", configPath],
       {
         cwd: repoRoot,
         env: createServerEnv(configPath, port, tempDb.connectionString, {
@@ -323,7 +336,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
-  }, 60_000);
+    // Database start and migrations (~10 s) plus the server's health wait.
+  }, SERVER_HEALTH_TIMEOUT_MS + 60_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
