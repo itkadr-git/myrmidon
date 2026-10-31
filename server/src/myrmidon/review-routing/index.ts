@@ -50,7 +50,7 @@ export function createReviewRoutingScheduler(input: {
         source: "assignment",
         triggerDetail: "system",
         reason: wake.reason,
-        payload: { issueId: wake.issueId, mutation: wake.mutation, executionStage: wake.executionStage },
+        payload: { issueId: wake.issueId, mutation: wake.mutation, executionStage: wake.executionStage, retryAttempt: wake.retryAttempt },
         requestedByActorType: "system",
         requestedByActorId: null,
         contextSnapshot: {

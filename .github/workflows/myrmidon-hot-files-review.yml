@@ -32,7 +32,8 @@ permissions:
 jobs:
   hot-files-review:
     name: hot files review
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    # Light gate: own pool (vars.CI_RUNNER_LIGHT, same as `plan`), the GitHub-hosted queue is hours long.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
         shell: bash
