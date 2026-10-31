@@ -273,6 +273,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         companyId: row.companyId,
         identifier: row.identifier,
         title: row.title,
+        createdAt: row.createdAt,
         updatedAt: row.updatedAt,
       }));
     },

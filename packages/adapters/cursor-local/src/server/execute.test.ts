@@ -136,7 +136,7 @@ function createFreshLeaseSandboxRunner(options: {
   };
 }
 
-describe("cursor execute", { timeout: 20_000 }, () => {
+describe("cursor execute", () => {
   it("installs the default agent command on a fresh sandbox lease before execution", async () => {
     setPrepareCursorSandboxCommand.mockReset();
     setPrepareCursorSandboxCommand.mockImplementation(async (input) => {
