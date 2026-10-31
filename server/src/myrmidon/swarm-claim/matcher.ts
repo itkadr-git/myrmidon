@@ -1215,7 +1215,7 @@ export async function listIdleRolePairs(
   options: SwarmPoolReadOptions = {},
 ): Promise<SwarmIdleRolePair[]> {
   const poolNow = options.order?.now ?? new Date();
-  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent, failedRunsSql] =
+  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] =
     await Promise.all([
       db
         .select({
@@ -1249,7 +1249,6 @@ export async function listIdleRolePairs(
       // hardcoded zero here would hand it a second task it cannot start.
       liveClaimCountsByAgent(db, companyId),
       openLoadByAgent(db, companyId),
-      getCachedFailedRunsDerivedSql(db, companyId, poolNow),
     ] as const);
 
   // The quota facts are read for the candidate agents of this pass only.

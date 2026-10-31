@@ -220,6 +220,19 @@ export function clearFailedRunsCache(companyId?: string): void {
 
 export const invalidateFailedRunsCache = clearFailedRunsCache;
 
+export const computeFailedRunsMap = queryFailedRunsMap;
+export const FAILED_RUNS_CACHE_TTL_MS = DEFAULT_FAILED_RUNS_CACHE_TTL_MS;
+export const failedRunsValuesTableSql = failedRunsValuesSql;
+
+export async function getCachedFailedRunsDerivedSql(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+): Promise<SQL> {
+  const map = await getCachedFailedRunsMap(db, companyId, now);
+  return failedRunsValuesSql(map);
+}
+
 /**
  * Retrieves the cached failed-runs map for a company, querying at most once per 60 seconds.
  * Coalesces concurrent in-flight queries to prevent thundering herd.

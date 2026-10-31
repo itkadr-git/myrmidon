@@ -4,14 +4,15 @@
 // and lastRunRows. N matcher passes within 60s perform exactly one SQL calculation.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Db } from "@myrmidon/db";
 import {
-  computeFailedRunsMap,
-  FAILED_RUNS_CACHE_TTL_MS,
+  DEFAULT_FAILED_RUNS_CACHE_TTL_MS,
   failedRunsDerivedSql,
-  failedRunsValuesTableSql,
+  failedRunsValuesSql,
   getCachedFailedRunsDerivedSql,
   getCachedFailedRunsMap,
   invalidateFailedRunsCache,
+  queryFailedRunsMap,
 } from "./effective-pheromone.js";
 import {
   getCachedLastRunRows,
@@ -36,7 +37,7 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
         { issue_uuid: ISSUE_1, failed_runs: 3 },
         { issue_uuid: ISSUE_2, failed_runs: 1 },
       ]);
-      const fakeDb = { execute: executeMock };
+      const fakeDb = { execute: executeMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       // 5 calls within the 60s window
@@ -73,7 +74,7 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
       const executeMock = vi.fn().mockImplementation(async (sqlObj) => {
         return [{ issue_uuid: ISSUE_1, failed_runs: 2 }];
       });
-      const fakeDb = { execute: executeMock };
+      const fakeDb = { execute: executeMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       await getCachedFailedRunsMap(fakeDb, COMPANY_ID, now);
@@ -102,7 +103,7 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
         resolvePromise = resolve;
       });
       const executeMock = vi.fn().mockReturnValue(delayedExecution);
-      const fakeDb = { execute: executeMock };
+      const fakeDb = { execute: executeMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       // 5 concurrent calls
@@ -127,7 +128,7 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
       const executeMock = vi.fn().mockResolvedValue([
         { issue_uuid: ISSUE_1, failed_runs: 2 },
       ]);
-      const fakeDb = { execute: executeMock };
+      const fakeDb = { execute: executeMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       const derivedSql = await getCachedFailedRunsDerivedSql(fakeDb, COMPANY_ID, now);
@@ -140,13 +141,13 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
 
     it("handles empty failed-runs result cleanly", async () => {
       const executeMock = vi.fn().mockResolvedValue([]);
-      const fakeDb = { execute: executeMock };
+      const fakeDb = { execute: executeMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       const map = await getCachedFailedRunsMap(fakeDb, COMPANY_ID, now);
       expect(map.size).toBe(0);
 
-      const emptySql = failedRunsValuesTableSql(map);
+      const emptySql = failedRunsValuesSql(map);
       expect(emptySql).toBeDefined();
     });
   });
@@ -165,7 +166,7 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
         }),
       });
 
-      const fakeDb = { select: selectMock } as never;
+      const fakeDb = { select: selectMock } as unknown as Db;
       const now = new Date("2026-10-30T10:00:00.000Z");
 
       for (let i = 0; i < 5; i++) {
