@@ -24,11 +24,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, AlarmClock } from "lucide-react";
 import type {
   InstanceGeneralSettings,
+  ScentSettings,
   SwarmClaimSettingsPatch,
   SwarmClaimSettingSource,
   SwarmSettings,
 } from "@myrmidon/shared";
 import {
+  readScentSettings,
   SWARM_COOLDOWN_BASE_MIN_DEFAULT,
   SWARM_COOLDOWN_BASE_MIN_MAX,
   SWARM_COOLDOWN_BASE_MIN_MIN,
@@ -690,9 +692,9 @@ export function SwarmScentSettingsPanelView({
     enabled: Boolean(selectedCompanyId),
   });
 
-  const storedScent = (swarm as Record<string, unknown> | undefined)?.scent as Record<string, unknown> | undefined;
-  const storedModel = typeof storedScent?.model === "string" ? storedScent.model : "qwen-turbo";
-  const storedSecret = typeof storedScent?.apiKeySecretName === "string" ? storedScent.apiKeySecretName : "";
+  const baseScent = readScentSettings(swarm);
+  const storedModel = baseScent.model;
+  const storedSecret = baseScent.apiKeySecretName ?? "";
 
   const [draftModel, setDraftModel] = useState<string>(storedModel);
   const [draftSecret, setDraftSecret] = useState<string>(storedSecret);
@@ -717,9 +719,9 @@ export function SwarmScentSettingsPanelView({
   const secrets = secretsQuery.data ?? [];
 
   const handleSave = () => {
-    const nextScent = {
-      ...(storedScent ?? {}),
-      model: draftModel.trim() || undefined,
+    const nextScent: ScentSettings = {
+      ...baseScent,
+      model: draftModel.trim() || baseScent.model,
       apiKeySecretName: draftSecret.trim() ? draftSecret.trim() : null,
     };
     onSave({
