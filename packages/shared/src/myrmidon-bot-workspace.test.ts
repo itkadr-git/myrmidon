@@ -145,6 +145,9 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
       boardUrl: "MYRMIDON_BOTD_BOARD_URL",
       boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+      hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
+      hermesPruneDays: "MYRMIDON_HERMES_PRUNE_DAYS",
+      gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
     });
     // botd authenticates with the bot's own board key, referenced by name only.
     expect(WS_BOTD_BOARD_KEY_ENV_VALUE).toBe("PAPERCLIP_API_KEY");

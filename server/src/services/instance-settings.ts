@@ -82,7 +82,7 @@ import {
   preservePluginEntitlementPublicKeyGeneralKey,
 } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
-import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
+import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/channel-connectors/bridge/dm-progress-settings.js";
 // myrmidon(1.6.5-TG-LOCALE-C): keep the instance-wide bridge language across vendor writes of `general`
 import { preserveBridgeLanguageGeneralKey } from "../myrmidon/bridge-language/settings.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
@@ -298,6 +298,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // drops the key, so the tree the owner edits in the web interface would
       // never roundtrip and /model would keep showing the automatic groups.
       ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
+      ...(parsed.data.modelApiPricing ? { modelApiPricing: parsed.data.modelApiPricing } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(OPE-7898): the stored IDLE-STOP policy survives every general read and write.
@@ -438,6 +439,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // wipes a hand-set value.
       ...(parsed.data.blockerRootFanoutAlertLimit !== undefined
         ? { blockerRootFanoutAlertLimit: parsed.data.blockerRootFanoutAlertLimit }
+        : {}),
+      ...(parsed.data.issueRewakeFreezeThreshold !== undefined
+        ? { issueRewakeFreezeThreshold: parsed.data.issueRewakeFreezeThreshold }
         : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).

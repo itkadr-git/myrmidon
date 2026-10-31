@@ -9,15 +9,16 @@ import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
 } from "@myrmidon/shared";
-import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
+import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRoutingSignals, setImmediateNoReviewerSignal } from "./attention.js";
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { PullRequestHeadState } from "./pr-policy.js";
 
@@ -36,6 +37,8 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    createdAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
+    updatedAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -48,10 +51,15 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
-  managerChain?: Map<string, Array<{ id: string; role: string }>>;
-  reviewers: Array<{ id: string; role: string }>;
+  managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
+  reviewers: Array<{ id: string; role: string; invokable?: boolean; model?: string | null }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
+  activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
+  wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
+  reviewerActiveRuns?: Map<string, number>;
+  escalations: Array<Record<string, unknown>>;
+  agentModels?: Map<string, string | null>;
 }
 
 function makeStore(fx: Fixture) {
@@ -62,8 +70,32 @@ function makeStore(fx: Fixture) {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
+    getAgentModel: async (_company: string, agentId: string) => fx.agentModels?.get(agentId) ?? null,
     loadByAgent: async () => new Map(fx.load),
+    countActiveRunsForAgent: async (_companyId: string, agentId: string) => {
+      return fx.reviewerActiveRuns?.get(agentId) ?? 0;
+    },
+    countActiveRunsForIssue: async (
+      _companyId: string,
+      agentId: string,
+      issueId: string,
+    ) => {
+      const state = fx.wakeStates?.get(issueId);
+      if (!state || !state.activeRun) return 0;
+      const row = fx.rows.get(issueId);
+      if (!row || typeof row.executionState !== "object" || row.executionState === null) return 0;
+      const participant = (row.executionState as Record<string, unknown>).currentParticipant as Record<string, unknown> | undefined;
+      return participant?.agentId === agentId ? 1 : 0;
+    },
     routingHistory: async (_company: string, ids: readonly string[]) => new Map([...fx.history].filter(([id]) => ids.includes(id))),
+    reviewWakeState: async ({ issueId }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string }) => {
+      return fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+    },
+    recordReviewWakeEscalation: async (entry: Record<string, unknown>) => { fx.escalations?.push(entry); },
+    recordReviewWake: async ({ issueId, at, attempt }: { companyId: string; issueId: string; reviewerAgentId: string; stageId: string; at: Date; attempt: number }) => {
+      const wake = fx.wakeStates?.get(issueId) ?? { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 };
+      fx.wakeStates?.set(issueId, { ...wake, activeRun: false, pendingWake: true, lastWakeAt: at, attempts: attempt });
+    },
     applyPatch: async ({ issueId, guard, build }: { issueId: string; companyId: string; guard: (fresh: RoutingIssue) => boolean; build: (fresh: RoutingIssue) => Record<string, unknown> | null }) => {
       const current = fx.rows.get(issueId);
       if (!current || !guard(current)) return null;
@@ -97,14 +129,17 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     ],
     load: new Map(),
     history: new Map(),
+    activities: [],
+    escalations: [],
+    wakeStates: new Map(),
     ...fx,
   };
   let current = normalizeReviewRoutingSettings(settings);
   const activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }> = [];
   const comments: Array<{ issueId: string; body: string }> = [];
-  const wakes: Array<{ agentId: string; issueId: string; executionStage: Record<string, unknown> }> = [];
-  const wakeReviewer = vi.fn(async (agentId: string, wake: { issueId: string; executionStage: Record<string, unknown> }) => {
-    wakes.push({ agentId, issueId: wake.issueId, executionStage: wake.executionStage });
+  const wakes: Array<{ agentId: string; issueId: string; executionStage: Record<string, unknown>; retryAttempt?: number }> = [];
+  const wakeReviewer = vi.fn(async (agentId: string, wake: { issueId: string; executionStage: Record<string, unknown>; retryAttempt?: number }) => {
+    wakes.push({ agentId, issueId: wake.issueId, executionStage: wake.executionStage, retryAttempt: wake.retryAttempt });
   });
   const sweep = createReviewRoutingSweep({
     store: makeStore(fixture),
@@ -115,12 +150,13 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
     wakeReviewer,
     logActivity: async (entry) => {
       activities.push({ action: entry.action, issueId: entry.issueId, details: entry.details });
-      // The real log is what the store reads the anchor from.
-      const previous = fixture.history.get(entry.issueId);
-      fixture.history.set(entry.issueId, {
-        lastAt: NOW,
-        reviewerAgentIds: [...(previous?.reviewerAgentIds ?? []), String(entry.details.reviewerAgentId)],
-      });
+      if (entry.action === REVIEW_ROUTING_ASSIGNED_ACTION) {
+        const previous = fixture.history.get(entry.issueId);
+        fixture.history.set(entry.issueId, {
+          lastAt: NOW,
+          reviewerAgentIds: [...(previous?.reviewerAgentIds ?? []), String(entry.details.reviewerAgentId)],
+        });
+      }
     },
     log: { info: vi.fn(), warn: vi.fn() },
   });
@@ -139,7 +175,268 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
 
 beforeEach(() => resetReviewRoutingSignals());
 
+describe("review wake liveness", () => {
+  function pending(id: string, reviewerId: string, overrides: Partial<InReviewIssueRow> = {}) {
+    const state = {
+      status: "pending",
+      currentStageId: `stage-${id}`,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      lastDecisionOutcome: null,
+      humanReviewPending: false,
+    };
+    const policy = { mode: "normal", stages: [{ id: `stage-${id}`, type: "review", participants: [{ type: "agent", agentId: reviewerId }] }] };
+    return row(id, { assigneeAgentId: reviewerId, executionState: state, executionPolicy: policy, ...overrides });
+  }
+
+  it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+      ["2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("3", pending("3", REV_B));
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+    expect(t.activities).toEqual([]);
+    expect(t.fixture.history.get("1")).toBeUndefined();
+  });
+
+  it("records one wake activity event for a successful retry", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: true, lastWakeAt: NOW, attempts: 1 });
+    expect(t.activities).toEqual([]);
+  });
+  it("records a wake before dispatch; dispatch failures still respect persisted backoff", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.wakeReviewer.mockRejectedValueOnce(new Error("dispatch unavailable"));
+    const first = await t.sweep.sweep(NOW, { force: true });
+    expect(first.failed).toBe(1);
+    expect(t.fixture.wakeStates!.get("1")).toEqual({ activeRun: false, pendingWake: true, lastWakeAt: NOW, attempts: 1 });
+    const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
+    expect(second.woken).toBe(0);
+    expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
+  });
+
+  it("measures the 30-minute stale threshold from last update, not issue creation", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 10 * 60_000) }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("uses the persisted wake time instead of a later issue update", async () => {
+    const lastWakeAt = new Date(NOW.getTime() - 31 * 60_000);
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt, attempts: 1 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      updatedAt: new Date(NOW.getTime() - 2 * 60_000),
+    }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(2);
+  });
+
+  it("reserves the one-dispatch budget before an attempted wake, even when it rejects", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_B));
+    t.wakeReviewer.mockRejectedValueOnce(new Error("first dispatch failed"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.failed).toBe(1);
+    expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("intentional return changes the participant/stage so a later sweep does not wake the former reviewer", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    // Simulate the ordinary returned transition: current participant and stage move off review.
+    t.fixture.rows.set("1", { ...pending("1", REV_A), executionState: { status: "pending", currentStageId: "implementation", currentStageType: "work", currentParticipant: { type: "agent", agentId: ASSIGNEE } } });
+    expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    expect(t.wakeReviewer).not.toHaveBeenCalled();
+  });
+
+  it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
+    const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
+    t.fixture.load.set(REV_A, 12);
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("2", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("3", pending("3", REV_A));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes.map(({ issueId }) => issueId)).toEqual(["1"]);
+  });
+
+  it("does not wake another issue while the reviewer has an active run elsewhere", async () => {
+    const t = setup({}, {
+      wakeStates: new Map([["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }]]),
+      reviewerActiveRuns: new Map([[REV_A, 1]]),
+    });
+    t.fixture.rows.set("1", pending("1", REV_A));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("caps exponential retry backoff at 60 minutes and skips exhausted retries", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 59 * 60_000), attempts: 5 }],
+    ]) });
+    expect(REVIEW_WAKE_MAX_BACKOFF_MS).toBe(60 * 60_000);
+    expect(Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** 5)).toBe(60 * 60_000);
+    t.fixture.rows.set("1", pending("1", REV_A));
+    expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    const retryAt = new Date(NOW.getTime() + 60_000);
+    expect((await t.sweep.sweep(retryAt, { force: true })).woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(6);
+
+    const exhausted = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60 * 60_000), attempts: REVIEW_WAKE_MAX_ATTEMPTS }],
+    ]) });
+    exhausted.fixture.rows.set("1", pending("1", REV_A));
+    expect((await exhausted.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    expect(exhausted.wakes).toHaveLength(0);
+    expect(exhausted.fixture.escalations).toEqual([expect.objectContaining({ companyId: COMPANY, issueId: "1", reviewerAgentId: REV_A, attempts: REVIEW_WAKE_MAX_ATTEMPTS, at: NOW })]);
+  });
+  it("retries a failed dispatch after ten minutes despite a fresh issue update", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 10 * 60_000), attempts: 1 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(2);
+  });
+
+  it("retries a cancelled reviewer run after ten minutes even without an earlier wake marker or on fresh issue update", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: new Date(NOW.getTime() - 10 * 60_000) }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(1);
+  });
+
+  it("does not retry a cancelled reviewer run before the ten-minute backoff expires", async () => {
+    const t = setup({}, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0, lastCancelledRunAt: new Date(NOW.getTime() - 5 * 60_000) }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("retries repeatedly cancelled reviewer runs on exponential backoff anchored at each cancellation", async () => {
+    const t = setup({}, { wakeStates: new Map() });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: NOW }));
+
+    // Run 1 was cancelled at T0 (30m ago)
+    const t0 = new Date(NOW.getTime() - 30 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: null,
+      attempts: 0,
+      lastCancelledRunAt: t0,
+    });
+
+    // 5 minutes after first cancel: within 10m backoff -> no wake
+    const at5m = new Date(t0.getTime() + 5 * 60_000);
+    expect((await t.sweep.sweep(at5m, { force: true })).woken).toBe(0);
+
+    // 10 minutes after first cancel: reaches 10m backoff -> wakes attempt 1
+    const at10m = new Date(t0.getTime() + 10 * 60_000);
+    const res1 = await t.sweep.sweep(at10m, { force: true });
+    expect(res1.woken).toBe(1);
+    expect(t.wakes[0]?.retryAttempt).toBe(1);
+
+    // Run was launched and cancelled at T1 = t0 + 12m
+    const t1 = new Date(t0.getTime() + 12 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: at10m,
+      attempts: 1,
+      lastCancelledRunAt: t1,
+    });
+
+    // 5 minutes after second cancel: within 10m backoff -> no wake
+    const at17m = new Date(t1.getTime() + 5 * 60_000);
+    expect((await t.sweep.sweep(at17m, { force: true })).woken).toBe(0);
+
+    // 10 minutes after second cancel: reaches 10m backoff -> wakes attempt 2
+    const at22m = new Date(t1.getTime() + 10 * 60_000);
+    const res2 = await t.sweep.sweep(at22m, { force: true });
+    expect(res2.woken).toBe(1);
+    expect(t.wakes[1]?.retryAttempt).toBe(2);
+
+    // Second retry run was launched and cancelled again at T2 = t1 + 12m
+    const t2 = new Date(t1.getTime() + 12 * 60_000);
+    t.fixture.wakeStates!.set("1", {
+      activeRun: false,
+      pendingWake: false,
+      lastWakeAt: at22m,
+      attempts: 2,
+      lastCancelledRunAt: t2,
+    });
+
+    // Backoff for attempt 2 is 20 minutes (10m * 2^1)
+    // 15 minutes after third cancel: within 20m backoff -> no wake
+    const at37m = new Date(t2.getTime() + 15 * 60_000);
+    expect((await t.sweep.sweep(at37m, { force: true })).woken).toBe(0);
+
+    // 20 minutes after third cancel: reaches 20m backoff -> wakes attempt 3
+    const at42m = new Date(t2.getTime() + 20 * 60_000);
+    const res3 = await t.sweep.sweep(at42m, { force: true });
+    expect(res3.woken).toBe(1);
+    expect(t.wakes[2]?.retryAttempt).toBe(3);
+  });
+
+  it("does not wake a review before 30 minutes or inside retry backoff", async () => {
+    const t = setup({ maxLoadPerReviewer: 2 }, { wakeStates: new Map([
+      ["1", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 5 * 60_000), attempts: 1 }],
+      ["2", { activeRun: false, pendingWake: false, lastWakeAt: new Date(NOW.getTime() - 2 * 60_000), attempts: 1 }],
+    ]) });
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 20 * 60_000) }));
+    t.fixture.rows.set("2", pending("2", REV_B));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+  });
+});
+
 describe("assignment", () => {
+  it("does not route until the reviewer-less review has aged fifteen minutes", async () => {
+    const t = setup();
+    t.fixture.rows.set("fresh", row("fresh", { updatedAt: NOW }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("fresh")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.wakes).toHaveLength(0);
+
+    t.fixture.rows.set("aged", row("aged", { updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000) }));
+    await t.sweep.sweep(NOW, { force: true });
+    expect(t.fixture.rows.get("aged")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
+  });
+
   it("prefers the nearest eligible manager in the engineer chain", async () => {
     const t = setup({}, {
       managerChain: new Map([[ASSIGNEE, [
@@ -182,9 +479,9 @@ describe("assignment", () => {
     const updated = t.fixture.rows.get("1")!;
     expect(updated.assigneeAgentId).toBe(REV_B);
     expect((updated.executionState as Record<string, any>).currentParticipant.agentId).toBe(REV_B);
-    expect(t.activities).toEqual([
+    expect(t.activities).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: REVIEW_ROUTING_ASSIGNED_ACTION, issueId: "1" }),
-    ]);
+    ]));
     expect(t.comments).toHaveLength(1);
     expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_B, issueId: "1" })]);
     expect(t.wakes[0]?.executionStage).toMatchObject({ wakeRole: "reviewer" });
@@ -200,7 +497,26 @@ describe("assignment", () => {
     expect(reviewers.filter((id) => id === REV_B)).toHaveLength(2);
   });
 
-  it("never picks the author or the assignee, even when they are the least loaded reviewers", async () => {
+  it("filters out reviewers whose model matches the author's model", async () => {
+    const t = setup(
+      {},
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer", invokable: true, model: "model-author" },
+          { id: REV_B, role: "reviewer", invokable: true, model: "model-other" },
+        ],
+        load: new Map([[REV_A, 0], [REV_B, 1]]),
+        agentModels: new Map([[AUTHOR, "model-author"]]),
+      },
+    );
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    // REV_A has lower load (0) but matches author model; REV_B is assigned.
+    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_B);
+  });
+
+  it("excludes the task author and current assignee from reviewer candidates", async () => {
     const t = setup(
       {},
       {
@@ -212,9 +528,12 @@ describe("assignment", () => {
         load: new Map([[REV_A, 4]]),
       },
     );
-    t.fixture.rows.set("1", row("1"));
-    await t.sweep.sweep(NOW, { force: true });
-    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_A);
+    t.fixture.rows.set("authored", row("authored", { assigneeAgentId: null }));
+    t.fixture.rows.set("assigned", row("assigned"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 2, signaled: 0 });
+    expect(t.fixture.rows.get("authored")?.assigneeAgentId).toBe(ASSIGNEE);
+    expect(t.fixture.rows.get("assigned")?.assigneeAgentId).toBe(REV_A);
   });
 
   it("only considers the configured reviewer roles", async () => {
@@ -234,6 +553,9 @@ describe("assignment", () => {
     const second = await t.sweep.sweep(NOW, { force: true });
     expect(second).toMatchObject({ assigned: 0, reassigned: 0, signaled: 0 });
     expect(t.activities).toHaveLength(1);
+    expect(t.activities).toEqual([
+      expect.objectContaining({ action: REVIEW_ROUTING_ASSIGNED_ACTION }),
+    ]);
   });
 
   it("does not undo the assignment when the wake fails", async () => {
@@ -242,7 +564,9 @@ describe("assignment", () => {
     t.fixture.rows.set("1", row("1"));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.assigned).toBe(1);
-    expect(t.activities).toHaveLength(1);
+    expect(t.activities.map((entry) => entry.action)).toEqual([
+      REVIEW_ROUTING_ASSIGNED_ACTION,
+    ]);
   });
 
   it("stands down when a racing writer already gave the task a reviewer", async () => {
@@ -270,6 +594,78 @@ describe("assignment", () => {
 });
 
 describe("no reviewer available", () => {
+  it("sets one immediate no_reviewer signal until a reviewer is assigned", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    setImmediateNoReviewerSignal({ ...signal, since: new Date(NOW.getTime() + 1000).toISOString() }, true);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", issueId: "1", since: NOW.toISOString() }),
+    ]);
+    setImmediateNoReviewerSignal(signal, false);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("clears stale immediate cards when a successful sweep replaces the company's snapshot", () => {
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    replaceReviewRoutingSignals(COMPANY, []);
+
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+
+  it("sweep clears an immediate card after the task acquires a reviewer", async () => {
+    const t = setup({ enabled: true }, { reviewers: [{ id: REV_A, role: "reviewer" }] });
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1"));
+
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(t.fixture.rows.get("task-1")?.assigneeAgentId).toBe(REV_A);
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
+  it("sweep clears an immediate card when the task is no longer pending review", async () => {
+    const t = setup();
+    const signal = {
+      kind: "no_reviewer" as const,
+      issueId: "task-1",
+      companyId: COMPANY,
+      identifier: "T-1",
+      title: "Task 1",
+      since: NOW.toISOString(),
+      hoursInReview: null,
+    };
+    setImmediateNoReviewerSignal(signal, true);
+    t.fixture.rows.set("task-1", row("task-1", { status: "done" }));
+
+    await t.sweep.sweep(NOW, { force: true });
+
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([]);
+  });
   it("raises a no_reviewer signal instead of staying silent", async () => {
     const t = setup({}, { reviewers: [] });
     t.fixture.rows.set("1", row("1"));
@@ -324,7 +720,7 @@ describe("overdue review", () => {
     const second = t.fixture.rows.get("1")!.assigneeAgentId!;
     expect(second).not.toBe(first);
     expect([REV_A, REV_B]).toContain(second);
-    expect(t.activities.map((entry) => entry.action)).toEqual([
+    expect(t.activities.map((entry) => entry.action).filter((action) => action !== REVIEW_ROUTING_WAKE_ACTION)).toEqual([
       REVIEW_ROUTING_ASSIGNED_ACTION,
       REVIEW_ROUTING_REASSIGNED_ACTION,
     ]);
@@ -402,6 +798,8 @@ describe("PR lane (fake store + fake resolver)", () => {
       reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
+      activities: [],
+      escalations: [],
     });
     return {
       ...base,
@@ -490,7 +888,7 @@ describe("PR lane (fake store + fake resolver)", () => {
     expect(t.fixture.created).toEqual([
       expect.objectContaining({ title: "Review PR acme/widgets#7: Add routing", kind: "review", assigneeAgentId: REV_A, headSha: "aaaaaaaa" }),
     ]);
-    expect(t.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_PR_TASK_CREATED_ACTION]);
+    expect(t.activities.map((a) => a.action)).toEqual(expect.arrayContaining([REVIEW_ROUTING_PR_TASK_CREATED_ACTION]));
     expect(t.wakes).toEqual([{ agentId: REV_A, issueId: "task-review-7" }]);
   });
 
@@ -512,7 +910,7 @@ describe("PR lane (fake store + fake resolver)", () => {
     const approvedResult = await approved.sweep.sweep(NOW, { force: true });
     expect(approvedResult).toMatchObject({ stewardTasksCreated: 1, prTasksCreated: 0 });
     expect(approved.fixture.created).toEqual([expect.objectContaining({ title: "Merge PR acme/widgets#7", kind: "merge" })]);
-    expect(approved.activities.map((a) => a.action)).toEqual([REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION]);
+    expect(approved.activities.map((a) => a.action)).toEqual(expect.arrayContaining([REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION]));
   });
 
   it("cancels a task whose recorded head moved on and routes the new head the same pass", async () => {

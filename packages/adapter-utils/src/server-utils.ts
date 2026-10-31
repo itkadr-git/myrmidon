@@ -864,6 +864,9 @@ export type PaperclipWakePayload = {
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
+  reviewRecoveryInstruction: string | null;
+  reviewDecisionRetryAttempt: number | null;
+  reviewDecisionMaxRetries: number | null;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -1814,9 +1817,50 @@ export function normalizePaperclipWakePayload(
         )
         .map((entry) => entry.trim())
     : [];
+  const rawContext = parseObject(payload.context);
+  const rawSnapshot = parseObject(payload.contextSnapshot);
   const executionStage = normalizePaperclipWakeExecutionStage(
-    payload.executionStage,
+    payload.executionStage ??
+      rawContext.executionStage ??
+      rawSnapshot.executionStage,
   );
+  const reviewRecoveryInstruction =
+    asString(payload.reviewRecoveryInstruction, "").trim() ||
+    asString(rawContext.reviewRecoveryInstruction, "").trim() ||
+    asString(rawSnapshot.reviewRecoveryInstruction, "").trim() ||
+    null;
+
+  const rawAttempt =
+    typeof payload.reviewDecisionRetryAttempt === "number"
+      ? payload.reviewDecisionRetryAttempt
+      : typeof rawContext.reviewDecisionRetryAttempt === "number"
+        ? rawContext.reviewDecisionRetryAttempt
+        : typeof rawSnapshot.reviewDecisionRetryAttempt === "number"
+          ? rawSnapshot.reviewDecisionRetryAttempt
+          : typeof payload.retryAttempt === "number"
+            ? payload.retryAttempt
+            : typeof rawContext.retryAttempt === "number"
+              ? rawContext.retryAttempt
+              : typeof rawSnapshot.retryAttempt === "number"
+                ? rawSnapshot.retryAttempt
+                : null;
+  const reviewDecisionRetryAttempt =
+    typeof rawAttempt === "number" && Number.isFinite(rawAttempt) && rawAttempt > 0
+      ? Math.trunc(rawAttempt)
+      : null;
+
+  const rawMaxRetries =
+    typeof payload.reviewDecisionMaxRetries === "number"
+      ? payload.reviewDecisionMaxRetries
+      : typeof rawContext.reviewDecisionMaxRetries === "number"
+        ? rawContext.reviewDecisionMaxRetries
+        : typeof rawSnapshot.reviewDecisionMaxRetries === "number"
+          ? rawSnapshot.reviewDecisionMaxRetries
+          : null;
+  const reviewDecisionMaxRetries =
+    typeof rawMaxRetries === "number" && Number.isFinite(rawMaxRetries) && rawMaxRetries > 0
+      ? Math.trunc(rawMaxRetries)
+      : null;
   const continuationSummary = normalizePaperclipWakeContinuationSummary(
     payload.continuationSummary,
   );
@@ -1908,6 +1952,7 @@ export function normalizePaperclipWakePayload(
     unresolvedBlockerSummaries.length === 0 &&
     !activeTreeHold &&
     !executionStage &&
+    !reviewRecoveryInstruction &&
     !continuationSummary &&
     !planReviewContext &&
     !documentReviewContext &&
@@ -1950,6 +1995,9 @@ export function normalizePaperclipWakePayload(
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
+    reviewRecoveryInstruction,
+    reviewDecisionRetryAttempt,
+    reviewDecisionMaxRetries,
     continuationSummary,
     planReviewContext,
     documentReviewContext,
@@ -2895,6 +2943,16 @@ function renderPaperclipWakePromptBody(
         `- allowed actions: ${executionStage.allowedActions.join(", ")}`,
       );
     }
+    if (normalized.reviewRecoveryInstruction) {
+      const attemptSuffix = normalized.reviewDecisionRetryAttempt
+        ? ` (attempt ${normalized.reviewDecisionRetryAttempt}${normalized.reviewDecisionMaxRetries ? `/${normalized.reviewDecisionMaxRetries}` : ""})`
+        : "";
+      lines.push(
+        "",
+        `Review recovery instruction${attemptSuffix}:`,
+        normalized.reviewRecoveryInstruction,
+      );
+    }
     if (executionStage.reviewRequest) {
       lines.push(
         "",
@@ -2921,6 +2979,16 @@ function renderPaperclipWakePromptBody(
         "",
       );
     }
+  } else if (normalized.reviewRecoveryInstruction) {
+    const attemptSuffix = normalized.reviewDecisionRetryAttempt
+      ? ` (attempt ${normalized.reviewDecisionRetryAttempt}${normalized.reviewDecisionMaxRetries ? `/${normalized.reviewDecisionMaxRetries}` : ""})`
+      : "";
+    lines.push(
+      "",
+      `Review recovery instruction${attemptSuffix}:`,
+      normalized.reviewRecoveryInstruction,
+      "",
+    );
   }
 
   if (normalized.taskWatchdog) {
