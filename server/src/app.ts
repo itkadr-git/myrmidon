@@ -1260,11 +1260,9 @@ export async function createApp(
     if (!endpoint || !apiKey) return null;
     return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
   };
-  // Keep provider-backed pool-chat disabled until an operator explicitly
-  // enables the deployment after recovery/settlement checks.
-  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
-    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
-  }
+  // Mount pool-chat routes (authenticated API and telegram pool bridge webhook).
+  // Individual bridges stay dormant until explicitly enabled by an operator in channel settings.
+  api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary & telegram pool bridge
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
