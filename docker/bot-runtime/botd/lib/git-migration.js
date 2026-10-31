@@ -232,6 +232,24 @@ export function findMigrationCandidates(baseDir, workspacesDir) {
  * packs covered 100% by the mirror are removed, and only from repos whose
  * alternates point at that mirror, so reachability is preserved.
  */
+export function resolveMirrorGitDirs(objectsDir, alternatesContent, mirrorRoot = GIT_MIRROR_ROOT) {
+  const root = path.resolve(mirrorRoot);
+  return alternatesContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((entry) => {
+      const resolvedObjects = path.resolve(objectsDir, entry);
+      if (path.basename(resolvedObjects) !== "objects") return null;
+      const gitDir = path.dirname(resolvedObjects);
+      const relativeToRoot = path.relative(root, gitDir);
+      if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) return null;
+      if (!fs.existsSync(path.join(gitDir, "HEAD")) || !fs.existsSync(resolvedObjects)) return null;
+      return gitDir;
+    })
+    .filter((dir, index, dirs) => dir && dirs.indexOf(dir) === index);
+}
+
 export function removeMirrorCoveredPacks(gitDir, alternatesContent, opts = {}) {
   const git = opts.git || ((args, input) =>
     child_process.execFileSync("git", args, {
@@ -240,12 +258,11 @@ export function removeMirrorCoveredPacks(gitDir, alternatesContent, opts = {}) {
       timeout: 120_000,
       input,
     }));
-  const mirrorGitDirs = alternatesContent
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.startsWith("#"))
-    .map((objectsDir) => objectsDir.replace(/[/\\]objects$/, ""))
-    .filter((d, i, arr) => arr.indexOf(d) === i);
+  const mirrorGitDirs = resolveMirrorGitDirs(
+    path.join(gitDir, "objects"),
+    alternatesContent,
+    opts.mirrorRoot || GIT_MIRROR_ROOT,
+  );
   if (mirrorGitDirs.length === 0) return { removed: 0, checked: 0 };
 
   const packDir = path.join(gitDir, "objects", "pack");
