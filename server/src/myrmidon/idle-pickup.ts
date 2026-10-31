@@ -447,6 +447,16 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         // unblock clears a settled hold (settled-holds/human-unblock.ts), and
         // the issue comes back here on the next pass.
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): do not wake an agent on a task waiting for an
+        // interaction or external unblock (prevents idle pickup looping on pending questions).
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        isNull(issues.unblockDescriptor),
       ),
     )
     .orderBy(asc(issues.createdAt))
@@ -1010,6 +1020,8 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
+  /** Retry pending participant reviews before the general assigned-task lane. */
+  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -1105,6 +1117,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
+        const review = await deps.pickupReviewForAgent?.(agent);
+        if (review?.handled) {
+          wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
+          totals.woken += review.woken;
+          continue;
+        }
         const perAgent = await idlePickupForAgent(deps, agent, {
           // The pass already decided with the resolved settings; handing the
           // decision over keeps the environment from vetoing a stored "on".
