@@ -739,6 +739,7 @@ export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, bo
     [WS_PROFILE_ENV.partitionCriticalPercent]: String(mechanics.partitionCriticalPercent),
     [WS_PROFILE_ENV.graceClosingMinutes]: String(mechanics.graceClosingMinutes),
     [WS_PROFILE_ENV.scratchTtlHours]: String(mechanics.scratchTtlHours),
+    [WS_PROFILE_ENV.sessionRetentionDays]: String(mechanics.sessionRetentionDays),
     [WS_PROFILE_ENV.boardUrl]: boardUrl,
     [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
   };

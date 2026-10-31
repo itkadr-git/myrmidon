@@ -162,11 +162,11 @@ function listArchives() {
     return out;
   }
   for (const n of names) {
-    if (!n.endsWith(".bundle") && !n.endsWith(".dir.tar")) continue;
+    if (!n.endsWith(".bundle") && !n.endsWith(".dir.tar") && !n.endsWith(".jsonl.gz")) continue;
     const p = path.join(ARCHIVE_DIR, n);
     try {
       const st = fs.statSync(p);
-      const m = /^(.+)-\d{8}T\d{6}Z\.(?:bundle|dir\.tar)$/.exec(n);
+      const m = /^(.+)-\d{8}T\d{6}Z\.(?:bundle|dir\.tar|jsonl\.gz)$/.exec(n);
       out.push({ key: m ? m[1] : n, path: p, sizeBytes: st.size, createdAt: st.mtime });
     } catch {
       /* gone */
@@ -264,6 +264,21 @@ async function main() {
     parts.selfChecks = { reflink: null, gitref: null, wsCli: wsOk };
     parts.foreignUid = foreignUid;
     foreignUid = null;
+    const sessionPrunePath = path.join(HOME, "session-prune.json");
+    let sessionPrune = null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(sessionPrunePath, "utf8"));
+      if (raw && typeof raw === "object") {
+        sessionPrune = {
+          stateDbBytesBefore: typeof raw.stateDbBytesBefore === "number" ? raw.stateDbBytesBefore : null,
+          stateDbBytesAfter: typeof raw.stateDbBytesAfter === "number" ? raw.stateDbBytesAfter : null,
+          deletedSessions: typeof raw.deletedSessions === "number" ? raw.deletedSessions : 0,
+        };
+      }
+    } catch {
+      /* not present or unreadable */
+    }
+    parts.sessionPrune = sessionPrune;
     return { inventory, parts };
   }
 
