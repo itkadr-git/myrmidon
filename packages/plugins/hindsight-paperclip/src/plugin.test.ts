@@ -157,6 +157,7 @@ function issue(input: { id: string; title: string; assigneeAgentId?: string | nu
     createdByAgentId: null,
     createdByUserId: null,
     responsibleUserId: null,
+    responsibleAgentId: null,
     issueNumber: 1,
     identifier: "T-1",
     originKind: undefined,
