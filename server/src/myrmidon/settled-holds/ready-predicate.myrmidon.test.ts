@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { AskUserQuestionsPayload } from "@myrmidon/shared";
 import {
   agentWakeupRequests,
   agents,
@@ -18,6 +19,7 @@ import {
   createDb,
   heartbeatRuns,
   issueRecoveryActions,
+  issueThreadInteractions,
   issues,
 } from "@myrmidon/db";
 import {
@@ -224,6 +226,47 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     });
 
+    it("idle-pickup skips tasks waiting on pending thread interactions (OPE-7707)", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      const interactionPayload: AskUserQuestionsPayload = {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "clarify requirements",
+            selectionMode: "single",
+            options: [{ id: "opt1", label: "Option 1" }],
+          },
+        ],
+      };
+      await db.insert(issueThreadInteractions).values({
+        companyId,
+        issueId,
+        status: "pending",
+        kind: "ask_user_questions",
+        payload: interactionPayload,
+      });
+
+      const enqueueWakeup = enqueueSpy();
+      const result = await pickup(enqueueWakeup, { id: agentId, companyId });
+      expect(result.considered).toBe(0);
+      expect(result.woken).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("idle-pickup skips tasks with unblockDescriptor (OPE-7707)", async () => {
+      const { companyId, agentId, issueId } = await seed();
+      await db.update(issues).set({
+        unblockDescriptor: { action: "waiting_on_human", owner: "board" },
+      }).where(eq(issues.id, issueId));
+
+      const enqueueWakeup = enqueueSpy();
+      const result = await pickup(enqueueWakeup, { id: agentId, companyId });
+      expect(result.considered).toBe(0);
+      expect(result.woken).toBe(0);
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
     it("myrmidon(1.6.6 OPE-8988): revisiting an already-settled terminal run opens no new recovery action", async () => {
       const { companyId, agentId, issueId } = await seed();
       const [run] = await db
@@ -351,6 +394,32 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
       const ordinary = await seed();
       await seedParkedWake({ ...ordinary, recoveryActionId: null });
       expect(await issueHasLiveClaimOrWake(db, ordinary.companyId, ordinary)).toBe(true);
+    });
+
+    it("tasks waiting on pending thread interactions are excluded from swarm queues (OPE-7707)", async () => {
+      const { companyId, issueId } = await seed();
+      await seedSettledAction(companyId, issueId, "cleared");
+      const interactionPayload: AskUserQuestionsPayload = {
+        version: 1,
+        questions: [
+          {
+            id: "q1",
+            prompt: "clarify",
+            selectionMode: "single",
+            options: [{ id: "opt1", label: "Option 1" }],
+          },
+        ],
+      };
+      await db.insert(issueThreadInteractions).values({
+        companyId,
+        issueId,
+        status: "pending",
+        kind: "ask_user_questions",
+        payload: interactionPayload,
+      });
+
+      expect(await listRoleQueue(db, companyId, "engineer")).toEqual([]);
+      expect(await listIdleRolePairs(db, companyId)).toEqual([]);
     });
   });
 });
