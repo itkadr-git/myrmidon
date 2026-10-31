@@ -33,13 +33,14 @@ const FULL_DEFAULTS = {
   inbound: { enabled: false, requireMention: true },
   escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
   proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+  updates: { enabled: false, chatId: null, topicId: null },
 };
 
 describe("myrmidon(OPE-3789): telegramNotify defaults", () => {
   it("has every section present with every field, all enabled flags off", () => {
     const settings = defaultTelegramNotifySettings();
     expect(settings).toEqual(FULL_DEFAULTS);
-    for (const section of ["digest", "errors", "inbound", "escalations"] as const) {
+    for (const section of ["digest", "errors", "inbound", "escalations", "updates"] as const) {
       expect(settings[section].enabled).toBe(false);
     }
   });
@@ -67,6 +68,7 @@ describe("myrmidon(OPE-3789): document parsing", () => {
       inbound: { enabled: true, requireMention: false },
       escalations: { hours: 48, channel: "dm", chatId: "chat-2", topicId: "topic-1" },
       proactivity: { mode: "rarely", rarelyMaxPerDay: 1 },
+      updates: { enabled: true, chatId: "chat-up", topicId: "topic-up" },
       changelog: [{ at: "2026-10-03T00:00:00.000Z", actor: "agent-a", field: "digest.enabled", from: false, to: true }],
     });
     expect(parsed.settings.digest).toEqual({
@@ -92,6 +94,11 @@ describe("myrmidon(OPE-3789): document parsing", () => {
       topicId: "topic-1",
     });
     expect(parsed.settings.proactivity).toEqual({ mode: "rarely", rarelyMaxPerDay: 1 });
+    expect(parsed.settings.updates).toEqual({
+      enabled: true,
+      chatId: "chat-up",
+      topicId: "topic-up",
+    });
     expect(parsed.changelog).toHaveLength(1);
   });
 

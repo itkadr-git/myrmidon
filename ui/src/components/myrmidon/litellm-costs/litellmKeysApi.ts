@@ -9,6 +9,8 @@ export interface AgentGatewayKeyView {
   /** sha256 of the key value — the only form the value is ever reported in. */
   valueHash: string | null;
   canManageKeys: boolean;
+  /** Allowed models list. Empty array means all models allowed. */
+  models?: string[];
 }
 
 export interface GatewayFallbackCycle {
@@ -32,13 +34,20 @@ const base = (companyId: string) => `/myrmidon/companies/${encodeURIComponent(co
 export const litellmKeysApi = {
   keys: (companyId: string) => api.get<AgentGatewayKeyView[]>(`${base(companyId)}/keys`),
   fallbacks: (companyId: string) => api.get<GatewayFallbackReport>(`${base(companyId)}/fallbacks`),
-  create: (companyId: string, agentId: string) =>
+  create: (companyId: string, agentId: string, models?: string[]) =>
     api.post<AgentGatewayKeyView & { value: string }>(
       `${base(companyId)}/keys/${encodeURIComponent(agentId)}`,
-      {},
+      { models },
     ),
   rotate: (companyId: string, agentId: string) =>
     api.post<AgentGatewayKeyView>(`${base(companyId)}/keys/${encodeURIComponent(agentId)}/rotate`, {}),
+  revoke: (companyId: string, agentId: string) =>
+    api.delete<AgentGatewayKeyView>(`${base(companyId)}/keys/${encodeURIComponent(agentId)}`),
+  updateAllowlist: (companyId: string, agentId: string, models: string[]) =>
+    api.put<AgentGatewayKeyView>(
+      `${base(companyId)}/keys/${encodeURIComponent(agentId)}/models`,
+      { models },
+    ),
 };
 
 export const litellmKeysKey = (companyId: string) =>

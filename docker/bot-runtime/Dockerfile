@@ -271,6 +271,11 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/disabled_tools.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 19-redact-auth-bearer-template-syntax.patch:
+# authorization headers in code literals/templates (`Bearer ${token}`, <token>,
+# variable identifiers) must not be false-masked into `***`, while long high-entropy
+# secrets (e.g. `Bearer ghp_...` 36+ chars) are masked safely without syntax corruption.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/auth_header_redact_templates.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).

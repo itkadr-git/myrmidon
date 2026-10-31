@@ -2,7 +2,12 @@
 // of `instance_settings.general.processes` (design OPE-5394 §7.2), and the
 // supervisor wiring (§7.1).
 import type { Db } from "@myrmidon/db";
-import { applyProcessesSettingsToProcess, createProcessesSettingsService, defaultProcessesSettingsDeps } from "./service.js";
+import {
+  applyProcessesSettingsToProcess,
+  createProcessesSettingsService,
+  defaultProcessesSettingsDeps,
+  type ProcessesSettingsBus,
+} from "./service.js";
 import { myrmidonProcessesRoutes } from "./routes.js";
 import type { ProcessSupervisor } from "./supervisor.js";
 
@@ -31,8 +36,12 @@ export {
 export { isSupervisedChild, reportReadyToSupervisor, wireSupervisorDrainHandler } from "./child.js";
 
 /** The router of the process settings, with the production dependencies. */
-export function myrmidonProcessesRouter(db: Db, supervisor: ProcessSupervisor | null = null) {
-  return myrmidonProcessesRoutes(db, createProcessesSettingsService(defaultProcessesSettingsDeps(db, supervisor)));
+export function myrmidonProcessesRouter(
+  db: Db,
+  supervisor: ProcessSupervisor | null = null,
+  processBus: ProcessesSettingsBus | null = null, // myrmidon(OPE-10011)
+) {
+  return myrmidonProcessesRoutes(db, createProcessesSettingsService(defaultProcessesSettingsDeps(db, supervisor, processBus)));
 }
 
 /**

@@ -49,6 +49,7 @@ function harness(opts: { replica?: boolean; restoreError?: Error; hideOpenMoveOn
       calls.push(`${site}:restore:${Buffer.concat(chunks).toString()}`);
     },
     async quarantine() { calls.push(`${site}:quarantine`); },
+    async logs() { return "logs"; },
   });
 
   const service = new FleetMoveService({

@@ -56,6 +56,7 @@ import { createCardEnvResolver } from "./card-env.js";
 import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
+import { listFleetSites } from "./site-registry.js";
 import {
   createActivityWarningSink,
   createBotProfileCompile,
@@ -541,6 +542,11 @@ export function createDbBotCardSyncPorts(db: Db, profilePorts: BotProfilePorts =
   return {
     loadAgent: profilePorts.loadAgent,
     ensureApiServerKey: profilePorts.ensureApiServerKey,
+    async fleetSiteUrl(companyId: string, hostName: string) {
+      const sites = await listFleetSites(db, companyId);
+      const site = sites.find((entry) => entry.name === hostName && entry.status === "active");
+      return site?.url ?? null;
+    },
     async saveAdapterConfig(agent, adapterConfig) {
       await agents.update(agent.id, { adapterConfig }, { recordRevision: { source: "myrmidon_bot_containers" } });
     },
@@ -568,7 +574,12 @@ export function botProfileWiring(
    *  bot is done, so nothing survives into the next tick. */
   beginProfilePass: () => BotProfilePass;
   endProfilePass: (pass: BotProfilePass) => void;
-  syncCard: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult>;
+  syncCard: (
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
   /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
    *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
@@ -578,8 +589,27 @@ export function botProfileWiring(
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
+  const fleetHostForAgent: NonNullable<BotProfileCompileOptions["fleetHostForAgent"]> = async (agent, hostName) => {
+    const site = (await listFleetSites(db, agent.companyId)).find((entry) => entry.name === hostName && entry.status === "active");
+    if (!site) return null;
+    return {
+      name: site.name,
+      url: site.url,
+      tokenSecret: site.tokenSecret ?? "",
+      hindsightUrl: site.profile.hindsightUrl,
+      llmBaseUrl: site.profile.llmBaseUrl,
+      boardExtraHost: site.profile.boardExtraHost,
+      volumeRoot: site.profile.volumeRoot,
+      network: site.profile.network,
+      imageAllowlist: site.profile.imageAllowlist,
+    };
+  };
   const onWarnings = compileOptions.onWarnings ?? (activity ? createActivityWarningSink(activity) : undefined);
-  const compile = createBotProfileCompile(ports, { ...compileOptions, ...(onWarnings ? { onWarnings } : {}) });
+  const compile = createBotProfileCompile(ports, {
+    ...compileOptions,
+    fleetHostForAgent,
+    ...(onWarnings ? { onWarnings } : {}),
+  });
   return {
     compile,
     beginProfilePass: compile.beginPass,

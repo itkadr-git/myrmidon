@@ -1,3 +1,4 @@
+import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -10,9 +11,10 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@myrmidon/adapter-utils";
-import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
+import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
+import { getCompanyEmptyRunStats } from "../services/empty-run.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -3381,9 +3383,10 @@ export function agentRoutes(
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
-    const models = refresh
+    const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
 
@@ -4355,7 +4358,12 @@ function getActorIdentityPart(req: Request): string {
         goalId: issue.goalId,
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
+        activeRun: issue.activeRun && req.actor?.type === "agent" && issue.activeRun.execution
+          ? {
+              ...issue.activeRun,
+              execution: sanitizeExecutionProjectionForActor(issue.activeRun.execution, req.actor) ?? undefined,
+            }
+          : issue.activeRun,
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
@@ -4379,7 +4387,13 @@ function getActorIdentityPart(req: Request): string {
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
 
-    res.json(rows);
+    res.json(rows.map((row: any) => row.activeRun && req.actor?.type === "agent" && row.activeRun.execution ? {
+      ...row,
+      activeRun: {
+        ...row.activeRun,
+        execution: sanitizeExecutionProjectionForActor(row.activeRun.execution, req.actor) ?? undefined,
+      },
+    } : row));
   });
 
   router.get("/agents/:id", async (req, res) => {
@@ -5718,7 +5732,7 @@ function getActorIdentityPart(req: Request): string {
         adapterConfig: patchData.adapterConfig,
       });
       // myrmidon(S4): admin-only inheritProcessEnv, unknown models are rejected
-      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>);
+      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>, { db });
     }
     if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
@@ -7138,6 +7152,8 @@ function getActorIdentityPart(req: Request): string {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
 
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
@@ -7147,11 +7163,36 @@ function getActorIdentityPart(req: Request): string {
         : null,
     ]);
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = (wakeReason !== undefined || hasResult)
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
+  });
+
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10066)
+  router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/empty-run-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/external-sessions", async (req, res) => {
@@ -7306,7 +7347,7 @@ function getActorIdentityPart(req: Request): string {
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
       res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       })))));
       return;
@@ -7315,7 +7356,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
     res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
-        execution: projections.get(run.id) ?? null,
+        execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     })))));
   });
@@ -7350,7 +7391,7 @@ function getActorIdentityPart(req: Request): string {
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...singleContinuationRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...singleContinuationRun, execution: sanitizeExecutionProjectionForActor(await executionProjectionForRun(db, run.companyId, run.id), req.actor), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -7932,7 +7973,7 @@ function getActorIdentityPart(req: Request): string {
     const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
-      execution: projections.get(run.id) ?? null,
+      execution: sanitizeExecutionProjectionForActor(projections.get(run.id) ?? null, req.actor),
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
   });
@@ -7944,7 +7985,9 @@ function getActorIdentityPart(req: Request): string {
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
     )).orderBy(sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`, desc(heartbeatRuns.createdAt)).limit(1);
-    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution: await executionProjectionForRun(db, issue.companyId, run.id) } : null);
+    const rawExecution = run ? await executionProjectionForRun(db, issue.companyId, run.id) : null;
+    const execution = sanitizeExecutionProjectionForActor(rawExecution, req.actor);
+    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution } : null);
   });
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
@@ -7989,9 +8032,10 @@ function getActorIdentityPart(req: Request): string {
     }
 
     const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
+    const rawExecution = await executionProjectionForRun(db, issue.companyId, run.id);
     res.json({
       ...decoratedRun,
-      execution: await executionProjectionForRun(db, issue.companyId, run.id),
+      execution: sanitizeExecutionProjectionForActor(rawExecution, req.actor),
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

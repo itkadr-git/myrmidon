@@ -208,6 +208,15 @@ export function createGitHubPrHeadResolver(input: {
 
       const open = (asString(pr.state) ?? "unknown") === "open";
       const headSha = asString(asRecord(pr.head)?.sha);
+      const rawLabels = Array.isArray(pr.labels) ? pr.labels : [];
+      const labels = rawLabels
+        .map((item: unknown) => {
+          if (typeof item === "string") return item;
+          const rec = asRecord(item);
+          return rec ? asString(rec.name) : null;
+        })
+        .filter((l): l is string => Boolean(l));
+
       const bodyFields: Omit<PullRequestHeadState, "ci" | "reviewDecision" | "fetchFailed"> = {
         repository,
         number,
@@ -218,6 +227,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
+        ...(labels.length > 0 ? { labels } : {}),
       };
 
       if (!open || !headSha) {

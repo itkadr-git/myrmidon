@@ -25,6 +25,7 @@ export const BOT_IMAGE_ROLLOUT_ENV = {
   botTimeoutSec: "MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC",
   batchSize: "MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE",
   busySoftPauseSec: "MYRMIDON_BOT_IMAGE_ROLLOUT_BUSY_SOFT_PAUSE_SEC",
+  site: "MYRMIDON_BOT_IMAGE_ROLLOUT_SITE",
 } as const;
 
 /** Hard module bounds, below any env value: the script itself clamps a batch
@@ -49,6 +50,8 @@ export const botImageRolloutSettingsSchema = z
     batchSize: batchSizeSchema.optional(),
     /** Soft pause after a busy bot before the batch moves on; 0 = off. */
     busySoftPauseSec: busySoftPauseSecSchema.optional(),
+    /** Site filter: only switch bot cards hosted on this site (e.g. "myr-vm1" or "local"). */
+    site: z.string().trim().min(1).max(64).optional(),
   })
   .strict();
 
