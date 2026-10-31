@@ -22,9 +22,11 @@ import {
   UsersAdminError,
   consumePasswordSetToken,
   createUser,
+  listAuditLogs,
   listUsers,
   resetUserPassword,
   setUserBlocked,
+  setUserRole,
 } from "./service.js";
 
 const createUserSchema = z
@@ -37,11 +39,22 @@ const createUserSchema = z
   .strict();
 
 const patchUserSchema = z
-  .object({ blocked: z.boolean().optional(), resetPassword: z.boolean().optional() })
+  .object({
+    blocked: z.boolean().optional(),
+    resetPassword: z.boolean().optional(),
+    role: z.enum(["instance_admin", "member"]).optional(),
+  })
   .strict()
-  .refine((v) => v.blocked !== undefined || v.resetPassword !== undefined, {
-    message: "Provide `blocked` or `resetPassword`",
+  .refine((v) => v.blocked !== undefined || v.resetPassword !== undefined || v.role !== undefined, {
+    message: "Provide `blocked`, `resetPassword` or `role`",
   });
+
+const auditQuerySchema = z.object({
+  userId: z.string().optional(),
+  actorId: z.string().optional(),
+  action: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
 
 const passwordSetSchema = z
   .object({ token: z.string().min(20).max(200), newPassword: z.string().min(PASSWORD_MIN).max(PASSWORD_MAX) })
@@ -146,7 +159,34 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
           action: "instance.user.password_reset", details: { via: "set_link" },
         });
       }
+      if (body.role !== undefined) {
+        const { previousRole, newRole } = await setUserRole(db, {
+          userId,
+          role: body.role,
+          actorUserId: actor.actorId,
+        });
+        result.role = newRole;
+        await audit(db, {
+          actorType: "user", actorId: actor.actorId, targetUserId: userId,
+          action: "instance.user.role_changed", details: { previousRole, newRole },
+        });
+      }
       res.json(result);
+    } catch (err) {
+      handle(err, res);
+    }
+  });
+
+  router.get("/myrmidon/users-admin-a/audit", async (req, res) => {
+    assertInstanceAdmin(req);
+    const parsed = auditQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsed.error.issues });
+      return;
+    }
+    try {
+      const items = await listAuditLogs(db, parsed.data);
+      res.json({ audit: items });
     } catch (err) {
       handle(err, res);
     }
