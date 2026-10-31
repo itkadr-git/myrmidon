@@ -8,7 +8,7 @@ This protocol documents the verification procedure, acceptance criteria, and ope
 
 | Objective | Target Requirement | Verification Mechanism | Status |
 | :--- | :--- | :--- | :--- |
-| **Warm Standby Cluster** | Single standby cluster on `myr-vm1` (`10.10.0.110:5433`) | `docker-compose.standby.yml` + `standby-ctl.sh` | Verified (single cluster port 5433, replicates both DBs) |
+| **Warm Standby Cluster** | Single standby cluster on `myr-vm1` (:5433) | `docker-compose.standby.yml` + `standby-ctl.sh` | Verified (single cluster port 5433, replicates both DBs) |
 | **Streaming Replication** | Continuous WAL replay via `standby_board_slot` | `pg_stat_wal_receiver` check in `setupStandby` | Verified fail-closed (fails if streaming stream inactive) |
 | **Replication Security** | scram-sha-256 credentials via container passfile | `.pgpass` (0600) mounted at `/var/lib/postgresql/data/.pgpass` | Verified (no plaintext passwords in config or compose) |
 | **Switchback Safety** | Prevent accidental data directory destruction | Explicit `--force` flag requirement | Verified fail-closed (throws before stopping or deleting) |
