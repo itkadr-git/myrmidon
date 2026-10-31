@@ -8428,6 +8428,7 @@ function decorateHeartbeatRunRuntimeStatus<
   currentToolName: string | null;
   lastAssistantSnippet: string | null;
   lastEventAt: Date | null;
+  queuedReason: string | null;
 } {
   if (isHeartbeatRunTerminalStatus(run.status)) {
     clearHeartbeatRunRuntimeStatus(run.id);
@@ -8448,6 +8449,10 @@ function decorateHeartbeatRunRuntimeStatus<
         })
       : null;
 
+  const context = run.contextSnapshot ? parseObject(run.contextSnapshot) : {};
+  const queuedReason =
+    run.status === "queued" && typeof context.waitReason === "string" ? context.waitReason : null;
+
   return {
     ...run,
     currentStatusMessage: currentStatus?.message ?? null,
@@ -8455,6 +8460,7 @@ function decorateHeartbeatRunRuntimeStatus<
     currentToolName: currentStatus?.currentToolName ?? null,
     lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
     lastEventAt: currentStatus?.lastEventAt ?? null,
+    queuedReason,
   };
 }
 
@@ -21216,7 +21222,11 @@ export function heartbeatService(
   });
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
-        sweep: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+        sweep: async () => {
+          const outcome = await runStartDispatcher.sweepQueuedWithoutRunning();
+          await resumeQueuedRuns();
+          return outcome;
+        },
         loadSettings: () => loadRunDispatchSettings(db),
         onError: (err) => logger.error({ err }, "queued run resweep pass failed"),
       })
@@ -22001,7 +22011,10 @@ export function heartbeatService(
               "queued heartbeat execution failed",
             );
           })
-          .finally(() => admission.finish());
+          .finally(() => {
+            admission.finish();
+            scheduleAdmissionResweep();
+          });
         // Register the in-flight execution so drainActiveRunExecutions() can await
         // it. executeRun resolves only after its finally block finishes flushing
         // run rows/events, so awaiting this promise guarantees the run's writes

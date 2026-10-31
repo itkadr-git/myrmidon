@@ -259,6 +259,7 @@ export interface MetricsSnapshotFields {
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  runsQueuedByReason?: Array<{ reason: string; count: number }>;
   /** Queued runs older than 30 minutes. */
   runsQueuedOver30m: number;
   /** Failed runs, all time. */
@@ -443,6 +444,7 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   queued: number;
   queuedOver30m: number;
   failedTotal: number;
+  queuedByReason?: Array<{ reason: string; count: number }>;
 }> {
   // Keep the established grouped-by-status query: the global aggregate form
   // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
@@ -459,6 +461,27 @@ async function readRunCounters(db: Db, now: Date): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
+  let queuedByReason: Array<{ reason: string; count: number }> = [];
+  if (queued > 0) {
+    try {
+      const reasonRows = await db
+        .select({
+          reason: sql<string>`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`,
+          total: count(),
+        })
+        .from(heartbeatRuns)
+        .where(
+          sql`${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry')`,
+        )
+        .groupBy(sql`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`);
+      queuedByReason = reasonRows.map((r) => ({
+        reason: String(r.reason),
+        count: Number(r.total),
+      }));
+    } catch {
+      // Best effort fallback
+    }
+  }
   const [staleQueuedRow] = await db
     .select({ total: count() })
     .from(heartbeatRuns)
@@ -473,6 +496,7 @@ async function readRunCounters(db: Db, now: Date): Promise<{
     queued,
     queuedOver30m: Number(staleQueuedRow?.total ?? 0),
     failedTotal,
+    queuedByReason,
   };
 }
 
@@ -862,6 +886,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedByReason: runCounters.queuedByReason,
       runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
@@ -1075,7 +1100,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_queued",
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
-      [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+      snapshot.runsQueuedByReason && snapshot.runsQueuedByReason.length > 0
+        ? [
+            `myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`,
+            ...snapshot.runsQueuedByReason.map(
+              (entry) =>
+                `myrmidon_runs_queued{${R},reason="${escapeLabelValue(entry.reason)}"} ${formatSampleValue(entry.count)}`,
+            ),
+          ]
+        : [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
     ),
   );
   blocks.push(
