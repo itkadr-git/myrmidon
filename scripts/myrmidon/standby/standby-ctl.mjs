@@ -357,7 +357,7 @@ export function planSwitchback(target = "board", overrides = {}) {
 export function planRehearsal(target = "board", overrides = {}) {
   const isBoard = target === "board";
   const drillPort = overrides.drillPort || 5533;
-  const drillDir = overrides.drillDir || `/srv/standby/drill-cluster`;
+  const drillDir = overrides.drillDir || (process.env && process.env.STANDBY_DRILL_DIR) || `/srv/standby/drill-cluster`;
   const standbyPort = resolveStandbyPort(overrides, target);
   const boardUser = overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = overrides.boardDbName || DEFAULT_CONFIG.boardDbName;
@@ -1132,6 +1132,12 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   }
   if (flags.port !== undefined) {
     flags.standbyPort = Number(flags.port);
+  }
+  if (flags["drill-dir"] !== undefined) {
+    flags.drillDir = flags["drill-dir"];
+  }
+  if (flags["drill-port"] !== undefined) {
+    flags.drillPort = Number(flags["drill-port"]);
   }
 
   switch (command) {
