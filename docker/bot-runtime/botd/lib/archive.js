@@ -29,6 +29,7 @@
 // Plain Node (no dependencies), synchronous: one botd process, one copy at a time.
 
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -543,6 +544,58 @@ function retentionAudit(archiveRoot, record) {
   } finally { fs.closeSync(fd); }
 }
 
+/**
+ * Verify an independent backup receipt (e.g. from OneDrive) against a local archive file.
+ * Checks receipt validity, file size match, and SHA-256 match.
+ */
+export function verifyBackupReceipt(file, receipt) {
+  if (!receipt || typeof receipt !== "object") throw new Error("missing backup receipt");
+  if (!receipt.receiptId && !receipt.id) throw new Error("invalid backup receipt: missing receiptId");
+  const st = fs.statSync(file);
+  const expectedSize = receipt.sizeBytes ?? receipt.size;
+  if (typeof expectedSize === "number" && expectedSize !== st.size) {
+    throw new Error(`backup receipt size mismatch: expected ${st.size}, got ${expectedSize}`);
+  }
+  if (receipt.sha256) {
+    const localSha256 = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    if (receipt.sha256.toLowerCase() !== localSha256.toLowerCase()) {
+      throw new Error(`backup receipt sha256 mismatch: expected ${localSha256}, got ${receipt.sha256}`);
+    }
+  } else {
+    throw new Error("invalid backup receipt: missing sha256");
+  }
+  return true;
+}
+
+/**
+ * Safe deletion of an archive file with full symlink, path traversal and TOCTOU protection.
+ */
+export function safeDropArchiveFile(file, archiveRoot) {
+  const root = path.resolve(archiveRoot);
+  const resolved = path.resolve(file);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error("unsafe file path: outside archive root");
+  }
+  if (/(^|[/\\])(state\.db|session|auth|credential)/i.test(path.basename(file))) {
+    throw new Error("never delete protected file: " + file);
+  }
+  const lstat = fs.lstatSync(file);
+  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink !== 1) {
+    throw new Error("unsafe file type or symlink: " + file);
+  }
+  // TOCTOU race check: open with O_NOFOLLOW and verify inode & dev match
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const fstat = fs.fstatSync(fd);
+    if (fstat.ino !== lstat.ino || fstat.dev !== lstat.dev || !fstat.isFile() || fstat.nlink !== 1) {
+      throw new Error("TOCTOU race detected: file changed between stat and open");
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.unlinkSync(file);
+}
+
 export function retain(archiveRoot, opts = {}) {
   const now = opts.now || new Date();
   const maxAge = (opts.maxAgeDays ?? RETENTION_DAYS) * DAY_MS;
@@ -560,12 +613,43 @@ export function retain(archiveRoot, opts = {}) {
     const removed = [];
     const drop = (entry, why) => {
       const files = retentionFiles(archiveRoot, entry);
+      let receipt = null;
       if (!opts.dryRun) {
-        retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why });
-        for (const f of files) {
-          try { fs.unlinkSync(f); } catch (err) { if (err.code !== "ENOENT") throw err; }
+        if (opts.backupGate) {
+          try {
+            if (typeof opts.backupGate.uploadAndVerifySync === "function") {
+              receipt = opts.backupGate.uploadAndVerifySync(files, entry);
+            } else if (typeof opts.backupGate.verifySync === "function") {
+              receipt = opts.backupGate.verifySync(files, entry);
+            } else if (typeof opts.backupGate.uploadAndVerify === "function") {
+              receipt = opts.backupGate.uploadAndVerify(files, entry);
+            }
+          } catch (err) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "transfer-failed", key: entry.key, files, reason: err.message });
+            return;
+          }
+        } else if (opts.backupReceipts && opts.backupReceipts[entry.key]) {
+          try {
+            receipt = opts.backupReceipts[entry.key];
+            for (const f of files) verifyBackupReceipt(f, receipt);
+          } catch (err) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "receipt-mismatch", key: entry.key, files, reason: err.message });
+            return;
+          }
+        } else if (opts.requireVerifiedReceipt) {
+          retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
+          return;
         }
-        retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why });
+
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
+        for (const f of files) {
+          try {
+            safeDropArchiveFile(f, archiveRoot);
+          } catch (err) {
+            if (err.code !== "ENOENT") throw err;
+          }
+        }
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
       }
       removed.push({ key: entry.key, createdAt: entry.createdAt, sizeBytes: entry.sizeBytes, reason: why });
     };
