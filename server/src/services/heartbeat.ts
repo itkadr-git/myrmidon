@@ -21126,8 +21126,9 @@ export function heartbeatService(
   const stopQueuedResweep = queuedResweepArming.armed
     ? startQueuedResweepTimer({
         sweep: async () => {
-          await runStartDispatcher.sweepQueuedWithoutRunning();
+          const outcome = await runStartDispatcher.sweepQueuedWithoutRunning();
           await resumeQueuedRuns();
+          return outcome;
         },
         loadSettings: () => loadRunDispatchSettings(db),
         onError: (err) => logger.error({ err }, "queued run resweep pass failed"),
