@@ -38,6 +38,7 @@ export * from "../myrmidon-capacity-policy-schema.js";
 export * from "../myrmidon-capacity-policy.js";
 export * from "../myrmidon-castes.js";
 export * from "../myrmidon-channel-allowlist.js";
+export * from "../myrmidon-check-updates.js";
 export * from "../myrmidon-cloud-connector.js";
 export * from "../myrmidon-corpus.js";
 export * from "../myrmidon-cto-chat.js";
