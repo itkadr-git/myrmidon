@@ -762,6 +762,9 @@ import {
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
+import { pickupNextReview } from "../myrmidon/review-routing/pickup.js";
+import { issueHasNoExecutionHold } from "../myrmidon/settled-holds/ready-predicate.js";
+import { buildReviewRoutingWakeContext } from "../myrmidon/review-routing/policy.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
 // myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
 // release path below hands the freed agent to it (design §3.5).
@@ -18802,9 +18805,82 @@ export function heartbeatService(
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  async function pickupReviewForAgent(agent: { id: string; companyId: string }, excludeIssueId?: string) {
+    let woken = 0;
+    const handled = await pickupNextReview({
+      serialize: async (work) => {
+        const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.status, "in_review"),
+          isNull(issues.executionRunId),
+          sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+          sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+          sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+        )).limit(1);
+        if (!candidateExists) return false;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`review-pickup:${agent.companyId}:${agent.id}`}, 0))`);
+          return work();
+        });
+      },
+      hasWorkInFlight: async () => {
+        const [live] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        )).limit(1);
+        if (live) return true;
+        const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        )).limit(1);
+        return Boolean(pending);
+      },
+      candidates: () => db.select({
+        id: issues.id, updatedAt: issues.updatedAt, executionState: issues.executionState,
+      }).from(issues).where(and(
+        eq(issues.companyId, agent.companyId),
+        eq(issues.status, "in_review"),
+        isNull(issues.executionRunId),
+        issueHasNoExecutionHold(db),
+        sql`not exists (
+          select 1
+          from issue_relations ir
+            join issues blocker on blocker.id = ir.issue_id and blocker.company_id = ${issues.companyId}
+          where ir.company_id = ${issues.companyId}
+            and ir.related_issue_id = ${issues.id}
+            and ir.type = 'blocks'
+            and ${blockerOpenSql('blocker.status')}
+        )`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+        sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+      )),
+      wake: async (candidate) => {
+        if (!idleWakeBudget.tryConsume(agent.companyId)) return null;
+        const result = await enqueueWakeup(agent.id, {
+          source: "automation", triggerDetail: "system", reason: "execution_review_requested",
+          requestedByActorType: "system", requestedByActorId: "review_pickup",
+          idempotencyKey: `review-pickup:${candidate.id}:${parseObject(candidate.executionState).currentStageId ?? "review"}`,
+          contextSnapshot: {
+            issueId: candidate.id, taskKey: candidate.id, source: "review_pickup",
+            executionStage: { ...buildReviewRoutingWakeContext(parseObject(candidate.executionState)) },
+          },
+        });
+        if (result) woken += 1;
+        return result;
+      },
+    }, { excludeIssueId });
+    return { handled, woken };
+  }
+
   const idlePickupSweeper = createIdlePickupSweeper({
     db,
     budget: idleWakeBudget,
+    pickupReviewForAgent,
     readLiveness: teamLivenessRead,
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     logActivity: async (input) => {
@@ -28353,6 +28429,20 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
+          const releasedSnapshot = parseObject(releasedRun.contextSnapshot);
+          const isReviewerRun =
+            releasedAgent?.role === "reviewer" ||
+            readNonEmptyString(releasedSnapshot.wakeReason) === "execution_review_requested" ||
+            readNonEmptyString(parseObject(releasedSnapshot.executionStage).stageType) === "review" ||
+            readNonEmptyString(releasedSnapshot.source) === "review_pickup";
+          // OPE-9676: participants in review are not issue assignees. Select
+          // their waiting review queue before the general development queues.
+          if (pickupAllowed && releasedAgent && isReviewerRun) {
+            const { handled: reviewHandled } = await pickupReviewForAgent(
+              { id: releasedRun.agentId, companyId: releasedRun.companyId }, releasedIssueId ?? undefined,
+            );
+            if (reviewHandled) return;
+          }
           // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
           // swarm on, the agent that just became free is paired by the board
           // itself — its own assigned ready task first, otherwise the top ready
