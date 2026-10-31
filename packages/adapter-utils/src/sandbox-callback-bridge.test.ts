@@ -384,9 +384,21 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
+    let observedRequests!: () => void;
+    const requestsObserved = new Promise<void>((resolve) => {
+      observedRequests = resolve;
+    });
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client: {
+        ...baseClient,
+        listJsonFiles: async (remotePath) => {
+          const files = await baseClient.listJsonFiles(remotePath);
+          if (remotePath === directories.requestsDir && files.length >= 2) observedRequests();
+          return files;
+        },
+      },
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -426,6 +438,8 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
+    // Shutdown must not race ahead of the poller observing the queued files.
+    await requestsObserved;
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     expect(processed).toEqual(["req-a", "req-b"]);

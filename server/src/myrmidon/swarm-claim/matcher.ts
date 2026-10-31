@@ -53,6 +53,7 @@ import {
   type Db,
 } from "@myrmidon/db";
 import {
+  DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
   SWARM_MATCHED_ACTION,
@@ -92,6 +93,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -435,7 +438,13 @@ function freeAgentsOfPair(
 ): SwarmMatcherAgent[] {
   // The ceiling of the caste wins over the global one (the same reading the
   // sweeper's idle pass used before this file took the pass over).
-  const maxActiveTasks = caste?.maxActiveTasks ?? settings.maxActiveTasks;
+  // 1.6.6 (OPE-9678): Cap automatic assignment at two tasks per agent (DEFAULT_SWARM_MAX_ACTIVE_TASKS).
+  // A caste or settings ceiling can restrict further, but cannot exceed 2 for auto-assignment.
+  const rawMax = caste?.maxActiveTasks ?? settings.maxActiveTasks;
+  const maxActiveTasks =
+    rawMax !== null && rawMax !== undefined
+      ? Math.min(rawMax, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
+      : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
   return pair.agents
     .filter((agent) => {
       if (
@@ -563,17 +572,20 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      // 1.6.6 (SWARM-B): the capacity check is atomic. Two passes (or a pass and
+      // 1.6.6 (SWARM-B / OPE-9678): the capacity check is atomic. Two passes (or a pass and
       // the claim API) that pick the same agent queue on this lock; the second one
       // counts the first one's committed assignment and stops at the ceiling.
-      if (target.maxActiveTasks !== undefined && target.maxActiveTasks !== null) {
-        await txDb.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
-        );
-        const load = await agentOpenLoad(txDb, companyId, target.agentId);
-        if (swarmActiveTaskLimitReached(load, { maxActiveTasks: target.maxActiveTasks })) {
-          throw new MatcherAgentFull();
-        }
+      // Auto-assignment is strictly capped at DEFAULT_SWARM_MAX_ACTIVE_TASKS (2).
+      const effectiveLimit =
+        target.maxActiveTasks !== undefined && target.maxActiveTasks !== null
+          ? Math.min(target.maxActiveTasks, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
+          : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+      await txDb.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
+      );
+      const load = await agentOpenLoad(txDb, companyId, target.agentId);
+      if (swarmActiveTaskLimitReached(load, { maxActiveTasks: effectiveLimit })) {
+        throw new MatcherAgentFull();
       }
       const claim = await insertClaim(txDb, { companyId, ...plan, origin: plan.origin ?? "auto_match" });
       if (!claim) throw new MatcherClaimLost();
@@ -1193,11 +1205,18 @@ export async function listIdleRolePairs(
     .filter((role) => !wanted || wanted.has(role))
     .sort();
 
+  const failedRunsMap = await getCachedFailedRunsMap(
+    db,
+    companyId,
+    options.order?.now,
+  );
+
   const queues = await Promise.all(
     roles.map((role) =>
       listReadyQueueCandidates(db, companyId, role, {
         order: options.order,
         issueId: options.issueId,
+        failedRunsMap,
       }),
     ),
   );
@@ -1588,7 +1607,11 @@ async function listReadyQueueCandidates(
   db: Db,
   companyId: string,
   role: string,
-  options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
+  options: {
+    order?: SwarmQueueOrderOptions;
+    issueId?: string;
+    failedRunsMap?: ReadonlyMap<string, number>;
+  } = {},
 ): Promise<SwarmMatcherQueueCandidate[]> {
   const conditions = [
     ...readyQueueConditions(db, companyId),
@@ -1598,6 +1621,9 @@ async function listReadyQueueCandidates(
     ),
   ];
   if (options.issueId) conditions.push(eq(issues.id, options.issueId));
+  const failedRunsMap =
+    options.failedRunsMap ??
+    (await getCachedFailedRunsMap(db, companyId, options.order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -1611,8 +1637,8 @@ async function listReadyQueueCandidates(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once (#1047).
-    .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(failedRunsMap), failedRunsJoinOnSql())
     .where(and(...conditions))
     .orderBy(...swarmQueueOrderBy(options.order))
     .limit(SWARM_POOL_READ_LIMIT);

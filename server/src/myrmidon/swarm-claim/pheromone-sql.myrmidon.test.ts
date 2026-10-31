@@ -50,7 +50,8 @@ vi.mock("../../middleware/logger.js", () => ({
   httpLogger: vi.fn(),
 }));
 
-import { roleQueueRows } from "./queue.js";
+import { listRoleQueue, roleQueueRows } from "./queue.js";
+import { clearFailedRunsCache } from "./effective-pheromone.js";
 import { listIdleRolePairs } from "./matcher.js";
 import { projectService } from "../../services/projects.js";
 import { issueService } from "../../services/issues.js";
@@ -72,6 +73,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
   }, 60_000);
 
   afterEach(async () => {
+    clearFailedRunsCache();
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueLabels);
@@ -509,4 +511,44 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     const explicit = await service.create(companyId, { title: "explicit", priority: "high", pheromoneStrength: 999 } as never);
     expect(explicit.pheromoneStrength).toBe(999);
   }, 30_000);
+
+  it("cached failed runs map is reused across queue reads and respects cache TTL / invalidation", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const finishedAt = new Date(Date.now() - 2 * HOUR);
+    const issueId = await seedIssue(companyId, { pheromoneStrength: 50 });
+    await seedFailedRun(companyId, agentId, issueId, finishedAt);
+
+    // Initial read populates cache: penalty is active (1 failed run)
+    const initialCandidates = await listRoleQueue(db, companyId, "engineer");
+    const initialCandidate = initialCandidates.find((c) => c.issueId === issueId);
+    expect(initialCandidate).toBeDefined();
+    expect(initialCandidate!.failedRunsSinceLastChange).toBe(1);
+
+    // A person comments on the issue (lifts the penalty in DB)
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "Fixed",
+      authorUserId: "board-user",
+      createdAt: new Date(),
+    });
+
+    // While cache is warm (within TTL), cached count is preserved
+    const warmCandidates = await listRoleQueue(db, companyId, "engineer");
+    const warmCandidate = warmCandidates.find((c) => c.issueId === issueId);
+    expect(warmCandidate!.failedRunsSinceLastChange).toBe(1);
+
+    // After TTL expiration (> 60s), the cache re-queries DB and penalty is lifted
+    const expiredCandidates = await listRoleQueue(db, companyId, "engineer", undefined, {
+      now: new Date(Date.now() + 61_000),
+    });
+    const expiredCandidate = expiredCandidates.find((c) => c.issueId === issueId);
+    expect(expiredCandidate!.failedRunsSinceLastChange).toBe(0);
+
+    // Manual invalidation also lifts penalty immediately
+    clearFailedRunsCache(companyId);
+    const refreshedCandidates = await listRoleQueue(db, companyId, "engineer");
+    const refreshedCandidate = refreshedCandidates.find((c) => c.issueId === issueId);
+    expect(refreshedCandidate!.failedRunsSinceLastChange).toBe(0);
+  });
 });

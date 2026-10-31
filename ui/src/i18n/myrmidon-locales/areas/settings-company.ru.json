@@ -1125,7 +1125,8 @@
         "topicLogDisplay": "отображение журналов",
         "topicKeyboardShortcuts": "сочетания клавиш",
         "topicBackupRetention": "хранение резервных копий",
-        "topicDataSharing": "передача данных"
+        "topicDataSharing": "передача данных",
+        "secretReferencesLink": "Управлять ссылками на секреты"
       },
       "pipeline-settings": {
         "alreadyAvailableOnChildItems": "Уже доступно у дочерних элементов",
