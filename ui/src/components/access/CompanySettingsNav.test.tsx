@@ -107,6 +107,7 @@ describe("CompanySettingsNav", () => {
     root: ReturnType<typeof createRoot>,
     hiddenSettings?: string[],
     cloud?: { managed: boolean },
+    boardAccess?: unknown,
   ) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
@@ -114,6 +115,15 @@ describe("CompanySettingsNav", () => {
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
+    queryClient.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      boardAccess ?? {
+        userId: "user-1",
+        isInstanceAdmin: true,
+        source: "session",
+        companyIds: ["company-1"],
+      },
+    );
     root.render(
       <QueryClientProvider client={queryClient}>
         <CompanySettingsNav />
@@ -258,6 +268,54 @@ describe("CompanySettingsNav", () => {
     );
     expect(renderedValues).not.toContain("import");
     expect(renderedValues).toContain("export");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses the Models & providers tab for non-admin company members", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, undefined, {
+        userId: "user-plain",
+        isInstanceAdmin: false,
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "member", status: "active" }],
+      });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("models");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Models & providers tab for company owner or admin", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, undefined, {
+        userId: "user-owner",
+        isInstanceAdmin: false,
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
+      });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).toContain("models");
 
     await act(async () => {
       root.unmount();

@@ -1,6 +1,6 @@
 // server/src/myrmidon/model-providers/routes-with-sync.ts
 //
-// myrmidon(1.6.1 MODEL-PROVIDERS B): model provider API with LiteLLM synchronization.
+// myrmidon(1.6.1 MODEL-PROVIDERS B, 1.6.7 OPE-9852): model provider API with LiteLLM synchronization.
 //
 // Same surface as part A's routes.ts (paths, authz, parsing, responses), plus
 // the gateway propagation on the three mutations that change the company's
@@ -15,6 +15,9 @@
 //  - DELETE …/:id: the provider's enabled models are unregistered from the
 //    gateway after the row is removed (otherwise they would stay callable
 //    under a credential the company no longer owns).
+//
+// Reads and mutations require company admin access (owner or admin, or instance admin).
+// Plain members, operators, viewers and agents are denied (403).
 //
 // Synchronization is instance-optional and company-resolved: `getLitellmSync`
 // answers the per-company sync service, or null when the gateway settings or
@@ -35,7 +38,7 @@ import {
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest, HttpError } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertCompanyAdmin } from "../../routes/authz.js";
 import type {
   ModelProviderActivityEntry,
   ModelProviderModelView,
@@ -148,8 +151,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
 
   router.post("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(createModelProviderSchema, bodyOf(req));
     const provider = await deps.service.createProvider({
       companyId,
@@ -161,7 +163,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
 
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
@@ -171,8 +173,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.patch("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(patchModelProviderSchema, bodyOf(req));
     if (body.key !== undefined) {
       const view = await deps.service.rotateProviderKey({
@@ -203,8 +204,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.delete("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     // Read the model set before the row goes: after deletion the board can no
     // longer name what the gateway still holds under this provider.
     const models: ModelProviderModelView[] = await deps.service.listModels(companyId, providerId);
@@ -226,15 +226,14 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.get("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     res.json({ models: await deps.service.listModels(companyId, providerId) });
   });
 
   router.post("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(setModelProviderModelsSchema, bodyOf(req));
 
     // Persist first: the answer's model rows carry the authoritative state.
@@ -267,7 +266,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     const result = await deps.service.listChannels(companyId, providerId);
     res.json(result);
   });
@@ -275,8 +274,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(reportAccountStatusSchema, bodyOf(req));
     const signal = reportPoolAccountStatus({
       companyId,

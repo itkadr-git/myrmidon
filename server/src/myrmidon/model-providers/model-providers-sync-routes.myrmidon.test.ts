@@ -22,7 +22,22 @@ import type { LitellmSyncService } from "../litellm-sync/service.js";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const KEY_VALUE = "sk-tes...1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
 
 const providerView = (id: string): ModelProviderView => ({
   id,
@@ -247,5 +262,14 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       .post(`${base}/provider-1/models`)
       .send({ models: [{ modelName: "model-a", enabled: false }] })
       .expect(200);
+  });
+
+  it("denies plain company member on read and write (403)", async () => {
+    const { server } = app({ sync, actor: plainMember });
+    await request(server).get(base).expect(403);
+    await request(server)
+      .post(`${base}/provider-1/models`)
+      .send({ models: [{ modelName: "model-a", enabled: true }] })
+      .expect(403);
   });
 });

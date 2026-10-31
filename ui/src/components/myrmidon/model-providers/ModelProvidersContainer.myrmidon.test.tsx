@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelProvidersScreen } from "./ModelProvidersContainer";
 import { modelProvidersApi } from "./modelProvidersApi";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 
 const apiMock = vi.hoisted(() => ({
   view: vi.fn(),
@@ -74,6 +75,13 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+    userId: "user-1",
+    isInstanceAdmin: true,
+    source: "session",
+    companyIds: [COMPANY_ID],
+    memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+  });
   apiMock.view.mockReset().mockResolvedValue(viewData());
   apiMock.models.mockReset().mockResolvedValue({
     providerId: "prov-1",
@@ -254,5 +262,33 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS C) container", () => {
       .toContain("Provider in use");
     // The models query is untouched by the failed remove.
     expect(apiMock.models).toHaveBeenCalled();
+  });
+
+  it("denies access to ordinary company members and displays access denied state without calling API", async () => {
+    queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+      userId: "user-plain",
+      isInstanceAdmin: false,
+      source: "session",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+    });
+    await renderScreen();
+    expect(container.querySelector('[data-testid="myrmidon-model-providers-denied"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-model-providers-screen"]')).toBeNull();
+    expect(apiMock.view).not.toHaveBeenCalled();
+  });
+
+  it("permits access to company owner and renders the model providers screen", async () => {
+    queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+      userId: "user-owner",
+      isInstanceAdmin: false,
+      source: "session",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+    });
+    await renderScreen();
+    expect(container.querySelector('[data-testid="myrmidon-model-providers-screen"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="myrmidon-model-providers-denied"]')).toBeNull();
+    expect(apiMock.view).toHaveBeenCalledWith(COMPANY_ID);
   });
 });
