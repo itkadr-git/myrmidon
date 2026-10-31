@@ -27,6 +27,8 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { inspectReplicationHealth } from "../services/replication-health.js";
+import { replicationHealthQuerySchema } from "@myrmidon/shared";
 import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../services/workspace-readiness.js";
 import {
   resolveWorkspaceReadinessLocalToken,
@@ -230,6 +232,84 @@ export function healthRoutes(
       requestId,
       mode: "hot",
     });
+  });
+
+  router.get("/replication", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    const exposeFullDetails = shouldExposeFullHealthDetails(
+      actorType,
+      opts.deploymentMode,
+    );
+
+    const parsedQuery = replicationHealthQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({
+        error: "invalid_query_parameters",
+        message: "Invalid query parameters for replication health check",
+        details: parsedQuery.error.issues,
+      });
+      return;
+    }
+
+    if (!db) {
+      res.status(503).json({
+        error: "database_unavailable",
+        message: "Database connection is not configured",
+        status: "critical",
+      });
+      return;
+    }
+
+    try {
+      const replicationHealth = await inspectReplicationHealth(db, parsedQuery.data);
+
+      if (!exposeFullDetails) {
+        const redactedStandbys = replicationHealth.standbys?.map((s) => ({
+          applicationName: s.applicationName,
+          state: s.state,
+          syncState: s.syncState,
+          syncPriority: s.syncPriority,
+          writeLagSeconds: s.writeLagSeconds,
+          flushLagSeconds: s.flushLagSeconds,
+          replayLagSeconds: s.replayLagSeconds,
+          byteLag: s.byteLag,
+        }));
+        const redactedReceiver = replicationHealth.receiver
+          ? {
+              status: replicationHealth.receiver.status,
+            }
+          : null;
+
+        res.json({
+          status: replicationHealth.status,
+          role: replicationHealth.role,
+          inRecovery: replicationHealth.inRecovery,
+          connectedStandbys: replicationHealth.connectedStandbys,
+          ...(redactedStandbys ? { standbys: redactedStandbys } : {}),
+          ...(replicationHealth.inRecovery ? { receiver: redactedReceiver } : {}),
+          lag: {
+            seconds: replicationHealth.lag.seconds,
+            bytes: replicationHealth.lag.bytes,
+            lastReplayTimestamp: replicationHealth.lag.lastReplayTimestamp,
+            currentWalLsn: null,
+            lastReceiveLsn: null,
+            lastReplayLsn: null,
+          },
+          warnings: replicationHealth.warnings,
+          checkedAt: replicationHealth.checkedAt,
+        });
+        return;
+      }
+
+      res.json(replicationHealth);
+    } catch (error) {
+      logger.warn({ err: error }, "Replication health check database probe failed");
+      res.status(503).json({
+        error: "database_probe_failed",
+        message: error instanceof Error ? error.message : "Database probe failed",
+        status: "critical",
+      });
+    }
   });
 
   router.get("/", async (req, res) => {
