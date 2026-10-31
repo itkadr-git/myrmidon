@@ -554,6 +554,7 @@ export async function seedPaperclip(options = {}) {
       priority,
       titleNeedsGeneration: titleNeedsGen,
       title_needs_generation: titleNeedsGen,
+      allowDuplicate: true,
     });
   }
 
@@ -568,6 +569,7 @@ export async function seedPaperclip(options = {}) {
         priority: spec.priority,
         titleNeedsGeneration: spec.titleNeedsGeneration,
         title_needs_generation: spec.title_needs_generation,
+        allowDuplicate: true,
       },
     });
     const issue = res.data;
