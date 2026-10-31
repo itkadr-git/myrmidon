@@ -385,6 +385,49 @@ function RevisionsPanel({
             {revision.note ? (
               <span className="ui2-knowledge-revision-note text-muted-foreground">{revision.note}</span>
             ) : null}
+            {(revision.sources ?? []).length > 0 ? (
+              <span className="ui2-knowledge-revision-sources flex items-center gap-1">
+                {(revision.sources ?? []).map((source, index) => {
+                  const link =
+                    source.kind === "page" && source.ref
+                      ? ({
+                          kind: "internal",
+                          to: knowledgeHref({ spaceKey: source.space ?? "", slug: source.ref, anchor: null }, basePath),
+                        } as const)
+                      : knowledgeSourceLink(source);
+                  const label = source.label ?? source.ref;
+                  if (!link) {
+                    return (
+                      <span
+                        key={`revision-source-${revision.revision}-${index}`}
+                        className="ui2-knowledge-revision-source text-muted-foreground"
+                      >
+                        {label}
+                      </span>
+                    );
+                  }
+                  return link.kind === "internal" ? (
+                    <Link
+                      key={`revision-source-${revision.revision}-${index}`}
+                      className="ui2-knowledge-revision-source-link text-primary underline underline-offset-2"
+                      to={link.to}
+                    >
+                      {label}
+                    </Link>
+                  ) : (
+                    <a
+                      key={`revision-source-${revision.revision}-${index}`}
+                      className="ui2-knowledge-revision-source-link text-primary underline underline-offset-2"
+                      href={link.href}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {label}
+                    </a>
+                  );
+                })}
+              </span>
+            ) : null}
             {revision.revision < item.revision ? (
               <button
                 type="button"
