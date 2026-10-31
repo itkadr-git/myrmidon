@@ -1,5 +1,6 @@
 ---
 divergence-section: DM-PROGRESS: живые шаги в сообщении статуса Telegram-лички
+settings-section: Track 5 — operations
 ---
 
 ## changelog-en
@@ -8,12 +9,18 @@ divergence-section: DM-PROGRESS: живые шаги в сообщении ст�
 
 - The rebrand keeps the vendor name only in the LICENSE, the third-party notices and the "based on ... (MIT)" line of About. The new gate `scripts/myrmidon/vendor-name/check-vendor-name.mjs` scans the built UI bundle (`ui/dist`) and the recorded response bodies of the main endpoints and counts the visible vendor name; identifier spellings (`@paperclipai/*`, `PAPERCLIP_*`, API paths, storage keys, headers) are reported but not gated for one release. Modes: `ratchet` (the visible count may not grow above the baseline) and `strict` (no occurrence outside the exceptions); CI fails a build that adds a new visible mention. Mode and baseline are editable on Instance -> General without a restart; `MYRMIDON_VENDOR_NAME_CHECK_MODE` / `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` remain forced overrides (both are documented in docs/myrmidon/SETTINGS.md rows below).
 
-## settings
+## settings-en
 
 | `MYRMIDON_VENDOR_NAME_CHECK_MODE` | unset — the policy file decides | Forced override of the vendor-name gate mode (`ratchet` or `strict`) |
 | `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` | unset — the policy file decides | Forced override of the visible vendor-name baseline |
 
+## settings-ru
+
+| `MYRMIDON_VENDOR_NAME_CHECK_MODE` | unset — policy file decides | принудительный режим сторожа (`ratchet` или `strict`) |
+| `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` | unset — policy file decides | принудительная базовая видимая частота |
+
 ## changelog-ru
+
 
 ### Сторож имени вендора в собранном интерфейсе и ответах сервера (REBRAND-F)
 
