@@ -28,6 +28,9 @@ on:
   workflow_run:
     workflows: ["Myrmidon CI (tag)"]
     types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,7 +58,7 @@ jobs:
 
   rerun-failed-freeze:
     name: re-run failed freeze gates
-    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'workflow_run' }}
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
