@@ -2460,10 +2460,10 @@ async function startServerWithDatabaseTeardown(
           const reattached = await sweepGatewayRunReattach(
             db as any,
             heartbeat,
-            { adoptableControllerBootIds },
+            { adoptableControllerBootIds, isStartup: true },
           );
-          if (reattached.reattached > 0 || reattached.failed > 0) {
-            logger.warn(
+          if (reattached.reattached > 0 || reattached.failed > 0 || reattached.scanned > 0) {
+            logger.info(
               reattached,
               "startup gateway run reattach complete",
             );
