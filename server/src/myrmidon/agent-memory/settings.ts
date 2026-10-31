@@ -9,7 +9,7 @@
 // The key is optional. The instance setting general.agentMemory wins over the
 // environment and is re-read on every request (no restart).
 
-import type { AgentMemorySettings } from "@myrmidon/shared";
+import type { AgentMemoryAccessMode, AgentMemorySettings } from "@myrmidon/shared";
 
 export const MEMORY_HINDSIGHT_API_URL_ENV = "MYRMIDON_HINDSIGHT_API_URL";
 /** Same service as seen by the bot containers; the fallback address. */
@@ -21,6 +21,9 @@ export interface MemoryUiSettings {
   baseUrl: string | null;
   /** Name of the company secret holding the hindsight API key; null = no key is sent. */
   keySecret: string | null;
+  accessMode: AgentMemoryAccessMode;
+  enabledRoles: string[];
+  enabledAgentIds: string[];
 }
 
 /** Trimmed non-empty value, or null. */
@@ -62,7 +65,7 @@ export function readMemoryUiSettings(
 ): MemoryUiSettings & { urlSource: MemoryUrlSource | null } {
   const candidates: Array<[MemoryUrlSource, string | null]> = [
     ["setting", readHttpUrlSetting(stored.apiUrl)],
-    ["env", readHttpUrlSetting(env[MEMORY_HINDSIGHT_API_URL_ENV])],
+    ["env", readHttpUrlSetting(env[MEMORY_HINDSIGHT_API_URL_ENV]) || readHttpUrlSetting(env.HINDSIGHT_API_URL)],
     ["bot-env", readHttpUrlSetting(env[MEMORY_BOT_HINDSIGHT_API_URL_ENV])],
   ];
   const found = candidates.find(([, url]) => url !== null);
@@ -73,5 +76,8 @@ export function readMemoryUiSettings(
     baseUrl,
     keySecret,
     urlSource: found ? found[0] : null,
+    accessMode: stored.accessMode ?? "all",
+    enabledRoles: stored.enabledRoles ?? [],
+    enabledAgentIds: stored.enabledAgentIds ?? [],
   };
 }

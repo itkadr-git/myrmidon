@@ -141,6 +141,13 @@ describe("AuditRuns", () => {
     expect(container.textContent).toContain("Clear filters");
   });
 
+  it("renders RunsWithResultPanel when view is set to results", async () => {
+    currentSearch = "view=results";
+    await render();
+
+    expect(container.querySelector('[data-testid="runs-with-result-panel"]')).toBeTruthy();
+  });
+
   it("loads routine runs directly when the Audit scope is a routine", async () => {
     await render("routine-1");
 
@@ -150,5 +157,21 @@ describe("AuditRuns", () => {
     expect(container.textContent).toContain("Publish forecast");
     expect(container.textContent).toContain("Daily forecast");
     expect(container.querySelector('a[href="/issues/TES-42"]')).toBeTruthy();
+  });
+
+  it("renders the OutcomeRunsPanel and displays telemetry outcome badges", async () => {
+    listRunsMock.mockResolvedValue([
+      run({
+        runTelemetry: {
+          outcomeCategory: "artifact",
+          wakeReason: "timer",
+        },
+      }),
+    ]);
+    await render();
+
+    expect(container.querySelector('[data-testid="outcome-runs-panel"]')).toBeTruthy();
+    expect(container.textContent).toContain("Artifact");
+    expect(container.textContent).toContain("(Timer)");
   });
 });

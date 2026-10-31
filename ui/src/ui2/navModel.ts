@@ -60,7 +60,7 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
       { labelKey: "ui2.nav.agents", to: "/agents", icon: Bot },
       { labelKey: "ui2.nav.servers", to: "/fleet", icon: Server },
       { labelKey: "ui2.nav.costs", to: "/activity/costs", icon: Wallet },
-      { labelKey: "ui2.nav.quality", to: "/dashboard", icon: Activity },
+      { labelKey: "ui2.nav.quality", to: "/quality", icon: Activity },
     ],
   },
   {
@@ -111,5 +111,5 @@ export const UI2_PHONE_TABS: Ui2NavItem[] = [
   { labelKey: "ui2.nav.servers", to: "/fleet", icon: Server },
   // myrmidon(1.6-CTO-CHAT-A): same switch on the phone tab bar.
   { labelKey: "ui2.nav.commander", to: "/commander-chat", icon: MessagesSquare },
-  { labelKey: "ui2.nav.more", to: "/agents/all", icon: LayoutGrid },
+  { labelKey: "ui2.nav.more", to: "/more", icon: LayoutGrid },
 ];

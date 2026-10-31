@@ -21,8 +21,9 @@ import { readConfigFile } from "../config-file.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
-// myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
-import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
+// myrmidon(U2): owner-delivery bindings for tasks without their own chat thread
+// (the U2 path now lives behind the 1.7-ACTIVE-CHANNEL gate).
+import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-active-channel/owner-delivery-gate.js";
 // myrmidon(U2): owner Telegram questions and confirmations are delivered as text only.
 import {
   TelegramOwnerTextTooLongError,

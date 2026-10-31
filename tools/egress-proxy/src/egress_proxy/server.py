@@ -27,6 +27,7 @@ import http.client
 import json
 import socket
 import threading
+import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -66,20 +67,75 @@ BLOCKED_RESULT = "blocked"
 
 
 class _Tunnel:
-    """Copies bytes both ways between the client socket and the upstream one."""
+    """Copies bytes both ways between the client socket and the upstream one.
 
-    def __init__(self, client: socket.socket, upstream: socket.socket) -> None:
+    With `idle_sec`, a tunnel that carried no byte in either direction for that
+    long is closed, which frees its two threads. One clock serves both
+    directions: a long download, where the client sends nothing, is not idle. A
+    blocked pump looks at the clock a few times per `idle_sec`, so the close
+    comes a little after `idle_sec`, never before. Without `idle_sec` a tunnel
+    stays open until one side closes it.
+    """
+
+    #: How often a blocked pump looks at the clock, per `idle_sec`.
+    _CHECKS_PER_IDLE = 4
+
+    def __init__(self, client: socket.socket, upstream: socket.socket, idle_sec: float | None = None) -> None:
+        if idle_sec is not None and idle_sec <= 0:
+            raise ValueError(f"idle_sec must be positive or None, got {idle_sec!r}")
         self.client = client
         self.upstream = upstream
+        self.idle_sec = idle_sec
+        # time.monotonic() of the last byte moved in either direction. Both pump
+        # threads write it; assigning a float is atomic, so no lock.
+        self._last_byte = time.monotonic()
+        if idle_sec is not None:
+            for sock in (client, upstream):
+                sock.settimeout(idle_sec / self._CHECKS_PER_IDLE)
 
-    @staticmethod
-    def _pump(source: socket.socket, sink: socket.socket) -> None:
+    def _idle_expired(self) -> bool:
+        return self.idle_sec is not None and time.monotonic() - self._last_byte >= self.idle_sec
+
+    def _send(self, sink: socket.socket, chunk: bytes) -> bool:
+        """Send all of `chunk`; False if the tunnel went idle before that.
+
+        Sent in pieces so that a slow reader that takes some bytes now and then
+        counts as traffic instead of timing the whole chunk out.
+        """
+        view = memoryview(chunk)
+        while view:
+            try:
+                sent = sink.send(view)
+            except socket.timeout:
+                if self._idle_expired():
+                    return False
+                continue
+            view = view[sent:]
+            self._last_byte = time.monotonic()
+        return True
+
+    def _abort(self) -> None:
+        """End both directions, so the pump still blocked in `recv` wakes up now."""
+        for sock in (self.client, self.upstream):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _pump(self, source: socket.socket, sink: socket.socket) -> None:
         try:
             while True:
-                chunk = source.recv(65536)
+                try:
+                    chunk = source.recv(65536)
+                except socket.timeout:
+                    if self._idle_expired():
+                        break
+                    continue
                 if not chunk:
                     break
-                sink.sendall(chunk)
+                self._last_byte = time.monotonic()
+                if not self._send(sink, chunk):
+                    break
         except OSError:
             pass
         finally:
@@ -87,6 +143,8 @@ class _Tunnel:
                 sink.shutdown(socket.SHUT_WR)
             except OSError:
                 pass
+            if self._idle_expired():
+                self._abort()
 
     def run(self) -> None:
         upstream_to_client = threading.Thread(target=self._pump, args=(self.upstream, self.client), daemon=True)
@@ -178,7 +236,7 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
         self.send_response(200, "Connection Established")
         self.end_headers()
         self.close_connection = True
-        _Tunnel(self.connection, upstream).run()
+        _Tunnel(self.connection, upstream, idle_sec=self.proxy.config.tunnel_idle_sec).run()
 
     # -- plain HTTP -------------------------------------------------------
 
@@ -425,7 +483,8 @@ def serve(config: Config) -> None:
     print(
         f"egress-proxy: mode={config.mode} listening on {config.bind}:{server.port} "
         f"bots_in_map={len(config.bots)} projects={len(policy.projects)} "
-        f"policy_url={config.policy_url or '-'} policy_file={config.policy_file or '-'}"
+        f"policy_url={config.policy_url or '-'} policy_file={config.policy_file or '-'} "
+        f"tunnel_idle_sec={'-' if config.tunnel_idle_sec is None else format(config.tunnel_idle_sec, 'g')}"
         + (
             " (log-only: every destination is recorded, none is refused)"
             if config.mode == "log"

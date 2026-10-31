@@ -78,6 +78,17 @@ export interface ReviewPullRequestCiFacts {
   headSha: string | null;
   /** Why the state is "unknown"; a short code, never a token or a header. */
   reason?: string | null;
+  /**
+   * Present when GitHub answered a rate limit while reading: the measured
+   * budget of the installation/IP (OPE-10246). Numbers from the
+   * `x-ratelimit-*` response headers, never a token.
+   */
+  rateLimit?: {
+    remaining: number | null;
+    limit: number | null;
+    /** Epoch seconds of `x-ratelimit-reset`; null when GitHub did not send it. */
+    resetEpochSeconds: number | null;
+  } | null;
 }
 
 export interface StalledReviewRecoveryFacts {

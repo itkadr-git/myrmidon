@@ -672,6 +672,9 @@ export type {
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
   IssueBlockerMetadata,
+  IssueActiveBlockerMetadata,
+  IssueFreezeOnlyMetadata,
+  IssueRewakeFreeze,
   IssueReviewAttention,
   IssueReviewAttentionPath,
   IssueReviewAttentionPathKind,
@@ -880,7 +883,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject, CostByDay } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,

@@ -86,7 +86,7 @@ function loadTaskPrSyncServices() {
 }
 
 /** Statuses the sweep may rewrite; a task in any other status is not a candidate. */
-const CANDIDATE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
+const CANDIDATE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);
 const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
@@ -176,6 +176,93 @@ function readMonitorNextCheckAt(policy: unknown): string | null {
   return typeof nextCheckAt === "string" ? nextCheckAt : null;
 }
 
+
+let lastClosedTaskReconcileAt = 0;
+
+/** Periodically reconcile every non-terminal issue that has linked PR work products. */
+export async function reconcileClosedIssuePullRequests(input: {
+  db: Db;
+  resolvePullRequestDetails: PullRequestMergeDetailsResolver;
+  limit?: number;
+  now?: Date;
+}): Promise<{ scanned: number; synced: number }> {
+  const candidates = await input.db.selectDistinct({
+    id: issues.id,
+    companyId: issues.companyId,
+    status: issues.status,
+    updatedAt: issues.updatedAt,
+  }).from(issues).innerJoin(
+    issueWorkProducts,
+    and(
+      eq(issueWorkProducts.issueId, issues.id),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "open"),
+    ),
+  ).where(inArray(issues.status, ["done", "cancelled"]))
+    .orderBy(asc(issues.updatedAt)).limit(input.limit ?? 500);
+  const { extractGitHubPullRequestReferences } = await loadTaskPrSyncServices();
+  lastClosedTaskReconcileAt = (input.now ?? new Date()).getTime();
+  let synced = 0;
+
+  for (const issue of candidates) {
+    try {
+      const products = await input.db.select().from(issueWorkProducts).where(and(
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.status, "open"),
+      ));
+      for (const product of products) {
+        const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+          ? product.metadata as Record<string, unknown>
+          : {};
+        const { repo, number } = readPullRequestMetadata({ metadata });
+        const reference = extractGitHubPullRequestReferences([
+          product.url,
+          repo && number ? `${repo}#${number}` : null,
+        ])[0];
+        if (!reference) continue;
+
+        let details: PullRequestMergeDetails;
+        try {
+          details = await input.resolvePullRequestDetails(issue.companyId, reference);
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not refresh a closed-task PR work product",
+          );
+          continue;
+        }
+
+        const state = resolvedPullRequestState(details);
+        if (state !== "merged" && state !== "closed") continue;
+        const mergedSha = details.headSha ?? readLastMergedSha({ metadata });
+        if (state === product.status && mergedSha === readLastMergedSha({ metadata })) continue;
+
+        try {
+          await input.db.update(issueWorkProducts).set({
+            status: state,
+            metadata: { ...metadata, state, draft: false, ...(state === "merged" && mergedSha ? { lastMergedSha: mergedSha } : {}) },
+            updatedAt: input.now ?? new Date(),
+          }).where(eq(issueWorkProducts.id, product.id));
+          synced++;
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed closed-task PR state",
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { errorKind: "closed_task_pr_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
+        "failed reconciling PR work products for a closed task",
+      );
+    }
+  }
+
+  return { scanned: candidates.length, synced };
+}
+
 /** Map the resolver's answer to the state the policy understands. */
 export function resolvedPullRequestState(
   details: PullRequestMergeDetails,
@@ -262,7 +349,11 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       if (reference) {
         try {
           details = await deps.resolvePullRequestDetails(issue.companyId, reference);
-        } catch {
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not resolve pull-request state during task PR sync",
+          );
           // A resolver failure is not a merge; the policy sees `unknown` and waits.
           details = null;
         }
@@ -291,8 +382,11 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               draft: resolvedState === "draft",
             },
           });
-        } catch {
-          // Bookkeeping only; the policy still acts on the fresh facts.
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed pull-request state",
+          );
         }
       }
     }
@@ -650,7 +744,14 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
           result.scanned += 1;
           try {
             const products = productsByIssue.get(issue.id) ?? [];
+            // Keep PR work-product state fresh for inactive issues, but do not let
+            // their statuses flow into the automatic settle/return policy.
+            const shouldSkipPolicy = issue.status === "backlog" || issue.status === "todo" || issue.status === "blocked";
             const prFacts = await resolvePrFacts(issue, products);
+            if (shouldSkipPolicy) {
+              result.skipped += 1;
+              continue;
+            }
             const openGate = await hasOpenPostDeployGate(
               deps.db,
               { id: issue.id, executionPolicy: issue.executionPolicy },
@@ -725,7 +826,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id, errorName: err instanceof Error ? err.name : typeof err },
+              { errorKind: "task_pr_sync_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
               "task PR sync failed for one task",
             );
           }
