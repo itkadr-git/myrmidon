@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import {
   useMyrmidonUi2PersonalOverride,
   type Ui2PersonalOverride,
-} from "@/ui2/useMyrmidonUi2Enabled";
+} from "@/lib/myrmidonUi2PersonalOverride";
 
 interface UiInterfaceToggleProps {
   className?: string;

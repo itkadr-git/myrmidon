@@ -194,7 +194,7 @@ describe("useMyrmidonUi2Enabled", () => {
       expect(window.localStorage.getItem("myr.ui2.personal")).toBe("1");
     });
 
-    it("resets to instance setting when 'По настройке экземпляра' is selected", async () => {
+    it("resets to instance setting when 'По настройке экземпляра' is selected (with enableMyrmidonUi2 = true)", async () => {
       // 1. Instance setting is enableMyrmidonUi2 = true
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableMyrmidonUi2: true });
       const queryClient1 = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -217,11 +217,13 @@ describe("useMyrmidonUi2Enabled", () => {
       // Should now follow instance setting (enableMyrmidonUi2: true -> UI2_SHELL)
       expect(host.textContent).toBe("UI2_SHELL");
       expect(window.localStorage.getItem("myr.ui2.personal")).toBeNull();
+    });
 
+    it("resets to instance setting when 'По настройке экземпляра' is selected (with enableMyrmidonUi2 = false)", async () => {
       // 2. Now test with instance setting enableMyrmidonUi2 = false
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableMyrmidonUi2: false });
       const queryClient2 = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      setUi2PersonalOverride("2"); // forced UI2
+      window.localStorage.setItem("myr.ui2.personal", "2"); // personal forced UI2
       flushSync(() => {
         root.render(
           <QueryClientProvider client={queryClient2}>

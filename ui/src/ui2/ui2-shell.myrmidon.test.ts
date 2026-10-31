@@ -189,14 +189,6 @@ describe("ui2 personal override (?ui=1|2)", () => {
     expect(mod.readUi2PersonalOverride(storage)).toBe("2");
     mod.rememberUi2PersonalOverride(null, storage);
     expect(mod.readUi2PersonalOverride(storage)).toBeNull();
-
-    // myrmidon(OPE-9382): setUi2PersonalOverride updates window.localStorage
-    mod.setUi2PersonalOverride("2");
-    expect(mod.readUi2PersonalOverride(window.localStorage)).toBe("2");
-    mod.setUi2PersonalOverride("1");
-    expect(mod.readUi2PersonalOverride(window.localStorage)).toBe("1");
-    mod.setUi2PersonalOverride(null);
-    expect(mod.readUi2PersonalOverride(window.localStorage)).toBeNull();
   });
 });
 

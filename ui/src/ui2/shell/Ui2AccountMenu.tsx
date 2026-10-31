@@ -1,6 +1,6 @@
 // myrmidon(OPE-9382): UI2 account menu with interface version switcher
 // ("Новая / Прежняя / По настройке экземпляра") and language selection.
-import { useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import {
   UserRound,
   Check,
@@ -25,7 +25,7 @@ import {
   useMyrmidonUi2PersonalOverride,
   type Ui2PersonalOverride,
 } from "@/ui2/useMyrmidonUi2Enabled";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClientContext, useQuery } from "@tanstack/react-query";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -36,21 +36,29 @@ interface Ui2AccountMenuProps {
   className?: string;
 }
 
-export function Ui2AccountMenu({ compact = false, trigger, className }: Ui2AccountMenuProps) {
+interface Ui2AccountMenuPresentationalProps extends Ui2AccountMenuProps {
+  health?: { deploymentMode?: string } | null;
+  onSignOut?: () => void;
+  signOutPending?: boolean;
+}
+
+function Ui2AccountMenuPresentational({
+  compact = false,
+  trigger,
+  className,
+  health,
+  onSignOut,
+  signOutPending = false,
+}: Ui2AccountMenuPresentationalProps) {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation();
   const { selectedCompany } = useCompany();
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => healthApi.get(),
-  });
-  const signOutMutation = useSignOut();
   const { language, setLanguage } = useAppLanguage();
   const { override, setOverride } = useMyrmidonUi2PersonalOverride();
 
   const handleSignOut = () => {
     setOpen(false);
-    signOutMutation.mutate();
+    onSignOut?.();
   };
 
   const selectInterface = (choice: Ui2PersonalOverride) => {
@@ -373,15 +381,15 @@ export function Ui2AccountMenu({ compact = false, trigger, className }: Ui2Accou
                 color: "var(--myr-ink-muted)",
                 fontSize: "var(--myr-text-nano)",
                 textAlign: "left",
-                cursor: signOutMutation.isPending ? "not-allowed" : "pointer",
-                opacity: signOutMutation.isPending ? 0.6 : 1,
+                cursor: signOutPending ? "not-allowed" : "pointer",
+                opacity: signOutPending ? 0.6 : 1,
               }}
               onClick={handleSignOut}
-              disabled={signOutMutation.isPending}
+              disabled={signOutPending}
             >
               <LogOut style={{ width: 14, height: 14 }} />
               <span>
-                {signOutMutation.isPending
+                {signOutPending
                   ? t("area.shell-sidebar-layout-1.sidebar-account-menu.signingOut", { defaultValue: "Выход…" })
                   : t("area.shell-sidebar-layout-1.sidebar-account-menu.signOut", { defaultValue: "Выйти" })}
               </span>
@@ -391,4 +399,33 @@ export function Ui2AccountMenu({ compact = false, trigger, className }: Ui2Accou
       </PopoverContent>
     </Popover>
   );
+}
+
+function Ui2AccountMenuWithQuery(props: Ui2AccountMenuProps) {
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
+  const signOutMutation = useSignOut();
+
+  return (
+    <Ui2AccountMenuPresentational
+      {...props}
+      health={health}
+      onSignOut={() => signOutMutation.mutate()}
+      signOutPending={signOutMutation.isPending}
+    />
+  );
+}
+
+function Ui2AccountMenuStandalone(props: Ui2AccountMenuProps) {
+  return <Ui2AccountMenuPresentational {...props} />;
+}
+
+export function Ui2AccountMenu(props: Ui2AccountMenuProps) {
+  const hasQueryClient = useContext(QueryClientContext) != null;
+  if (!hasQueryClient) {
+    return <Ui2AccountMenuStandalone {...props} />;
+  }
+  return <Ui2AccountMenuWithQuery {...props} />;
 }
