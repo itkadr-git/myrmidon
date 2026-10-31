@@ -35,6 +35,13 @@ import {
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
+// myrmidon(OPE-10045): a final review approval given before the PR is merged.
+import {
+  buildReviewApprovalPendingMergeNotice,
+  findApprovalPendingMergePullRequest,
+  isApprovalRequestingDone,
+  type ReviewApprovalPendingMergeNotice,
+} from "../myrmidon/review-stage-recovery/pre-merge-approval.js";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -1514,6 +1521,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_review_participant_recovery",
   "execution_review_requested",
   "finish_successful_run_handoff",
+  "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
   "heartbeat.scheduling_suppressed",
@@ -3021,6 +3029,12 @@ function buildExecutionStageWakeup(input: {
   interruptedRunId: string | null;
   requestedByActorType: "user" | "agent";
   requestedByActorId: string;
+  /**
+   * myrmidon(OPE-10045): the issue comes back to `in_review` (e.g. a blocked
+   * task returned by the operator) with its stage still pending. The kept
+   * participant is woken so it can decide without a new submission.
+   */
+  reenteringReview?: boolean;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
@@ -3031,6 +3045,7 @@ function buildExecutionStageWakeup(input: {
         ? (nextState.currentParticipant.agentId ?? null)
         : null;
     const stageChanged =
+      input.reenteringReview === true ||
       previousState?.status !== "pending" ||
       previousState?.currentStageId !== nextState.currentStageId ||
       !executionPrincipalsEqual(
@@ -3571,7 +3586,10 @@ async function coordinateIssueListGet(input: {
   }
 }
 
-function estimatedJsonBytes(value: unknown): number {
+export function estimatedJsonBytes(value: unknown): number {
+  if (!logger.isLevelEnabled("debug")) {
+    return 0;
+  }
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
@@ -3582,13 +3600,18 @@ function logIssueListRequest(input: {
   requestKey: ReturnType<typeof issueListRequestKey>;
   startedAt: number;
   cacheStatus: IssueListCacheStatus;
-  bodyBytes: number;
+  bodyBytes: number | (() => number);
   etagOutcome: "none" | "fresh" | "not_modified";
   identicalInFlightCount: number;
 }) {
+  if (!logger.isLevelEnabled("debug")) {
+    return;
+  }
   input.res.once("finish", () => {
     const contentEncoding = input.res.getHeader("content-encoding");
     const contentLength = Number(input.res.getHeader("content-length"));
+    const responseBytes =
+      typeof input.bodyBytes === "function" ? input.bodyBytes() : input.bodyBytes;
     logger.debug(
       {
         event: "safe_get_request_observed",
@@ -3602,7 +3625,7 @@ function logIssueListRequest(input: {
         requestCount: input.identicalInFlightCount,
         durationMs: Date.now() - input.startedAt,
         statusCode: input.res.statusCode,
-        responseBytes: input.bodyBytes,
+        responseBytes,
         compressedBytes:
           contentEncoding && Number.isFinite(contentLength)
             ? contentLength
@@ -3675,7 +3698,7 @@ export function issueRoutes(
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean }>;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3686,7 +3709,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
-  const insertReviewAdmissionWakeup =
+  const insertReviewAdmissionWakeup: NonNullable<typeof opts.insertReviewAdmissionWakeup> =
     opts.insertReviewAdmissionWakeup ??
     (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
       ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
@@ -8698,7 +8721,7 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: "retry",
-        bodyBytes: estimatedJsonBytes(body),
+        bodyBytes: () => estimatedJsonBytes(body),
         etagOutcome: "none",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8706,12 +8729,13 @@ export function issueRoutes(
       return;
     }
 
-    if (coordinated.response.kind === "compact") {
-      res.setHeader("Cache-Control", coordinated.response.cacheControl);
-      res.setHeader("ETag", coordinated.response.etag);
+    const coordinatedResponse = coordinated.response;
+    if (coordinatedResponse.kind === "compact") {
+      res.setHeader("Cache-Control", coordinatedResponse.cacheControl);
+      res.setHeader("ETag", coordinatedResponse.etag);
       const etagMatched = requestMatchesEtag(
         req.header("if-none-match"),
-        coordinated.response.etag,
+        coordinatedResponse.etag,
       );
       logIssueListRequest({
         req,
@@ -8720,9 +8744,10 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: coordinated.cacheStatus,
-        bodyBytes: etagMatched
-          ? 0
-          : estimatedJsonBytes(coordinated.response.body),
+        bodyBytes: () =>
+          etagMatched
+            ? 0
+            : estimatedJsonBytes(coordinatedResponse.body),
         etagOutcome: etagMatched ? "not_modified" : "fresh",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8730,7 +8755,7 @@ export function issueRoutes(
         res.status(304).end();
         return;
       }
-      res.json(coordinated.response.body);
+      res.json(coordinatedResponse.body);
       return;
     }
 
@@ -8741,11 +8766,11 @@ export function issueRoutes(
       requestKey,
       startedAt,
       cacheStatus: coordinated.cacheStatus,
-      bodyBytes: estimatedJsonBytes(coordinated.response.body),
+      bodyBytes: () => estimatedJsonBytes(coordinatedResponse.body),
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
-    res.json(coordinated.response.body);
+    res.json(coordinatedResponse.body);
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
@@ -9910,13 +9935,19 @@ export function issueRoutes(
             });
             Object.assign(updateFields, transition.patch);
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                lockedIssue.responsibleAgentId &&
+                (!actor.agentId || lockedIssue.responsibleAgentId !== actor.agentId)
+                  ? lockedIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 lockedIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   sourceRunId: actor.runId ?? undefined,
                   title: transition.recoveryInteraction.title,
@@ -14017,14 +14048,46 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+      // myrmidon(OPE-10045): the active participant approved the last stage
+      // and asked for `done`, but the PR is still open, so the done gate would
+      // refuse the whole update and the decision would be lost. Record the
+      // approval and complete the stage; the task stays `in_review` and the PR
+      // sync closes it once the PR is merged.
+      let reviewApprovalPendingMerge: ReviewApprovalPendingMergeNotice | null =
+        null;
+      if (
+        isApprovalRequestingDone({
+          decisionOutcome: transition.decision?.outcome,
+          requestedStatus: updateFields.status,
+          existingStatus: existing.status,
+        })
+      ) {
+        const openPullRequest = await findApprovalPendingMergePullRequest(
+          db,
+          existing.companyId,
+          existing.id,
+        );
+        if (openPullRequest) {
+          delete updateFields.status;
+          reviewApprovalPendingMerge = buildReviewApprovalPendingMergeNotice(
+            openPullRequest.url,
+          );
+        }
+      }
       if (transition.recoveryInteraction) {
+        const targetAgentId =
+          existing.responsibleAgentId &&
+          (!actor.agentId || existing.responsibleAgentId !== actor.agentId)
+            ? existing.responsibleAgentId
+            : null;
         await issueThreadInteractionService(db).create(
           existing,
           {
             kind: "ask_user_questions",
             idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-            resolverPolicy: "human_only",
-            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            resolverPolicy: targetAgentId ? "anyone" : "human_only",
+            addresseeAgentId: targetAgentId,
+            addresseeUserId: targetAgentId ? null : (existing.responsibleUserId ?? existing.createdByUserId ?? null),
             continuationPolicy: "none",
             title: transition.recoveryInteraction.title,
             summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
@@ -14125,14 +14188,35 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+          "blockedByIssueIds or externalRef",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
+      if (
+        enteringBlocked &&
+        !blockerMetadataRaw.blockedByIssueIds?.length &&
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
+      ) {
+        res.status(422).json({
+          error: "Entering blocked requires a blocker reference in blockerMetadata",
+          missingFields: ["blockedByIssueIds or externalRef"],
+        });
+        return;
+      }
+
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
       // a transition out of blocked without new metadata clears it, so no stale reason survives.
       const leavingBlocked =
@@ -14856,7 +14940,9 @@ export function issueRoutes(
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            // myrmidon(OPE-10045): an approval recorded before the merge is still a verdict.
+            reviewApprovalPendingMerge !== null);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&
@@ -15001,7 +15087,9 @@ export function issueRoutes(
               issue: lockedTransitionIssue,
               policy: nextExecutionPolicy,
               previousPolicy: previousExecutionPolicy,
-              requestedStatus: updateFields.status,
+              // myrmidon(OPE-10045): re-check a pre-merge approval as the
+              // approval it is, so a stage that changed under the lock refuses it.
+              requestedStatus: reviewApprovalPendingMerge ? "done" : updateFields.status,
               requestedAssigneePatch: explicitAssigneePatch,
               actor: {
                 agentId: actor.agentId ?? null,
@@ -15013,6 +15101,15 @@ export function issueRoutes(
               monitorExplicitlyUpdated:
                 req.body.executionPolicy !== undefined && monitorChanged,
             });
+            if (
+              reviewApprovalPendingMerge &&
+              lockedTransition.decision?.outcome !== "approved"
+            ) {
+              throw conflict(
+                "The review stage changed while the approval was recorded. Reload the issue and decide again.",
+                { code: "review_stage_changed" },
+              );
+            }
             Object.assign(updateFields, lockedTransition.patch);
             const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
             if (lockedDecisionId) {
@@ -15113,6 +15210,8 @@ export function issueRoutes(
                 interruptedRunId,
                 requestedByActorType: actor.actorType === "user" ? "user" : "agent",
                 requestedByActorId: actor.actorId,
+                // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
+                reenteringReview: existing.status !== "in_review",
               });
               if (stageWake?.agentId) {
                 const admission = await insertReviewAdmissionWakeup(
@@ -15121,7 +15220,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
                   );
@@ -15148,7 +15247,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
@@ -16043,6 +16142,9 @@ export function issueRoutes(
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+        // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
+        reenteringReview:
+          existing.status !== "in_review" && issue.status === "in_review",
       });
 
       if (closesRecoveryIssue) {
@@ -16693,6 +16795,10 @@ export function issueRoutes(
           unavailable,
         );
       }
+      // myrmidon(OPE-10045): tell the reviewer the approval was kept although the task stays in review.
+      const reviewApprovalResponse = reviewApprovalPendingMerge
+        ? { reviewApproval: reviewApprovalPendingMerge }
+        : {};
       if (prefersMinimalIssueUpdateResponse(req)) {
         res.setHeader("Preference-Applied", "return=minimal");
         res.json({
@@ -16702,10 +16808,11 @@ export function issueRoutes(
           changes,
           comment,
           ...handoffResponse,
+          ...reviewApprovalResponse,
         });
         return;
       }
-      res.json({ ...issueResponse, changes, comment, ...handoffResponse });
+      res.json({ ...issueResponse, changes, comment, ...handoffResponse, ...reviewApprovalResponse });
     },
   );
 
@@ -19444,12 +19551,31 @@ export function issueRoutes(
         }
 
         issueBeforeCommentDecision = currentIssue;
+        // myrmidon(OPE-10045): an approval comment on the last stage while the
+        // PR is still open: keep the comment and the decision, complete the
+        // stage and leave the task in review until the PR sync closes it.
+        // Without this the done gate refused the update and rolled back both.
+        const commentApprovalPendingMerge =
+          typeof transition.patch.status !== "string" &&
+          isApprovalRequestingDone({
+            decisionOutcome: transition.decision?.outcome,
+            requestedStatus: "done",
+            existingStatus: currentIssue.status,
+          })
+            ? await findApprovalPendingMergePullRequest(
+                db,
+                currentIssue.companyId,
+                currentIssue.id,
+              )
+            : null;
         const updatePatch = {
           ...transition.patch,
           status:
             typeof transition.patch.status === "string"
               ? transition.patch.status
-              : "done",
+              : commentApprovalPendingMerge
+                ? currentIssue.status
+                : "done",
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
@@ -19512,13 +19638,19 @@ export function issueRoutes(
             if (!updated) throw new AutoApprovalIssueMissingError();
 
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                currentIssue.responsibleAgentId &&
+                (!actor.agentId || currentIssue.responsibleAgentId !== actor.agentId)
+                  ? currentIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 currentIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   title: transition.recoveryInteraction.title,
                   summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
