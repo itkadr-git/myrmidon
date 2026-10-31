@@ -173,6 +173,22 @@ describe("myrmidon(1.6.6-ALERTS) severity mapping and routing", () => {
     expect(routeAssignee(alert, [])).toBe("adm-devops");
     expect(routeAssignee(alert, [{ match: "", assignee: "" }], "fallback")).toBe("fallback");
   });
+
+  it("parses Zabbix tags and routes route=owner to adm", () => {
+    const alertWithTagString = parseZabbixAlert({
+      ...zabbixFiring,
+      tags: "route=owner,component=scent",
+    })!;
+    expect(alertWithTagString.labels.route).toBe("owner");
+    expect(routeAssignee(alertWithTagString, [])).toBe("adm");
+
+    const alertWithTagArray = parseZabbixAlert({
+      ...zabbixFiring,
+      tags: [{ tag: "route", value: "owner" }],
+    })!;
+    expect(alertWithTagArray.labels.route).toBe("owner");
+    expect(routeAssignee(alertWithTagArray, [])).toBe("adm");
+  });
 });
 
 describe("myrmidon(1.6.6-ALERTS) issue text", () => {

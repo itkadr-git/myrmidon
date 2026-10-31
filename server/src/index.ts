@@ -15,6 +15,7 @@ import { reconcileSafeNativeReplacements } from "./services/native-runtime/nativ
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
 import { backgroundInterval, laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
+import { createPullRequestMergeDetailsResolver } from "./services/github-pull-request-merge.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
@@ -203,12 +204,13 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
+import { createGuardReturnScheduler } from "./myrmidon/guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { resolveRunScratchSweeperConfig, startRunScratchSweeper } from "./services/run-scratch-sweeper.js"; // myrmidon(1.6.6 TMP-HYGIENE)
@@ -1628,6 +1630,8 @@ async function startServerWithDatabaseTeardown(
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
+  let taskPrSyncRunner: (() => void) | null = null;
+  let taskPrSyncSchedulerStop: (() => void) | null = null;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
 
@@ -1675,6 +1679,10 @@ async function startServerWithDatabaseTeardown(
         heartbeatSchedulerInFlight.delete(tracked);
       });
     heartbeatSchedulerInFlight.add(tracked);
+  };
+  const trackTaskPrSyncWork = (work: Promise<unknown>) => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(work);
   };
   const waitForHeartbeatSchedulerIdle = async () => {
     while (heartbeatSchedulerInFlight.size > 0) {
@@ -1887,7 +1895,36 @@ async function startServerWithDatabaseTeardown(
   // the existing resolver, and settles the task (status done, one comment with the
   // PR refs / merge sha / time) once every PR is merged — or returns it to the
   // assignee when a PR was closed without merging.
-  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  const scheduleTaskPrSyncSweep = createTaskPrSyncScheduler({
+    db: db as any,
+    track: trackTaskPrSyncWork,
+    env: process.env,
+    isLeader: () => !heartbeatSchedulerStopped && leaderLeaseManager.isLeader("scheduler"),
+  });
+  let lastClosedTaskReconcileAt = 0;
+  const closedTaskReconcileIntervalMs = 24 * 60 * 60_000;
+  const closedTaskReconcileInterval = backgroundInterval(() => {
+    if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
+    const now = Date.now();
+    if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
+    lastClosedTaskReconcileAt = now;
+    trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
+      db: db as any,
+      resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
+    }).then((result) => {
+      if (result.synced > 0) logger.info(result, "reconciled PR work products on closed tasks");
+    }).catch((err) => {
+      logger.warn({ errorKind: "closed_task_pr_reconcile_failed", errorName: err instanceof Error ? err.name : typeof err }, "closed-task PR reconcile failed");
+    }));
+  }, 60_000);
+  if (processRoleProfile.runsBackground) {
+    taskPrSyncRunner = () => {
+      if (heartbeatSchedulerStopped || !leaderLeaseManager.isLeader("scheduler")) return;
+      scheduleTaskPrSyncSweep();
+    };
+    taskPrSyncSchedulerStop = scheduleTaskPrSyncSweep.stop;
+    taskPrSyncRunner();
+  }
   // myrmidon(BOARD-JANITOR): daily board cleanup (08:00 Irkutsk / on demand)
   const scheduleBoardJanitorSweep = createBoardJanitorScheduler({
     db: db as any,
@@ -1932,6 +1969,16 @@ async function startServerWithDatabaseTeardown(
   // with the reviewer woken; a merged/closed PR settles the review. Settings
   // are read on every pass; the interval is enforced inside the sweep.
   const scheduleReviewReworkSweep = createReviewReworkScheduler({
+    db: db as any,
+    wakeup: ((agentId: string, options: Record<string, unknown>) =>
+      backgroundHeartbeat.wakeup(agentId, options as any)),
+    track: trackHeartbeatSchedulerWork,
+  });
+  // myrmidon(1.6.6 GUARD-RETURN): code tasks of dev projects must not stall on
+  // non-coding roles (reviewer, lead, operator). Automatically returns tasks with
+  // PR/changes_requested to the PR author or returnAssignee, puts them in in_progress,
+  // relays review remarks, and logs to activity_log. Runs every 5 minutes.
+  const { scheduleGuardReturnSweep } = createGuardReturnScheduler({
     db: db as any,
     wakeup: ((agentId: string, options: Record<string, unknown>) =>
       backgroundHeartbeat.wakeup(agentId, options as any)),
@@ -2632,7 +2679,7 @@ async function startServerWithDatabaseTeardown(
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
-        scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
+        // myrmidon(TASK-PR-SYNC): swept by its own poll timer, not heartbeat ticks.
         scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
         scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
@@ -2643,6 +2690,7 @@ async function startServerWithDatabaseTeardown(
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
         scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
+        scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -2853,6 +2901,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
       scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
+      scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
@@ -2990,6 +3039,8 @@ async function startServerWithDatabaseTeardown(
     logger.info({ signal }, `myrmidon(OPE-9107): shutdown started (runtime pid ${process.pid})`);
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    scheduleTaskPrSyncSweep.stop();
+    clearInterval(closedTaskReconcileInterval);
     if (executionControlInterval) clearInterval(executionControlInterval);
     runContextColumnsBackfill?.stop(); // OPE-5007 П2
     // myrmidon(PROCS-1.2): the children go first — SIGTERM each, stop the
@@ -3016,11 +3067,12 @@ async function startServerWithDatabaseTeardown(
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
     stopModelProviderPoolSweep(); // myrmidon(1.6.6 OPE-7198)
     stopBotCanary(); // myrmidon(R5-B)
+    taskPrSyncSchedulerStop?.();
+    taskPrSyncSchedulerStop = null;
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
     }
-
     // myrmidon(PROCS-1.7, design OPE-5394 §5.3): release the leader leases
     // right after the timers stop so a standby takes over within one renewal
     // tick (≤ 1 s handover at a graceful shutdown).
