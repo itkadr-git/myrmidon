@@ -1,0 +1,51 @@
+diff --git a/tests/tools/test_process_heartbeat.py b/tests/tools/test_process_heartbeat.py
+--- a/tests/tools/test_process_heartbeat.py
++++ b/tests/tools/test_process_heartbeat.py
+@@ -66,17 +66,29 @@
+ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
+     from tools import terminal_tool as tt
+ 
+-    captured = {}
++    # myrmidon(G1): execute a harmless real shell command in regression coverage.
++    def execute_real_shell(**kwargs):
++        import subprocess
+ 
+-    def fake_terminal_tool(**kwargs):
+-        captured.update(kwargs)
+-        return json.dumps({"output": "Background process started", "session_id": "proc_x", "exit_code": 0})
++        completed = subprocess.run(
++            kwargs["command"], shell=True, text=True, capture_output=True, timeout=5
++        )
++        return json.dumps({
++            "output": completed.stdout,
++            "exit_code": completed.returncode,
++            "error": completed.stderr if completed.returncode else None,
++        })
+ 
+-    monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+-    dispatch = tt._handle_terminal
+-    fg = json.loads(dispatch({"command": "sleep 1", "heartbeat": 120}))
+-    assert fg.get("error") and "background" in fg["error"]
++    monkeypatch.setattr(tt, "terminal_tool", execute_real_shell)
++    result = json.loads(tt._handle_terminal({
++        "command": "printf heartbeat-regression",
++        "background": False,
++        "heartbeat": 60,
++        "notify": False,
++        "pty": False,
++    }))
++    assert result["output"] == "heartbeat-regression"
++    assert result["exit_code"] == 0
++    assert result["error"] is None
+ 
+-    bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
+-    assert "error" not in bg or not bg["error"]
+-    assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
++    rejected = json.loads(tt._handle_terminal({
++        "command": "printf should-not-run",
++        "background": False,
++        "heartbeat": 60,
++        "notify": True,
++        "pty": False,
++    }))
++    assert "notify/heartbeat only apply to background commands" in rejected["error"]

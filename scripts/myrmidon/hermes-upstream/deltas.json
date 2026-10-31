@@ -300,13 +300,30 @@
       }
     },
     {
+      "id": "19-terminal-foreground-execution-test",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-terminal-foreground-execution-test.patch",
+      "files": [
+        "tests/tools/test_process_heartbeat.py"
+      ],
+      "reason": "The foreground default regression must execute a harmless local shell command through the Hermes terminal handler and assert stdout and exit status; notification=true must still return the clear foreground-only error.",
+      "dropCondition": "Upstream heartbeat tests execute the foreground heartbeat=60, notify=false command and assert its output and exit status, and assert notification=true remains rejected.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tests/tools/test_process_heartbeat.py",
+        "upstreamMarker": "heartbeat-regression"
+      }
+    },
+    {
       "id": "18-terminal-foreground-defaults",
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/18-terminal-foreground-defaults.patch",
       "files": [
         "tools/terminal_tool.py"
       ],
-      "reason": "Claude models fill every advertised terminal parameter with its default (heartbeat=60, notify=false) on each call; upstream rejected any of them on a foreground run, so every terminal call of such a bot failed and the run looped. On a foreground call heartbeat is now dropped and only a real notify/notify_on_complete/watch_patterns request is rejected.",
+      "reason": "Claude models fill every advertised terminal parameter with its default (heartbeat=60, notify=false) on each call; upstream rejected any of them on a foreground run, so every terminal call of such a bot failed and the run looped. On a foreground call heartbeat is now discarded; true notify/notify_on_complete/nonempty watch_patterns remain rejected and the schema marks heartbeat as background-only and not to be passed by default.",
       "dropCondition": "Upstream ignores background-only defaults on a foreground terminal call.",
       "offer": null,
       "offerNote": "Not offered yet.",
