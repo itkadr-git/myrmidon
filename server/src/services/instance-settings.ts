@@ -98,6 +98,8 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
+import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -450,6 +452,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
     };
   }
   return {
@@ -907,6 +912,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               // The preserve line above restores the stored value: a patch that
               // carries the key must win, the same rule as ownerDelivery.
               ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}), // myrmidon(1.6.5-DBC1)
+              ...preserveOwnerActiveChannelGeneralKey(current.general), // myrmidon(1.7-ACTIVE-CHANNEL)
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.ownerActiveChannel !== undefined
+                ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
+                : {}),
             },
             updatedAt: now,
           })
