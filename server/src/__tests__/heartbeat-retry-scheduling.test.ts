@@ -2012,6 +2012,56 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
   });
 
+  it("schedules one delayed retry for a deployment cooldown window and succeeds after recovery", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T22:29:00.000Z");
+    const cooldownUntil = new Date("2026-04-22T22:34:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      retryNotBefore: cooldownUntil.toISOString(),
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.dueAt).toEqual(cooldownUntil);
+
+    const duplicate = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(duplicate.outcome).toBe("scheduled");
+    if (duplicate.outcome !== "scheduled") return;
+    expect(duplicate.run.id).toBe(scheduled.run.id);
+    expect(duplicate.dueAt).toEqual(cooldownUntil);
+
+    const retries = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(retries).toHaveLength(2);
+    expect(retries.filter((retry) => retry.status === "scheduled_retry")).toHaveLength(1);
+
+    const promoted = await heartbeat.promoteDueScheduledRetries(cooldownUntil);
+    expect(promoted.promoted).toBe(1);
+    const [retry] = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id));
+    expect(retry?.status).toBe("queued");
+  });
+
   it("schedules bounded retries for claude_transient_upstream and honors its retry-not-before hint", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
