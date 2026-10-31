@@ -9,12 +9,16 @@ import {
   interactionEscalations,
   issues,
   issueThreadInteractions,
+  projectMemberships,
+  projects,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
+import { applyReaddress } from "@myrmidon/db";
 import { selectDueEscalations } from "./select-due.js";
+import { escalateInteractionStep } from "./escalate-step.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -307,5 +311,125 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     // Повторный вызов -> 0
     const repeated = await selectDueEscalations(db, now, 10);
     expect(repeated).toEqual([]);
+  });
+
+  it("после applyReaddress карточка проходит полный путь эскалации selectDue -> escalateStep", async () => {
+    await seedCompanyAndIssue();
+    const architectId = randomUUID();
+    const reviewerId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: architectId,
+        companyId,
+        name: "Architect",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerId,
+        companyId,
+        name: "Secondary reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Resolver only accepts project members; attach the issue to a project
+    // with joined memberships for architect and secondary reviewer.
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Escalation project",
+    });
+    await db.insert(projectMemberships).values([
+      { companyId, projectId, userId: architectId, state: "joined" },
+      { companyId, projectId, userId: reviewerId, state: "joined" },
+    ]);
+    await db.update(issues).set({ projectId }).where(eq(issues.id, issueId));
+
+    const interactionId = randomUUID();
+    const applyNow = new Date("2026-10-30T11:30:00Z");
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      title: "Backlog card",
+      summary: "Readdress target",
+      createdByAgentId: agentId,
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      payload: {
+        routing: {
+          routeType: "decision",
+          projectRoles: {
+            architect: { type: "agent", agentId: architectId },
+            secondary_reviewer: { type: "agent", agentId: reviewerId },
+          },
+          escalationPolicy: {
+            participantRoles: ["architect", "secondary_reviewer"],
+            fallbackQueue: "review-recovery",
+            stepDelayMinutes: 30,
+          },
+        },
+        version: 1,
+        prompt: "Approve the plan",
+      },
+    });
+
+    // Apply persists addressee + escalation_chain together
+    const applyResult = await applyReaddress(db, { dryRun: false, now: applyNow });
+    expect(applyResult.appliedCount).toBe(1);
+    const [appliedCard] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(appliedCard.addresseeAgentId).toBe(architectId);
+    expect(appliedCard.escalationChain).toEqual([
+      { recipient: { agentId: architectId }, afterMinutes: 0 },
+      { recipient: { agentId: reviewerId }, afterMinutes: 30 },
+      { recipient: { serviceQueue: "review-recovery" }, afterMinutes: 60 },
+    ]);
+    expect(appliedCard.payload).toEqual({
+      routing: {
+        routeType: "decision",
+        projectRoles: {
+          architect: { type: "agent", agentId: architectId },
+          secondary_reviewer: { type: "agent", agentId: reviewerId },
+        },
+        escalationPolicy: {
+          participantRoles: ["architect", "secondary_reviewer"],
+          fallbackQueue: "review-recovery",
+          stepDelayMinutes: 30,
+        },
+      },
+      version: 1,
+      prompt: "Approve the plan",
+    });
+
+    // Timeout reached: scheduler selects the card and advances one step
+    const dueAt = new Date("2026-10-30T12:00:00Z");
+    const selected = await selectDueEscalations(db, dueAt, 10);
+    expect(selected).toEqual([{ interactionId, nextLevel: 1 }]);
+
+    const step = await escalateInteractionStep(db, interactionId, 1);
+    expect(step).toBe("escalated");
+    const [escalatedCard] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(escalatedCard.escalationLevel).toBe(1);
+    expect(escalatedCard.addresseeAgentId).toBe(reviewerId);
+    expect(escalatedCard.payload).toEqual(appliedCard.payload);
   });
 });
