@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -65,9 +65,18 @@ async function createApp(db: Record<string, unknown>) {
 }
 
 describe("invite-token endpoint rate limiting", () => {
-  beforeEach(() => {
-    vi.resetModules();
-  });
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 20 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The limiter is built per
+  // app, so no test needs a module reset. 60 s is ~2x the slowest cold load
+  // measured.
+  beforeAll(async () => {
+    await Promise.all([
+      import("../routes/access.js"),
+      import("../middleware/index.js"),
+    ]);
+  }, 60_000);
 
   it(
     "returns 429 once the per-IP threshold is exceeded",

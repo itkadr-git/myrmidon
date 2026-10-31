@@ -150,9 +150,11 @@ export {
 } from "./pipeline-case-type.js";
 export {
   deriveResponsibleUser,
+  deriveResponsibleActor,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
+  type ResponsibleActor,
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
@@ -1131,6 +1133,9 @@ export type {
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
   IssueBlockerMetadata,
+  IssueActiveBlockerMetadata,
+  IssueFreezeOnlyMetadata,
+  IssueRewakeFreeze,
   IssueUnblockDescriptor,
   IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
@@ -1977,6 +1982,9 @@ export {
   issueExecutionPolicySchema,
   issueBlockReasonSchema,
   issueBlockerMetadataSchema,
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
+  issueRewakeFreezeSchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
@@ -2806,23 +2814,12 @@ export * from "./announcements.js";
 // event-shaped wakes (assignment / mention / review), read at wake generation.
 export * from "./notification-prefs.js";
 
-// myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
-// server, the sweep and the settings validator.
-export * from "./myrmidon-workspace-hygiene.js";
-// myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
-// UI and the settings validator.
-export * from "./myrmidon-host-disk.js";
-// myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows (failed-run horizon, feed cache
-// TTL) shared by the feed, the settings route and the settings screen.
-export * from "./myrmidon-attention-feed.js";
-// myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
-// (runbook steps and document link) and the sustained-resolution auto-close, shared by the
-// server, the settings validator and the board UI.
-export * from "./myrmidon-alert-recovery.js";
-// myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings shared by the server and the settings validator.
-export * from "./myrmidon-bot-disk.js";
-// myrmidon(BOT-DISK-F): isolation scope resolver and bot-disk scope layout shared by the server and the UI.
-export * from "./myrmidon-isolation-scope.js";
+// myrmidon(OPE-9341): domain barrel for Myrmidon contracts.
+// All Myrmidon control plane contracts and specifications are exported via
+// this domain barrel. Do NOT append new exports to the end of index.ts;
+// add them to packages/shared/src/myrmidon/index.ts (or regenerate via
+// `pnpm generate:shared`) to prevent parallel PR merge conflicts.
+export * from "./myrmidon/index.js";
 
 // myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
 // limits — schemas, level semantics, signal-only resolution, window math.
@@ -3019,7 +3016,9 @@ export * from "./myrmidon-agent-exchange-feed.js";
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
+export * from "./myrmidon-capacity-policy-schema.js";
 export * from "./myrmidon-capacity-policy.js";
+export * from "./myrmidon-capacity-policy-order.js";
 export * from "./blocker-graph.js";
 // myrmidon(1.6.6 P1.9 CLAIM-TRANSACTION): the continuation dedupe contract —
 // one deterministic key per (issue, event, head) plus the dedupe outcome and
@@ -3037,6 +3036,8 @@ export {
   type InteractionRoutingInput,
   type InteractionRoutingMetrics,
 } from "./interaction-routing.js";
+export * from "./interaction-recipient-resolver.js";
+export * from "./build-chain.js";
 
 // myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed request/result
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and

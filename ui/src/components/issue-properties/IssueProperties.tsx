@@ -1484,6 +1484,7 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
+  const rewakeFreeze = issue.blockerMetadata?.issueRewakeFreeze ?? null;
   const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
@@ -2881,6 +2882,11 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
+        {rewakeFreeze ? (
+          <div className="text-sm text-amber-700 dark:text-amber-400" title={rewakeFreeze.frozenAt}>
+            Empty re-wakes frozen since {new Date(rewakeFreeze.frozenAt).toLocaleString()} ({rewakeFreeze.noProgressStreak} runs)
+          </div>
+        ) : null}
         <PropertyPicker
           inline={inline}
           label={t("area.issue-properties-panels-2.issue-properties.rows.monitor")}
@@ -3090,6 +3096,20 @@ export function IssueProperties({
       ) : null}
 
       <PropertySection title={t("area.issue-properties-panels-2.issue-properties.sections.about")} streamlined={streamlinedPropertiesEnabled}>
+        {issue.responsibleAgentId ? (
+          <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.responsible", { defaultValue: "Responsible" })}>
+            <Link
+              to={`/agents/${issue.responsibleAgentId}`}
+              className="hover:underline"
+            >
+              <Identity
+                name={agentName(issue.responsibleAgentId) ?? issue.responsibleAgentId.slice(0, 8)}
+                size="sm"
+                shape="square"
+              />
+            </Link>
+          </PropertyRow>
+        ) : null}
         {originatingActor ? (
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.originating")}>
             {originatingActor.kind === "agent" ? (

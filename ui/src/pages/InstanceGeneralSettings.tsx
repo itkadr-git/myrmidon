@@ -1,5 +1,6 @@
 import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -44,7 +45,6 @@ import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSet
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
-import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel"; // myrmidon(SETTINGS-UI E2.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
@@ -161,6 +161,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           {visibleActionError}
         </div>
       )}
+      <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
+        {t("area.settings-company.instance-general-settings.secretReferencesLink")}
+      </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
@@ -188,7 +191,6 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
-      <InstanceSecretSettingsPanel /> {/* myrmidon(SETTINGS-UI E2.1) */}
 
       {showDeploymentStatus && (
       <section>
