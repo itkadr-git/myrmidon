@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PoolChatService } from "./service.js";
+import type { ChannelSettings } from "../channel-settings/settings.js";
 
 export interface TelegramUser {
   id: number;
@@ -114,6 +115,17 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
   const inflightUpdates = new Map<number, Promise<TelegramBridgeProcessResult>>();
   const outbox: TelegramOutboxItem[] = [];
 
+  const MAX_PROCESSED_UPDATES = 2000;
+  const markProcessed = (updateId: number, item: TelegramOutboxItem | null) => {
+    if (processedUpdates.size >= MAX_PROCESSED_UPDATES) {
+      const oldestKey = processedUpdates.keys().next().value;
+      if (oldestKey !== undefined) {
+        processedUpdates.delete(oldestKey);
+      }
+    }
+    processedUpdates.set(updateId, item);
+  };
+
   const defaultSender: TelegramOutboxSender = async ({ botToken, chatId, text, replyToMessageId }) => {
     if (!botToken) {
       return { ok: false, error: "Bot token not configured" };
@@ -128,6 +140,7 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
           text,
           reply_to_message_id: replyToMessageId,
         }),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const errorText = await res.text().catch(() => "HTTP error");
@@ -177,20 +190,18 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
         return { status: "ignored", reason: "no_text_message", updateId: update.update_id };
       }
 
-      // Allowlist checks: chat ID
-      if (
-        config.allowedChatId !== undefined &&
-        config.allowedChatId !== null &&
-        String(config.allowedChatId).trim().length > 0
-      ) {
-        if (String(message.chat.id) !== String(config.allowedChatId)) {
-          return {
-            status: "refused",
-            reason: "chat_not_allowed",
-            updateId: update.update_id,
-            chatId: message.chat.id,
-          };
-        }
+      // Allowlist checks: chat ID (fail-closed: allowedChatId must be configured and non-empty)
+      const configuredChatId =
+        config.allowedChatId !== undefined && config.allowedChatId !== null
+          ? String(config.allowedChatId).trim()
+          : "";
+      if (!configuredChatId || String(message.chat.id) !== configuredChatId) {
+        return {
+          status: "refused",
+          reason: "chat_not_allowed",
+          updateId: update.update_id,
+          chatId: message.chat.id,
+        };
       }
 
       // Allowlist checks: user ID
@@ -267,7 +278,7 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
             updateId: update.update_id,
             error: errorMsg,
           };
-          processedUpdates.set(update.update_id, null);
+          // Do NOT cache submission error in processedUpdates so Telegram can retry
           return errResult;
         }
 
@@ -292,32 +303,47 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
 
         outbox.push(outboxItem);
         // Mark processed updates immediately to prevent duplicate submissions on retry or concurrent delivery
-        processedUpdates.set(update.update_id, outboxItem);
+        markProcessed(update.update_id, outboxItem);
 
-        // Dispatch parts via outbox
+        // Dispatch parts via outbox with retry (up to 3 attempts with backoff)
         for (const part of parts) {
-          outboxItem.attempts += 1;
-          let res: { ok: boolean; messageId?: number; error?: string };
-          try {
-            res = await sender({
-              botToken: config.botToken ?? undefined,
-              chatId: message.chat.id,
-              text: part,
-              replyToMessageId: message.message_id,
-            });
-          } catch (senderErr) {
-            const senderErrMsg = senderErr instanceof Error ? senderErr.message : String(senderErr);
-            res = {
-              ok: false,
-              error: senderErrMsg,
-            };
+          let sent = false;
+          let lastRes: { ok: boolean; messageId?: number; error?: string } = {
+            ok: false,
+            error: "Failed to send message",
+          };
+
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            outboxItem.attempts += 1;
+            try {
+              lastRes = await sender({
+                botToken: config.botToken ?? undefined,
+                chatId: message.chat.id,
+                text: part,
+                replyToMessageId: message.message_id,
+              });
+            } catch (senderErr) {
+              const senderErrMsg = senderErr instanceof Error ? senderErr.message : String(senderErr);
+              lastRes = {
+                ok: false,
+                error: senderErrMsg,
+              };
+            }
+
+            if (lastRes.ok && lastRes.messageId !== undefined) {
+              outboxItem.deliveredMessageIds.push(lastRes.messageId);
+              sent = true;
+              break;
+            }
+
+            if (attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+            }
           }
 
-          if (res.ok && res.messageId !== undefined) {
-            outboxItem.deliveredMessageIds.push(res.messageId);
-          } else {
+          if (!sent) {
             outboxItem.status = "failed";
-            outboxItem.error = redactSecret(res.error ?? "Failed to send message", config.botToken);
+            outboxItem.error = redactSecret(lastRes.error ?? "Failed to send message", config.botToken);
             return {
               status: "error",
               updateId: update.update_id,
@@ -345,4 +371,49 @@ export function createTelegramPoolBridge(options: TelegramPoolBridgeOptions) {
       }
     },
   };
+}
+
+export async function resolveTelegramPoolBotToken(
+  provider: "chatgpt" | "gemini",
+  settings: ChannelSettings,
+  deps?: {
+    companyId?: string;
+    env?: NodeJS.ProcessEnv;
+    secretResolver?: (companyId: string, name: string) => Promise<string | null>;
+  },
+): Promise<string> {
+  const env = deps?.env ?? process.env;
+  const envVarName =
+    provider === "chatgpt"
+      ? "MYRMIDON_TELEGRAM_POOL_CHATGPT_BOT_TOKEN"
+      : "MYRMIDON_TELEGRAM_POOL_GEMINI_BOT_TOKEN";
+  const fromEnv = env[envVarName]?.trim();
+  if (fromEnv) return fromEnv;
+
+  const fromSettings =
+    provider === "chatgpt"
+      ? settings.telegramPoolChatGptBotToken?.value?.trim()
+      : settings.telegramPoolGeminiBotToken?.value?.trim();
+
+  if (fromSettings) {
+    if (fromSettings.startsWith("secret:")) {
+      const secretName = fromSettings.slice("secret:".length).trim();
+      if (deps?.secretResolver && deps.companyId) {
+        const resolved = await deps.secretResolver(deps.companyId, secretName);
+        if (resolved) return resolved;
+      }
+    } else {
+      return fromSettings;
+    }
+  }
+
+  // Fallback to company secret storage
+  const standardSecretName =
+    provider === "chatgpt" ? "telegram-pool-chatgpt-token" : "telegram-pool-gemini-token";
+  if (deps?.secretResolver && deps.companyId) {
+    const resolved = await deps.secretResolver(deps.companyId, standardSecretName);
+    if (resolved) return resolved;
+  }
+
+  return "";
 }

@@ -254,6 +254,37 @@ describe("Telegram Pool Bridge", () => {
       expect(poolService.submit).toHaveBeenCalledTimes(1);
       expect(mockSender).toHaveBeenCalledTimes(1);
     });
+
+    it("fails closed when allowedChatId is not configured or empty", async () => {
+      const poolService = createMockPoolChatService();
+      const mockSender = vi.fn();
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            allowedChatId: "",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const result = await bridge.processUpdate("chatgpt", {
+        update_id: 12,
+        message: {
+          message_id: 1,
+          chat: { id: "any-chat" },
+          text: "hello",
+        },
+      });
+
+      expect(result.status).toBe("refused");
+      expect(result.reason).toBe("chat_not_allowed");
+      expect(poolService.submit).not.toHaveBeenCalled();
+      expect(mockSender).not.toHaveBeenCalled();
+    });
   });
 
   describe("update deduplication (дедуп update)", () => {
@@ -349,6 +380,88 @@ describe("Telegram Pool Bridge", () => {
       expect(poolService.submit).toHaveBeenCalledTimes(1);
       expect(res1.status).toBe("delivered");
       expect(res2.status).toBe("deduplicated");
+    });
+
+    it("does not cache submit error in processedUpdates so retry can succeed", async () => {
+      const poolService = createMockPoolChatService();
+      poolService.submit
+        .mockRejectedValueOnce(new Error("Temporary submit error"))
+        .mockResolvedValueOnce({
+          request: { id: "req-retry", status: "completed", result: { text: "Success on retry" } },
+          result: { text: "Success on retry" },
+        } as any);
+      const mockSender: TelegramOutboxSender = vi.fn(async () => ({ ok: true, messageId: 102 }));
+
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            allowedChatId: "chat-1",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const update: TelegramUpdate = {
+        update_id: 999,
+        message: {
+          message_id: 25,
+          chat: { id: "chat-1" },
+          text: "Retry test",
+        },
+      };
+
+      const res1 = await bridge.processUpdate("chatgpt", update);
+      expect(res1.status).toBe("error");
+      expect(res1.error).toContain("Temporary submit error");
+
+      // Retry delivery
+      const res2 = await bridge.processUpdate("chatgpt", update);
+      expect(res2.status).toBe("delivered");
+      expect(poolService.submit).toHaveBeenCalledTimes(2);
+      expect(mockSender).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries outbox sender on failure without re-calling poolChatService submit", async () => {
+      const poolService = createMockPoolChatService();
+      let senderAttempts = 0;
+      const mockSender: TelegramOutboxSender = vi.fn(async () => {
+        senderAttempts++;
+        if (senderAttempts === 1) {
+          throw new Error("Temporary network error");
+        }
+        return { ok: true, messageId: 103 };
+      });
+
+      const bridge = createTelegramPoolBridge({
+        poolChatService: poolService,
+        modules: {
+          chatgpt: {
+            enabled: true,
+            moduleId: "mod-chatgpt",
+            provider: "chatgpt",
+            allowedChatId: "chat-1",
+          },
+        },
+        outboxSender: mockSender,
+      });
+
+      const update: TelegramUpdate = {
+        update_id: 1005,
+        message: {
+          message_id: 30,
+          chat: { id: "chat-1" },
+          text: "Test retry",
+        },
+      };
+
+      const res = await bridge.processUpdate("chatgpt", update);
+      expect(res.status).toBe("delivered");
+      expect(poolService.submit).toHaveBeenCalledTimes(1);
+      expect(mockSender).toHaveBeenCalledTimes(2);
     });
 
     it("uses update.update_id in idempotencyKey and clientMessageId for durable adapter deduplication", async () => {

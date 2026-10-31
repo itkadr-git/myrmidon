@@ -237,4 +237,42 @@ describe("myrmidon(1.7-SETTINGS-TO-UI) channel settings: the routes", () => {
     await request(withActor(admin)).patch(URL).send({ telegramDmStatus: "yes" }).expect(400);
     expect(writes).toEqual([]);
   });
+
+  it("stores telegramPool bridge settings and masks bot token in API responses and audit logs", async () => {
+    const { withActor, writes, current, audits } = harness();
+    const res = await request(withActor(admin))
+      .patch(URL)
+      .send({
+        telegramPoolChatGptEnabled: true,
+        telegramPoolChatGptChatId: "123456789",
+        telegramPoolChatGptModel: "balanced",
+        telegramPoolChatGptBotToken: "secret-bot-token-12345",
+      })
+      .expect(200);
+
+    expect(current.document.channel?.telegramPoolChatGptEnabled).toBe(true);
+    expect(current.document.channel?.telegramPoolChatGptChatId).toBe("123456789");
+    expect(current.document.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+
+    // Masked in API response
+    expect(res.body.telegramPoolChatGptEnabled.value).toBe(true);
+    expect(res.body.telegramPoolChatGptChatId.value).toBe("123456789");
+    expect(res.body.telegramPoolChatGptBotToken.value).toBe("********");
+
+    // Masked in audit log
+    expect(audits[0].details.channel.telegramPoolChatGptBotToken).toBe("********");
+
+    // Subsequent update with mask does not overwrite stored token
+    const res2 = await request(withActor(admin))
+      .patch(URL)
+      .send({
+        telegramPoolChatGptChatId: "987654321",
+        telegramPoolChatGptBotToken: "********",
+      })
+      .expect(200);
+
+    expect(current.document.channel?.telegramPoolChatGptChatId).toBe("987654321");
+    expect(current.document.channel?.telegramPoolChatGptBotToken).toBe("secret-bot-token-12345");
+    expect(res2.body.telegramPoolChatGptBotToken.value).toBe("********");
+  });
 });

@@ -103,6 +103,19 @@ export function parseChannelSettingsDraft(draft: {
     }
   }
 
+  patch.telegramPoolChatGptEnabled = draft.telegramPoolChatGptEnabled;
+  patch.telegramPoolChatGptChatId = draft.telegramPoolChatGptChatId.trim();
+  patch.telegramPoolChatGptModel = draft.telegramPoolChatGptModel.trim();
+  if (draft.telegramPoolChatGptBotToken && draft.telegramPoolChatGptBotToken !== "********") {
+    patch.telegramPoolChatGptBotToken = draft.telegramPoolChatGptBotToken.trim();
+  }
+  patch.telegramPoolGeminiEnabled = draft.telegramPoolGeminiEnabled;
+  patch.telegramPoolGeminiChatId = draft.telegramPoolGeminiChatId.trim();
+  patch.telegramPoolGeminiModel = draft.telegramPoolGeminiModel.trim();
+  if (draft.telegramPoolGeminiBotToken && draft.telegramPoolGeminiBotToken !== "********") {
+    patch.telegramPoolGeminiBotToken = draft.telegramPoolGeminiBotToken.trim();
+  }
+
   return { patch, errors };
 }
 
@@ -117,15 +130,26 @@ const NUMERIC_FIELDS = [
   "chatReconcileIntervalMs",
 ] as const;
 
+type BooleanSettingKey =
+  | "telegramDmStatus"
+  | "telegramPoolChatGptEnabled"
+  | "telegramPoolGeminiEnabled";
+
 type EditableSettingKey =
   | "telegramDmConversations"
-  | "telegramDmStatus"
+  | "telegramPoolChatGptChatId"
+  | "telegramPoolChatGptModel"
+  | "telegramPoolChatGptBotToken"
+  | "telegramPoolGeminiChatId"
+  | "telegramPoolGeminiModel"
+  | "telegramPoolGeminiBotToken"
+  | BooleanSettingKey
   | (typeof NUMERIC_FIELDS)[number];
 
 type StringDraft = Record<
-  Exclude<EditableSettingKey, "telegramDmStatus">,
+  Exclude<EditableSettingKey, BooleanSettingKey>,
   string
-> & { telegramDmStatus: boolean };
+> & Record<BooleanSettingKey, boolean>;
 
 function toDraft(settings: ChannelSettingsView): StringDraft {
   return {
@@ -142,6 +166,14 @@ function toDraft(settings: ChannelSettingsView): StringDraft {
       settings.chatReconcileIntervalMs.value === null
         ? ""
         : String(settings.chatReconcileIntervalMs.value),
+    telegramPoolChatGptEnabled: settings.telegramPoolChatGptEnabled?.value ?? false,
+    telegramPoolChatGptChatId: settings.telegramPoolChatGptChatId?.value ?? "",
+    telegramPoolChatGptModel: settings.telegramPoolChatGptModel?.value ?? "balanced",
+    telegramPoolChatGptBotToken: settings.telegramPoolChatGptBotToken?.value ?? "",
+    telegramPoolGeminiEnabled: settings.telegramPoolGeminiEnabled?.value ?? false,
+    telegramPoolGeminiChatId: settings.telegramPoolGeminiChatId?.value ?? "",
+    telegramPoolGeminiModel: settings.telegramPoolGeminiModel?.value ?? "gemini-2.0-flash",
+    telegramPoolGeminiBotToken: settings.telegramPoolGeminiBotToken?.value ?? "",
   };
 }
 
@@ -216,19 +248,17 @@ export function ChannelSettingsPanelView({
   const currentPatch: ChannelSettingsPatch = {
     ...parsed.patch,
     telegramDmStatus: numbers.telegramDmStatus,
-    ...(view.telegramPoolChatGptEnabled
-      ? {
-          telegramPoolChatGptEnabled: view.telegramPoolChatGptEnabled.value,
-          telegramPoolChatGptChatId: view.telegramPoolChatGptChatId?.value,
-          telegramPoolChatGptModel: view.telegramPoolChatGptModel?.value,
-        }
+    telegramPoolChatGptEnabled: numbers.telegramPoolChatGptEnabled,
+    telegramPoolChatGptChatId: numbers.telegramPoolChatGptChatId.trim(),
+    telegramPoolChatGptModel: numbers.telegramPoolChatGptModel.trim(),
+    ...(numbers.telegramPoolChatGptBotToken && numbers.telegramPoolChatGptBotToken !== "********"
+      ? { telegramPoolChatGptBotToken: numbers.telegramPoolChatGptBotToken.trim() }
       : {}),
-    ...(view.telegramPoolGeminiEnabled
-      ? {
-          telegramPoolGeminiEnabled: view.telegramPoolGeminiEnabled.value,
-          telegramPoolGeminiChatId: view.telegramPoolGeminiChatId?.value,
-          telegramPoolGeminiModel: view.telegramPoolGeminiModel?.value,
-        }
+    telegramPoolGeminiEnabled: numbers.telegramPoolGeminiEnabled,
+    telegramPoolGeminiChatId: numbers.telegramPoolGeminiChatId.trim(),
+    telegramPoolGeminiModel: numbers.telegramPoolGeminiModel.trim(),
+    ...(numbers.telegramPoolGeminiBotToken && numbers.telegramPoolGeminiBotToken !== "********"
+      ? { telegramPoolGeminiBotToken: numbers.telegramPoolGeminiBotToken.trim() }
       : {}),
   };
   // Drop keys the environment pins: the server keeps honouring the override,
@@ -237,7 +267,9 @@ export function ChannelSettingsPanelView({
     if (view[key]?.overridden) delete currentPatch[key];
   }
 
-  const setField = (key: keyof Omit<StringDraft, "telegramDmStatus">, value: string) =>
+  const setField = (key: keyof Omit<StringDraft, BooleanSettingKey>, value: string) =>
+    setDraft({ ...toDraft(view), ...numbers, [key]: value });
+  const setBoolField = (key: BooleanSettingKey, value: boolean) =>
     setDraft({ ...toDraft(view), ...numbers, [key]: value });
 
   return (
@@ -338,50 +370,172 @@ export function ChannelSettingsPanelView({
           </div>
         ))}
 
-        {view.telegramPoolChatGptEnabled ? (
-          <div className="space-y-3 md:col-span-2 border-t pt-4" data-testid="channel-settings-telegram-pool-bridges">
-            <h3 className="text-sm font-semibold">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2 p-3 border rounded-md">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">ChatGPT Pool Bridge</span>
-                  <span className="text-xs font-mono">
-                    {view.telegramPoolChatGptEnabled.value ? "Enabled" : "Disabled (default)"}
-                  </span>
+        <div className=\"space-y-4 md:col-span-2 border-t pt-4\" data-testid=\"channel-settings-telegram-pool-bridges\">
+          <h3 className=\"text-sm font-semibold\">Telegram Pool Bridges (ChatGPT & Gemini)</h3>
+          <div className=\"grid gap-4 md:grid-cols-2\">
+            {/* ChatGPT Bridge */}
+            <div className=\"space-y-3 p-3 border rounded-md\">
+              <div className=\"flex items-center justify-between gap-4\">
+                <div className=\"space-y-1\">
+                  <Label htmlFor=\"channel-settings-telegramPoolChatGptEnabled\">ChatGPT Pool Bridge</Label>
+                  <p className=\"text-xs text-muted-foreground\">
+                    <span data-testid=\"channel-settings-source-telegramPoolChatGptEnabled\">
+                      {sourceLabel(view, \"telegramPoolChatGptEnabled\")}
+                    </span>
+                    {view.telegramPoolChatGptEnabled?.overridden ? (
+                      <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptEnabled.envName}</span>
+                    ) : null}
+                  </p>
                 </div>
-                {view.telegramPoolChatGptChatId?.value ? (
-                  <p className="text-xs text-muted-foreground">
-                    Allowed Chat ID: {view.telegramPoolChatGptChatId.value}
-                  </p>
-                ) : null}
-                {view.telegramPoolChatGptModel?.value ? (
-                  <p className="text-xs text-muted-foreground">
-                    Model: {view.telegramPoolChatGptModel.value}
-                  </p>
-                ) : null}
+                <ToggleSwitch
+                  id=\"channel-settings-telegramPoolChatGptEnabled\"
+                  checked={numbers.telegramPoolChatGptEnabled}
+                  onCheckedChange={(checked) => setBoolField(\"telegramPoolChatGptEnabled\", checked)}
+                  disabled={view.telegramPoolChatGptEnabled?.overridden}
+                />
               </div>
 
-              <div className="space-y-2 p-3 border rounded-md">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Gemini Pool Bridge</span>
-                  <span className="text-xs font-mono">
-                    {view.telegramPoolGeminiEnabled?.value ? "Enabled" : "Disabled (default)"}
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolChatGptChatId\">Allowed Chat ID</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolChatGptChatId\"
+                  placeholder=\"e.g. 123456789\"
+                  value={numbers.telegramPoolChatGptChatId}
+                  onChange={(e) => setField(\"telegramPoolChatGptChatId\", e.target.value)}
+                  disabled={view.telegramPoolChatGptChatId?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolChatGptChatId\">
+                    {sourceLabel(view, \"telegramPoolChatGptChatId\")}
                   </span>
+                  {view.telegramPoolChatGptChatId?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptChatId.envName}</span>
+                  ) : null}
                 </div>
-                {view.telegramPoolGeminiChatId?.value ? (
-                  <p className="text-xs text-muted-foreground">
-                    Allowed Chat ID: {view.telegramPoolGeminiChatId.value}
+              </div>
+
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolChatGptModel\">Model</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolChatGptModel\"
+                  placeholder=\"balanced\"
+                  value={numbers.telegramPoolChatGptModel}
+                  onChange={(e) => setField(\"telegramPoolChatGptModel\", e.target.value)}
+                  disabled={view.telegramPoolChatGptModel?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolChatGptModel\">
+                    {sourceLabel(view, \"telegramPoolChatGptModel\")}
+                  </span>
+                  {view.telegramPoolChatGptModel?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptModel.envName}</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolChatGptBotToken\">Bot Token / Secret Ref</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolChatGptBotToken\"
+                  type=\"password\"
+                  placeholder=\"Bot token or secret:name\"
+                  value={numbers.telegramPoolChatGptBotToken}
+                  onChange={(e) => setField(\"telegramPoolChatGptBotToken\", e.target.value)}
+                  disabled={view.telegramPoolChatGptBotToken?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolChatGptBotToken\">
+                    {sourceLabel(view, \"telegramPoolChatGptBotToken\")}
+                  </span>
+                  {view.telegramPoolChatGptBotToken?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolChatGptBotToken.envName}</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            {/* Gemini Bridge */}
+            <div className=\"space-y-3 p-3 border rounded-md\">
+              <div className=\"flex items-center justify-between gap-4\">
+                <div className=\"space-y-1\">
+                  <Label htmlFor=\"channel-settings-telegramPoolGeminiEnabled\">Gemini Pool Bridge</Label>
+                  <p className=\"text-xs text-muted-foreground\">
+                    <span data-testid=\"channel-settings-source-telegramPoolGeminiEnabled\">
+                      {sourceLabel(view, \"telegramPoolGeminiEnabled\")}
+                    </span>
+                    {view.telegramPoolGeminiEnabled?.overridden ? (
+                      <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiEnabled.envName}</span>
+                    ) : null}
                   </p>
-                ) : null}
-                {view.telegramPoolGeminiModel?.value ? (
-                  <p className="text-xs text-muted-foreground">
-                    Model: {view.telegramPoolGeminiModel.value}
-                  </p>
-                ) : null}
+                </div>
+                <ToggleSwitch
+                  id=\"channel-settings-telegramPoolGeminiEnabled\"
+                  checked={numbers.telegramPoolGeminiEnabled}
+                  onCheckedChange={(checked) => setBoolField(\"telegramPoolGeminiEnabled\", checked)}
+                  disabled={view.telegramPoolGeminiEnabled?.overridden}
+                />
+              </div>
+
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolGeminiChatId\">Allowed Chat ID</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolGeminiChatId\"
+                  placeholder=\"e.g. 123456789\"
+                  value={numbers.telegramPoolGeminiChatId}
+                  onChange={(e) => setField(\"telegramPoolGeminiChatId\", e.target.value)}
+                  disabled={view.telegramPoolGeminiChatId?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolGeminiChatId\">
+                    {sourceLabel(view, \"telegramPoolGeminiChatId\")}
+                  </span>
+                  {view.telegramPoolGeminiChatId?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiChatId.envName}</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolGeminiModel\">Model</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolGeminiModel\"
+                  placeholder=\"gemini-2.0-flash\"
+                  value={numbers.telegramPoolGeminiModel}
+                  onChange={(e) => setField(\"telegramPoolGeminiModel\", e.target.value)}
+                  disabled={view.telegramPoolGeminiModel?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolGeminiModel\">
+                    {sourceLabel(view, \"telegramPoolGeminiModel\")}
+                  </span>
+                  {view.telegramPoolGeminiModel?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiModel.envName}</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className=\"space-y-1\">
+                <Label htmlFor=\"channel-settings-telegramPoolGeminiBotToken\">Bot Token / Secret Ref</Label>
+                <Input
+                  id=\"channel-settings-telegramPoolGeminiBotToken\"
+                  type=\"password\"
+                  placeholder=\"Bot token or secret:name\"
+                  value={numbers.telegramPoolGeminiBotToken}
+                  onChange={(e) => setField(\"telegramPoolGeminiBotToken\", e.target.value)}
+                  disabled={view.telegramPoolGeminiBotToken?.overridden}
+                />
+                <div className=\"text-xs text-muted-foreground\">
+                  <span data-testid=\"channel-settings-source-telegramPoolGeminiBotToken\">
+                    {sourceLabel(view, \"telegramPoolGeminiBotToken\")}
+                  </span>
+                  {view.telegramPoolGeminiBotToken?.overridden ? (
+                    <span className=\"ml-2 font-mono\">{view.telegramPoolGeminiBotToken.envName}</span>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
-        ) : null}
+        </div>
 
         <div className="space-y-1 md:col-span-2 text-xs text-muted-foreground" data-testid="channel-settings-deployment-only">
           <span>{t("area.settings-integrations.channel-settings-panel.deploymentOnly")} </span>

@@ -42,9 +42,11 @@ export interface ChannelSettingsView {
   telegramPoolChatGptEnabled?: ChannelSettingValue<boolean>;
   telegramPoolChatGptChatId?: ChannelSettingValue<string>;
   telegramPoolChatGptModel?: ChannelSettingValue<string>;
+  telegramPoolChatGptBotToken?: ChannelSettingValue<string>;
   telegramPoolGeminiEnabled?: ChannelSettingValue<boolean>;
   telegramPoolGeminiChatId?: ChannelSettingValue<string>;
   telegramPoolGeminiModel?: ChannelSettingValue<string>;
+  telegramPoolGeminiBotToken?: ChannelSettingValue<string>;
 }
 
 /** The keys the panel may change (`telegramApiBaseUrl` is deployment-only). */
@@ -65,9 +67,11 @@ export interface ChannelSettingsPatch {
   telegramPoolChatGptEnabled?: boolean;
   telegramPoolChatGptChatId?: string;
   telegramPoolChatGptModel?: string;
+  telegramPoolChatGptBotToken?: string;
   telegramPoolGeminiEnabled?: boolean;
   telegramPoolGeminiChatId?: string;
   telegramPoolGeminiModel?: string;
+  telegramPoolGeminiBotToken?: string;
 }
 
 export const channelSettingsQueryKey = ["myrmidon", "channel-settings"] as const;

@@ -199,7 +199,7 @@ describe("ChannelSettingsPanelView", () => {
     ).toBeTruthy();
   });
 
-  it("renders Telegram pool bridge section when present in view", () => {
+  it("renders Telegram pool bridge section with editable inputs", () => {
     const withPoolBridge: ChannelSettingsView = {
       ...VIEW,
       telegramPoolChatGptEnabled: resolved(false),
@@ -214,7 +214,11 @@ describe("ChannelSettingsPanelView", () => {
     expect(poolBridges).toBeTruthy();
     expect(poolBridges?.textContent).toContain("ChatGPT Pool Bridge");
     expect(poolBridges?.textContent).toContain("Gemini Pool Bridge");
-    expect(poolBridges?.textContent).toContain("Allowed Chat ID: 123456789");
-    expect(poolBridges?.textContent).toContain("Allowed Chat ID: 987654321");
+    const chatGptChatIdInput = container.querySelector("#channel-settings-telegramPoolChatGptChatId") as HTMLInputElement;
+    const geminiChatIdInput = container.querySelector("#channel-settings-telegramPoolGeminiChatId") as HTMLInputElement;
+    expect(chatGptChatIdInput).toBeTruthy();
+    expect(chatGptChatIdInput.value).toBe("123456789");
+    expect(geminiChatIdInput).toBeTruthy();
+    expect(geminiChatIdInput.value).toBe("987654321");
   });
 });

@@ -31,9 +31,21 @@ settings-section: Track 4 — chats and skills
 ## settings-en
 
 | `MYRMIDON_TELEGRAM_POOL_CHATGPT_ENABLED` | OPE-8077 | `0` | Enables the Telegram bridge for the ChatGPT pool module | `0` or unset — disabled; `1` — enabled |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_CHAT_ID` | OPE-8077 | `""` | Allowed Telegram chat ID for the ChatGPT pool module | Required when bridge enabled |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_MODEL` | OPE-8077 | `"balanced"` | Model name for the ChatGPT pool module | Optional model override |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_BOT_TOKEN` | OPE-8077 | `""` | Bot token or secret reference for ChatGPT pool module | Optional token override |
 | `MYRMIDON_TELEGRAM_POOL_GEMINI_ENABLED` | OPE-8077 | `0` | Enables the Telegram bridge for the Google AI / Gemini pool module | `0` or unset — disabled; `1` — enabled |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_CHAT_ID` | OPE-8077 | `""` | Allowed Telegram chat ID for the Google AI / Gemini pool module | Required when bridge enabled |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_MODEL` | OPE-8077 | `"gemini-2.0-flash"` | Model name for the Google AI / Gemini pool module | Optional model override |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_BOT_TOKEN` | OPE-8077 | `""` | Bot token or secret reference for Google AI / Gemini pool module | Optional token override |
 
 ## settings-ru
 
 | `MYRMIDON_TELEGRAM_POOL_CHATGPT_ENABLED` | OPE-8077 | `0` | Включает Telegram-мост для модуля пула ChatGPT | `0` или не задано — выключен; `1` — включён |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_CHAT_ID` | OPE-8077 | `""` | Разрешённый Telegram chat ID для модуля пула ChatGPT | Обязателен при включении моста |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_MODEL` | OPE-8077 | `"balanced"` | Название модели для модуля пула ChatGPT | Опциональное переопределение модели |
+| `MYRMIDON_TELEGRAM_POOL_CHATGPT_BOT_TOKEN` | OPE-8077 | `""` | Токен бота или ссылка на секрет для пула ChatGPT | Опциональное переопределение токена |
 | `MYRMIDON_TELEGRAM_POOL_GEMINI_ENABLED` | OPE-8077 | `0` | Включает Telegram-мост для модуля пула Google AI / Gemini | `0` или не задано — выключен; `1` — включён |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_CHAT_ID` | OPE-8077 | `""` | Разрешённый Telegram chat ID для модуля пула Google AI / Gemini | Обязателен при включении моста |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_MODEL` | OPE-8077 | `"gemini-2.0-flash"` | Название модели для модуля пула Google AI / Gemini | Опциональное переопределение модели |
+| `MYRMIDON_TELEGRAM_POOL_GEMINI_BOT_TOKEN` | OPE-8077 | `""` | Токен бота или ссылка на секрет для пула Google AI / Gemini | Опциональное переопределение токена |

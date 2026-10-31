@@ -21,8 +21,9 @@ This runbook guides operators through configuring, verifying, and accepting the 
 1. Navigate to **Instance → General → Channels (Telegram & chat bridges)**.
 2. Locate **Telegram Pool Bridges (ChatGPT & Gemini)**.
 3. Configure:
-   - **Allowed Chat ID**: Specify your test Telegram chat ID (e.g., `123456789`).
-   - **Model**: Set desired model (e.g., `balanced` for ChatGPT, `gemini-1.5-pro` for Google AI).
+   - **Allowed Chat ID**: Specify your test Telegram chat ID (e.g., `123456789`). (Fail-closed: must be non-empty to accept updates).
+   - **Model**: Set desired model (e.g., `balanced` for ChatGPT, `gemini-2.0-flash` for Google AI).
+   - **Bot Token / Secret Ref**: Enter Telegram bot token or reference to company secret (e.g. `secret:telegram-pool-chatgpt-token`). Stored tokens are masked as `********` when read back.
    - **Bridge Toggle**: Keep switch **Off** until ready for testing.
 4. Click **Save channel settings**.
 
@@ -30,11 +31,13 @@ This runbook guides operators through configuring, verifying, and accepting the 
 - `MYRMIDON_TELEGRAM_POOL_CHATGPT_ENABLED`: `0` (default) or `1`
 - `MYRMIDON_TELEGRAM_POOL_CHATGPT_CHAT_ID`: Allowed chat ID for ChatGPT
 - `MYRMIDON_TELEGRAM_POOL_CHATGPT_MODEL`: Default `balanced`
+- `MYRMIDON_TELEGRAM_POOL_CHATGPT_BOT_TOKEN`: Direct bot token or secret ref
 - `MYRMIDON_TELEGRAM_POOL_GEMINI_ENABLED`: `0` (default) or `1`
 - `MYRMIDON_TELEGRAM_POOL_GEMINI_CHAT_ID`: Allowed chat ID for Gemini
-- `MYRMIDON_TELEGRAM_POOL_GEMINI_MODEL`: Default `gemini-1.5-pro`
+- `MYRMIDON_TELEGRAM_POOL_GEMINI_MODEL`: Default `gemini-2.0-flash`
+- `MYRMIDON_TELEGRAM_POOL_GEMINI_BOT_TOKEN`: Direct bot token or secret ref
 
-Bot tokens are mounted into the secret store or environment via secret references:
+Bot tokens can also be mounted into the secret store via company secrets:
 - ChatGPT bot token secret: `telegram-pool-chatgpt-token`
 - Gemini bot token secret: `telegram-pool-gemini-token`
 
