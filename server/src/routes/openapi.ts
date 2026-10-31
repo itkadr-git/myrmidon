@@ -1337,6 +1337,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/join-requests/{requestId}/reject",
   "GET /api/companies/{companyId}/members",
   "PATCH /api/companies/{companyId}/members/{memberId}",
+  "PATCH /api/companies/{companyId}/users/{userId}",
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
@@ -3888,6 +3889,15 @@ registry.registerPath({
 });
 
 // myrmidon(1.6.6 main-red 01.11): routes mounted by OPE-9964 / OPE-10096 / ideas SLA were missing in the spec.
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/users/{userId}",
+  tags: ["companies"],
+  summary: "Update a company user (suspension revokes the user's sessions)",
+  request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/ci-status",
