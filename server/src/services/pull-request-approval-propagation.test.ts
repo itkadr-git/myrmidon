@@ -357,6 +357,36 @@ describe("pull-request-approval-propagation", () => {
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
 
+    it("negative path: skips propagation when decisionOutcome is null but verdictBody indicates non-approval", async () => {
+      const db = createMockDb();
+      const mockClient: GitHubApprovalClient = {
+        getPullRequest: vi.fn(),
+        addLabel: vi.fn(),
+        submitReview: vi.fn(),
+      };
+
+      const result = await propagateReviewApprovalToPullRequest(
+        {
+          db: db as any,
+          client: mockClient,
+          tokenProvider: vi.fn().mockResolvedValue("mock-token"),
+        },
+        {
+          companyId,
+          issueId,
+          repository: "itkadr-git/myrmidon",
+          number: 123,
+          decisionOutcome: null,
+          verdictBody: "VERDICT: REQUEST CHANGES please revise",
+        },
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe("skipped");
+      expect(result.reason).toBe("non_approval");
+      expect(mockClient.getPullRequest).not.toHaveBeenCalled();
+    });
+
     it("idempotency: does not duplicate label if PR already carries review-approved", async () => {
       const db = createMockDb();
       const mockClient: GitHubApprovalClient = {
@@ -392,7 +422,7 @@ describe("pull-request-approval-propagation", () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe("noop");
-      expect(result.reason).toBe("already_approved_and_labeled");
+      expect(result.reason).toBe("already_labeled");
       expect(mockClient.addLabel).not.toHaveBeenCalled();
       expect(mockClient.submitReview).not.toHaveBeenCalled();
     });
