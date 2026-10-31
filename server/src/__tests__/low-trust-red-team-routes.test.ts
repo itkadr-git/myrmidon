@@ -1051,7 +1051,18 @@ describeEmbeddedPostgres(
         .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
         // myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation
         // out of the way; the run lock conflict is what is under test.
-        .send({ status: "blocked", unblockDescriptor: { owner: "board", action: "Peer probe", reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" } } });
+        .send({
+          status: "blocked",
+          unblockDescriptor: { owner: "board", action: "Peer probe", reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" } },
+          blockerMetadata: {
+            blockReason: "human_decision",
+            owner: { userId: "00000000-0000-4000-8000-000000000001" },
+            externalRef: "low-trust-peer-probe",
+            nextCheckAt: "2026-10-10T00:00:00.000Z",
+            timeoutAt: "2026-10-11T00:00:00.000Z",
+            escalationPolicy: "notify_owner",
+          },
+        });
       expect(
         checkedOutPeerUpdate.status,
         JSON.stringify(checkedOutPeerUpdate.body),
@@ -1134,11 +1145,20 @@ describeEmbeddedPostgres(
     it("relays blocked and cancelled stops once without laundering child prose", async () => {
       const fixture = await seedLowTrustFixture(db);
       const app = createApp(db, boardActor(fixture));
-      // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
+      // myrmidon(STALE-BLOCK + P1.10): entering blocked needs a reason
+      // reference and complete typed blockerMetadata.
       const unblockDescriptor = {
         owner: "board",
         action: "Review the low-trust stop",
         reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+      } as const;
+      const blockerMetadata = {
+        blockReason: "human_decision",
+        owner: { userId: "00000000-0000-4000-8000-000000000001" },
+        externalRef: "low-trust-red-team-test",
+        nextCheckAt: "2026-10-10T00:00:00.000Z",
+        timeoutAt: "2026-10-11T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
       } as const;
 
       await db
@@ -1151,6 +1171,7 @@ describeEmbeddedPostgres(
           status: "blocked",
           comment: fixture.canaries.raw,
           unblockDescriptor,
+          blockerMetadata,
         });
       expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
       expect(blocked.body.unblockDescriptor).toEqual(unblockDescriptor);
@@ -1161,7 +1182,7 @@ describeEmbeddedPostgres(
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
-        .send({ status: "blocked", unblockDescriptor })
+        .send({ status: "blocked", unblockDescriptor, blockerMetadata })
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
@@ -1185,12 +1206,13 @@ describeEmbeddedPostgres(
           parentId: fixture.issues.reviewGrandparent.id,
           status: "blocked",
           unblockDescriptor,
+          blockerMetadata,
         })
         .expect(200);
 
       await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
-        .send({ status: "blocked", unblockDescriptor })
+        .send({ status: "blocked", unblockDescriptor, blockerMetadata })
         .expect(200);
       await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)

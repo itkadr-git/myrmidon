@@ -298,6 +298,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // drops the key, so the tree the owner edits in the web interface would
       // never roundtrip and /model would keep showing the automatic groups.
       ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
+      ...(parsed.data.modelApiPricing ? { modelApiPricing: parsed.data.modelApiPricing } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(OPE-7898): the stored IDLE-STOP policy survives every general read and write.

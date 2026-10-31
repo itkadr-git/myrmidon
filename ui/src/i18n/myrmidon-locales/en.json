@@ -1671,5 +1671,6 @@
       "antigravity-sidebar": "Antigravity",
       "antigravity-page": "Antigravity"
     }
-  }
+  },
+  "ui2.nav.group.plugins": "Plugins"
 }

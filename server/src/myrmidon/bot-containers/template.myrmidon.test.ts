@@ -394,6 +394,8 @@ describe("resolveProfileFileTarget", () => {
 
 describe("isUnderManagedDir", () => {
   it("covers the compiler-owned skills directory and everything under it, nothing else", () => {
+    expect(isUnderManagedDir("hermes/skills/paperclip-managed")).toBe(true);
+    expect(isUnderManagedDir("hermes/skills/paperclip-managed/a/SKILL.md")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board/a/SKILL.md")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board-other/a")).toBe(false);

@@ -182,6 +182,8 @@ export function decideStrandedAutoPolicy(input: {
    * blocked with `adm` as owner instead.
    */
   targetIsAdm?: boolean;
+  /** Successful-run disposition exhaustion must not fall through to board. */
+  requireAgentDisposition?: boolean;
   /**
    * The assignee is paused. Pausing is not stranding: an auto-retry wake to
    * a paused agent can only throw (paused is not invokable), and a manager
@@ -200,7 +202,13 @@ export function decideStrandedAutoPolicy(input: {
     return { kind: "retry", attempt: input.attemptsInWindow + 1, maxAttemptsPerDay: input.maxAttemptsPerDay };
   }
   const targetAgentId = input.managerAgentId ?? input.escalationAgentId ?? null;
-  if (targetAgentId && (input.successfulRunHandoffExhausted || input.hasExecutionWorkflow || input.targetIsAdm)) {
+  if (
+    targetAgentId &&
+    (input.successfulRunHandoffExhausted ||
+      input.hasExecutionWorkflow ||
+      input.targetIsAdm ||
+      input.requireAgentDisposition)
+  ) {
     return {
       kind: "disposition_blocked",
       ownerAgentId: targetAgentId,
@@ -402,7 +410,9 @@ export function buildStrandedAutoPolicyManagerReviewComment(input: {
 export function issueHasExistingExecutionWorkflow(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
+  hasOpenPullRequest?: boolean;
 }): boolean {
+  if (issue.hasOpenPullRequest === true) return true;
   if (issue.executionPolicy != null) return true;
 
   const state = issue.executionState;
