@@ -121,7 +121,8 @@ vi.mock("../services/index.js", async (importOriginal) => {
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
-}));
+};
+});
 
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
