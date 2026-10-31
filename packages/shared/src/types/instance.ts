@@ -107,6 +107,13 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
  */
 export type InstanceExecutionMode = "kubernetes" | "any";
 
+export type InstanceNumberFormat = "en-US" | "ru-RU";
+export type InstanceDateFormat = "ymd" | "dmy" | "mdy";
+
+export const DEFAULT_INSTANCE_TIME_ZONE = "Asia/Irkutsk";
+export const DEFAULT_INSTANCE_NUMBER_FORMAT: InstanceNumberFormat = "en-US";
+export const DEFAULT_INSTANCE_DATE_FORMAT: InstanceDateFormat = "ymd";
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
@@ -114,6 +121,21 @@ export interface InstanceGeneralSettings {
   taskDrain?: { draining: boolean; startedAt: string | null; expiresAt: string | null };
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): IANA time zone identifier.
+   * Validated via Intl.DateTimeFormat; default is "Asia/Irkutsk".
+   */
+  timeZone?: string;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): Number formatting locale ("en-US" or "ru-RU").
+   * Default is "en-US".
+   */
+  numberFormat?: InstanceNumberFormat;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): Date formatting order ("ymd", "dmy", or "mdy").
+   * Default is "ymd".
+   */
+  dateFormat?: InstanceDateFormat;
   /**
    * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.
