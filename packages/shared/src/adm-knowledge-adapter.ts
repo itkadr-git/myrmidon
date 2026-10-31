@@ -93,7 +93,7 @@ export interface AdmKnowledgeWritePort {
 
 export interface AdmKnowledgeRestPort {
   search(query: string, options: { space: string; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
-  list(options: { space: string; kind: string; status: "published"; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
+  list(options: { space: string; kind?: string; status: "published"; limit: number }): Promise<readonly AdmKnowledgeItem[]>;
   read(id: string): Promise<AdmKnowledgeItem | null>;
   proposeRule?: AdmKnowledgeWritePort["proposeRule"];
   writeLesson?: AdmKnowledgeWritePort["writeLesson"];
@@ -174,7 +174,7 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
   const proposeRuleWithConflictRetry = async (
     input: Parameters<AdmKnowledgeWritePort["proposeRule"]>[0] & {
       itemId?: string;
-      onConflict?: (diff: string) => boolean | void | Promise<boolean | void>;
+      onConflict: (diff: string) => boolean | Promise<boolean>;
     },
     nextIdempotencyKey: string,
   ): Promise<{ result: AdmWriteResult; diff: string; conflictResolved: boolean }> => {
@@ -212,11 +212,12 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
           `+ ${input.body ?? ""}`,
         ].join("\n");
 
-        if (input.onConflict) {
-          const proceed = await input.onConflict(diff);
-          if (proceed === false) {
-            throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry aborted after diff review", { cause: error });
-          }
+        if (typeof input.onConflict !== "function") {
+          throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry requires owner approval callback (onConflict)", { cause: error });
+        }
+        const proceed = await input.onConflict(diff);
+        if (!proceed) {
+          throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict retry aborted after diff review", { cause: error });
         }
 
         const retryBaseRevisionId = latest.deliveredRevisionId ?? (typeof latest.revisionId === "string" ? latest.revisionId : undefined);
@@ -299,8 +300,8 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
       if (!parsed.success) throw new AdmConnectorError("ADM_INVALID_METADATA", "ADM knowledge metadata is invalid", { cause: parsed.error });
       return parsed.data;
     },
-    createHookLoader(): (args: { event: "SessionStart" | "UserPromptSubmit"; triggers: string[] }) => Promise<{ items: AdmKnowledgeItem[]; fetchedAt: number; degraded: boolean }> {
-      return async () => {
+    createHookLoader(): (args?: { event?: "SessionStart" | "UserPromptSubmit"; triggers?: string[] }) => Promise<{ items: AdmKnowledgeItem[]; fetchedAt: number; degraded: boolean }> {
+      return async (args) => {
         try {
           const items = await rest.list({
             space: "adm/",
@@ -308,7 +309,20 @@ export function createAdmKnowledgeAdapter(rest: AdmKnowledgeRestPort) {
             limit: 100,
           });
           const published = items.filter((item) => item.slug.startsWith("adm/") && item.status === "published");
-          return { items: published, fetchedAt: Date.now(), degraded: false };
+          const normalized = published.map((item) => {
+            const itemTriggers = (item.triggers as string[] | undefined) ?? ((item.tags as string[] | undefined) ?? []).map((t) => t.replace(/^trigger:/, ""));
+            const shouldIncludeBody = args?.event === "UserPromptSubmit" && (args?.triggers ?? []).some((t) => itemTriggers.includes(t));
+            return {
+              ...item,
+              summary: item.summary ?? "",
+              triggers: itemTriggers,
+              priority: typeof item.priority === "number" ? item.priority : 0,
+              revision_id: (item.deliveredRevisionId ?? item.revisionId ?? item.revision_id ?? "") as string,
+              updated_at: (item.updatedAt ?? new Date().toISOString()) as string,
+              body: shouldIncludeBody ? (item.body ?? item.content ?? "") : "",
+            };
+          });
+          return { items: normalized, fetchedAt: Date.now(), degraded: false };
         } catch {
           return { items: [], fetchedAt: 0, degraded: true };
         }

@@ -1159,63 +1159,66 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       const target = await loadItem(nestId, input.targetSlug);
       targetId = target.id;
     }
-    if (input.idempotencyKey) {
-      const [existingEvent] = await db
-        .select()
-        .from(knowledgeEvents)
-        .where(
-          and(
-            eq(knowledgeEvents.companyId, input.companyId),
-            eq(knowledgeEvents.nestId, nestId),
-            eq(knowledgeEvents.event, "knowledge.suggested"),
-            sql`${knowledgeEvents.payload}->>'idempotencyKey' = ${input.idempotencyKey}`,
-          ),
-        )
-        .limit(1);
-      if (existingEvent) {
-        const suggestionId = (existingEvent.payload as { suggestionId?: string } | undefined)?.suggestionId;
-        if (suggestionId) {
-          const [row] = await db
-            .select()
-            .from(knowledgeSuggestions)
-            .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, suggestionId)))
-            .limit(1);
-          if (row) {
-            return { id: row.id, targetItemId: row.targetItemId, status: row.status, createdAt: row.createdAt.toISOString() };
+    return await db.transaction(async (tx) => {
+      if (input.idempotencyKey) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${input.companyId}), hashtext(${input.idempotencyKey}))`);
+        const [existingEvent] = await tx
+          .select()
+          .from(knowledgeEvents)
+          .where(
+            and(
+              eq(knowledgeEvents.companyId, input.companyId),
+              eq(knowledgeEvents.nestId, nestId),
+              eq(knowledgeEvents.event, "knowledge.suggested"),
+              sql`${knowledgeEvents.payload}->>'idempotencyKey' = ${input.idempotencyKey}`,
+            ),
+          )
+          .limit(1);
+        if (existingEvent) {
+          const suggestionId = (existingEvent.payload as { suggestionId?: string } | undefined)?.suggestionId;
+          if (suggestionId) {
+            const [row] = await tx
+              .select()
+              .from(knowledgeSuggestions)
+              .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, suggestionId)))
+              .limit(1);
+            if (row) {
+              return { id: row.id, targetItemId: row.targetItemId, status: row.status, createdAt: row.createdAt.toISOString() };
+            }
           }
         }
       }
-    }
-    const [row] = await db
-      .insert(knowledgeSuggestions)
-      .values({
+      const [row] = await tx
+        .insert(knowledgeSuggestions)
+        .values({
+          companyId: input.companyId,
+          nestId,
+          targetItemId: targetId,
+          body: input.body,
+          rationale: input.rationale ?? null,
+          sourceKind: input.sourceKind ?? null,
+          sourceRef: input.sourceRef ?? null,
+          trust: input.trust ?? null,
+          status: "pending",
+          createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
+          createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
+          createdAt: now(),
+        })
+        .returning();
+      await appendEvent(tx, {
         companyId: input.companyId,
         nestId,
-        targetItemId: targetId,
-        body: input.body,
-        rationale: input.rationale ?? null,
-        sourceKind: input.sourceKind ?? null,
-        sourceRef: input.sourceRef ?? null,
-        trust: input.trust ?? null,
-        status: "pending",
-        createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
-        createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
-        createdAt: now(),
-      })
-      .returning();
-    await appendEvent(db, {
-      companyId: input.companyId,
-      nestId,
-      itemId: targetId,
-      event: "knowledge.suggested",
-      payload: {
-        body: input.body,
-        suggestionId: row!.id,
-        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-      },
-      actor,
+        itemId: targetId,
+        event: "knowledge.suggested",
+        payload: {
+          body: input.body,
+          suggestionId: row!.id,
+          ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+        },
+        actor,
+      });
+      return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
     });
-    return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
   }
 
   async function decideSuggestion(

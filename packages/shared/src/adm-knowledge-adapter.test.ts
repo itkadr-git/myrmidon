@@ -430,17 +430,49 @@ describe("ADM knowledge REST adapter", () => {
     await expect(
       adapter.proposeRuleWithConflictRetry(
         {
-          itemId: policy.id,
           slug: policy.slug,
           title: policy.title,
           summary: "Summary",
           body: "Body",
           sourceRef: "OPE-9877",
-          idempotencyKey: "ope-9877:sec-conflict:1",
+          idempotencyKey: "ope-9877:abort-conflict:1",
+          onConflict: () => false,
         },
-        "ope-9877:sec-conflict:2",
+        "ope-9877:abort-conflict:2",
       ),
     ).rejects.toMatchObject({ code: "ADM_REVISION_CONFLICT" });
+  });
+
+  it("rejects conflict retry if onConflict callback is missing (owner approval gate enforced)", async () => {
+    const latestPolicy: AdmKnowledgeItem = {
+      ...policy,
+      deliveredRevisionId: "rev-2",
+      summary: "Updated deployment policy v2",
+      content: "Old body content v2",
+    };
+    const api = rest({
+      proposeRule: vi.fn(async () => {
+        throw new AdmConnectorError("ADM_REVISION_CONFLICT", "Conflict detected");
+      }),
+      read: vi.fn(async () => latestPolicy),
+    });
+    const adapter = createAdmKnowledgeAdapter(api);
+    await expect(
+      adapter.proposeRuleWithConflictRetry(
+        {
+          slug: policy.slug,
+          title: policy.title,
+          summary: "Summary",
+          body: "Body",
+          sourceRef: "OPE-9877",
+          idempotencyKey: "ope-9877:missing-onconflict:1",
+        } as any,
+        "ope-9877:missing-onconflict:2",
+      ),
+    ).rejects.toMatchObject({
+      code: "ADM_REVISION_CONFLICT",
+      message: expect.stringContaining("requires owner approval callback"),
+    });
   });
 
   it("destructures cleanly without breaking this context", async () => {

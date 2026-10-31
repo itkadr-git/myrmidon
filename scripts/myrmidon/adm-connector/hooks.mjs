@@ -18,8 +18,21 @@ const compare = (a, b) => rank(a) - rank(b) || b.priority - a.priority || Date.p
 const key = item => JSON.stringify([item.slug, item.revision_id]);
 const summary = item => `${Array.from(`${item.title}: ${item.summary}`).slice(0, 300).join('')} [${item.slug}@${item.revision_id}]`;
 
+export function createHookLoader(loader) {
+  if (typeof loader === 'function') return loader;
+  if (loader && typeof loader.createHookLoader === 'function') return loader.createHookLoader();
+  throw new Error('createHookLoader requires a loader function or adapter with createHookLoader()');
+}
+
 /** load is the validated cache/REST boundary; never accept an unchecked disk cache here. */
-export function createHooks({ stateDir, load, log = async () => {} }) {
+export function createHooks({ stateDir, load, createHookLoader: hookLoaderFactory, log = async () => {} }) {
+  const getLoader = () => {
+    if (typeof hookLoaderFactory === 'function') return hookLoaderFactory();
+    if (load && typeof load.createHookLoader === 'function') return load.createHookLoader();
+    if (typeof load === 'function') return load;
+    throw new Error('createHooks requires load or createHookLoader');
+  };
+  const loader = getLoader();
   return { async run(event) {
     if (!['SessionStart', 'UserPromptSubmit'].includes(event.hook_event_name) || typeof event.session_id !== 'string' || !event.session_id) throw new Error('Invalid hook event');
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
@@ -39,7 +52,7 @@ export function createHooks({ stateDir, load, log = async () => {} }) {
       const delivered = new Set(state.delivered);
       if (event.hook_event_name === 'SessionStart' || matched.length) {
         try {
-          const snapshot = await load({ triggers: matched, event: event.hook_event_name });
+          const snapshot = await loader({ triggers: matched, event: event.hook_event_name });
           if (!Number.isFinite(snapshot.fetchedAt)) throw new Error('Invalid cache age');
           const items = snapshot.items.filter(x => x.status === 'published');
           for (const x of items) {

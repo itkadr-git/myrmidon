@@ -155,3 +155,41 @@ test('exercises fail-closed warning behavior on budget overflow and omission of 
     assert.equal(res.context, '');
   } finally { await c2(); }
 });
+
+test('production hooks invoke createHookLoader() from adapter or option (production hook integration)', async () => {
+  const items = [
+    item('adm/policy/deploy', [], 'Deploy rule body'),
+    item('adm/trigger/ssh', ['ssh'], 'SSH rule body'),
+  ];
+  let loaderCalled = 0;
+  const mockAdapter = {
+    createHookLoader() {
+      loaderCalled++;
+      return async ({ event, triggers }) => {
+        return {
+          items: items.map(x => ({
+            ...x,
+            body: event === 'UserPromptSubmit' && triggers.some(t => x.triggers.includes(t)) ? x.body : '',
+          })),
+          fetchedAt: Date.now(),
+          degraded: false,
+        };
+      };
+    },
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'adm-hooks-prod-'));
+  try {
+    const hooks = createHooks({
+      stateDir: dir,
+      load: mockAdapter,
+    });
+    assert.equal(loaderCalled, 1, 'createHooks should call createHookLoader() on adapter');
+    const start = await hooks.run({ hook_event_name: 'SessionStart', session_id: 'session-prod-1' });
+    assert.ok(start.bytes > 0);
+    const submit = await hooks.run({ hook_event_name: 'UserPromptSubmit', session_id: 'session-prod-1', prompt: 'connect with ssh' });
+    assert.ok(submit.bytes > 0);
+    assert.ok(submit.context.includes('SSH rule body'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
