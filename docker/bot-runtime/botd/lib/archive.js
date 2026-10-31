@@ -209,7 +209,7 @@ function writeManifest(archiveRoot, manifest) {
 
 function entryFiles(entry) {
   // fullTar: the fallback archive of the whole directory (bundle could not be made)
-  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar, entry.fullTar].filter((f) => typeof f === "string" && f);
+  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar, entry.fullTar, entry.sessionExport].filter((f) => typeof f === "string" && f);
 }
 
 function sizeOf(file) {
