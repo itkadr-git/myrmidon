@@ -5057,6 +5057,7 @@ const costSummaryPaths = [
   "by-provider",
   "by-biller",
   "by-project",
+  "by-issue",
   "finance-summary",
   "finance-by-biller",
   "finance-by-kind",
