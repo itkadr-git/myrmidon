@@ -343,6 +343,13 @@ Notes:
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
 
+## Diagnostic Environment Hygiene (OPE-1177 / OPE-3100)
+
+When inspecting container or runtime environment variables during diagnostics, never output raw credentials, tokens, passwords, or connection strings to transcripts or logs:
+- **Container wrapper:** `/usr/local/bin/env` is installed by `Dockerfile` and has precedence in `PATH`. When called without command arguments (e.g., `docker exec <container> env`), sensitive variables (`*_PASSWORD`, `*_SECRET`, `*_TOKEN`, `*_KEY`) and passwords within `DATABASE_URL` are masked as `***`.
+- **Command delegation:** When arguments are supplied (`env <command> ...`), the wrapper passes through to `/usr/bin/env` transparently without alteration.
+- **Diagnostic pipeline:** The recommended diagnostic pipeline is `docker exec <container> env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/'`. The raw secret count in new diagnostic transcripts must be 0.
+
 ## Native Runner build cache
 
 The image compiles the native Runner in `runner-build`, before copying the

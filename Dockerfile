@@ -55,6 +55,7 @@ COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plug
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
+COPY packages/plugins/plugin-mail-imap/package.json packages/plugins/plugin-mail-imap/
 COPY packages/plugins/hindsight-paperclip/package.json packages/plugins/hindsight-paperclip/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
@@ -181,6 +182,8 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-env-wrapper.sh /usr/local/bin/env
+RUN chmod +x /usr/local/bin/env
 
 COPY --chown=node:node --from=build /app /app
 
