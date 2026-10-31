@@ -5156,6 +5156,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(heartbeatRuns.id, runId));
 
+    const heartbeat = heartbeatService(db);
     await heartbeat.reapOrphanedRuns();
 
     const runs = await db
@@ -5247,6 +5248,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(heartbeatRuns.id, runId));
 
+    const heartbeat = heartbeatService(db);
     await heartbeat.reapOrphanedRuns();
 
     const runs = await db
@@ -5254,16 +5256,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, companyId));
 
-    expect(runs).toHaveLength(1);
+    // The failed process_lost run stays. No *pending-interaction* retry may
+    // exist (that is the OPE-2587 contract); main's generic liveness repair
+    // may legitimately queue an issue_continuation_needed run instead.
+    expect(
+      runs.filter((run) => run.contextSnapshot?.wakeReason === "interaction_pending"),
+    ).toHaveLength(1);
     expect(runs[0]).toMatchObject({
       id: runId,
       status: "failed",
       errorCode: "process_lost",
     });
+    expect(
+      runs.filter(
+        (run) =>
+          run.retryOfRunId === runId &&
+          run.contextSnapshot?.retryReason === "pending_interaction_process_loss_retry",
+      ),
+    ).toHaveLength(0);
     mockAdapterExecute.mockClear();
   });
 
