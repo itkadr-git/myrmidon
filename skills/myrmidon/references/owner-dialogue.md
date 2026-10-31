@@ -22,9 +22,9 @@ is absent. Use the documented REST fallback only when your runtime provides the 
 base URL, API key, and current run ID:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+curl -sS -X POST "$MYRMIDON_API_URL/api/myrmidon/owner-message" \
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  -H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID" \
   -H 'Content-Type: application/json' \
   --data '{"interactionIds":["<interaction-id>"],"text":"<plain-language explanation>"}'
 ```
@@ -33,9 +33,9 @@ The method is `POST` and the exact path is `/api/myrmidon/owner-message` (not an
 Save the JSON response and its `publicationId`:
 
 ```sh
-response="$(curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \\
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \\
+response="$(curl -sS -X POST "$MYRMIDON_API_URL/api/myrmidon/owner-message" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY" \\
+  -H "X-Paperclip-Run-Id: $MYRMIDON_RUN_ID" \\
   -H 'Content-Type: application/json' \\
   --data '{"interactionIds":["<interaction-id>"],"text":"<plain-language explanation>"}')"
 printf '%s\n' "$response"
@@ -48,12 +48,12 @@ The operator must perform the read-back with board access: first resolve the bin
 its publication status (replace `<task-id>` and `<publication-id>` literally):
 
 ```sh
-binding="$(curl -sS "$PAPERCLIP_API_URL/api/issues/<task-id>/chat-binding" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY")"
+binding="$(curl -sS "$MYRMIDON_API_URL/api/issues/<task-id>/chat-binding" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY")"
 endpoint_id="$(printf '%s' "$binding" | jq -r '.endpointId')"
 conversation_id="$(printf '%s' "$binding" | jq -r '.conversationId')"
-curl -sS "$PAPERCLIP_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conversation_id/publications/<publication-id>/status" \\
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS "$MYRMIDON_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conversation_id/publications/<publication-id>/status" \\
+  -H "Authorization: Bearer $MYRMIDON_API_KEY"
 ```
 
 Use the same run's identity for the POST; never borrow another agent's key or impersonate the owner. The
@@ -98,3 +98,14 @@ chat after your explanation (`403 no_owner_reply`), you are the author of the in
 fits its kind (`422 action_kind_mismatch`). Silence, your own reasoning, or someone else's words never close a
 decision. Tool-action confirmations, secret proposals and connection authorizations are not handled this way;
 they stay explicit decisions on the board.
+
+## Owner ideas ("Ideas" project, 1.6.7 IDEAS)
+
+Any thought or idea from Alex ("we should", "it would be great if", suggestion, hypothesis) that does not become a task in the current release immediately must be captured as a card in the "Идеи" (Ideas) project in the same turn:
+- Project: «Идеи» (on the Paperclip board).
+- Status: «идея» (without assignee or due date).
+- Mandatory origin field («откуда») in the issue description:
+  * Session / chat: session identifier or link to the conversation.
+  * Date: conversation date (YYYY-MM-DD).
+  * Speaker: Alex (or the agent's name).
+Do not lose owner ideas in conversation threads and do not clutter releases with them. A weekly routine has the lead or architect review the Ideas project (into release, reject with reason, or keep).

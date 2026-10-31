@@ -9,16 +9,16 @@ import type {
   PromptBreakdown,
   RuntimeStatusUpdate,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
-import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
-import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
-import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+} from "@myrmidon/adapter-utils";
+import { githubLauncherPayload } from "@myrmidon/adapter-utils/github-launcher";
+import { measureSections } from "@myrmidon/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@myrmidon/adapter-utils/input-overflow";
 import {
   INPUT_LIMIT_CONFIG_KEY,
   decideInputLimit,
   readInputLimitHint,
   trimTextToChars,
-} from "@paperclipai/adapter-utils/input-limit";
+} from "@myrmidon/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -28,7 +28,7 @@ import {
   isPaperclipRecoveryWakePayload,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
   CREATE_CANCEL_GRACE_MS,
@@ -66,7 +66,7 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
-// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Myrmidon-managed
 // skills (see ./myrmidon-skills-reconcile.ts for the route decision).
 import {
   buildPaperclipSkillsField,
@@ -123,6 +123,16 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  /** Raw tool args are ephemeral and only passed to RunGuard's hash-only signature. */
+  guardToolArguments: Map<string, unknown[]>;
+  guardModelTurnObserved: boolean;
+  guardPendingToolCalls: number;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  consecutiveToolErrors: {
+    toolName: string;
+    count: number;
+    lastError: string;
+  } | null;
 };
 
 type TextRedactor = (value: string) => string;
@@ -423,9 +433,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
   // measured as its own prompt section.
   const identityContract = [
-    `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
+    `You are ${ctx.agent.name}, an AI agent employee in a Myrmidon-managed company.`,
     "",
-    "Paperclip runtime identity:",
+    "Myrmidon runtime identity:",
     `- Agent ID: ${ctx.agent.id}`,
     `- Company ID: ${ctx.agent.companyId}`,
     // myrmidon(G4): this attempt's own ctx.runId (passed in as
@@ -504,9 +514,9 @@ function buildGitHubBrokerField(
 }
 
 // myrmidon(1.6.5 BOT-DISK-H5a, contract C6): the `workspace` field of a
-// /v1/runs request — `{key, repo, baseRef}` — from which the gateway runs
+// /v1/runs request — `{key, repo, baseRef?, branch?}` — from which the gateway runs
 // `myr-ws open` before the model starts. The shapes mirror
-// `runWorkspaceFieldSchema` of @paperclipai/shared (this package does not
+// `runWorkspaceFieldSchema` of @myrmidon/shared (this package does not
 // depend on it; execute.test.ts checks the output against the real schema).
 // key: the board identifier of the run's issue; repo: `owner/name` derived
 // from the project workspace's repo URL (github.com only: https, ssh:// or scp-like
@@ -547,13 +557,23 @@ function deriveWorkspaceRepoName(repoUrl: string): string | null {
 
 function buildWorkspaceField(
   context: Record<string, unknown>,
-): { key: string; repo: string; baseRef?: string } | undefined {
+): { key: string; repo: string; baseRef?: string; branch?: string } | undefined {
   const wake = parseObject(context.paperclipWake);
   const key = asString(parseObject(wake.issue).identifier, "").trim();
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
+  // The task's own pull request decides the repository and the branch: the project is only the
+  // fallback. A PR of one repository on a project bound to another (OPE-7967: PR #82 of
+  // myrmidon-deploy under a project of myrmidon) must open the PR's repository on the PR's
+  // head branch, not the project's repository on `bot/<KEY>`.
+  const pullRequest = parseObject(context.paperclipPullRequest);
+  const prRepoRaw = asString(pullRequest.repo, "").trim();
+  const prRepo = prRepoRaw && WS_REPO_NAME_RE.test(prRepoRaw) ? prRepoRaw : null;
+  const prBranchRaw = asString(pullRequest.headRef, "").trim().replace(/^refs\/heads\//, "");
+  const prBranch = prRepo && prBranchRaw && prBranchRaw.length <= 200 && WS_GIT_REF_RE.test(prBranchRaw) && !prBranchRaw.startsWith("-") && !prBranchRaw.includes("..") ? prBranchRaw : "";
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  const projectRepo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = prRepo ?? projectRepo;
   let usedDefault = false;
   if (!repo) {
     const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
@@ -563,12 +583,13 @@ function buildWorkspaceField(
     }
   }
   if (!repo) return undefined;
-  // The ref belongs to the project workspace's own repository, not to the fallback one.
-  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the PR's or the fallback one.
+  const baseRef = usedDefault || repo !== projectRepo ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
     ...(baseRef && baseRef.length <= 200 && WS_GIT_REF_RE.test(baseRef) ? { baseRef } : {}),
+    ...(prBranch ? { branch: prBranch } : {}),
   };
 }
 
@@ -615,8 +636,8 @@ function buildRunBody(
   const cardInstructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
-    "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
-  // myrmidon(G4): prepend the Paperclip-managed instructions bundle (the same
+    "Follow the Myrmidon wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  // myrmidon(G4): prepend the Myrmidon-managed instructions bundle (the same
   // file hermes_local injects via instructionsFilePath) ahead of the card's
   // own stable instructions string, mirroring local's `agentInstructions +
   // "\n\n---\n\n" + prompt` layering.
@@ -629,6 +650,11 @@ function buildRunBody(
   const model = nonEmpty(ctx.config.model);
   const provider = nonEmpty(ctx.config.provider);
   const modelOptions = buildModelOptions(ctx.config);
+  const fallbackModels = provider ? readGatewayFallbackModels(ctx.config) : [];
+  const modelAttemptId = nonEmpty(ctx.config.modelAttemptId);
+  const fallbackModelEntries = fallbackModels
+    .map((fallbackModel) => ({ provider, model: fallbackModel }))
+    .filter((entry): entry is { provider: string; model: string } => Boolean(entry.provider));
   // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
   // Assigned after the payloadTemplate spread so a card cannot forge a
   // capability: only the env the server itself wrote into runtimeConfig.env
@@ -654,10 +680,12 @@ function buildRunBody(
     ...(model ? { model } : {}),
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
+    ...(fallbackModelEntries.length ? { fallback_model: fallbackModelEntries } : {}),
+    ...(modelAttemptId ? { model_attempt_id: modelAttemptId } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
-    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // myrmidon(1.6.6-HERMES-SKILLS-A): Myrmidon-managed skills for the run's
     // profile (see the buildRunBody signature note); the gateway image's
     // run-scoped-skills patch materializes them before the agent starts.
     paperclip_skills: paperclipSkillsField,
@@ -815,6 +843,10 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    guardToolArguments: new Map(),
+    guardModelTurnObserved: false,
+    guardPendingToolCalls: 0,
+    consecutiveToolErrors: null,
   };
 }
 
@@ -869,7 +901,19 @@ function toolNameFromEvent(record: Record<string, unknown> | null): string {
 
 function toolPreviewFromEvent(record: Record<string, unknown> | null, redactText: TextRedactor): string {
   const preview = nonEmpty(record?.preview) ?? nonEmpty(record?.detail) ?? "";
-  return preview ? redactText(preview) : "";
+  if (!preview) return "";
+
+  // Tool arguments may contain arbitrary secrets; redact structured values by
+  // key before rendering the preview into persistent run logs.
+  try {
+    const parsed: unknown = JSON.parse(preview);
+    if (parsed !== null && typeof parsed === "object") {
+      return redactText(JSON.stringify(redactForLog(parsed, [], 0, redactText)));
+    }
+  } catch {
+    // Keep non-JSON previews, while still applying the text redactor below.
+  }
+  return redactText(preview);
 }
 
 function toolDurationSeconds(record: Record<string, unknown> | null): number | null {
@@ -920,6 +964,77 @@ function pushToolPreview(state: ExecutionState, name: string, preview: string): 
 function popToolPreview(state: ExecutionState, name: string): string {
   const queue = state.toolPreviews.get(name);
   return queue?.shift() ?? "";
+}
+
+function pushGuardToolArguments(state: ExecutionState, name: string, args: unknown): void {
+  const queue = state.guardToolArguments.get(name);
+  if (queue) queue.push(args);
+  else state.guardToolArguments.set(name, [args]);
+}
+
+function popGuardToolArguments(state: ExecutionState, name: string): unknown {
+  const queue = state.guardToolArguments.get(name);
+  if (!queue) return undefined;
+  const args = queue.shift();
+  if (queue.length === 0) state.guardToolArguments.delete(name);
+  return args;
+}
+
+async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+  if (!ctx.runGuard || state.guardModelTurnObserved) return;
+  state.guardModelTurnObserved = true;
+  const decision = ctx.runGuard.modelCall();
+  if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+}
+
+async function observeRunGuardEvent(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  eventName: string | null;
+  record: Record<string, unknown> | null;
+}): Promise<void> {
+  const { ctx, state, eventName, record } = input;
+  const guard = ctx.runGuard;
+  if (!guard) return;
+  if (eventName === "tool.started") {
+    state.guardPendingToolCalls += 1;
+    if (state.guardPendingToolCalls === 1) {
+      guard.pauseIdle();
+    }
+    await observeModelTurn(ctx, state);
+    const name = toolNameFromEvent(record);
+    const args = record?.input ?? record?.arguments ?? record?.preview;
+    if (args !== undefined) pushGuardToolArguments(state, name, args);
+    guard.event();
+    return;
+  }
+  if (eventName === "tool.completed") {
+    state.guardPendingToolCalls = Math.max(0, state.guardPendingToolCalls - 1);
+    if (state.guardPendingToolCalls === 0) {
+      guard.resumeIdle();
+    }
+    const name = toolNameFromEvent(record);
+    const args = popGuardToolArguments(state, name);
+    const decision = toolHasError(record)
+      ? guard.toolFailure(name, args)
+      : guard.toolSuccess();
+    if (decision.stop) await ctx.onRunGuardStop?.(decision.reason!);
+    if (state.guardPendingToolCalls === 0) state.guardModelTurnObserved = false;
+    return;
+  }
+  if (
+    (eventName === "message.delta" ||
+      eventName === "reasoning.available" ||
+      eventName === "content" ||
+      eventName === "model.request" ||
+      eventName === "model.started" ||
+      eventName === "llm.request" ||
+      eventName === "llm.started") &&
+    state.guardPendingToolCalls === 0
+  ) {
+    await observeModelTurn(ctx, state);
+  }
+  guard.event();
 }
 
 /** `  [tool] <name> <preview>` — real hermes chat prints this per agent/display.py's
@@ -977,6 +1092,40 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
+
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    if (toolHasError(record)) {
+      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
+      const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
+      const isSameError = Boolean(
+        isSameTool &&
+        state.consecutiveToolErrors?.lastError &&
+        errStr.length > 0 &&
+        state.consecutiveToolErrors.lastError === errStr,
+      );
+
+      let currentError = state.consecutiveToolErrors;
+      if (isSameTool && isSameError && currentError) {
+        currentError.count++;
+      } else {
+        currentError = { toolName: name, count: 1, lastError: errStr };
+        state.consecutiveToolErrors = currentError;
+      }
+
+      if (currentError.count >= 3) {
+        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${currentError.count} times consecutively with the same error.`;
+        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
+        markTerminal(state, {
+          runId: state.runId,
+          status: "failed",
+          eventName: "agent.runtime.stop_condition",
+          payload: { error: errorMsg },
+          output: errorMsg,
+        });
+      }
+    } else {
+      state.consecutiveToolErrors = null;
+    }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));
     if (reasoning) await ctx.onLog("stdout", formatCompactReasoningLine(reasoning));
@@ -1125,6 +1274,7 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
+  await observeRunGuardEvent({ ctx, state, eventName, record });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -1325,6 +1475,88 @@ function parseUsage(value: unknown): UsageSummary | undefined {
   };
 }
 
+function parseGatewayCallIds(value: unknown): {
+  gatewayCallIds: string[];
+  gatewayCallIdsTruncated: boolean;
+  litellmRequestIds: string[];
+  litellmRequestIdsTruncated: boolean;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      gatewayCallIds: [], gatewayCallIdsTruncated: false,
+      litellmRequestIds: [], litellmRequestIdsTruncated: false,
+    };
+  }
+  const usage = asRecord(record.usage);
+  const gatewayCallIds = new Set<string>();
+  const litellmRequestIds = new Set<string>();
+  const addIds = (target: Set<string>, candidate: unknown) => {
+    for (const raw of Array.isArray(candidate) ? candidate : [candidate]) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (id.length > 0 && id.length <= 256) target.add(id);
+    }
+  };
+  for (const source of [record, usage]) {
+    if (!source) continue;
+    addIds(gatewayCallIds, source.gateway_call_ids);
+    addIds(gatewayCallIds, source.gatewayCallIds);
+    addIds(litellmRequestIds, source.litellm_request_ids);
+    addIds(litellmRequestIds, source.litellmRequestIds);
+    for (const candidate of [source.model_call_ids, source.call_ids, source.model_call_id, source.call_id]) {
+      addIds(gatewayCallIds, candidate);
+    }
+  }
+  const gatewayCallIdsTruncated = gatewayCallIds.size > 500;
+  const litellmRequestIdsTruncated = litellmRequestIds.size > 500;
+  return {
+    gatewayCallIds: [...gatewayCallIds].slice(0, 500),
+    gatewayCallIdsTruncated,
+    litellmRequestIds: [...litellmRequestIds].slice(0, 500),
+    litellmRequestIdsTruncated,
+  };
+}
+
+function parseModelCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  const readCount = (candidate: unknown): number | null => {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    return Number.isSafeInteger(count) && count >= 0 ? Math.min(count, 100_000) : null;
+  };
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  const nested = asRecord(record?.model_calls) ?? asRecord(usage?.model_calls);
+  for (const candidate of [nested?.count, nested?.total]) {
+    const count = readCount(candidate);
+    if (count !== null) return count;
+  }
+  return null;
+}
+
+function parseOutputCallCount(outputChunks: string[]): number | null {
+  let count = 0;
+  for (const chunk of outputChunks) {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (/^\s*(?:┊\s*)?🔧\s*Calling\s+/.test(line)) count += 1;
+    }
+  }
+  return count > 0 ? Math.min(count, 100_000) : null;
+}
+
+function parseGatewayCallCount(value: unknown): number | null {
+  const record = asRecord(value);
+  const usage = asRecord(record?.usage);
+  for (const candidate of [record?.model_call_count, record?.modelCallCount, usage?.model_call_count, usage?.modelCallCount]) {
+    const count = typeof candidate === "number" ? candidate : typeof candidate === "string" ? Number(candidate) : Number.NaN;
+    if (Number.isSafeInteger(count) && count >= 0) return Math.min(count, 100_000);
+  }
+  return null;
+}
+
 function parseCostUsd(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record?.cost_usd ?? record?.costUsd ?? asRecord(record?.usage)?.cost_usd ?? asRecord(record?.usage)?.costUsd;
@@ -1391,6 +1623,41 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Parse explicit fallback models in the card's models.fallbacks field. */
+export function readGatewayFallbackModels(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const config = value as Record<string, unknown>;
+  const models = config.models;
+  const nested = typeof models === "object" && models !== null && !Array.isArray(models)
+    ? (models as Record<string, unknown>).fallbacks
+    : undefined;
+  const fallbacks = Array.isArray(config.fallbacks) ? config.fallbacks : nested;
+  if (!Array.isArray(fallbacks)) return [];
+  return fallbacks.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1408,6 +1675,8 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
+  modelAttemptId?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1416,11 +1685,25 @@ export function mapFinalResultForTest(input: {
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
-  const mapped = terminalResultCode(input.terminal.status);
+  const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  const providerErrorAsContent = Boolean(
+    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+  );
+  const mapped = providerErrorAsContent
+    ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
+    : terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const payloadCallIds = parseGatewayCallIds(payload);
+  const gatewayModelCallCount = parseGatewayCallCount(payload);
+  const explicitCallCount = gatewayModelCallCount ?? parseGatewayCallCount(usage);
+  const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
+  const modelCallCount = explicitCallCount ?? metadataCallCount;
+  const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
   const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    ? redactText(providerErrorAsContent
+      ? "Provider returned an overload or quota error as successful response content"
+      : extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
   // myrmidon(RECOVERY-HERMES-GATEWAY): see the signature constant above — a
   // failed turn whose message carries the upstream-connection signature is
@@ -1432,9 +1715,12 @@ export function mapFinalResultForTest(input: {
   // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
-    errorMessage !== null &&
-    errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+    providerErrorAsContent
       ? "transient_upstream"
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+        ? "transient_upstream"
       : mapped.errorCode === "hermes_gateway_run_failed" &&
           errorMessage !== null &&
           errorMessage
@@ -1445,6 +1731,9 @@ export function mapFinalResultForTest(input: {
             classifyInputOverflow(errorMessage)
           ? "input_overflow"
           : null;
+  if (providerErrorAsContent) {
+    console.warn("provider_error_as_content", { model: extractModel(payload) ?? input.configuredModel ?? "unknown" });
+  }
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1463,7 +1752,7 @@ export function mapFinalResultForTest(input: {
     // the owner when the run has no separate final message, so it must carry the
     // complete answer. A 2,000-character cut here reached Telegram as a
     // silently truncated reply; length is handled downstream by splitting.
-    ...(output ? { summary: output } : {}),
+    ...(output && !providerErrorAsContent ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -1480,11 +1769,18 @@ export function mapFinalResultForTest(input: {
       // under the standard `result` key the comment builder reads, while the
       // top-level `summary` stays a bounded copy for run lists/journals. The
       // `output` key is kept for existing gateway-specific consumers.
-      result: output ?? "",
-      output: output ?? "",
+      result: providerErrorAsContent ? "" : output ?? "",
+      output: providerErrorAsContent ? "" : output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      modelCallCount: modelCallCount,
+      modelCallCountSource,
+      gatewayCallIds: payloadCallIds.gatewayCallIds,
+      gatewayCallIdsTruncated: payloadCallIds.gatewayCallIdsTruncated,
+      litellmRequestIds: payloadCallIds.litellmRequestIds,
+      litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
 }
@@ -1505,7 +1801,11 @@ async function stopRun(input: {
       headers: input.headers,
       signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
     });
-    await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
+    const cancellation = input.ctx.paperclipCancellation?.current;
+    await input.ctx.onLog(
+      "stdout",
+      `[hermes-gateway] stop requested for run ${input.runId} correlationId=${cancellation?.correlationId ?? "unknown"} sender=${cancellation?.source.actor ?? cancellation?.source.code ?? "unknown"}\n`,
+    );
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
@@ -1525,13 +1825,29 @@ export async function stopGatewayRunForBoard(input: {
   baseUrl: string;
   apiKey: string;
   gatewayRunId: string;
+  cancellation?: {
+    correlationId: string;
+    source: { code: string; endpoint?: string; actor?: string };
+    reason: string;
+  };
 }): Promise<{ stopped: boolean }> {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   if (!baseUrl) return { stopped: false };
   try {
     await fetchJson(apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(input.gatewayRunId)}/stop`), {
       method: "POST",
-      headers: { Authorization: `Bearer ${input.apiKey}` },
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        ...(input.cancellation
+          ? {
+              "x-paperclip-correlation-id": input.cancellation.correlationId,
+              "x-paperclip-cancellation-source": input.cancellation.source.code,
+              ...(input.cancellation.source.endpoint ? { "x-paperclip-cancellation-endpoint": input.cancellation.source.endpoint } : {}),
+              ...(input.cancellation.source.actor ? { "x-paperclip-cancellation-actor": input.cancellation.source.actor } : {}),
+              "x-paperclip-cancellation-reason": input.cancellation.reason,
+            }
+          : {}),
+      },
       signal: AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS),
     });
     return { stopped: true };
@@ -1787,6 +2103,7 @@ function isUnambiguousCreateNonStart(err: unknown): boolean {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const fallbackModels = readGatewayFallbackModels(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return {
@@ -1857,7 +2174,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually reaches this adapter). ctx.runId is unique per attempt, so a
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
-  const idempotencyKey = ctx.runId;
+  const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
@@ -1891,6 +2208,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
+  const cancellation = ctx.paperclipCancellation?.current;
+  if (cancellation) {
+    runHeaders["X-Paperclip-Cancellation-Id"] = cancellation.correlationId;
+    runHeaders["X-Paperclip-Cancellation-Source"] = cancellation.source.code;
+    eventHeaders["X-Paperclip-Cancellation-Id"] = cancellation.correlationId;
+    eventHeaders["X-Paperclip-Cancellation-Source"] = cancellation.source.code;
+  }
   const redactText = createTextRedactor([
     apiKey,
     sessionKey,
@@ -1927,7 +2251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Myrmidon-managed skills
   // before POST /v1/runs, at the same boundary hermes_local reconcile skills
   // (execute.ts:372-389). The preferred route — reading/writing the gateway
   // profile's skills.external_dirs over the API — does not exist on the
@@ -1938,7 +2262,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // whole block is a no-op (a developer outside the board is unaffected) —
   // buildPaperclipSkillsField returns undefined and JSON drops the field.
   // Any reconcile/fact-check failure aborts before the run is created, with
-  // the same "Cannot start without the required Paperclip-managed skills"
+  // the same "Cannot start without the required Myrmidon-managed skills"
   // message as hermes_local; the redactor is applied defensively even though
   // the module's own messages never carry secrets.
   let paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined;
@@ -1960,21 +2284,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
         await ctx.onLog(
           "stdout",
-          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Paperclip-managed skill(s) verified in the run-body field\n`,
+          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Myrmidon-managed skill(s) verified in the run-body field\n`,
         );
       }
     } catch (err) {
       const reason = redactErrorMessage(err, redactText);
       await ctx.onLog(
         "stderr",
-        `[hermes-gateway] Cannot start without the required Paperclip-managed skills: ${reason}\n`,
+        `[hermes-gateway] Cannot start without the required Myrmidon-managed skills: ${reason}\n`,
       );
       return {
         exitCode: 1,
         signal: null,
         timedOut: false,
         errorCode: "paperclip_skills_unavailable",
-        errorMessage: `Cannot start without the required Paperclip-managed skills: ${reason}`,
+        errorMessage: `Cannot start without the required Myrmidon-managed skills: ${reason}`,
         provider: "hermes_gateway",
         sessionParams: { strategy },
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
@@ -2456,8 +2780,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
-    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
-    // used when the gateway's terminal payload names none.
+    modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
@@ -2501,5 +2824,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  const isProviderError =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+      finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+
+  const shouldTryFallback =
+    finalResult.errorCode === "hermes_gateway_run_failed" &&
+    finalResult.errorFamily === "transient_upstream" &&
+    fallbackModels.length > 0;
+
+  if (shouldTryFallback) {
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+    );
+    const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+    const fallbackResult = await execute({
+      ...ctx,
+      runId: fallbackAttemptId,
+      config: {
+        ...ctx.config,
+        model: fallbackModels[0],
+        models: { fallbacks: fallbackModels.slice(1) },
+        modelAttemptId: fallbackAttemptId,
+      },
+      onDispatch: undefined,
+      onExternalRunId: undefined,
+      onMeta: undefined,
+    });
+    if (fallbackResult.exitCode === 0) return fallbackResult;
+    if (isProviderError) {
+      return {
+        ...finalResult,
+        summary: undefined,
+        resultJson: {
+          ...finalResult.resultJson,
+          result: "",
+          output: "",
+          provider_error_as_content: true,
+        },
+      };
+    }
+    return fallbackResult;
+  }
+
+  if (isProviderError) {
+    return {
+      ...finalResult,
+      summary: undefined,
+      resultJson: {
+        ...finalResult.resultJson,
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+      },
+    };
+  }
+
   return finalResult;
 }

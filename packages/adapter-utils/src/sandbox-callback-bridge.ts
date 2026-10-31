@@ -22,7 +22,7 @@ import {
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
@@ -1054,7 +1054,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       let raw: string;
       try {
-        raw = await input.client.readTextFile(requestPath, readLimit);
+        raw = await input.client.readTextFile(requestPath, maxEnvelopeBytes);
       } catch (error) {
         // The gateway deletes a request file when its caller stops waiting
         // (client-side timeout cleanup). A read that fails because the file is
@@ -1064,6 +1064,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
         // keeps its existing handling.
         const remaining = await input.client.listJsonFiles(directories.requestsDir).catch(() => null);
         if (remaining !== null && !remaining.includes(fileName)) {
+          return;
+        }
+        if (error instanceof Error && error.message.includes("Bridge envelope exceeded the configured size limit")) {
+          await finalize({
+            id: fileName.replace(/\.json$/i, ""),
+            status: 413,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ error: "Bridge request envelope exceeded the configured size limit." }),
+            completedAt: new Date().toISOString(),
+          });
           return;
         }
         throw error;

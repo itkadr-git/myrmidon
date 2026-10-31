@@ -4,7 +4,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
@@ -372,25 +372,31 @@ describe("ProjectWorkspaceSummaryCard", () => {
 
     await act(async () => {
       branchTextButton!.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
-    expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
+    await vi.waitFor(() => {
+      flushSync(() => {});
+      expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
+      expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
+    });
 
     await act(async () => {
       pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
-    expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
+    await vi.waitFor(() => {
+      flushSync(() => {});
+      expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
+      expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
+    });
 
     await act(async () => {
       branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(writeClipboard).toHaveBeenCalledWith(summary.branchName);
-    expect(writeClipboard).toHaveBeenCalledWith(summary.cwd);
+    await vi.waitFor(() => {
+      flushSync(() => {});
+      expect(writeClipboard).toHaveBeenCalledWith(summary.branchName);
+      expect(writeClipboard).toHaveBeenCalledWith(summary.cwd);
+    });
 
     act(() => {
       root.unmount();

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Test planning and execution for the two-tier Myrmidon CI.
 //
-//   node scripts/myrmidon/ci/affected-tests.mjs plan --base <sha> --head <sha> [--force-full] [--out plan.json]
+//   node scripts/myrmidon/ci/affected-tests.mjs plan --base <sha> --head <sha> [--force-full] [--release-fast [--pr-light]] [--out plan.json]
 //   node scripts/myrmidon/ci/affected-tests.mjs run --plan plan.json     # fast tier: selected tests
 //   node scripts/myrmidon/ci/affected-tests.mjs extra                    # full tier: packages test:run skips
 //
@@ -14,11 +14,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_FAST_FILES_PER_PACKAGE, applyReleaseFast, classifyChanges, selectTests } from "./select.mjs";
+import {
+  MAX_FAST_FILES_PER_PACKAGE,
+  applyReleaseFast,
+  classifyChanges,
+  lightLogLines,
+  selectDirectTests,
+  selectTests,
+} from "./select.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
-const SERVER = "@paperclipai/server";
+const SERVER = "@myrmidon/server";
 const TEST_FILE = /\.(test|spec)\.(?:[cm]?[jt]sx?)$/;
 
 function log(message) {
@@ -40,7 +47,7 @@ export function vitestProjectDirs(root = ROOT) {
   return [...block.slice(0, block.indexOf("]")).matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
 }
 
-/** Workspace packages: { name, dir, vitestProject, scripts }. */
+/** Workspace packages: { name, dir, vitestProject, scripts, exports }. */
 export function workspacePackages(root = ROOT) {
   const listed = JSON.parse(
     execFileSync("pnpm", ["-r", "ls", "--depth", "-1", "--json"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
@@ -50,7 +57,7 @@ export function workspacePackages(root = ROOT) {
     .map((entry) => {
       const dir = path.relative(root, entry.path).split(path.sep).join("/");
       const pkg = readJson(path.join(entry.path, "package.json"));
-      return { name: entry.name, dir, vitestProject: projectDirs.has(dir), scripts: pkg.scripts ?? {} };
+      return { name: entry.name, dir, vitestProject: projectDirs.has(dir), scripts: pkg.scripts ?? {}, exports: pkg.exports ?? null };
     })
     .filter((pkg) => pkg.dir !== "");
 }
@@ -211,12 +218,13 @@ function finish() {
 // ---------------------------------------------------------------- commands
 
 function planCommand(args) {
-  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, out: null };
+  const opts = { base: null, head: "HEAD", forceFull: false, releaseFast: false, prLight: false, out: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--base") opts.base = args[++i];
     else if (args[i] === "--head") opts.head = args[++i];
     else if (args[i] === "--force-full") opts.forceFull = true;
     else if (args[i] === "--release-fast") opts.releaseFast = true;
+    else if (args[i] === "--pr-light") opts.prLight = true;
     else if (args[i] === "--out") opts.out = args[++i];
     else throw new Error(`unknown argument ${args[i]}`);
   }
@@ -234,12 +242,27 @@ function planCommand(args) {
     // affected job that cannot finish in its time budget. The release branch
     // itself still gets one full run before the release tag (manual run or
     // the `full-ci` label).
+    //
+    // --pr-light (ordinary PRs while the repository variable CI_PR_FAST is true,
+    // together with --release-fast): a package over the limit does not escalate
+    // to full but runs its direct selection (changed tests, tests next to the
+    // changed sources, direct importers, shared guard suites) capped at the
+    // limit; what the cap drops is logged. rel/*, main, merge_group and tags
+    // never get the flag.
     let selection = null;
+    let directSelection = null;
     if (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full")) {
       const packages = workspacePackages();
-      selection = selectTests(changed, packages, repoTestFiles(packages));
+      const tests = repoTestFiles(packages);
+      selection = selectTests(changed, packages, tests);
+      if (opts.prLight && !opts.forceFull) directSelection = selectDirectTests(changed, packages, tests);
     }
-    plan = applyReleaseFast(plan, selection, { releaseFast: opts.releaseFast, forceFull: opts.forceFull });
+    plan = applyReleaseFast(plan, selection, {
+      releaseFast: opts.releaseFast,
+      forceFull: opts.forceFull,
+      prLight: opts.prLight,
+      directSelection,
+    });
   }
   const shown = plan.reasons.slice(0, 5).join("; ") + (plan.reasons.length > 5 ? `; +${plan.reasons.length - 5} more` : "");
   log(`tier: ${plan.tier} (${shown})`);
@@ -247,6 +270,7 @@ function planCommand(args) {
     log(`whole packages: ${plan.selection.wholePackages.join(", ") || "none"}`);
     for (const entry of plan.selection.files) log(`${entry.package}: ${entry.files.length} test file(s)`);
   }
+  for (const line of lightLogLines(plan)) log(line);
   if (opts.out) fs.writeFileSync(opts.out, JSON.stringify(plan, null, 2));
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `tier=${plan.tier}\n`);
   return 0;

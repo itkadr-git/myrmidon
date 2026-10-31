@@ -17,18 +17,21 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
   agents,
   companies,
+  corpusShadowLog,
   heartbeatRuns,
   issueClaims,
   issues,
   litellmCostEvents,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { createPgReviewRoutingStore } from "../../review-routing/store.js";
+import { readFeatureAttentionSignals } from "../../features/attention.js";
 import {
   readSwarmClaimAttentionSignals,
 } from "./swarm-signals.js";
@@ -48,7 +51,28 @@ import {
   type ChannelBridgeFallbackSample,
   type ChannelBridgeFallbackSource,
 } from "../../channel-connectors/bridge/fallback-counters.js";
+import {
+  resolveSingletonProxySource,
+  type SingletonProxySample,
+  type SingletonProxySource,
+} from "../../singleton-proxy/counters.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
+import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-containers/fleet-site-metrics.js"; // myrmidon(1.6.6 REMOTE-SITES-T4)
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
+import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
+import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
+import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
+import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import {
+  recoveryFactoryMetrics as processRecoveryMetrics,
+  ISSUE_RECOVERY_ACTION_KINDS,
+  type IssueRecoveryActionKind,
+  type RecoveryFactoryMetrics as RecoveryFactoryMetricsPort,
+  recoveryFactoryMetricsState,
+  snapshotRecoveryFactoryMetrics,
+} from "@myrmidon/shared";
+import { issueRecoveryActions } from "@myrmidon/db";
+import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -56,6 +80,13 @@ import {
   channelIngressCounters,
   type ChannelIngressCounters,
 } from "../../channel-connectors/ingress.js";
+
+// myrmidon(1.6.6 TMP-HYGIENE): volume of the heartbeat run scratch janitor
+// (in-process state of the sweeper, no DB).
+import {
+  heartbeatRunScratchMetrics,
+  type HeartbeatRunScratchMetrics,
+} from "../../../services/run-scratch.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -80,18 +111,45 @@ const LATENCY_SAMPLE_CAP = 5000;
  * Metric families the endpoint serves. Every family renders HELP and TYPE
  * once, followed by its samples; unknown label values are escaped.
  */
+import {
+  INTERACTION_METRIC_FAMILIES,
+  collectInteractionMetrics,
+  interactionMetricsReadPort,
+  renderInteractionMetricBlocks,
+  renderInteractionMetrics,
+  type InteractionMetricsReadPort,
+  type InteractionMetricsSnapshot,
+} from "./interaction-metrics.js";
+
 export const METRIC_FAMILIES = [
+  "blocked_age_seconds",
+  "blocked_missing_fields_total",
+  ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
+  "myrmidon_runs_queued_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
   "myrmidon_role_queue_tasks",
+  "myrmidon_review_tasks_without_reviewer",
+  "myrmidon_blocked_tasks_without_assignee",
+  "myrmidon_code_tasks_on_noncoding_roles",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
+  "swarm_claim_conflicts_total",
+  "swarm_lease_recovered_total",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_recovery_created_total",
+  "myrmidon_recovery_deduped_total",
+  "myrmidon_recovery_success_total",
+  "myrmidon_recovery_age_seconds",
+  "myrmidon_recovery_addressless_active",
   "myrmidon_scrape_errors",
+  // Process-local continuation claims; continuation keys are not labels.
+  "myrmidon_continuation_created_total",
+  "myrmidon_continuation_deduped_total",
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
   "myrmidon_board_event_loop_lag_seconds",
@@ -105,6 +163,9 @@ export const METRIC_FAMILIES = [
   // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
   "myrmidon_board_db_queries_total",
   "myrmidon_board_lane_busy_seconds_total",
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): single routes forwarded by an api
+  // process to the worker, per route group and outcome.
+  "myrmidon_board_singleton_proxy_total",
 
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam — how
   // often the channel adapter did not answer and the direct path took the call
@@ -115,6 +176,36 @@ export const METRIC_FAMILIES = [
   // by path — the adapter and the vendor path that still reads in parallel
   // (design section 4, the inbound flow).
   "myrmidon_chat_ingress_total",
+
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor — what it removed and
+  // what stays in the temp directory.
+  "myrmidon_run_scratch_removed_dirs_total",
+  "myrmidon_run_scratch_removed_bytes_total",
+  "myrmidon_run_scratch_remaining_dirs",
+  "myrmidon_run_scratch_remaining_bytes",
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites — probe result and age per site, the runs
+  // requeued after a site was lost, and the failover moves by result (design remote-sites-v2 7.1).
+  "myrmidon_fleet_site_reachable",
+  "myrmidon_fleet_site_last_seen_seconds",
+  "myrmidon_fleet_exec_retries_total",
+  "myrmidon_fleet_moves_total",
+
+  // myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of both shadow legs (part
+  // A) read from corpus_shadow_log inside the latency window. With the
+  // flag off the table stays empty and the families render HELP/TYPE only.
+  "myrmidon_corpus_shadow_ragflow_latency_seconds",
+  "myrmidon_corpus_shadow_module_latency_seconds",
+  "blocker_root_fanout",
+  "blocker_terminal_count",
+  "blocker_roots_over_limit",
+
+  // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
+  "myrmidon_readiness_ratio",
+  "myrmidon_queue_age_seconds",
+  "myrmidon_project_share",
+  "myrmidon_starvation_total",
+  "myrmidon_claim_rejection_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -124,11 +215,53 @@ export type MetricFamily = (typeof METRIC_FAMILIES)[number];
 // ---------------------------------------------------------------------------
 
 /** The per-family values one scrape reads (the selfcheck probe shares them). */
+export const CLAIM_REJECTION_REASONS = [
+  "capacity_limit", "project_scope", "caste_scope", "assignment_conflict",
+  "dependency_blocked", "interaction_pending", "already_claimed", "not_ready", "other",
+] as const;
+
+export interface CapacityDashboardMetricsSnapshot {
+  readonly readinessRatio: number | null;
+  readonly queueAgeSeconds: number | null;
+  readonly projectShare: ReadonlyArray<{ readonly project: string; readonly share: number }> | null;
+  readonly starvationTotal: number | null;
+  readonly claimRejectionTotal: Readonly<Record<(typeof CLAIM_REJECTION_REASONS)[number], number>> | null;
+}
+
+export type CapacityDashboardMetricsProvider = () =>
+  | Promise<CapacityDashboardMetricsSnapshot | null>
+  | CapacityDashboardMetricsSnapshot
+  | null;
+
+function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnapshot): void {
+  const gauge = (key: "readinessRatio" | "queueAgeSeconds", value: number | null, max: number) => {
+    if (value !== null && (!Number.isFinite(value) || value < 0 || value > max)) throw new Error(`invalid capacity metric: ${key}`);
+  };
+  gauge("readinessRatio", snapshot.readinessRatio, 1);
+  gauge("queueAgeSeconds", snapshot.queueAgeSeconds, Number.MAX_VALUE);
+  if (snapshot.starvationTotal !== null && (!Number.isSafeInteger(snapshot.starvationTotal) || snapshot.starvationTotal < 0)) throw new Error("invalid capacity metric: starvationTotal");
+  if (snapshot.projectShare !== null) {
+    const seen = new Set<string>();
+    for (const row of snapshot.projectShare) {
+      if (!row.project || seen.has(row.project) || !Number.isFinite(row.share) || row.share < 0 || row.share > 1) throw new Error("invalid capacity metric: projectShare");
+      seen.add(row.project);
+    }
+  }
+  if (snapshot.claimRejectionTotal !== null) for (const reason of CLAIM_REJECTION_REASONS) {
+    const value = snapshot.claimRejectionTotal[reason];
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`invalid capacity metric: claimRejectionTotal.${reason}`);
+  }
+}
 export interface MetricsSnapshotFields {
+  interactions?: InteractionMetricsSnapshot | null;
+  blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  runsQueuedByReason?: Array<{ reason: string; count: number }>;
+  /** Queued runs older than 30 minutes. */
+  runsQueuedOver30m: number;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -138,6 +271,9 @@ export interface MetricsSnapshotFields {
   runDurationSecondsP95: number | null;
   /** Issue counts per assignee role and status. */
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
+  reviewTasksWithoutReviewer: number;
+  blockedTasksWithoutAssignee: number;
+  codeTasksOnNoncodingRoles: number;
   /** Live (not released, not expired) SWARM claims. */
   swarmClaimsActive: number;
   /** All SWARM claim rows ever written. */
@@ -146,6 +282,11 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
+  recoveryAgeSeconds?: Array<{ kind: IssueRecoveryActionKind; seconds: number }> | null;
+  recoveryAddresslessActive?: number;
   /**
    * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
    * source (no DB). null renders HELP/TYPE with no samples — the families
@@ -165,6 +306,12 @@ export interface MetricsSnapshotFields {
    * included, so a missing series can only mean an unwired counter.
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
+  /**
+   * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
+   * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
+   * present sample renders every route x outcome, zeros included.
+   */
+  singletonProxy?: SingletonProxySample[] | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
@@ -174,10 +321,36 @@ export interface MetricsSnapshotFields {
    * connector yet" is readable off the graph.
    */
   chatIngress?: ChannelIngressCounters | null;
+
+  /**
+   * myrmidon(1.6.6 TMP-HYGIENE): the run scratch janitor volume of this
+   * process. null renders HELP/TYPE with no samples.
+   */
+  runScratch?: HeartbeatRunScratchMetrics | null;
+
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site gauges and counters of this
+   * process (in-process, no DB). null renders HELP/TYPE with no samples.
+   */
+  fleetSites?: FleetSiteMetricsSample | null;
+  blockerRoots?: BlockerRootMetrics | null;
+  capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
+
+  /**
+   * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
+   * seconds, read from corpus_shadow_log inside the latency window. Absent
+   * or null (flag off — the table stays empty) renders HELP/TYPE with no
+   * samples, the same shape the run-duration summary uses with no rows.
+   */
+  corpusShadowRagflowSecondsP50?: number | null;
+  corpusShadowRagflowSecondsP95?: number | null;
+  corpusShadowModuleSecondsP50?: number | null;
+  corpusShadowModuleSecondsP95?: number | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
 export interface MetricsSnapshot extends MetricsSnapshotFields {
+  interactions?: InteractionMetricsSnapshot | null;
   /**
    * myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the process role
    * (`api` | `worker` | `all`) of the process that answered this scrape. It is
@@ -197,7 +370,19 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // Port: where the numbers come from
 // ---------------------------------------------------------------------------
 
+export function recoveryPortSnapshot(port: RecoveryFactoryMetricsPort) {
+  const state = recoveryFactoryMetricsState(port);
+  if (port === processRecoveryMetrics) return snapshotRecoveryFactoryMetrics();
+  return {
+    created: new Map(state.created),
+    deduped: new Map(state.deduped),
+    succeeded: new Map(state.succeeded),
+    ages: new Map(state.ages),
+  };
+}
+
 export interface MetricsCollectorDeps {
+  interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
   now(): Date;
@@ -231,6 +416,8 @@ export interface MetricsCollectorDeps {
    * fake, so no test depends on another test's fallbacks.
    */
   adapterFallbacks?: ChannelBridgeFallbackSource | null;
+  /** myrmidon(1.6.6 PROCS-1.5 / OPE-5412): where the proxy counters come from; tests inject a fake. */
+  singletonProxy?: SingletonProxySource | null;
 
   /**
    * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
@@ -238,19 +425,31 @@ export interface MetricsCollectorDeps {
    * so no test depends on another test's reads.
    */
   chatIngress?: (() => ChannelIngressCounters) | null;
+
+  /** myrmidon(1.6.6 TMP-HYGIENE): where the run scratch volume comes from; tests inject a fake. */
+  runScratch?: (() => HeartbeatRunScratchMetrics) | null;
+
+  /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
+  fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
+  recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
+
+  /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
+  capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
 
-/** Reads the run counters — one grouped query, whole instance. */
-async function readRunCounters(db: Db): Promise<{
+/** Reads the run counters for the whole instance. */
+async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
+  queuedOver30m: number;
   failedTotal: number;
+  queuedByReason?: Array<{ reason: string; count: number }>;
 }> {
+  // Keep the established grouped-by-status query: the global aggregate form
+  // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
   const rows = await db
-    .select({
-      status: heartbeatRuns.status,
-      total: count(),
-    })
+    .select({ status: heartbeatRuns.status, total: count() })
     .from(heartbeatRuns)
     .groupBy(heartbeatRuns.status);
   let active = 0;
@@ -262,7 +461,43 @@ async function readRunCounters(db: Db): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
-  return { active, queued, failedTotal };
+  let queuedByReason: Array<{ reason: string; count: number }> = [];
+  if (queued > 0) {
+    try {
+      const reasonRows = await db
+        .select({
+          reason: sql<string>`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`,
+          total: count(),
+        })
+        .from(heartbeatRuns)
+        .where(
+          sql`${heartbeatRuns.status} in ('queued', 'retrying', 'scheduled_retry')`,
+        )
+        .groupBy(sql`coalesce(nullif(${heartbeatRuns.contextSnapshot}->>'waitReason', ''), 'unknown')`);
+      queuedByReason = reasonRows.map((r) => ({
+        reason: String(r.reason),
+        count: Number(r.total),
+      }));
+    } catch {
+      // Best effort fallback
+    }
+  }
+  const [staleQueuedRow] = await db
+    .select({ total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "queued"),
+        lt(heartbeatRuns.createdAt, new Date(now.getTime() - 30 * 60 * 1000)),
+      ),
+    );
+  return {
+    active,
+    queued,
+    queuedOver30m: Number(staleQueuedRow?.total ?? 0),
+    failedTotal,
+    queuedByReason,
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -289,6 +524,42 @@ async function readRunDurations(
     .filter((value) => Number.isFinite(value) && value >= 0);
   if (durations.length === 0) return { p50: null, p95: null, samples: 0 };
   return { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), samples: durations.length };
+}
+
+/**
+ * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of one shadow leg, in seconds,
+ * over corpus_shadow_log rows written inside the latency window. The empty
+ * table (flag off, the default) yields nulls — the families then render
+ * HELP/TYPE without samples.
+ */
+async function readCorpusShadowLatencies(
+  db: Db,
+  windowStart: Date,
+): Promise<{
+  ragflow: { p50: number | null; p95: number | null };
+  module: { p50: number | null; p95: number | null };
+}> {
+  const rows = await db
+    .select({
+      ragflowMs: corpusShadowLog.ragflowLatencyMs,
+      moduleMs: corpusShadowLog.moduleLatencyMs,
+    })
+    .from(corpusShadowLog)
+    .where(gte(corpusShadowLog.ts, windowStart))
+    .orderBy(corpusShadowLog.ts)
+    .limit(LATENCY_SAMPLE_CAP);
+  type ShadowRow = { ragflowMs: number | null; moduleMs: number | null };
+  const toSeconds = (values: ShadowRow[], field: keyof ShadowRow) =>
+    values
+      .map((row) => row[field])
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0)
+      .map((value) => value / 1000);
+  const ragflow = toSeconds(rows, "ragflowMs").sort((a, b) => a - b);
+  const module = toSeconds(rows, "moduleMs").sort((a, b) => a - b);
+  return {
+    ragflow: ragflow.length === 0 ? { p50: null, p95: null } : { p50: percentile(ragflow, 0.5), p95: percentile(ragflow, 0.95) },
+    module: module.length === 0 ? { p50: null, p95: null } : { p50: percentile(module, 0.5), p95: percentile(module, 0.95) },
+  };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -322,6 +593,23 @@ async function readRoleQueues(db: Db): Promise<Array<{ role: string; status: str
   }));
 }
 
+async function readBlockedTasksWithoutAssignee(db: Db): Promise<number> {
+  const [row] = await db
+    .select({ total: count() })
+    .from(issues)
+    .where(and(eq(issues.status, "blocked"), isNull(issues.assigneeAgentId), isNull(issues.assigneeUserId), isNull(issues.hiddenAt)));
+  return Number(row?.total ?? 0);
+}
+
+async function readReviewTasksWithoutReviewer(db: Db): Promise<number> {
+  const store = createPgReviewRoutingStore(db);
+  const companyIds = await store.listActiveCompanyIds();
+  const counts = await Promise.all(
+    companyIds.map((companyId) => store.countUnroutedReviewIssues(companyId)),
+  );
+  return counts.reduce((total, countValue) => total + countValue, 0);
+}
+
 /** SWARM claim counters — live claims and all rows ever. */
 async function readClaimCounters(
   db: Db,
@@ -352,6 +640,7 @@ async function readAgentErrorSignals(db: Db): Promise<number> {
     signals += readStaleBlockSignals(row.id).length;
     signals += readSwarmClaimAttentionSignals(row.id).length;
   }
+  signals += readFeatureAttentionSignals().length;
   return signals;
 }
 
@@ -402,6 +691,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   const latencyWindowStart = new Date(now.getTime() - deps.latencyWindowSec * 1000);
 
   const errors: string[] = [];
+  let interactions: InteractionMetricsSnapshot | null = null;
+  try {
+    interactions = await collectInteractionMetrics(deps.interactions ?? interactionMetricsReadPort(deps.db), now);
+  } catch {
+    errors.push(INTERACTION_METRIC_FAMILIES.join("|"));
+  }
   async function guarded<T>(family: string, read: () => Promise<T>, fallback: T): Promise<T> {
     try {
       return await read();
@@ -411,22 +706,64 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     }
   }
 
-  // The run counters answer three families with one grouped query; a failure
-  // names all three in the selfcheck output.
+  const blocked = await guarded(
+    "blocked_age_seconds|blocked_missing_fields_total",
+    async () => {
+      const rows = await deps.db.select({ id: companies.id }).from(companies);
+      const result: NonNullable<MetricsSnapshotFields["blocked"]> = [];
+      for (const company of rows) {
+        const groups = await collectBlockedMetrics((id) => loadBlockedGraph(deps.db, id), company.id, now);
+        result.push({ companyId: company.id, groups });
+      }
+      return result;
+    },
+    [] as NonNullable<MetricsSnapshotFields["blocked"]>,
+  );
+
+  // The run counters answer four families with one aggregate query; a failure
+  // names those families in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
-    () => readRunCounters(deps.db),
-    { active: 0, queued: 0, failedTotal: 0 },
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db, now),
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
     () => readRunDurations(deps.db, latencyWindowStart),
     { p50: null, p95: null, samples: 0 },
   );
+  // myrmidon(1.6.6-CORPUS-SHADOW A): both shadow legs ride the same guarded
+  // scrape; the per-family "a|b" entry marks both families on a failed read,
+  // which the self-check's split("|") already understands.
+  const shadowLatencies = await guarded(
+    "myrmidon_corpus_shadow_ragflow_latency_seconds|myrmidon_corpus_shadow_module_latency_seconds",
+    () => readCorpusShadowLatencies(deps.db, latencyWindowStart),
+    { ragflow: { p50: null, p95: null }, module: { p50: null, p95: null } },
+  );
   const roleQueues = await guarded(
     "myrmidon_role_queue_tasks",
     () => readRoleQueues(deps.db),
     [] as Array<{ role: string; status: string; count: number }>,
+  );
+  const issueStore = createPgReviewRoutingStore(deps.db);
+  const reviewTasksWithoutReviewer = await guarded(
+    "myrmidon_review_tasks_without_reviewer",
+    async () => {
+      const companyIds = await issueStore.listActiveCompanyIds();
+      const counts = await Promise.all(companyIds.map((id) => issueStore.countUnroutedReviewIssues(id, now)));
+      return counts.reduce((total, countValue) => total + countValue, 0);
+    },
+    0,
+  );
+  const blockedTasksWithoutAssignee = await guarded(
+    "myrmidon_blocked_tasks_without_assignee",
+    () => issueStore.countBlockedWithoutAssignee(),
+    0,
+  );
+  const codeTasksOnNoncodingRoles = await guarded(
+    "myrmidon_code_tasks_on_noncoding_roles",
+    () => countCodeTasksOnNoncodingRoles(deps.db),
+    0,
   );
   const claimCounters = await guarded(
     "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
@@ -473,6 +810,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback counters of the bridge seam
   // ride the same guarded scrape. The registry cannot throw; the guard is here
   // for the seam, the way it is for the lanes.
+  const singletonProxySample = await guarded(
+    "myrmidon_board_singleton_proxy_total",
+    () => Promise.resolve().then(resolveSingletonProxySource(deps.singletonProxy)),
+    null as SingletonProxySample[] | null,
+  );
   const fallbackSample = await guarded(
     "myrmidon_adapter_fallback_total",
     () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
@@ -488,25 +830,111 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as ChannelIngressCounters | null,
   );
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the run scratch volume rides the same guarded scrape.
+  const runScratch = await guarded(
+    "myrmidon_run_scratch_removed_dirs_total|myrmidon_run_scratch_removed_bytes_total|myrmidon_run_scratch_remaining_dirs|myrmidon_run_scratch_remaining_bytes",
+    () => Promise.resolve().then(() => (deps.runScratch ?? heartbeatRunScratchMetrics)()),
+    null as HeartbeatRunScratchMetrics | null,
+  );
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
+  const fleetSites = await guarded(
+    "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
+    () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
+    null as FleetSiteMetricsSample | null,
+  );
+
+  const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
+  const recoveryCounters = recoveryPortSnapshot(recoveryPort);
+  const recoveryRows = await guarded(
+    "myrmidon_recovery_age_seconds|myrmidon_recovery_addressless_active",
+    async () => {
+      const active = await deps.db
+        .select({ kind: issueRecoveryActions.kind, createdAt: issueRecoveryActions.createdAt })
+        .from(issueRecoveryActions)
+        .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      const ages = new Map<IssueRecoveryActionKind, number>();
+      for (const [kind, seconds] of recoveryCounters.ages) {
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+      }
+      for (const row of active) {
+        const kind = row.kind as IssueRecoveryActionKind;
+        const seconds = Math.max(0, (now.getTime() - row.createdAt.getTime()) / 1000);
+        ages.set(kind, Math.max(ages.get(kind) ?? 0, seconds));
+        recoveryPort.age(kind, seconds);
+      }
+      const addressless = await deps.db
+        .select({ total: count() })
+        .from(issueRecoveryActions)
+        .where(and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          isNotNull(issueRecoveryActions.dedupeKey),
+          isNull(issueRecoveryActions.ownerAgentId),
+          isNull(issueRecoveryActions.ownerUserId),
+          isNull(issueRecoveryActions.ownerQueue)
+        ));
+      return {
+        age: [...ages].map(([kind, seconds]) => ({ kind, seconds })),
+        addressless: Number(addressless[0]?.total ?? 0),
+      };
+    },
+    { age: [] as Array<{ kind: IssueRecoveryActionKind; seconds: number }>, addressless: 0 },
+  );
+
   return {
     fields: {
+      blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedByReason: runCounters.queuedByReason,
+      runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
+      corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
+      corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
+      corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
+      corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
       roleQueueTasks: roleQueues,
+      reviewTasksWithoutReviewer,
+      blockedTasksWithoutAssignee,
+      codeTasksOnNoncodingRoles,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      recoveryCreatedTotal: new Map(recoveryCounters.created),
+      recoveryDedupedTotal: new Map(recoveryCounters.deduped),
+      recoverySuccessTotal: new Map(recoveryCounters.succeeded),
+      recoveryAgeSeconds: recoveryRows.age,
+      recoveryAddresslessActive: recoveryRows.addressless,
       process: processSample,
       lanes: laneSample,
 
       adapterFallbacks: fallbackSample,
+      singletonProxy: singletonProxySample,
 
       chatIngress,
+
+      runScratch,
+
+      fleetSites,
+      blockerRoots: await guarded(
+        "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
+        () => collectBlockerRootMetrics(deps.db),
+        null as BlockerRootMetrics | null,
+      ),
+      capacityDashboard: await guarded(
+        "myrmidon_readiness_ratio|myrmidon_queue_age_seconds|myrmidon_project_share|myrmidon_starvation_total|myrmidon_claim_rejection_total",
+        async () => {
+          const value = deps.capacityDashboard ? await deps.capacityDashboard() : null;
+          if (value !== null) validateCapacityDashboardMetrics(value);
+          return value;
+        },
+        null as CapacityDashboardMetricsSnapshot | null,
+      ),
+      interactions,
     },
     errors,
     now,
@@ -619,6 +1047,46 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const R = `role="${escapeLabelValue(role)}"`;
   const blocks: string[] = [];
 
+  const blockedAgeSamples: string[] = [];
+  const blockedMissingFieldsSamples: string[] = [];
+  for (const { companyId, groups } of snapshot.blocked ?? []) {
+    const C = companyId ? `,company_id="${escapeLabelValue(companyId)}"` : "";
+    for (const group of groups) {
+      for (const statistic of ["p50", "p95", "max"] as const) {
+        const value = group.ageSeconds[statistic];
+        if (value !== null) {
+          blockedAgeSamples.push(
+            `blocked_age_seconds{${R}${C},legacy="${group.legacy}",statistic="${statistic}"} ${formatSampleValue(value)}`,
+          );
+        }
+      }
+      for (const field of ["reason", "owner", "nextCheckAt"] as const) {
+        blockedMissingFieldsSamples.push(
+          `blocked_missing_fields_total{${R}${C},legacy="${group.legacy}",field="${field}"} ${formatSampleValue(group.missingFields[field])}`,
+        );
+      }
+    }
+  }
+
+  blocks.push(
+    familyBlock(
+      "blocked_age_seconds",
+      "Current blocked age in seconds (nearest-rank percentiles).",
+      "gauge",
+      blockedAgeSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "blocked_missing_fields_total",
+      "Current blocked issues missing each required field.",
+      "gauge",
+      blockedMissingFieldsSamples,
+    ),
+  );
+
+  blocks.push(...renderInteractionMetricBlocks(snapshot.interactions ?? null, role));
+
   blocks.push(
     familyBlock(
       "myrmidon_runs_active",
@@ -632,7 +1100,23 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "myrmidon_runs_queued",
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
-      [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+      snapshot.runsQueuedByReason && snapshot.runsQueuedByReason.length > 0
+        ? [
+            `myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`,
+            ...snapshot.runsQueuedByReason.map(
+              (entry) =>
+                `myrmidon_runs_queued{${R},reason="${escapeLabelValue(entry.reason)}"} ${formatSampleValue(entry.count)}`,
+            ),
+          ]
+        : [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_queued_over_30m",
+      "Queued heartbeat runs older than 30 minutes.",
+      "gauge",
+      [`myrmidon_runs_queued_over_30m{${R}} ${formatSampleValue(snapshot.runsQueuedOver30m)}`],
     ),
   );
   blocks.push(
@@ -666,6 +1150,38 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ],
     ),
   );
+  // myrmidon(1.6.6-CORPUS-SHADOW A): the two shadow legs, one summary each,
+  // same quantile shape as the run-duration family above.
+  blocks.push(
+    familyBlock(
+      "myrmidon_corpus_shadow_ragflow_latency_seconds",
+      "Corpus shadow log: RAGFlow leg latency quantiles over the latency window.",
+      "summary",
+      [
+        ...(snapshot.corpusShadowRagflowSecondsP50 != null
+          ? [`myrmidon_corpus_shadow_ragflow_latency_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.corpusShadowRagflowSecondsP50)}`]
+          : []),
+        ...(snapshot.corpusShadowRagflowSecondsP95 != null
+          ? [`myrmidon_corpus_shadow_ragflow_latency_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.corpusShadowRagflowSecondsP95)}`]
+          : []),
+      ],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_corpus_shadow_module_latency_seconds",
+      "Corpus shadow log: corpus-module leg latency quantiles over the latency window.",
+      "summary",
+      [
+        ...(snapshot.corpusShadowModuleSecondsP50 != null
+          ? [`myrmidon_corpus_shadow_module_latency_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.corpusShadowModuleSecondsP50)}`]
+          : []),
+        ...(snapshot.corpusShadowModuleSecondsP95 != null
+          ? [`myrmidon_corpus_shadow_module_latency_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.corpusShadowModuleSecondsP95)}`]
+          : []),
+      ],
+    ),
+  );
   blocks.push(
     familyBlock(
       "myrmidon_role_queue_tasks",
@@ -675,6 +1191,30 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         (row) =>
           `myrmidon_role_queue_tasks{${R},assignee_role="${escapeLabelValue(row.role)}",status="${escapeLabelValue(row.status)}"} ${formatSampleValue(row.count)}`,
       ),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_review_tasks_without_reviewer",
+      "Issues in review without an assigned reviewer participant.",
+      "gauge",
+      [`myrmidon_review_tasks_without_reviewer{${R}} ${formatSampleValue(snapshot.reviewTasksWithoutReviewer)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_blocked_tasks_without_assignee",
+      "Blocked issues without an assignee.",
+      "gauge",
+      [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_code_tasks_on_noncoding_roles",
+      "Code tasks of dev projects held by non-coding roles (reviewer, lead, operator).",
+      "gauge",
+      [`myrmidon_code_tasks_on_noncoding_roles{${R}} ${formatSampleValue(snapshot.codeTasksOnNoncodingRoles)}`],
     ),
   );
   blocks.push(
@@ -709,12 +1249,71 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
     ),
   );
+  const recoveryCounterFamily = (
+    name: string,
+    help: string,
+    values: Map<IssueRecoveryActionKind, number> | null | undefined,
+  ) => blocks.push(familyBlock(
+    name,
+    help,
+    "counter",
+    values ? [...values.entries()].map(([kind, count]) => `${name}{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(count)}`) : [],
+  ));
+  recoveryCounterFamily("myrmidon_recovery_created_total", "Recovery actions created by kind, cumulative since process start.", snapshot.recoveryCreatedTotal);
+  recoveryCounterFamily("myrmidon_recovery_deduped_total", "Recovery action requests deduplicated by kind, cumulative since process start.", snapshot.recoveryDedupedTotal);
+  recoveryCounterFamily("myrmidon_recovery_success_total", "Recovery actions successfully completed by kind, cumulative since process start.", snapshot.recoverySuccessTotal);
+  blocks.push(familyBlock(
+    "myrmidon_recovery_age_seconds",
+    "Maximum age of active recovery actions by kind.",
+    "gauge",
+    snapshot.recoveryAgeSeconds ? snapshot.recoveryAgeSeconds.map(({ kind, seconds }) => `myrmidon_recovery_age_seconds{${R},kind="${escapeLabelValue(kind)}"} ${formatSampleValue(seconds)}`) : [],
+  ));
+  blocks.push(familyBlock(
+    "myrmidon_recovery_addressless_active",
+    "Active recovery actions with a dedupe key and no owner.",
+    "gauge",
+    snapshot.recoveryAddresslessActive === undefined ? [] : [`myrmidon_recovery_addressless_active{${R}} ${formatSampleValue(snapshot.recoveryAddresslessActive)}`],
+  ));
+
   blocks.push(
     familyBlock(
       "myrmidon_scrape_errors",
       "Metric families that failed to collect during this scrape.",
       "gauge",
       [`myrmidon_scrape_errors{${R}} ${formatSampleValue(snapshot.scrapeErrors)}`],
+    ),
+  );
+
+  const claimCounters = swarmClaimMetrics.read();
+  blocks.push(
+    familyBlock(
+      "swarm_claim_conflicts_total",
+      "Claim attempts refused because a live claim exists, cumulative since process start.",
+      "counter",
+      [`swarm_claim_conflicts_total{${R}} ${formatSampleValue(claimCounters.conflicts)}`],
+    ),
+    familyBlock(
+      "swarm_lease_recovered_total",
+      "Leases successfully recovered by expiry or supervisor rebalance, cumulative since process start.",
+      "counter",
+      SWARM_LEASE_RECOVERY_REASONS.map((reason) =>
+        `swarm_lease_recovered_total{${R},reason="${reason}"} ${formatSampleValue(claimCounters.recovered[reason])}`,
+      ),
+    ),
+  );
+  const continuationCounters = continuationDedupeMetrics.read();
+  blocks.push(
+    familyBlock(
+      "myrmidon_continuation_created_total",
+      "Continuation keys claimed for the first time since this process started.",
+      "counter",
+      [`myrmidon_continuation_created_total{${R}} ${formatSampleValue(continuationCounters.created)}`],
+    ),
+    familyBlock(
+      "myrmidon_continuation_deduped_total",
+      "Continuation keys suppressed because they were already claimed, cumulative since process start.",
+      "counter",
+      [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
     ),
   );
 
@@ -828,6 +1427,24 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  // myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy. Every route
+  // group x outcome renders even at zero — on a single-process board the whole
+  // family is zero, and a missing series would hide an unwired counter.
+  const proxyRows = snapshot.singletonProxy ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_singleton_proxy_total",
+      "Single-process routes an api process forwarded to the worker, per route group and outcome (proxied or unavailable), cumulative since boot.",
+      "counter",
+      proxyRows
+        ? proxyRows.map(
+            (row) =>
+              `myrmidon_board_singleton_proxy_total{${R},route="${escapeLabelValue(row.route)}",outcome="${escapeLabelValue(row.outcome)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+
   // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam. Both
   // reasons render even at zero — "the adapter never fell back" is exactly what
   // an operator looks for after a rollout, and a missing series would hide an
@@ -867,5 +1484,85 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  // myrmidon(1.6.6 TMP-HYGIENE): the volume of the run scratch janitor. Rendered
+  // as samples whenever the state was read, zero included.
+  const scratch = snapshot.runScratch ?? null;
+  const scratchFamily = (
+    name: string,
+    help: string,
+    type: "gauge" | "counter",
+    value: number | null,
+  ) => blocks.push(familyBlock(name, help, type, value === null ? [] : [`${name} ${formatSampleValue(value)}`]));
+  scratchFamily(
+    "myrmidon_run_scratch_removed_dirs_total",
+    "Orphaned heartbeat run scratch directories removed by the janitor, cumulative since boot of this process.",
+    "counter",
+    scratch ? scratch.removedDirsTotal : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_removed_bytes_total",
+    "Bytes freed by removing orphaned heartbeat run scratch directories, cumulative since boot of this process.",
+    "counter",
+    scratch ? scratch.removedBytesTotal : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_remaining_dirs",
+    "Marked heartbeat run scratch directories left after the last janitor sweep (not yet past TTL).",
+    "gauge",
+    scratch ? scratch.remainingDirs : null,
+  );
+  scratchFamily(
+    "myrmidon_run_scratch_remaining_bytes",
+    "Bytes held by marked heartbeat run scratch directories after the last janitor sweep.",
+    "gauge",
+    scratch ? scratch.remainingBytes : null,
+  );
+
+  // Provider-only contract. Null fields intentionally render no samples.
+  const capacity = snapshot.capacityDashboard ?? null;
+  blocks.push(familyBlock("myrmidon_readiness_ratio", "Ready eligible open issues divided by all open issues in one company snapshot.", "gauge", capacity?.readinessRatio == null ? [] : [`myrmidon_readiness_ratio{${R}} ${formatSampleValue(capacity.readinessRatio)}`]));
+  blocks.push(familyBlock("myrmidon_queue_age_seconds", "Maximum continuous ready-episode age among currently eligible issues.", "gauge", capacity?.queueAgeSeconds == null ? [] : [`myrmidon_queue_age_seconds{${R}} ${formatSampleValue(capacity.queueAgeSeconds)}`]));
+  blocks.push(familyBlock("myrmidon_project_share", "Share of active claim/run slots by project in the company snapshot.", "gauge", capacity?.projectShare == null ? [] : capacity.projectShare.map((row) => `myrmidon_project_share{${R},project="${escapeLabelValue(row.project)}"} ${formatSampleValue(row.share)}`)));
+  blocks.push(familyBlock("myrmidon_starvation_total", "Ready episodes crossing the starvation threshold since producer start.", "counter", capacity?.starvationTotal == null ? [] : [`myrmidon_starvation_total{${R}} ${formatSampleValue(capacity.starvationTotal)}`]));
+  const rejectionTotals = capacity?.claimRejectionTotal ?? null;
+  blocks.push(familyBlock("myrmidon_claim_rejection_total", "Authoritatively rejected claim attempts since producer start by closed reason.", "counter", rejectionTotals === null ? [] : CLAIM_REJECTION_REASONS.map((reason) => `myrmidon_claim_rejection_total{${R},reason="${reason}"} ${formatSampleValue(rejectionTotals[reason])}`)));
+
+  // myrmidon(1.6.6 REMOTE-SITES-T4): the remote sites. A site renders from its first probe on;
+  // every move result renders at zero too.
+  const fleet = snapshot.fleetSites ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_fleet_site_reachable",
+      "1 when the last health probe of the remote site answered, 0 when it did not.",
+      "gauge",
+      fleet ? fleet.sites.map((row) => `myrmidon_fleet_site_reachable{site="${escapeLabelValue(row.site)}"} ${row.reachable}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_site_last_seen_seconds",
+      "Seconds since the remote site last answered a health probe (absent while it has never answered).",
+      "gauge",
+      fleet
+        ? fleet.sites.flatMap((row) =>
+            row.lastSeenSeconds === null
+              ? []
+              : [`myrmidon_fleet_site_last_seen_seconds{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.lastSeenSeconds)}`],
+          )
+        : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_exec_retries_total",
+      "Runs of a lost remote site finalized as site_lost and requeued, per site, cumulative since boot.",
+      "counter",
+      fleet ? fleet.retriesTotal.map((row) => `myrmidon_fleet_exec_retries_total{site="${escapeLabelValue(row.site)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+    familyBlock(
+      "myrmidon_fleet_moves_total",
+      "Failover moves of bots off a lost remote site by result, cumulative since boot.",
+      "counter",
+      fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
+    ),
+  );
+
+  blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
   return `${blocks.join("\n\n")}\n`;
 }

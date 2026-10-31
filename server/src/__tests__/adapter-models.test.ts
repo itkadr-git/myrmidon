@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
-import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
-import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
-import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
-import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
-import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { models as claudeFallbackModels } from "@myrmidon/adapter-claude-local";
+import { resetClaudeModelsCacheForTests } from "@myrmidon/adapter-claude-local/server";
+import { models as codexFallbackModels } from "@myrmidon/adapter-codex-local";
+import { models as cursorFallbackModels } from "@myrmidon/adapter-cursor-local";
+import { models as opencodeFallbackModels } from "@myrmidon/adapter-opencode-local";
+import { resetOpenCodeModelsCacheForTests } from "@myrmidon/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
+import { resetGatewayModelsCacheForTests } from "../adapters/hermes-gateway-models.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -24,11 +25,24 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.MYRMIDON_LITELLM_BASE_URL;
+    delete process.env.LITELLM_BASE_URL;
+    delete process.env.HERMES_GATEWAY_URL;
+    delete process.env.HERMES_API_BASE_URL;
+    delete process.env.MYRMIDON_LITELLM_KEY;
+    delete process.env.MYRMIDON_LITELLM_API_KEY;
+    delete process.env.MYRMIDON_LITELLM_MASTER_KEY;
+    delete process.env.MYRMIDON_LITELLM_ADMIN_KEY;
+    delete process.env.LITELLM_MASTER_KEY;
+    delete process.env.LLM_GATEWAY_API_KEY;
+    delete process.env.PAPERCLIP_ADAPTER_MODELS;
+    delete process.env.MYRMIDON_ADAPTER_MODELS;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
+    resetGatewayModelsCacheForTests();
     vi.restoreAllMocks();
   });
 
@@ -257,6 +271,92 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
+  });
+
+  describe("hermes_gateway LiteLLM dynamic discovery", () => {
+    it("returns empty list when LiteLLM is not configured", async () => {
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([]);
+    });
+
+    it("discovers models from LiteLLM /v1/models without PAPERCLIP_ADAPTER_MODELS", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/v1/models")) {
+          return new Response(
+            JSON.stringify({
+              object: "list",
+              data: [
+                { id: "gpt-4o", object: "model" },
+                { id: "claude-3-7-sonnet", object: "model" },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([
+        { id: "gpt-4o", label: "gpt-4o" },
+        { id: "claude-3-7-sonnet", label: "claude-3-7-sonnet" },
+      ]);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      // Second call uses cache within TTL
+      const second = await listAdapterModels("hermes_gateway");
+      expect(second).toEqual(models);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("reflects newly added model in LiteLLM without restart on refreshAdapterModels", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      let modelList = [{ id: "gpt-4o" }];
+
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/v1/models")) {
+          return new Response(
+            JSON.stringify({ data: modelList }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      });
+
+      const initial = await listAdapterModels("hermes_gateway");
+      expect(initial).toEqual([{ id: "gpt-4o", label: "gpt-4o" }]);
+
+      // Model added dynamically in LiteLLM
+      modelList = [{ id: "gpt-4o" }, { id: "gemini-2.5-flash" }];
+
+      // Refresh without server restart
+      const refreshed = await refreshAdapterModels("hermes_gateway");
+      expect(refreshed).toEqual([
+        { id: "gpt-4o", label: "gpt-4o" },
+        { id: "gemini-2.5-flash", label: "gemini-2.5-flash" },
+      ]);
+    });
+
+    it("passes API key in Authorization header when configured", async () => {
+      process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+      process.env.MYRMIDON_LITELLM_API_KEY = "test-sk-key";
+
+      let capturedHeaders: HeadersInit | undefined;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+        capturedHeaders = init?.headers;
+        return new Response(
+          JSON.stringify({ data: [{ id: "test-model" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      });
+
+      const models = await listAdapterModels("hermes_gateway");
+      expect(models).toEqual([{ id: "test-model", label: "test-model" }]);
+      expect((capturedHeaders as Record<string, string>)?.[ "Authorization" ]).toBe("Bearer test-sk-key");
+    });
   });
 
   describe("PAPERCLIP_ADAPTER_MODELS declared models", () => {

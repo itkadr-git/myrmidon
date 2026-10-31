@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "@/i18n";
 import { CollapsibleSection, DraftInput, Field, ToggleField } from "../agent-config-primitives";
 import {
   disableParallelHelpers,
@@ -50,6 +51,7 @@ export function AgentCardParallelHelpersFields({
   /** Same picker and model list as the main model field. */
   renderModelPicker: HelperModelPickerRenderer;
 }) {
+  const { t } = useTranslation();
   const card = readParallelHelpersCard(value);
   const enabled = card.enabled === true;
   const [expanded, setExpanded] = useState(() => enabled);
@@ -67,11 +69,11 @@ export function AgentCardParallelHelpersFields({
   const model = typeof card.model === "string" ? card.model : "";
 
   return (
-    <CollapsibleSection title="Parallel helpers" open={expanded} onToggle={() => setExpanded((open) => !open)}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-parallel-helpers-fields.title")} open={expanded} onToggle={() => setExpanded((open) => !open)}>
       <div className="space-y-3">
         <ToggleField
-          label="Allow parallel helper subagents"
-          hint="When on, the agent can split work across helper subagents (delegate_task). When off, the delegation tool is removed from its toolset."
+          label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.toggleLabel")}
+          hint={t("area.settings-agent-card.agent-card-parallel-helpers-fields.toggleHint")}
           checked={enabled}
           onChange={(next) =>
             update(
@@ -85,14 +87,18 @@ export function AgentCardParallelHelpersFields({
         {enabled && (
           <>
             <Field
-              label="Max concurrent helpers"
-              hint={`How many helpers may run at once. The company ceiling is ${ceiling ?? "not set (default 10)"}; values above it are clamped server-side. There is no built-in upper limit on the ceiling itself (the operator sets it in settings).`}
+              label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.maxLabel")}
+              hint={
+                ceiling === null || ceiling === undefined
+                  ? t("area.settings-agent-card.agent-card-parallel-helpers-fields.maxHintNoCeiling")
+                  : t("area.settings-agent-card.agent-card-parallel-helpers-fields.maxHintCeiling", { ceiling })
+              }
             >
               <input
                 type="text"
                 inputMode="numeric"
                 className={inputClass}
-                aria-label="Max concurrent helpers"
+                aria-label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.maxLabel")}
                 aria-invalid={parsedLimit ? !parsedLimit.ok : undefined}
                 value={limitText}
                 onChange={(e) => setLimitText(e.target.value)}
@@ -109,8 +115,8 @@ export function AgentCardParallelHelpersFields({
               )}
             </Field>
             <Field
-              label="Helper model"
-              hint="Model the helper subagents run on. Empty inherits the agent's own model."
+              label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.modelLabel")}
+              hint={t("area.settings-agent-card.agent-card-parallel-helpers-fields.modelHint")}
             >
               {renderModelPicker({
                 value: model,
@@ -120,14 +126,14 @@ export function AgentCardParallelHelpersFields({
               })}
             </Field>
             <Field
-              label="Per-helper turn budget"
-              hint="Turn cap per helper subagent. Empty keeps the server default."
+              label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.budgetLabel")}
+              hint={t("area.settings-agent-card.agent-card-parallel-helpers-fields.budgetHint")}
             >
               <input
                 type="text"
                 inputMode="numeric"
                 className={inputClass}
-                aria-label="Per-helper turn budget"
+                aria-label={t("area.settings-agent-card.agent-card-parallel-helpers-fields.budgetLabel")}
                 aria-invalid={parsedBudget ? !parsedBudget.ok : undefined}
                 value={budgetText}
                 onChange={(e) => setBudgetText(e.target.value)}
@@ -144,7 +150,7 @@ export function AgentCardParallelHelpersFields({
               )}
             </Field>
             <p className="text-xs text-muted-foreground">
-              Changes apply on the bot's next reconcile tick, without a restart.
+              {t("area.settings-agent-card.agent-card-parallel-helpers-fields.applyNote")}
             </p>
           </>
         )}

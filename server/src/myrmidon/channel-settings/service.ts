@@ -14,7 +14,7 @@
 // stored. Every request's read-write-audit sequence runs through one queue,
 // exactly as the RUNTIME-LIMITS transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
   getEffectiveChannelSettings,

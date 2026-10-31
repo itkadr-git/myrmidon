@@ -2,7 +2,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   asNumber,
   asString,
@@ -13,7 +13,7 @@ import {
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
@@ -235,7 +235,7 @@ function tokenFromAuthHeader(rawHeader: string | null): string | null {
   return match ? nonEmpty(match[1]) : trimmed;
 }
 
-function resolveAuthToken(config: Record<string, unknown>, headers: Record<string, string>): string | null {
+export function resolveAuthToken(config: Record<string, unknown>, headers: Record<string, string>): string | null {
   const explicit = nonEmpty(config.authToken) ?? nonEmpty(config.token);
   if (explicit) return explicit;
 

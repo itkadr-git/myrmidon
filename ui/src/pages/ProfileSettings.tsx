@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
-import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
-import { authApi } from "@/api/auth";
+import { Camera, KeyRound, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
+import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@myrmidon/shared";
+import { authApi, AuthApiError, isCredentialAccount } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useTranslation } from "@/i18n";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -20,7 +21,12 @@ function deriveInitials(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+// Better Auth default (`emailAndPassword.minPasswordLength`); server/src/auth/better-auth.ts does not override it.
+export const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+
 export function ProfileSettings() {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -29,16 +35,29 @@ export function ProfileSettings() {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [revokeOthers, setRevokeOthers] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordChanged, setPasswordChanged] = useState(false);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
 
+  const accountsQuery = useQuery({
+    queryKey: ["auth", "accounts"],
+    queryFn: () => authApi.listAccounts(),
+    retry: false,
+  });
+  const hasPassword = (accountsQuery.data ?? []).some(isCredentialAccount);
+
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Profile" },
+      { label: t("area.settings-company.profile-settings.settings"), href: "/company/settings" },
+      { label: t("area.settings-company.profile-settings.profile") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -80,14 +99,14 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(error instanceof Error ? error.message : t("area.settings-company.profile-settings.failedToUpdateProfile"));
     },
   });
 
   const uploadAvatarMutation = useMutation({
     mutationFn: async (file: File) => {
       if (!selectedCompanyId) {
-        throw new Error("Select an organization before uploading a profile avatar.");
+        throw new Error(t("area.settings-company.profile-settings.selectAnOrganizationBeforeUploading"));
       }
 
       const asset = await assetsApi.uploadImage(
@@ -103,7 +122,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(error instanceof Error ? error.message : t("area.settings-company.profile-settings.failedToUploadAvatar"));
     },
   });
 
@@ -115,18 +134,62 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(error instanceof Error ? error.message : t("area.settings-company.profile-settings.failedToRemoveAvatar"));
     },
   });
 
+  const passwordMutation = useMutation({
+    mutationFn: () => authApi.changePassword({ currentPassword, newPassword, revokeOtherSessions: revokeOthers }),
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordChanged(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setRevokeOthers(false);
+    },
+    onError: (error) => {
+      setPasswordChanged(false);
+      if (error instanceof AuthApiError && error.code === "INVALID_PASSWORD") {
+        setPasswordError(t("area.settings-company.profile-settings.wrongCurrentPassword"));
+      } else if (error instanceof AuthApiError && error.code === "PASSWORD_TOO_SHORT") {
+        setPasswordError(t("area.settings-company.profile-settings.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+      } else if (error instanceof AuthApiError && error.code === "PASSWORD_TOO_LONG") {
+        setPasswordError(t("area.settings-company.profile-settings.passwordTooLong", { max: MAX_PASSWORD_LENGTH }));
+      } else if (error instanceof Error && error.message) {
+        setPasswordError(error.message);
+      } else {
+        setPasswordError(t("area.settings-company.profile-settings.failedToChangePassword"));
+      }
+    },
+  });
+
+  function submitPasswordChange() {
+    setPasswordChanged(false);
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordTooShort", { min: MIN_PASSWORD_LENGTH }));
+      return;
+    }
+    if (newPassword.length > MAX_PASSWORD_LENGTH) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordTooLong", { max: MAX_PASSWORD_LENGTH }));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError(t("area.settings-company.profile-settings.passwordsDoNotMatch"));
+      return;
+    }
+    setPasswordError(null);
+    passwordMutation.mutate();
+  }
+
   if (sessionQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{t("area.settings-company.profile-settings.loadingProfile")}</div>;
   }
 
   if (sessionQuery.error || !sessionQuery.data) {
     return (
       <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
+        {sessionQuery.error instanceof Error ? sessionQuery.error.message : t("area.settings-company.profile-settings.failedToLoadProfile")}
       </div>
     );
   }
@@ -136,18 +199,18 @@ export function ProfileSettings() {
   const initials = deriveInitials(currentName);
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
-    ? `Stored in Myrmidon file storage for ${selectedCompany.name}.`
-    : "Select an organization to upload an avatar into Myrmidon storage.";
+    ? t("area.settings-company.profile-settings.storedFor", { name: selectedCompany.name })
+    : t("area.settings-company.profile-settings.selectAnOrganizationToUpload");
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="text-lg font-semibold">{t("area.settings-company.profile-settings.profile")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Control how your account appears in the sidebar and other board surfaces.
+          {t("area.settings-company.profile-settings.controlHowYourAccountAppears")}
         </p>
       </div>
 
@@ -199,7 +262,7 @@ export function ProfileSettings() {
                     disabled={!selectedCompanyId || isSavingProfile}
                   >
                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
-                    {currentImage ? "Change photo" : "Upload photo"}
+                    {currentImage ? t("area.settings-company.profile-settings.changePhoto") : t("area.settings-company.profile-settings.uploadPhoto")}
                   </Button>
                   {currentImage ? (
                     <Button
@@ -209,7 +272,7 @@ export function ProfileSettings() {
                       disabled={isSavingProfile}
                     >
                       {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                      Remove
+                      {t("common.remove")}
                     </Button>
                   ) : null}
                 </div>
@@ -218,10 +281,10 @@ export function ProfileSettings() {
               <div className="min-w-0 flex-1 space-y-2 pb-1">
                 <div>
                   <h2 className="truncate text-2xl font-semibold text-foreground">{currentName}</h2>
-                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
+                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? t("area.settings-company.profile-settings.noEmail")}</p>
                 </div>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Click the avatar to upload a new image. {uploadHint}
+                  {t("area.settings-company.profile-settings.avatarHint", { hint: uploadHint })}
                 </p>
               </div>
             </div>
@@ -236,21 +299,21 @@ export function ProfileSettings() {
           }}
         >
           <div className="space-y-2">
-            <Label htmlFor="profile-name">Display name</Label>
+            <Label htmlFor="profile-name">{t("area.settings-company.profile-settings.displayName")}</Label>
             <Input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder="Board"
+              placeholder={t("common.board")}
             />
             <p className="text-xs text-muted-foreground">
-              Shown in the sidebar account footer and comment author surfaces.
+              {t("area.settings-company.profile-settings.shownInTheSidebarAccount")}
             </p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="profile-email">Email</Label>
+            <Label htmlFor="profile-email">{t("area.settings-company.profile-settings.email")}</Label>
             <Input
               id="profile-email"
               value={sessionQuery.data.user.email ?? ""}
@@ -258,17 +321,94 @@ export function ProfileSettings() {
               disabled
             />
             <p className="text-xs text-muted-foreground">
-              Email is managed by your auth session and is read-only here.
+              {t("area.settings-company.profile-settings.emailIsManagedByYour")}
             </p>
           </div>
 
           <div className="md:col-span-2 flex justify-end">
             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {updateMutation.isPending ? "Saving..." : "Save profile"}
+              {updateMutation.isPending ? t("area.settings-company.profile-settings.saving") : t("area.settings-company.profile-settings.saveProfile")}
             </Button>
           </div>
         </form>
+
+        {hasPassword ? (
+          <form
+            className="grid gap-4 md:max-w-md"
+            data-testid="change-password-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitPasswordChange();
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-base font-semibold">{t("area.settings-company.profile-settings.changePasswordTitle")}</h2>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-current-password">{t("area.settings-company.profile-settings.currentPassword")}</Label>
+              <Input
+                id="profile-current-password"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-new-password">{t("area.settings-company.profile-settings.newPassword")}</Label>
+              <Input
+                id="profile-new-password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("area.settings-company.profile-settings.newPasswordHint", { min: MIN_PASSWORD_LENGTH })}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="profile-confirm-password">{t("area.settings-company.profile-settings.confirmPassword")}</Label>
+              <Input
+                id="profile-confirm-password"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                id="profile-revoke-other-sessions"
+                type="checkbox"
+                checked={revokeOthers}
+                onChange={(event) => setRevokeOthers(event.target.checked)}
+              />
+              {t("area.settings-company.profile-settings.signOutOtherDevices")}
+            </label>
+            {passwordError ? (
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {passwordError}
+              </div>
+            ) : null}
+            {passwordChanged ? (
+              <div role="status" className="text-sm text-emerald-600">
+                {t("area.settings-company.profile-settings.passwordChanged")}
+              </div>
+            ) : null}
+            <div>
+              <Button
+                type="submit"
+                disabled={passwordMutation.isPending || !currentPassword || !newPassword || !confirmPassword}
+              >
+                {passwordMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                {t("area.settings-company.profile-settings.changePasswordButton")}
+              </Button>
+            </div>
+          </form>
+        ) : null}
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>

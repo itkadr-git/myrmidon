@@ -23,8 +23,8 @@
 // resolved per evaluation (fresh read of instance_settings), so a mode
 // change in the UI acts on the NEXT run answer without a restart.
 
-import type { Db } from "@paperclipai/db";
-import type { GuardrailMode } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { GuardrailMode } from "@myrmidon/shared";
 import { recordRunOutputGuardrailEvents } from "./events.js";
 import {
   guardrailBlockRefusal,

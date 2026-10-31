@@ -3,8 +3,9 @@ import {
   type GuardedRemoteHttpFetchOptions,
 } from "../../services/remote-http-fetch.js";
 import { parseRemoteHttpEndpoint } from "../../services/remote-http-endpoint-guard.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
-const PRIVATE_ENDPOINT_ALLOWLIST_ENV = "PAPERCLIP_HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST";
+const PRIVATE_ENDPOINT_ALLOWLIST_ENV = "HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST";
 
 export class HttpAdapterEndpointError extends Error {
   readonly code: string;
@@ -39,7 +40,7 @@ function normalizeAllowlistedOrigin(value: string): string | null {
 }
 
 export function httpAdapterPrivateEndpointAllowlist(
-  raw = process.env[PRIVATE_ENDPOINT_ALLOWLIST_ENV] ?? "",
+  raw = readProductEnv(PRIVATE_ENDPOINT_ALLOWLIST_ENV) ?? "",
 ): ReadonlySet<string> {
   return new Set(
     raw

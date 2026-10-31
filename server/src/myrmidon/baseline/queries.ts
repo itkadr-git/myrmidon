@@ -14,7 +14,7 @@ import {
   issues,
   litellmCostEvents,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   BaselineAgentRoleRow,
   BaselineBlockerRow,

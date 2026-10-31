@@ -1,0 +1,13 @@
+# OPE-8950: area task-chat-2
+components/task-chat/TaskChatComposer.tsx
+components/task-chat/TaskChatDescriptionBubble.tsx
+components/task-chat/TaskChatInteractionCard.tsx
+components/task-chat/TaskChatPausedTakeover.tsx
+components/task-chat/TaskChatProjectCreatedCard.tsx
+components/task-chat/TaskChatQueuedMessages.tsx
+components/task-chat/TaskChatRichInput.tsx
+components/task-chat/TaskMessageScroller.tsx
+components/task-chat/TweakPanel.tsx
+pages/AgentChat.tsx
+pages/BoardChat.tsx
+pages/TaskChatLab.tsx

@@ -1,4 +1,4 @@
-import type { SafeChatPublicationPayload } from "@paperclipai/shared";
+import type { SafeChatPublicationPayload } from "@myrmidon/shared";
 
 export type SlackSessionStatus =
   "processing" | "active" | "suspended" | "closed";

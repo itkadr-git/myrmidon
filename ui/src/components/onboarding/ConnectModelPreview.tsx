@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { MotionConfig } from "motion/react";
 
+import { useTranslation } from "@/i18n";
+
 import { Checkbox } from "../ui/checkbox";
 import { AgentPreview } from "./AgentPreview";
 import { CredentialModeLink } from "./CredentialModeLink";
@@ -79,6 +81,7 @@ export function ConnectModelPreview({
   initialUseApiKeys?: boolean;
   control?: CredentialControl;
 }) {
+  const { t } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(initialSourceId);
   const [useApiKeys, setUseApiKeys] = useState(initialUseApiKeys);
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
@@ -105,14 +108,14 @@ export function ConnectModelPreview({
         <div className="pt-6">
           <OnboardingHeading
             center
-            title="Connect a model"
-            lede="Myrmidon works with your existing subscription or API keys."
+            title={t("area.apps-connections-2.connect-model-preview.title")}
+            lede={t("area.apps-connections-2.connect-model-preview.lede")}
           />
         </div>
 
         <div className="space-y-2 pt-12">
           <ModelSourceTiles
-            label="Model source"
+            label={t("area.apps-connections-2.connect-model-preview.sourceLabel")}
             sources={MODEL_SOURCES}
             mode={mode}
             selectedId={selectedId}
@@ -132,7 +135,7 @@ export function ConnectModelPreview({
                 onCheckedChange={(checked) => setUseApiKeys(checked === true)}
               />
               <span className="text-sm font-medium text-foreground">
-                Use API keys instead
+                {t("area.apps-connections-2.connect-model-preview.useApiKeys")}
               </span>
             </label>
           )}
@@ -142,7 +145,7 @@ export function ConnectModelPreview({
             disabled rather than failing on press. */}
         <FooterNav
           onBack={() => {}}
-          primaryLabel="Connect"
+          primaryLabel={t("area.apps-connections-2.connect-model-preview.connect")}
           primaryDisabled={selectedId === null}
           onPrimary={() => {}}
         />

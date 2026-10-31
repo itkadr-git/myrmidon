@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { useTranslation } from "@/i18n";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
@@ -30,6 +31,7 @@ const history: TaskChatItem[] = Array.from({ length: 200 }, (_, index) => ({
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 function Harness() {
+  const { t } = useTranslation();
   const [streaming, setStreaming] = useState(false);
   const [reproject, setReproject] = useState(false);
   const [tick, setTick] = useState(0);
@@ -41,13 +43,13 @@ function Harness() {
   return (
     <div className="flex h-dvh flex-col px-6">
       <header className="flex shrink-0 items-center gap-4 py-3">
-        <h1>Task chat: 200 responses, 4,000 tools</h1>
-        <button onClick={() => setStreaming((value) => !value)}>{streaming ? "Stop streaming" : "Start streaming"}</button>
-        <label><input type="checkbox" checked={reproject} onChange={(event) => setReproject(event.target.checked)} /> Recreate history objects</label>
+        <h1>{t("area.ux-labs.task-chat-perf-harness.title")}</h1>
+        <button onClick={() => setStreaming((value) => !value)}>{streaming ? t("area.ux-labs.task-chat-perf-harness.stopStreaming") : t("area.ux-labs.task-chat-perf-harness.startStreaming")}</button>
+        <label><input type="checkbox" checked={reproject} onChange={(event) => setReproject(event.target.checked)} /> {t("area.ux-labs.task-chat-perf-harness.recreateHistory")}</label>
         <output data-testid="stream-tick">{tick}</output>
       </header>
-      <TaskChatThreadView items={reproject ? history.map((item) => ({ ...item })) : history} contentKey={tick} tail={<p>Live response {tick}</p>} />
-      <textarea className="shrink-0 border p-3" aria-label="Reply" placeholder="Reply to the task" />
+      <TaskChatThreadView items={reproject ? history.map((item) => ({ ...item })) : history} contentKey={tick} tail={<p>{t("area.ux-labs.task-chat-perf-harness.liveResponse", { tick })}</p>} />
+      <textarea className="shrink-0 border p-3" aria-label={t("area.ux-labs.task-chat-perf-harness.replyLabel")} placeholder={t("area.ux-labs.task-chat-perf-harness.replyPlaceholder")} />
     </div>
   );
 }

@@ -6,14 +6,14 @@
 //   GET /api/myrmidon/companies/:companyId/guardrails/resolve?agentId= -> per-agent effective modes
 //   GET /api/myrmidon/companies/:companyId/guardrails/events?limit&kind&severity&surface&runId
 //
-// Types import from @paperclipai/shared — the same contract the server
+// Types import from @myrmidon/shared — the same contract the server
 // validates and stores, so a drift fails typecheck on both sides.
 import { api } from "@/api/client";
 import type {
   GuardrailModesSettings,
   GuardrailRule,
   ResolvedGuardrailMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const guardrailsSettingsQueryKey = (companyId: string) =>
   ["myrmidon", "guardrails", "settings", companyId] as const;

@@ -19,12 +19,12 @@
 // "not set" instead of as a number the gateway would be told to obey.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   LITELLM_WORKERS_COMPANIES_KEY,
   normalizeLitellmWorkersSettings,
   type LitellmWorkersStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The single row of `instance_settings`. */
 export const LITELLM_WORKERS_SINGLETON_KEY = "default";
@@ -159,15 +159,15 @@ export const litellmWorkersSettingsInternals = { readCompanies, mergeGeneral };
 
 /**
  * The advisory-lock key of a resize. The pool belongs to the whole instance
- * (one gateway, one gunicorn master), so the key is one module constant and
+ * (one gateway, one gateway unit), so the key is one module constant and
  * not a company id: two companies resizing at once are the same race.
  */
 export const LITELLM_WORKERS_ADVISORY_LOCK_KEY = "paperclip:myrmidon:litellm-workers:resize";
 
 /**
- * Serialises whole resizes: read the pool, deliver the signals, record the
- * result. Without it two PUTs both read the same `current`, both count their
- * signals from it, and the pool ends above the memory ceiling.
+ * Serialises whole resizes: read the pool, restart the unit, record the
+ * result. Without it two PUTs both read the same `current` and both restart the
+ * gateway for the same target.
  */
 export interface LitellmWorkersLock {
   run<T>(operation: () => Promise<T>): Promise<T>;

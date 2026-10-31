@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 
 export class ToolContentValidationError extends Error {
@@ -18,9 +19,7 @@ const PROMPT_INJECTION_PATTERNS: Array<{ code: string; re: RegExp }> = [
   { code: "secret_exfiltration", re: /\b(exfiltrate|leak|steal|send)\b.{0,40}\b(secret|token|api[-_ ]?key|credential)s?\b/i },
 ];
 
-type ToolActionSigningSecretEnv = Partial<
-  Record<"PAPERCLIP_TOOL_ACTION_SIGNING_SECRET" | "PAPERCLIP_AGENT_JWT_SECRET" | "BETTER_AUTH_SECRET", string | undefined>
->;
+type ToolActionSigningSecretEnv = Record<string, string | undefined>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -47,8 +46,8 @@ function scanPromptInjection(value: unknown): string[] {
 export class ToolActionSigningSecretMissingError extends Error {
   constructor() {
     super(
-      "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is not configured; signed tool action approvals cannot be issued. " +
-        "Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in this instance's environment (worktrees inherit it from .paperclip/.env).",
+      "Tool action signing secret is not configured; signed tool action approvals cannot be issued. " +
+        "Set MYRMIDON_TOOL_ACTION_SIGNING_SECRET in this instance's environment (worktrees inherit it from .paperclip/.env).",
     );
     this.name = "ToolActionSigningSecretMissingError";
   }
@@ -60,7 +59,7 @@ export class ToolActionSigningSecretMissingError extends Error {
 export const TOOL_ACTION_REQUEST_SIGNING_GRACE_MS = 2 * 60 * 1000;
 
 export function resolveToolActionSigningSecret(env: ToolActionSigningSecretEnv = process.env as ToolActionSigningSecretEnv) {
-  const secret = env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET?.trim();
+  const secret = readProductEnvFrom(env, "TOOL_ACTION_SIGNING_SECRET")?.trim();
   if (!secret) {
     throw new ToolActionSigningSecretMissingError();
   }

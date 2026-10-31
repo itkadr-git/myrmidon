@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { GuardrailsScreen } from "./GuardrailsScreenContainer";
-import type { GuardrailModesSettings } from "@paperclipai/shared";
+import type { GuardrailModesSettings } from "@myrmidon/shared";
 
 const guardrailsApiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),

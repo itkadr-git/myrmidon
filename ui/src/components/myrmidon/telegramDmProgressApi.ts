@@ -3,7 +3,7 @@
 //
 // PATCH saves to the instance settings; the next status sweep uses it, without
 // restarting the server.
-import type { ResolvedTelegramDmProgress, TelegramDmProgressPatch } from "@paperclipai/shared";
+import type { ResolvedTelegramDmProgress, TelegramDmProgressPatch } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export type TelegramDmProgressView = ResolvedTelegramDmProgress;

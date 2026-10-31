@@ -16,7 +16,7 @@ import {
   type BudgetEnforcementMode,
   type BudgetEnforcementSource,
   type ResolvedBudgetEnforcement,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { BUDGET_ENFORCEMENT_MODE_ENV, BUDGET_ENFORCEMENT_SETTINGS_KEY };
 

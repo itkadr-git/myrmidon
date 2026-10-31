@@ -1,5 +1,8 @@
-import type { Db } from "@paperclipai/db";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
+import type { Db } from "@myrmidon/db";
+import {
+  createGitHubExternalObjectProvider,
+  type GitHubExternalObjectProviderOptions,
+} from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -14,12 +17,19 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  /**
+   * "denied": the board could not read the PR because it has no access to the
+   * repository (private repo without a token / App, rejected credentials).
+   * `state` is "unknown" then.
+   */
+  access?: "denied";
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
+  mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -86,8 +96,13 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db).resolvers
+const DENIED_ERROR_CODES = new Set(["github_auth_required", "github_forbidden", "github_token_unavailable"]);
+
+export function createPullRequestMergeDetailsResolver(
+  db: Db,
+  opts?: GitHubExternalObjectProviderOptions,
+): PullRequestMergeDetailsResolver {
+  const resolver = createGitHubExternalObjectProvider(db, opts).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
@@ -99,12 +114,22 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
       } as never,
     });
-    if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
+    if (!result.ok) {
+      const denied = DENIED_ERROR_CODES.has(result.errorCode);
+      return { state: "unknown", headRef: null, headSha: null, ...(denied ? { access: "denied" as const } : {}) };
+    }
     const data = readRecord(result.snapshot.data);
+    if (data?.notFound === true) return { state: "unknown", headRef: null, headSha: null, access: "denied" };
     const statusKey = result.snapshot.statusKey;
     const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
       ? statusKey
       : undefined;
+    const rawMergeable = data?.mergeable ?? data?.mergeableState ?? data?.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : typeof rawMergeable === "string" ? rawMergeable : null;
     return {
       state: statusKey === "merged" || data?.merged === true
         ? "merged"
@@ -119,6 +144,7 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
       additions: typeof data?.additions === "number" ? data.additions : null,
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
+      mergeable,
     };
   };
 }

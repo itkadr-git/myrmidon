@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind } from "@myrmidon/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -22,7 +22,7 @@ import type {
   Agent,
   Goal,
   Approval,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type {
   EventFilter,
   PluginContext,
@@ -1617,6 +1617,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           createdByAgentId: null,
           createdByUserId: null,
           responsibleUserId: null,
+          responsibleAgentId: null,
           issueNumber: null,
           identifier: null,
           originKind,

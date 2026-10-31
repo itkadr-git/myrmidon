@@ -18,15 +18,17 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CAPACITY_POLICY,
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
+  mergeCapacityPolicyPatch,
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   claimCovers,
   nextQueueTaskForAgent,
@@ -257,6 +259,7 @@ describe("myrmidon(1.6-SWARM) leases", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       role: "eng",
       runId: null,
+      origin: "auto_match",
       now: NOW,
       settings,
     });
@@ -353,5 +356,55 @@ describe("myrmidon(1.6-SWARM) shared wake contract", () => {
   it("the wake reason and queue statuses come from the shared contract", () => {
     expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
     expect(SWARM_CLAIM_QUEUE_ISSUE_STATUSES).toContain("todo");
+  });
+});
+
+describe("myrmidon(1.6.6) project and caste capacity admission", () => {
+  it("enforces project and caste capacity limits before admission, skipping saturated projects", () => {
+    const policy = mergeCapacityPolicyPatch(DEFAULT_CAPACITY_POLICY, {
+      limits: { perProjectActive: 1, perCasteActive: 2 },
+    });
+    const candidateA = candidate({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-A",
+      projectId: "projectA",
+      casteId: "eng",
+    } as never);
+    const candidateB = candidate({
+      issueId: "22222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-B",
+      projectId: "projectB",
+      casteId: "eng",
+    } as never);
+
+    // projectA is at limit (1/1 active tasks), projectB is under limit (0/1 active tasks)
+    const admitted = nextQueueTaskForAgent({
+      candidates: [candidateA, candidateB],
+      liveClaims: [],
+      activeTasks: 0,
+      settings,
+      capacityPolicy: policy,
+      activeCounts: {
+        activeByProject: { projectA: 1, projectB: 0 },
+        activeByCaste: { eng: 1 },
+      },
+      now: NOW,
+    });
+    expect(admitted?.issueId).toBe(candidateB.issueId);
+
+    // when both projects are at limit, returns null
+    const noneAdmitted = nextQueueTaskForAgent({
+      candidates: [candidateA, candidateB],
+      liveClaims: [],
+      activeTasks: 0,
+      settings,
+      capacityPolicy: policy,
+      activeCounts: {
+        activeByProject: { projectA: 1, projectB: 1 },
+        activeByCaste: { eng: 1 },
+      },
+      now: NOW,
+    });
+    expect(noneAdmitted).toBeNull();
   });
 });

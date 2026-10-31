@@ -15,7 +15,7 @@ import type {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 export type ToolPolicyBindingRow = typeof toolProfileBindings.$inferSelect;
 export type ToolPolicyProfileRow = typeof toolProfiles.$inferSelect;

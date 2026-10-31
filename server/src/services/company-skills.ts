@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents as agentsTable,
   assets,
@@ -26,9 +26,9 @@ import {
   issues,
   issueThreadInteractions,
   issueWorkProducts,
-} from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
+import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@myrmidon/adapter-utils/server-utils";
 import type {
   AgentDesiredSkillEntry,
   CatalogSkill,
@@ -95,7 +95,7 @@ import type {
   CompanySkillVersionFileInventoryEntry,
   IssueAttachment,
   IssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isUuidLike,
   joinFrontmatterBlock,
@@ -103,7 +103,7 @@ import {
   parseFrontmatterMarkdown,
   splitFrontmatterBlock,
   stringifyFrontmatter,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing skill texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -423,17 +423,27 @@ async function fetchWellKnownIndex(origin: string): Promise<WellKnownSkillEntry[
   return entries;
 }
 
-function resolveWellKnownArchiveUrl(origin: string, rawUrl: string) {
+export function resolveWellKnownArchiveUrl(originOrIndexUrl: string, rawUrl: string): string {
+  let base: URL;
+  try {
+    base = new URL(originOrIndexUrl);
+  } catch {
+    throw unprocessable(`Invalid skill archive URL "${rawUrl}".`, { code: "skill_discovery_invalid" });
+  }
+  const baseIndexUrl =
+    base.pathname === "" || base.pathname === "/"
+      ? new URL(buildWellKnownIndexUrl(base.origin))
+      : base;
   let resolved: URL;
   try {
-    resolved = new URL(rawUrl, `${origin}/`);
+    resolved = new URL(rawUrl, baseIndexUrl);
   } catch {
     throw unprocessable(`Invalid skill archive URL "${rawUrl}".`, { code: "skill_discovery_invalid" });
   }
   if (resolved.protocol !== "https:") {
     throw unprocessable("Skill archives must be served over HTTPS.", { code: "skill_source_validation_failed" });
   }
-  if (resolved.origin !== origin) {
+  if (resolved.origin !== base.origin) {
     throw unprocessable("Skill archive URLs must stay on the discovery site's origin.", {
       code: "skill_source_validation_failed",
     });
@@ -6630,12 +6640,13 @@ export function companySkillService(db: Db) {
       );
     }
     const entries = await fetchWellKnownIndex(origin);
+    const indexUrl = buildWellKnownIndexUrl(origin);
     return {
       skills: entries.map((entry) => ({
         name: entry.name,
         description: entry.description,
         digest: entry.digest,
-        url: resolveWellKnownArchiveUrl(origin, entry.url),
+        url: resolveWellKnownArchiveUrl(indexUrl, entry.url),
       })),
     };
   }
@@ -6663,7 +6674,8 @@ export function companySkillService(db: Db) {
       );
     }
 
-    const archiveUrl = resolveWellKnownArchiveUrl(origin, entry.url);
+    const indexUrl = buildWellKnownIndexUrl(origin);
+    const archiveUrl = resolveWellKnownArchiveUrl(indexUrl, entry.url);
     const archiveBytes = await fetchWellKnownArchiveBytes(archiveUrl);
     const digestHex = createHash("sha256").update(archiveBytes).digest("hex");
     const computedDigest = `sha256:${digestHex}`;

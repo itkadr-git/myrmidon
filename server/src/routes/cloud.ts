@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { forbidden, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   getCloudStackContext,
   type CloudInstanceEnv,
@@ -38,7 +39,7 @@ export function cloudRoutes(opts: {
       });
     }
 
-    const tenantToken = runtimeEnv.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+    const tenantToken = readProductEnvFrom(runtimeEnv, "CLOUD_TENANT_SERVER_TOKEN")?.trim();
     if (!context.cloudOrigin || !context.stackId || !tenantToken) {
       throw new HttpError(503, "Paperclip Cloud portfolio is not configured", {
         code: "cloud_portfolio_not_configured",

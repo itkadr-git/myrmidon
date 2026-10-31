@@ -17,13 +17,13 @@ import {
   issues,
   statusCards,
   statusCardUpdates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   defaultStatusCardRefreshPolicy,
   LOW_TRUST_REVIEW_PRESET,
   STATUS_CARD_AGENT_MAX_CARDS,
   STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../middleware/index.js";
 import { statusCardRoutes } from "../routes/status-cards.js";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
@@ -546,6 +546,7 @@ describeEmbeddedPostgres("status card routes", () => {
     const staleIssue = await realIssuesSvc.create(company.id, {
       title: "Stale status-card update",
       status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Test hold" },
       priority: "medium",
       assigneeAgentId: summarizer.id,
       createdByUserId: "board-user",
@@ -707,7 +708,7 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(generationIssueId).toBeTruthy();
 
     // The setup run gets stuck and blocks the task instead of writing a summary.
-    await issueService(db).update(generationIssueId, { status: "blocked" });
+    await issueService(db).update(generationIssueId, { status: "blocked", unblockDescriptor: { owner: "board", action: "Test hold" } });
 
     // The card releases its generation claim, so the tile stops spinning and the
     // board offers "Run now" again (generatingIssueId null → not "setup running").

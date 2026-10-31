@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@myrmidon/shared";
 import {
   readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
@@ -2909,6 +2909,41 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("renders execution stage, allowed actions, and review recovery instruction on review recovery wake", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_review_participant_recovery",
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-10204",
+        title: "Review recovery handoff",
+        status: "in_review",
+      },
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        allowedActions: ["approve", "request_changes"],
+      },
+      reviewRecoveryInstruction:
+        "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, or with status=done and a comment to approve it.",
+      reviewDecisionRetryAttempt: 1,
+      reviewDecisionMaxRetries: 3,
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("- execution wake role: reviewer");
+    expect(prompt).toContain("- allowed actions: approve, request_changes");
+    expect(prompt).toContain(
+      "You are waking as the active reviewer for this issue.",
+    );
+    expect(prompt).toContain("Review recovery instruction (attempt 1/3):");
+    expect(prompt).toContain(
+      "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, or with status=done and a comment to approve it.",
+    );
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
@@ -3764,6 +3799,10 @@ describe("appendWithByteCap", () => {
 
 describe("buildPaperclipEnv", () => {
   const ENV_KEYS = [
+    "MYRMIDON_API_URL",
+    "MYRMIDON_RUNTIME_API_URL",
+    "MYRMIDON_LISTEN_HOST",
+    "MYRMIDON_LISTEN_PORT",
     "PAPERCLIP_API_URL",
     "PAPERCLIP_RUNTIME_API_URL",
     "PAPERCLIP_LISTEN_HOST",
@@ -3799,7 +3838,10 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3100");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+        expect(env.MYRMIDON_AGENT_ID).toBe("agent-1");
+        expect(env.MYRMIDON_COMPANY_ID).toBe("company-1");
         expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
         expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
       },
@@ -3809,6 +3851,7 @@ describe("buildPaperclipEnv", () => {
   it("falls back to the derived runtime URL when no explicit override is set", () => {
     withEnv({ PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100" }, () => {
       const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      expect(env.MYRMIDON_API_URL).toBe("http://203.0.113.7:3100");
       expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.7:3100");
     });
   });
@@ -3821,6 +3864,7 @@ describe("buildPaperclipEnv", () => {
           id: "agent-1",
           companyId: "company-1",
         });
+        expect(env.MYRMIDON_API_URL).toBe("http://localhost:3200");
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );

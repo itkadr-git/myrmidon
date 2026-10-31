@@ -23,7 +23,7 @@ import {
   guardrailEvents,
   heartbeatRuns,
   instanceSettings,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -38,7 +38,7 @@ import { instanceSettingsService } from "../../services/instance-settings.js";
 import {
   GUARDRAILS_MODE_FORCE_ENV,
   normalizeGuardrailModesSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

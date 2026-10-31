@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { queryKeys } from "@/lib/queryKeys";
 import { createIssue, storybookLiveRuns } from "../fixtures/paperclipData";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection } from "@myrmidon/shared";
 import { expect, userEvent, within } from "storybook/test";
 
 const base: ExecutionProjection = {
@@ -21,7 +21,7 @@ const base: ExecutionProjection = {
   maxAttempts: 3,
   recoveryOwner: null,
   nextAction: null,
-  permittedActions: ["inspect_run"],
+  operatorActions: ["inspect_run"],
   predecessorRunId: null,
   successorRunId: null,
 };

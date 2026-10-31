@@ -11,7 +11,7 @@
 // that differ from the stored values (the core merges a partial body and
 // records every changed field in the changelog). Editing is board-only on
 // the server; a 403 on GET shows the denied state like the other System
-// sections. The contract types come from @paperclipai/shared so the UI
+// sections. The contract types come from @myrmidon/shared so the UI
 // cannot drift from the core.
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,7 +22,7 @@ import type {
   TelegramEscalationChannel,
   TelegramNotifySettings,
   TelegramProactivityMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { telegramNotifyApi, telegramNotifyQueryKey } from "@/api/myrmidonTelegramNotify";
 import { useCompany } from "@/context/CompanyContext";
 import { formatDateTime } from "@/lib/utils";
@@ -47,6 +47,7 @@ type Draft = {
   inbound: Partial<TelegramNotifySettings["inbound"]>;
   escalations: Partial<TelegramNotifySettings["escalations"]>;
   proactivity: Partial<TelegramNotifySettings["proactivity"]>;
+  updates: Partial<TelegramNotifySettings["updates"]>;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -55,6 +56,7 @@ const EMPTY_DRAFT: Draft = {
   inbound: {},
   escalations: {},
   proactivity: {},
+  updates: {},
 };
 
 /** Machine values look machine-made: chat/topic ids and field paths stay monospace. */
@@ -128,9 +130,10 @@ export function Ui2TelegramNotifySettings() {
     if (!settings) return false;
     return (Object.keys(draft) as Array<keyof Draft>).some((section) => {
       const stored = settings[section] as unknown as Record<string, unknown>;
-      return Object.entries(draft[section]).some(
-        ([field, value]) => stored[field] !== value,
-      );
+      const sectionDraft = draft[section];
+      return sectionDraft
+        ? Object.entries(sectionDraft).some(([field, value]) => stored[field] !== value)
+        : false;
     });
   }, [draft, settings]);
 

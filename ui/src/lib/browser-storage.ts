@@ -17,7 +17,13 @@ export function migrateLegacyStorage(storage: Storage): void {
   const keys: string[] = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key && LEGACY_PREFIXES.some((prefix) => key.startsWith(prefix))) keys.push(key);
+    // myrmidon(OPE-9387): the installed language plugin still owns this
+    // legacy key; migrating it makes the plugin read "en" after reload.
+    if (
+      key &&
+      key !== "paperclip.lang.locale" &&
+      LEGACY_PREFIXES.some((prefix) => key.startsWith(prefix))
+    ) keys.push(key);
   }
 
   for (const legacyKey of keys) {

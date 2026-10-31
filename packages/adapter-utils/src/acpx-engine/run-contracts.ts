@@ -17,7 +17,7 @@ import type {
   AdapterExecutionTargetPaperclipBridgeHandle,
   AdapterExecutionTargetProcessSessionBridgeHandle,
   PreparedAdapterExecutionTargetRuntime,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 
 // ---------------------------------------------------------------------------

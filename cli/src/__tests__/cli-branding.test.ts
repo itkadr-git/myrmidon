@@ -1,0 +1,66 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import packageJson from "../../package.json" with { type: "json" };
+
+it("publishes both CLI aliases to the same entrypoint", () => {
+  expect(packageJson.name).toBe("myrmidon");
+  expect(packageJson.bin).toEqual({
+    myrmidon: "./dist/index.js",
+    paperclipai: "./dist/index.js",
+  });
+});
+
+it("prints a deprecation warning only for the legacy binary", () => {
+  const index = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
+  const legacy = readFileSync(new URL("../legacy-bin.ts", import.meta.url), "utf8");
+  expect(index).toContain("warnIfLegacyBinaryName()");
+  expect(legacy).toContain('LEGACY_BINARY_NAME = "paperclipai"');
+  expect(legacy).toContain("paperclipai is deprecated, use myrmidon");
+});
+
+describe("runs the built entrypoint under both aliases and warns once only for paperclipai", () => {
+  const cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  let testDir: string;
+  const aliases = ["myrmidon", "paperclipai"] as const;
+
+  beforeAll(() => {
+    testDir = mkdtempSync(resolve(cliRoot, ".cli-branding-"));
+    execFileSync("pnpm", ["run", "build"], { cwd: cliRoot, stdio: "pipe", timeout: 25_000 });
+    for (const binary of aliases) {
+      symlinkSync(resolve(cliRoot, "dist/index.js"), resolve(testDir, binary));
+    }
+  }, 30_000);
+
+  afterAll(() => {
+    if (testDir) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(Array.from({ length: 20 }, (_, i) => i + 1))(
+    "run %i/20: executes both aliases without timeout and warns once only for paperclipai",
+    () => {
+      for (const [binary, expectedWarning] of [
+        ["myrmidon", false],
+        ["paperclipai", true],
+      ] as const) {
+        const result = spawnSync(resolve(testDir, binary), ["--help"], {
+          encoding: "utf8",
+          cwd: resolve(cliRoot, ".."),
+          env: { ...process.env, PAPERCLIP_CONFIG_PATH: "/dev/null" },
+          timeout: 10_000,
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("Usage: myrmidon");
+        const warnings = result.stderr.match(/paperclipai is deprecated, use myrmidon/g) ?? [];
+        expect(warnings).toHaveLength(expectedWarning ? 1 : 0);
+      }
+    },
+    10_000,
+  );
+});

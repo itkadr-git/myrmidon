@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidon/shared";
 import type { BotExtraMount } from "./driver.js";
 import {
   assertBotRuntimeContract,
@@ -394,6 +394,8 @@ describe("resolveProfileFileTarget", () => {
 
 describe("isUnderManagedDir", () => {
   it("covers the compiler-owned skills directory and everything under it, nothing else", () => {
+    expect(isUnderManagedDir("hermes/skills/paperclip-managed")).toBe(true);
+    expect(isUnderManagedDir("hermes/skills/paperclip-managed/a/SKILL.md")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board/a/SKILL.md")).toBe(true);
     expect(isUnderManagedDir("hermes/skills-board-other/a")).toBe(false);
@@ -607,6 +609,22 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     const withInterval = botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100");
     expect(withInterval[WS_PROFILE_ENV.botdIntervalSec]).toBe("300");
     expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.botdIntervalSec);
+  });
+
+  it("writes hermesPruneEnabled, hermesPruneDays, and gitMigrationEnabled when set", () => {
+    const withPrune = botdProfileEnv(
+      {
+        ...resolvedDefaults,
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      },
+      "http://board:3100",
+    );
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneEnabled]).toBe("1");
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneDays]).toBe("14");
+    expect(withPrune[WS_PROFILE_ENV.gitMigrationEnabled]).toBe("1");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.hermesPruneEnabled);
   });
 
   it("is deterministic: the same mechanics and board give byte-identical entries", () => {

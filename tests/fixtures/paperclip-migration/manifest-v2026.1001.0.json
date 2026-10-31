@@ -1,0 +1,81 @@
+{
+  "version": "1.0.0",
+  "vendorRelease": {
+    "tag": "v2026.1001.0",
+    "sha": "88bf9be92a3aaef3b29c15d487bc565e7beff7a6",
+    "lastMigration": "0283_jittery_psynapse",
+    "migrationCount": 282
+  },
+  "entityCounts": {
+    "companies": 1,
+    "projects": 2,
+    "issues": 3,
+    "issue_comments": 3,
+    "documents": 2,
+    "issue_documents": 2,
+    "agents": 2,
+    "instance_settings": 1,
+    "company_skills": 2,
+    "tool_connections": 2,
+    "connection_grants": 1,
+    "heartbeat_runs": 2,
+    "company_secrets": 2,
+    "company_secret_versions": 2,
+    "assets": 2,
+    "issue_attachments": 2
+  },
+  "vendorGapCounts": {
+    "chat_github_reviews": 1
+  },
+  "spotChecks": {
+    "company": {
+      "id": "c0000000-0000-4000-a000-000000000001",
+      "name": "Acme Synthetic Robotics",
+      "issuePrefix": "ACME"
+    },
+    "project": {
+      "id": "f7f1434e-0000-4000-a000-000000000001",
+      "name": "Core Platform"
+    },
+    "issue": {
+      "id": "57fdbf2f-0000-4000-a000-000000000001",
+      "identifier": "ACME-1",
+      "title": "Setup initial robotics pipeline"
+    },
+    "agent": {
+      "id": "a0000000-0000-4000-a000-000000000001",
+      "name": "synt-lead-agent",
+      "role": "lead"
+    },
+    "secret": {
+      "id": "6b5c0bb8-0000-4000-a000-000000000001",
+      "key": "SYNTH_API_KEY",
+      "expectedPlaintext": "synth-token-42-test-api-key-for-migration-proof",
+      "expectedSha256": "b0cb631dc3f3e42fbdd1c4ac71c7d2614e109dba7c3fb21be6f81c7802a4c639"
+    },
+    "secret2": {
+      "id": "6b5c0bb8-0000-4000-a000-000000000002",
+      "key": "SYNTH_DATABASE_PASSWORD",
+      "expectedPlaintext": "synth-pg-pass-99-neutral-credential-string",
+      "expectedSha256": "801ce49eb49dfec1ab9dc52efc4b594455f6e6283f0c0a7fdd578241bb95e5ba"
+    }
+  },
+  "files": [
+    {
+      "objectKey": "storage/spec-v1.md",
+      "relativePath": "storage/spec-v1.md",
+      "sha256": "9ab65856d1dbffab4939cfe447fcab2a77cc84dd73c2b150229ac0ec580da02b",
+      "byteSize": 114
+    },
+    {
+      "objectKey": "storage/architecture-overview.txt",
+      "relativePath": "storage/architecture-overview.txt",
+      "sha256": "d44702db3699d4052a2056a4d774a999faabb69576ff132465898ae65abc7884",
+      "byteSize": 151
+    }
+  ],
+  "keys": {
+    "sourceMasterKeyHex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "targetMasterKeyHex": "0202020202020202020202020202020202020202020202020202020202020202"
+  }
+}

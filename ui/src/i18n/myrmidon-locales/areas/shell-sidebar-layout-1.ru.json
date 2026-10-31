@@ -1,0 +1,94 @@
+{
+  "area": {
+    "shell-sidebar-layout-1": {
+      "breadcrumb-bar": {
+        "openSidebar": "Открыть боковую панель",
+        "hideProperties": "Скрыть свойства",
+        "showProperties": "Показать свойства"
+      },
+      "layout": {
+        "skipToMain": "Перейти к основному содержимому",
+        "closeSidebar": "Закрыть боковую панель"
+      },
+      "company-switcher": {
+        "selectOrganization": "Выберите организацию",
+        "organizations": "Организации",
+        "loadFailed": "Не удалось загрузить организации",
+        "tryAgain": "Повторить",
+        "none": "Организаций нет",
+        "settings": "Настройки",
+        "manage": "Управление организациями"
+      },
+      "company-settings-sidebar": {
+        "title": "Настройки",
+        "backToApp": "Назад в приложение",
+        "general": "Общие",
+        "profile": "Профиль",
+        "members": "Участники",
+        "users": "Пользователи",
+        "invites": "Приглашения",
+        "secrets": "Секреты",
+        "channelAllowlist": "Разрешённые каналы",
+        "accessHub": "Центр доступа",
+        "soon": "скоро",
+        "environments": "Окружения",
+        "access": "Доступ",
+        "boardApiKeys": "API-ключи доски",
+        "heartbeats": "Пульсы",
+        "export": "Экспорт",
+        "import": "Импорт",
+        "experimental": "Экспериментальное",
+        "features": "Функции",
+        "plugins": "Плагины",
+        "adapters": "Адаптеры",
+        "company": "Организация"
+      },
+      "sidebar": {
+        "newTask": "Новая задача",
+        "search": "Поиск",
+        "dashboard": "Обзор",
+        "inbox": "Входящие",
+        "unread": "непрочитано",
+        "decisions": "Решения",
+        "decisionsBadge": "решений",
+        "status": "Статусы",
+        "beta": "бета",
+        "conferenceRoom": "Переговорная",
+        "work": "Работа",
+        "tasks": "Задачи",
+        "cases": "Кейсы",
+        "routines": "Рутины",
+        "pipelines": "Пайплайны",
+        "goals": "Цели",
+        "artifacts": "Артефакты",
+        "skills": "Навыки",
+        "workspaces": "Рабочие области",
+        "projects": "Проекты",
+        "company": "Организация",
+        "org": "Оргструктура",
+        "connectors": "Коннекторы",
+        "timeline": "Таймлайн",
+        "costs": "Расходы",
+        "activity": "Активность",
+        "stack": "Стек",
+        "settings": "Настройки"
+      },
+      "sidebar-account-menu": {
+        "board": "Доска",
+        "signedIn": "Вы вошли",
+        "localBoard": "Локальная доска",
+        "openMenu": "Открыть меню аккаунта",
+        "viewProfile": "Открыть профиль",
+        "viewProfileDescription": "Ваша активность, задачи и учёт расхода.",
+        "editProfile": "Редактировать профиль",
+        "editProfileDescription": "Измените отображаемое имя и аватар.",
+        "documentation": "Документация",
+        "documentationDescription": "Документация Myrmidon откроется в новой вкладке.",
+        "signingOut": "Выход…",
+        "signOut": "Выйти",
+        "signOutDescription": "Завершить сеанс в этом браузере.",
+        "shareFeedback": "Отправить отзыв"
+      }
+    }
+  }
+}

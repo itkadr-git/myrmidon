@@ -85,6 +85,23 @@ case "$sub" in
         # the publish WAIT while the tag's image run is still building, then
         # succeed when it completes. GH_RUNS_SWITCH_AFTER is always exported
         # by the test harness (0 = switch on the first read).
+        # TAG-CI-RETRY (the 1.6.5 rc.13 incident): $SANDBOX/runs-fault.json
+        # holds a number of LEADING failed reads (transient gh api failure —
+        # 5xx / secondary rate limit: exit 1, empty stdout). The gate must
+        # retry and keep waiting instead of dying with an empty conclusion.
+        fault_left=0
+        if [ -f "$SANDBOX/runs-fault.json" ]; then
+          fault_left="$(cat "$SANDBOX/runs-fault.json")"
+        fi
+        fault_seen=0
+        if [ -f "$SANDBOX/runs-fault.count" ]; then
+          fault_seen="$(cat "$SANDBOX/runs-fault.count")"
+        fi
+        if [ "$fault_seen" -lt "$fault_left" ]; then
+          echo $(( fault_seen + 1 )) > "$SANDBOX/runs-fault.count"
+          # A transient API failure: nothing on stdout, failure exit.
+          exit 1
+        fi
         if [ -f "$SANDBOX/runs-after.json" ]; then
           count_file="$SANDBOX/runs-reads.count"
           reads=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
@@ -312,6 +329,65 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
+  // RELEASE-GATE-POLL-BUDGET: the gate's wait budget must cover a
+  // tag CI run delayed far beyond the old 120-poll default by the
+  // hosted-runner queue. rc.13: 9 workflows started at the tag push, the tag
+  // CI completed after ~50 min (> 120 x 20 s = 40 min) and the publish died
+  // at the timeout with an empty verdict 11 min before the green run landed.
+  // The scenario «the run completes only after more than the old 120 polls»
+  // must now publish (POLL_SECONDS is overridden to 0 in the tests, so the
+  // poll count is the budget, not the wall clock).
+  it("publishes when the tag CI run completes only after more than the old 120 polls (the rc.13 queue delay)", () => {
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const after = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
+      before[1],
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    // Reads per gate poll: one for the cancelled-run pre-check, then two per
+    // poll (verdict + status) while the verdict is "missing". The old default
+    // budget (120) times out on poll 120, i.e. after read 1 + 2*120 + 2 = 243
+    // reads. Switching after 300 reads (~poll 149) therefore lands strictly
+    // between the old (120) and the new (240) budget: the same scenario must
+    // time out with the old budget and publish with the raised one.
+    const switchAfter = "300";
+    const old = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "120",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.notEqual(old.code, 0, old.out);
+    assert.match(old.out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 120 polls/);
+    assert.equal(mutations(sb), "");
+    fs.rmSync(path.join(sb.dir, "runs-reads.count"), { force: true });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "240",
+      GH_RUNS_SWITCH_AFTER: switchAfter,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("still refuses on a tag CI run that never completes, just after more polls (240, not 120)", () => {
+    // The raised budget must not turn the gate into an infinite wait: with
+    // the run never completing the publish refuses — after POLL_MAX polls.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "6",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 6 polls/);
+    assert.equal(mutations(sb), "");
+  });
+
   // ---- RELEASE-PUBLISH-WAIT: the gate must wait for the TAG's runs, not the commit's ----
 
   it("waits for the board image run of the tag while it is still building, then publishes (the 1.6.1 incident)", () => {
@@ -410,6 +486,45 @@ describe("publish-github-release.sh: the CI gate", () => {
     const { code, out } = runScript(sb, rcTag);
     assert.match(out, /gate: Myrmidon CI \(tag\) success/);
     assert.match(out, /gate: Myrmidon image \(board\) success/);
+  });
+
+  // ---- TAG-CI-RETRY (the 1.6.5 rc.13 incident): a transient gh api failure must not kill the gate ----
+
+  it("survives a transient gh api failure while waiting for the tag CI run (the rc.13 incident)", () => {
+    // The exact shape of 2026-10-08: the tag's CI run was still running when
+    // one gh api read failed transiently (5xx / secondary rate limit). The
+    // old gate read an EMPTY verdict, treated "" != "missing" as a completed
+    // run and died with "(conclusion: )" while the CI finished success 11
+    // minutes later. The gate must retry the read and keep waiting.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    // 2 leading failed reads (fewer than MYRMIDON_RELEASE_GH_RETRIES=3):
+    // the gate retries and then reads the real green runs.
+    fs.writeFileSync(path.join(sb.dir, "runs-fault.json"), "2");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_GH_RETRIES: "3",
+      MYRMIDON_RELEASE_GH_RETRY_SLEEP: "0",
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: gh api runs read failed/);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("keeps waiting (missing) when the gh api failure persists beyond the retries", () => {
+    // All 3 reads fail: runs_of answers "[]" -> verdict "missing" -> the
+    // gate keeps WAITING instead of dying with an empty conclusion, and
+    // eventually times out with the poll budget exhausted.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "runs-fault.json"), "99");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_GH_RETRIES: "3",
+      MYRMIDON_RELEASE_GH_RETRY_SLEEP: "0",
+      MYRMIDON_RELEASE_POLL_MAX: "2",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /gate: gh api runs read failed/);
+    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
+    assert.equal(mutations(sb), "");
   });
 
   it("still refuses a tag that does not look like myr-vX.Y.Z[-rc.N]", () => {
@@ -799,6 +914,16 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
 
   it("declares the tag input as required", () => {
     assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
+  });
+
+  // RELEASE-GATE-POLL-BUDGET: the publish job raises the gate's
+  // poll budget so a tag CI run delayed by the tag-push runner queue
+  // (rc.13: ~50 min against the 40-min default) is waited out instead of
+  // timing out with an empty verdict.
+  it("raises the gate wait budget for the tag CI queue delay (MYRMIDON_RELEASE_POLL_MAX)", () => {
+    assert.match(workflow, /MYRMIDON_RELEASE_POLL_MAX: "240"/);
+    // The budget (20 s x 240 = 80 min) must stay inside the job's own timeout.
+    assert.match(workflow, /timeout-minutes: 90/);
   });
 });
 

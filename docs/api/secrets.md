@@ -74,6 +74,27 @@ GET /api/agents/me/secret-proposals
 DELETE /api/agents/me/secret-proposals/{proposalId}
 ```
 
+Secret creation proposals may include `rotateSecretId` to target an existing
+active company secret. The proposed value becomes a new version when approved,
+and existing `@latest` bindings resolve the new version. The proposal name/key
+must match the target; rotation does not rename secrets. Without a rotation
+target, name conflicts return `409` at proposal creation, rather than leaving
+an unapprovable pending proposal.
+
+```json
+{
+  "kind": "secret",
+  "name": "service-token",
+  "value": "<new secret value>",
+  "rotateSecretId": "<existing secret id>",
+  "justification": "Rotate the service credential"
+}
+```
+
+A binding proposal may retarget an existing company-secret reference when only
+the secret-reference portion differs. Plain values and user-secret bindings
+remain protected from replacement.
+
 An agent can ask Myrmidon to bind an existing secret under a new path without
 knowing a secret ID. Set `kind` to `binding` and identify the source by the
 agent's own existing `env.*` or `access.*` config path:

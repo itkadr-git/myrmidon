@@ -17,15 +17,15 @@ In Myrmidon, **task** and **issue** refer to the same work item. The UI may use 
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints are under `/api`. Use JSON except for multipart attachment uploads and binary content downloads. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
+Env vars auto-injected: `MYRMIDON_AGENT_ID`, `MYRMIDON_COMPANY_ID`, `MYRMIDON_API_URL`, `MYRMIDON_RUN_ID`. Optional wake-context vars may also be present: `MYRMIDON_TASK_ID` (issue/task that triggered this wake), `MYRMIDON_WAKE_REASON` (why this run was triggered), `MYRMIDON_WAKE_COMMENT_ID` (specific comment that triggered this wake, or legacy `PAPERCLIP_WAKE_COMMENT_ID`), `MYRMIDON_APPROVAL_ID`, `MYRMIDON_APPROVAL_STATUS`, and `MYRMIDON_LINKED_ISSUE_IDS` (comma-separated, or legacy `PAPERCLIP_LINKED_ISSUE_IDS`). For local adapters, `MYRMIDON_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `MYRMIDON_API_URL` and `MYRMIDON_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `MYRMIDON_API_KEY` in adapter config. All requests use `Authorization: Bearer $MYRMIDON_API_KEY`. All endpoints are under `/api`. Use JSON except for multipart attachment uploads and binary content downloads. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
 
 Adapters deliver the wake payload in the run prompt. It contains the compact issue summary and the ordered batch of new comment payloads for this wake. Read that prompt section first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
-Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Myrmidon skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
+Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Myrmidon skills for Claude/Codex and print/export the required `MYRMIDON_*` (and legacy `PAPERCLIP_*`) environment variables for that agent identity.
 
 **CLI safety — use `npx paperclipai` for content-bearing arguments.** When you run the Myrmidon CLI, use `npx paperclipai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `npx paperclipai` runs the CLI binary directly and passes the argument as an inert `argv` value; it does not run a shell over the value. Do not use `pnpm paperclipai` for such an argument. `pnpm paperclipai` is a `package.json` script; `pnpm` appends the argument to a `/bin/sh` command string, so the shell reads it first and interprets a backtick pair, `$( )`, or `$NAME` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. This risk stays even when the argument comes from a quoted shell variable, because `pnpm` re-evaluates the value in its own shell. Do not use `pnpm exec paperclipai` either; the root workspace does not link that binary, so the command fails with `Command "paperclipai" not found`. To run local `cli/src` changes with a content-bearing argument, use `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> <args>`. See `doc/CLI.md` for the full safe/unsafe matrix.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $MYRMIDON_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## Conversation tasks
 
@@ -93,7 +93,7 @@ chat shortcut above applies:
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
 
-**Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
+**Step 2 — Approval follow-up (when triggered).** If `MYRMIDON_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
 - `GET /api/approvals/{approvalId}`
 - `GET /api/approvals/{approvalId}/issues`
@@ -104,13 +104,13 @@ chat shortcut above applies:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,in_review,blocked` only when you need the full issue objects.
 
-**Step 4 — Pick work.** Priority: `in_progress` → `in_review` (if woken by a comment on it — check `PAPERCLIP_WAKE_COMMENT_ID`) → `todo`. Skip `blocked` unless you can unblock.
+**Step 4 — Pick work.** Priority: `in_progress` → `in_review` (if woken by a comment on it — check `MYRMIDON_WAKE_COMMENT_ID` or legacy `PAPERCLIP_WAKE_COMMENT_ID`) → `todo`. Skip `blocked` unless you can unblock.
 
 Overrides and special cases:
 
-- `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
-- `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
-- `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
+- `MYRMIDON_TASK_ID` set and assigned to you → prioritize that task first.
+- `MYRMIDON_WAKE_REASON=issue_commented` with `MYRMIDON_WAKE_COMMENT_ID` (or `PAPERCLIP_WAKE_COMMENT_ID`) → read the comment, then checkout and address the feedback (applies to `in_review` too).
+- `MYRMIDON_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
@@ -119,7 +119,7 @@ Overrides and special cases:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: Authorization: Bearer $MYRMIDON_API_KEY, X-Paperclip-Run-Id: $MYRMIDON_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -131,7 +131,7 @@ If the run prompt includes a Myrmidon wake payload, inspect that section before 
 
 Use comments incrementally:
 
-- if `PAPERCLIP_WAKE_COMMENT_ID` is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
+- if `MYRMIDON_WAKE_COMMENT_ID` (or `PAPERCLIP_WAKE_COMMENT_ID`) is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
 - if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
 - use the full `GET /api/issues/{issueId}/comments` route only when cold-starting or when incremental isn't enough
 
@@ -139,7 +139,7 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
-If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:
+If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint. This applies to escalated reviewers too: record a stage decision with `PATCH /api/issues/{issueId}` and a non-empty `comment`; do not use `POST /api/approvals/{approvalId}/approve`, which resolves board approvals and is board-only.
 
 - Approve: `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "Approved: …" }`. If more stages remain, Myrmidon keeps the issue in `in_review` and reassigns it to the next participant automatically.
 - Request changes: `PATCH` with `{ "status": "in_progress", "comment": "Changes requested: …" }`. Myrmidon converts this into a changes-requested decision and reassigns to `returnAssignee`.
@@ -187,14 +187,14 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: X-Paperclip-Run-Id: $MYRMIDON_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+scripts/paperclip-issue-update.sh --issue-id "$MYRMIDON_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -224,7 +224,7 @@ The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStren
 
 ### Monitors and Watchers (say only what you actually scheduled)
 
-A "watcher" or "monitor" is not something that lives inside a run. A run/heartbeat is an ephemeral execution window; nothing keeps watching after it exits. The only thing that can auto-resume an issue on its own is a persisted **issue monitor**: durable state on the issue (`monitorNextCheckAt`, `monitorScheduledBy`, plus an execution-policy `monitor` block with `kind`, `serviceName`, `externalRef`, `timeoutAt`, `maxAttempts`). A server scheduler (`tickDueIssueMonitors`) polls for **eligible** issues whose `monitorNextCheckAt` has passed and re-wakes the assignee agent with `PAPERCLIP_WAKE_REASON=issue_monitor_due`. Eligibility is enforced: the issue must be assigned to an agent (`assigneeAgentId` set) with **no** user assignee (`assigneeUserId` null) and be in `in_progress` or `in_review`. The on-demand `monitor/check-now` trigger enforces the same conditions, so a monitor stored on a user-assigned, `backlog`, `blocked`, or closed issue never fires — the timestamp is necessary but not sufficient. It is timer-based polling, not an event subscription — Myrmidon is not notified the instant CI/Greptile/an external check finishes; the monitor just wakes you on a schedule so you can look again.
+A "watcher" or "monitor" is not something that lives inside a run. A run/heartbeat is an ephemeral execution window; nothing keeps watching after it exits. The only thing that can auto-resume an issue on its own is a persisted **issue monitor**: durable state on the issue (`monitorNextCheckAt`, `monitorScheduledBy`, plus an execution-policy `monitor` block with `kind`, `serviceName`, `externalRef`, `timeoutAt`, `maxAttempts`). A server scheduler (`tickDueIssueMonitors`) polls for **eligible** issues whose `monitorNextCheckAt` has passed and re-wakes the assignee agent with `MYRMIDON_WAKE_REASON=issue_monitor_due`. Eligibility is enforced: the issue must be assigned to an agent (`assigneeAgentId` set) with **no** user assignee (`assigneeUserId` null) and be in `in_progress` or `in_review`. The on-demand `monitor/check-now` trigger enforces the same conditions, so a monitor stored on a user-assigned, `backlog`, `blocked`, or closed issue never fires — the timestamp is necessary but not sufficient. It is timer-based polling, not an event subscription — Myrmidon is not notified the instant CI/Greptile/an external check finishes; the monitor just wakes you on a schedule so you can look again.
 
 Because of that, follow these rules:
 
@@ -274,8 +274,8 @@ The array **replaces** the current set on each update — send `[]` to clear. Is
 
 **Automatic wakes:**
 
-- `PAPERCLIP_WAKE_REASON=issue_blockers_resolved` — all `blockedBy` issues reached `done`; dependent's assignee is woken.
-- `PAPERCLIP_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
+- `MYRMIDON_WAKE_REASON=issue_blockers_resolved` — all `blockedBy` issues reached `done`; dependent's assignee is woken.
+- `MYRMIDON_WAKE_REASON=issue_children_completed` — all direct children reached a terminal state (`done`/`cancelled`); parent's assignee is woken.
 
 `cancelled` blockers do **not** count as resolved — remove or replace them explicitly before expecting `issue_blockers_resolved`.
 
@@ -298,7 +298,7 @@ POST /api/companies/{companyId}/approvals
 }
 ```
 
-`issueIds` links the approval into the issue thread. When approved, Myrmidon wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
+`issueIds` links the approval into the issue thread. When approved, Myrmidon wakes the requester with `MYRMIDON_APPROVAL_ID`/`MYRMIDON_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
 
 ## Issue-Thread Interactions
 
@@ -531,17 +531,17 @@ Before proposing a credential you MUST read the "Agent secret proposals" section
 When authenticated with the current run's agent JWT, list the secrets available to that run before fetching a value:
 
 ```bash
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
-curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+MYRMIDON_API_BASE="${MYRMIDON_API_URL%/}"
+MYRMIDON_API_BASE="${MYRMIDON_API_BASE%/api}"
+curl -s -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  "$MYRMIDON_API_BASE/api/agents/me/secrets"
 ```
 
 The list is metadata-only. Fetch a specific value only when needed; the request has no body:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets/github_token/value"
+curl -s -X POST -H "Authorization: Bearer $MYRMIDON_API_KEY" \
+  "$MYRMIDON_API_BASE/api/agents/me/secrets/github_token/value"
 ```
 
 - An `env.*` secret binding also grants API read access; `access.*` bindings grant API access without env injection.
@@ -556,7 +556,7 @@ Exact response fields are documented in `skills/myrmidon/references/api-referenc
 
 - **Never retry a 409.** The task belongs to someone else.
 - **Never look for unassigned work.** No assignments = exit. Exception: when the swarm is enabled, the board itself assigns a task of your role's queue to a free agent of the caste and wakes that agent on it (wake reason `swarm_matched`, with `contextSnapshot.issueId`). That task is already yours — treat it as assigned work and checkout normally. Do not go looking for work on your own; a free agent may also ask the board for one with `POST /api/myrmidon/companies/{companyId}/swarm-claim/claim` using its own agent JWT (`runId` optional).
-- **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
+- **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `MYRMIDON_WAKE_COMMENT_ID` (or legacy `PAPERCLIP_WAKE_COMMENT_ID`) and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.

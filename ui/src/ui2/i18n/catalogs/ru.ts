@@ -7,6 +7,13 @@
 import type { Ui2Catalog } from "./en";
 
 export const ru: Ui2Catalog = {
+  uiSwitch: {
+    label: "Интерфейс",
+    new: "Новая",
+    legacy: "Прежняя",
+    instanceDefault: "По настройке экземпляра",
+    switchTo: "Переключить версию интерфейса",
+  },
   nav: {
     newTask: "Новая задача",
     search: "Поиск",
@@ -281,6 +288,38 @@ export const ru: Ui2Catalog = {
           title: "Язык и форматы",
         },
         runs: {
+          drain: {
+            action: {
+              start: "Начать слив",
+              stop: "Остановить слив",
+            },
+            confirm: {
+              cancel: "Отмена",
+              confirm: "Подтвердить запуск",
+              prompt: "Подтвердите запуск слива очереди на {{duration}}. Новые прогоны не будут запускаться.",
+            },
+            duration: {
+              d15m: "15 мин",
+              d1h: "1 ч",
+              d4h: "4 ч",
+              d24h: "24 ч",
+              label: "Срок слива",
+            },
+            error: {
+              actionFailed: "Не удалось выполнить действие.",
+              denied: "Нет прав на управление сливом очереди.",
+              generic: "Не удалось загрузить состояние слива очереди.",
+            },
+            status: {
+              activeRuns: "Активных прогонов: {{count}}",
+              draining: "Идёт слив очереди",
+              idle: "Слив не идёт",
+              noExpiry: "До ручной остановки",
+              until: "До {{time}}",
+            },
+            subtitle: "Остановка приёма новых прогонов и завершение текущих.",
+            title: "Слив очереди",
+          },
           off: "Прогоны выключены",
           reset: "Сбросить",
           save: "Сохранить",
@@ -359,6 +398,19 @@ export const ru: Ui2Catalog = {
         placeholderTitle: "Этот экран появится в 2.0",
         placeholderBody: "Макет 2.0 для этой зоны ещё не подключён; рабочий экран ниже сохраняет поток.",
         placeholderLegacyLink: "Вернуться к текущему макету",
+        fleet: {
+          title: "Серверы",
+          subtitle: "Состояние инфраструктуры по настроенным источникам мониторинга.",
+          monitoringError: "Мониторинг не настроен или недоступен.",
+          monitoringUnavailable: "Данные мониторинга недоступны.",
+          hosts: "Узлы",
+          services: "Сервисы",
+          empty: "Нет данных флота",
+          emptyBody: "Для этой компании не возвращены узлы или сервисы.",
+          error: "Данные флота недоступны.",
+          metrics: "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
+          states: { running: "Работает", stopped: "Остановлен", unknown: "Неизвестно" },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning

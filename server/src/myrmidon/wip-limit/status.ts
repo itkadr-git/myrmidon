@@ -10,15 +10,15 @@
 // tables, the same shape the stack registry and the budget signal use.
 
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { agents, issues } from "@myrmidon/db";
 import {
   buildWipLimitAgentStatus,
   isWipLimitLead,
   resolveWipLimitForAgent,
   type WipLimitAgentStatus,
   type WipLimitSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** In-flight statuses the count reads. */
 export const WIP_LIMIT_COUNTED_STATUSES = ["in_progress", "in_review"] as const;

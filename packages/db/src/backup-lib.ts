@@ -6,7 +6,7 @@ import { open as openFile, statfs, type FileHandle } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -16,7 +16,7 @@ export type BackupRetentionPolicy = {
   // when true, tiered pruning is skipped and all previous <prefix>-* files are
   // deleted after the new dump passes verification. Kept as a local copy of the
   // shared type (packages/shared/src/types/instance.ts): the db package does not
-  // depend on @paperclipai/shared, so the flag is mirrored here instead.
+  // depend on @myrmidon/shared, so the flag is mirrored here instead.
   keepLastOnly?: boolean;
 };
 
@@ -1086,12 +1086,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
+        formatted_type: string | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
+        SELECT c.column_name, c.data_type, c.udt_schema, c.udt_name, c.is_nullable, c.column_default,
+               c.character_maximum_length, c.numeric_precision, c.numeric_scale,
+               format_type(a.atttypid, a.atttypmod) AS formatted_type
+        FROM information_schema.columns c
+        LEFT JOIN pg_namespace ns ON ns.nspname = c.table_schema
+        LEFT JOIN pg_class cls ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
+        LEFT JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE c.table_schema = ${schema_name} AND c.table_name = ${tablename}
+        ORDER BY c.ordinal_position
       `;
 
       emit(`-- Table: ${schema_name}.${tablename}`);
@@ -1101,7 +1106,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for (const col of columns) {
         let typeStr: string;
         if (col.data_type === "USER-DEFINED") {
-          typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
+          const modifier = col.formatted_type?.match(/\([^)]+\)$/)?.[0] ?? "";
+          typeStr = `${quoteQualifiedName(col.udt_schema, col.udt_name)}${modifier}`;
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
           typeStr = col.udt_schema === "pg_catalog"

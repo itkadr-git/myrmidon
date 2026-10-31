@@ -4,7 +4,7 @@ import {
   type SmokeRunStep,
   type SmokeRunStepPath,
   type SmokeRunStepStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /**
  * Pure matrix/health helpers for the Smoke Lab tab (PAP-13347 / S2, plan §D3).

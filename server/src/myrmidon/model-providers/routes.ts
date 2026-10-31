@@ -23,18 +23,19 @@
 // ModelProviderRoutesDeps, so the suite runs the real routes with fakes (the
 // real wiring is wiring.ts).
 
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import {
   createModelProviderSchema,
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
   setModelProviderModelsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import type { ModelProviderActivityEntry, ModelProviderService } from "./service.js";
 import { reportPoolAccountStatus } from "./signals.js";
+import { sanitizeErrorMessage } from "../litellm-sync/client.js";
 
 const reportAccountStatusSchema = z.object({
   accountNumber: z.number().int().positive(),
@@ -160,6 +161,20 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json({ models: await deps.service.listModels(companyId, providerId) });
   });
 
+  router.post(
+    "/myrmidon/companies/:companyId/model-providers/:id/tool-call-probe",
+    async (req: Request, res: Response) => {
+      const companyId = req.params.companyId as string;
+      const providerId = req.params.id as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+      // The probe is deliberately detached from request latency. Its persisted state
+      // is read by the next provider list request.
+      void deps.service.checkToolCallCompatibility({ companyId, providerId }).catch(() => undefined);
+      res.status(202).json({ ok: true, queued: true });
+    },
+  );
+
   router.post("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
@@ -173,6 +188,30 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     });
     res.json({ models });
   });
+
+  const handleLitellmChannels = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (typeof (deps.service as any).listLitellmChannels === "function") {
+      try {
+        const channels = await (deps.service as any).listLitellmChannels(companyId);
+        res.json({ channels, enabled: true });
+        return;
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        res.status(502).json({
+          channels: [],
+          enabled: true,
+          error: sanitizeErrorMessage(raw),
+        });
+        return;
+      }
+    }
+    res.json({ channels: [], enabled: false, message: "LiteLLM gateway sync is not configured" });
+  };
+
+  router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
+  router.get("/myrmidon/companies/:companyId/litellm/channels", handleLitellmChannels);
 
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;

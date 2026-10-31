@@ -20,7 +20,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   litellmModels,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

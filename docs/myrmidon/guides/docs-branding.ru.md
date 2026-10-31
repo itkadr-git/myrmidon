@@ -3,7 +3,7 @@
 > English version: [docs-branding.md](docs-branding.md)
 
 Продукт в пользовательской и операторской документации `docs/` называется
-**Myrmidon**. Имя вендора **Paperclip** остаётся только там, где этого требуют
+**Myrmidon**. Имя вендора остаётся только там, где этого требуют
 лицензия и происхождение кода: `LICENSE`, сторонние уведомления (`NOTICE`,
 `ui/public/fonts/NOTICE.md`, …) и строка атрибуции «Based on Paperclip (MIT)»
 на экране About и в экспортируемом README.

@@ -10,7 +10,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
-import type { GuardrailModesSettings, ResolvedGuardrailMode } from "@paperclipai/shared";
+import type { GuardrailModesSettings, ResolvedGuardrailMode } from "@myrmidon/shared";
 import { GuardrailsScreenView, type GuardrailsAgentRow } from "./GuardrailsScreen";
 import { GuardrailsJournal } from "./GuardrailsJournal";
 import { guardrailsApi, guardrailsSettingsQueryKey, type GuardrailEventFilters } from "./guardrailsApi";

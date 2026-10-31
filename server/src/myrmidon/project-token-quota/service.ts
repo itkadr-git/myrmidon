@@ -23,13 +23,13 @@
 // heartbeat daily cap uses.
 
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { projects, projectTokenQuotas } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { projects, projectTokenQuotas } from "@myrmidon/db";
 import {
   projectTokenQuotaSchema,
   type ProjectTokenQuota,
   type ProjectTokenQuotaBlock,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, notFound, unprocessable } from "../../errors.js";
 
 export type ProjectTokenQuotaRow = typeof projectTokenQuotas.$inferSelect;

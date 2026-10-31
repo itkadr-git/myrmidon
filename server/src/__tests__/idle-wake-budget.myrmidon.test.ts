@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({
@@ -22,7 +22,7 @@ import {
   TEAM_LIVENESS_CARD_KEY,
   resolveTeamLivenessSettings,
   type ResolvedTeamLiveness,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   createIdlePickupSweeper,
   createIdleWakeBudget,

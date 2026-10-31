@@ -16,7 +16,7 @@
 // No database access and no network here: the caller reads the rows and resolves
 // the PR state, then packs both into `TaskPrSyncFacts`.
 
-import type { IssueWorkProduct, PullRequestWorkProductMetadata } from "@paperclipai/shared";
+import type { IssueWorkProduct, PullRequestWorkProductMetadata } from "@myrmidon/shared";
 
 /** Effective state of one delivering PR, after the stored row and the resolved facts are merged. */
 export type TaskPrSyncPrState =
@@ -35,6 +35,8 @@ export interface TaskPrSyncPrFact {
   number: number | null;
   /** Head (post-merge) sha the resolver reported; the settle-comment dedup marker. `null` when unknown. */
   mergedSha: string | null;
+  /** Mergeability state reported by GitHub or external provider. */
+  mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
 }
 
 export interface TaskPrSyncFacts {
@@ -50,11 +52,13 @@ export type TaskPrSyncNoopReason =
   | "no_pr_products"
   | "pr_still_open"
   | "pr_state_unknown"
-  | "post_deploy_gate_open";
+  | "post_deploy_gate_open"
+  | "inactive_issue";
 
 export type TaskPrSyncDecision =
   | { kind: "settle_done"; mergedSha: string | null; prRefs: string[] }
   | { kind: "return_to_assignee"; closedPrRefs: string[] }
+  | { kind: "return_conflict"; conflictPrRefs: string[] }
   | { kind: "noop"; reason: TaskPrSyncNoopReason };
 
 /** Terminal statuses the sweep must never rewrite. */
@@ -125,9 +129,23 @@ export function readLastMergedSha(
  */
 export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
   if (TERMINAL_ISSUE_STATUSES.has(facts.issueStatus)) return noop("terminal_issue");
+  // Inactive queue states may update PR work-product state, but must not auto-close
+  // a task before an assignee starts it. Explicit post-deploy gates remain decisive.
+  if (facts.issueStatus === "todo" || facts.issueStatus === "backlog" || facts.issueStatus === "blocked") {
+    return facts.openPostDeployGate ? noop("post_deploy_gate_open") : noop("inactive_issue");
+  }
 
   const active = facts.prs.filter((pr) => pr.state !== "superseded");
   if (active.length === 0) return noop("no_pr_products");
+
+  if (facts.issueStatus === "in_review") {
+    const conflicting = active.filter(
+      (pr) => (pr.state === "open" || pr.state === "draft") && pr.mergeable === "CONFLICTING",
+    );
+    if (conflicting.length > 0) {
+      return { kind: "return_conflict", conflictPrRefs: conflicting.map(taskPrReference) };
+    }
+  }
 
   if (active.some((pr) => pr.state === "open" || pr.state === "draft")) return noop("pr_still_open");
   if (active.some((pr) => pr.state === "unknown")) return noop("pr_state_unknown");

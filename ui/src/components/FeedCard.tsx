@@ -1,8 +1,9 @@
 import { Link } from "@/lib/router";
+import { i18n, useTranslation } from "@/i18n";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@myrmidon/shared";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import {
   FileText,
@@ -43,85 +44,85 @@ function formatVerb(
 ): string {
   switch (action) {
     case "issue.created":
-      return "opened";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbOpened");
     case "issue.updated": {
       const status = details?.status;
-      if (typeof status === "string") return `moved to ${humanize(status)}`;
+      if (typeof status === "string") return i18n.t("area.inbox-status-cards-1.feed-card.verbMovedTo", { status: humanize(status) });
       const priority = details?.priority;
-      if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
-      return "updated";
+      if (typeof priority === "string") return i18n.t("area.inbox-status-cards-1.feed-card.verbSetPriority", { priority: humanize(priority) });
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdated");
     }
     case "issue.document_created":
-      return "wrote doc on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbWroteDoc");
     case "issue.document_updated":
-      return "edited doc on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbEditedDoc");
     case "issue.document_deleted":
-      return "deleted doc from";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbDeletedDoc");
     case "issue.work_product_created":
-      return "delivered work on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbDeliveredWork");
     case "issue.work_product_updated":
-      return "updated work on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdatedWork");
     case "issue.work_product_deleted":
-      return "removed work from";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbRemovedWork");
     case "issue.checked_out":
-      return "picked up";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbPickedUp");
     case "issue.released":
-      return "released";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbReleased");
     case "issue.commented":
     case "issue.comment_added":
-      return "commented on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbCommented");
     case "issue.attachment_added":
-      return "attached a file to";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbAttached");
     case "issue.attachment_removed":
-      return "removed attachment from";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbRemovedAttachment");
     case "issue.deleted":
-      return "deleted";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbDeleted");
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned" ? i18n.t("area.inbox-status-cards-1.feed-card.verbNeedsApproval") : i18n.t("area.inbox-status-cards-1.feed-card.verbRequestedApproval");
     case "approval.approved":
-      return "approved";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbApproved");
     case "approval.rejected":
-      return "rejected";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbRejected");
     case "approval.revision_requested":
-      return "requested changes on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbRequestedChanges");
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned" ? i18n.t("area.inbox-status-cards-1.feed-card.verbWantsHire") : i18n.t("area.inbox-status-cards-1.feed-card.verbHired");
     case "agent.paused":
-      return "paused";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbPaused");
     case "agent.resumed":
-      return "resumed";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbResumed");
     case "agent.updated":
-      return "updated";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdated");
     case "agent.terminated":
-      return "terminated";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbTerminated");
 
     case "heartbeat.invoked":
-      return "started a run on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbStartedRun");
     case "heartbeat.cancelled":
-      return "cancelled a run on";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbCancelledRun");
 
     case "project.created":
-      return "created project";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbCreatedProject");
     case "project.updated":
-      return "updated project";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdatedProject");
     case "project.deleted":
-      return "deleted project";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbDeletedProject");
     case "goal.created":
-      return "created goal";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbCreatedGoal");
     case "goal.updated":
-      return "updated goal";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdatedGoal");
     case "goal.deleted":
-      return "deleted goal";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbDeletedGoal");
     case "company.created":
-      return "created organization";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbCreatedOrg");
     case "company.updated":
-      return "updated organization";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdatedOrg");
     case "company.archived":
-      return "archived organization";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbArchivedOrg");
     case "company.budget_updated":
-      return "updated organization budget";
+      return i18n.t("area.inbox-status-cards-1.feed-card.verbUpdatedOrgBudget");
 
     default:
       return action.replace(/[._]/g, " ");
@@ -293,10 +294,10 @@ function resolveContent(
   const actorName =
     actor?.name ??
     (event.actorType === "system"
-      ? "System"
+      ? i18n.t("area.inbox-status-cards-1.feed-card.actorSystem")
       : event.actorType === "user"
-        ? "Board"
-        : event.actorId || "Unknown");
+        ? i18n.t("area.inbox-status-cards-1.feed-card.actorBoard")
+        : event.actorId || i18n.t("area.inbox-status-cards-1.feed-card.actorUnknown"));
 
   const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`) ?? null;
 
@@ -351,7 +352,7 @@ function resolveContent(
     if (approvalAgentName) {
       identifier = approvalAgentName;
     } else {
-      identifier = approvalType ? humanize(approvalType) : "approval";
+      identifier = approvalType ? humanize(approvalType) : i18n.t("area.inbox-status-cards-1.feed-card.approvalFallback");
       identifierMono = false;
     }
     title = entityTitle;
@@ -425,6 +426,7 @@ export function FeedCard({
   isPinned = false,
   className,
 }: FeedCardProps) {
+  const { t } = useTranslation();
   const details = event.details as Record<string, unknown> | null;
   const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap);
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
@@ -468,7 +470,7 @@ export function FeedCard({
         )}
       </span>
       {isPinned && (
-        <span className="shrink-0 text-xs text-muted-foreground">Review →</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{t("area.inbox-status-cards-1.feed-card.review")}</span>
       )}
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}

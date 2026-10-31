@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { createPostgresRunDispatchAdapter } from "./adapters/postgres.js";
 import {
   createCancelStaleQueuedRun,
@@ -43,6 +43,7 @@ export type {
   CancelStaleQueuedRunOutcome,
 } from "./application/types.js";
 export { RunDispatchApplicationError } from "./application/types.js";
+export { createCancelStaleQueuedRun } from "./application/use-cases.js";
 
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */

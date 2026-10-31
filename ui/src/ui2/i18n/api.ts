@@ -12,7 +12,7 @@
 // lives behind its own route (GET/PATCH /api/myrmidon/bridge-language); reading
 // it is open to the board, changing it is instance-admin only.
 import { api } from "@/api/client";
-import type { Ui2Language, Ui2LanguagePreference } from "@paperclipai/shared";
+import type { Ui2Language, Ui2LanguagePreference } from "@myrmidon/shared";
 
 /**
  * myrmidon(1.7-TG-LOCALE): the SOURCE of the language the bridged Telegram DM

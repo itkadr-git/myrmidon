@@ -3,8 +3,8 @@ import request from "supertest";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { withAccountHomeSecretMutationLock } from "@myrmidon/adapter-codex-local/server";
 import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
   AdapterAuthSessionRow,
@@ -202,8 +202,8 @@ vi.mock("../middleware/logger.js", () => ({
 // Retain the production readiness helper while making the promotion decision
 // observable. This lets the route test prove that a resolved but rejected
 // Decision H outcome becomes a failed terminal rather than authenticated.
-vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-codex-local/server")>();
+vi.mock("@myrmidon/adapter-codex-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidon/adapter-codex-local/server")>();
   return {
     ...actual,
     promoteDeviceLoginCredential: mockDeviceLoginPromotion,
@@ -361,11 +361,10 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, COMPANY_2
   };
 }
 
+let agentRoutes: typeof import("../routes/agents.js").agentRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
 async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -385,8 +384,24 @@ describe("adapter device-login routes", () => {
   // `afterEach` whether or not the route removed them itself.
   const accountHomeTestDirs: string[] = [];
 
+  // The route module graph (routes/agents.ts and everything it pulls in) is huge,
+  // and loading it cold costs ~12 s on a GitHub runner and ~30 s on a slow
+  // one. It used to be re-imported after vi.resetModules() inside every test:
+  // the first test paid the whole transform inside its 15 s budget, and when
+  // that timed out the still-running import finished later and started a login
+  // against the next test's store (a cascading 409 "already active"). Every
+  // mock here is a hoisted, module-level object or a factory over one, and each
+  // test builds its own store, runtime and app, so nothing needs a module
+  // reset: load the routes once, outside any test's budget. 60 s is about 2x
+  // the slowest measured cold load.
+  beforeAll(async () => {
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
     mockDeviceLoginPromotion.mockResolvedValue({
       outcome: "promoted",
@@ -1329,9 +1344,9 @@ describe("adapter device-login routes", () => {
       accountHomeDir,
       accountHomeCreated: true,
     });
-    // `vi.resetModules()` in `beforeEach` gives the route module a fresh copy
-    // of `../errors.js`. Import the conflict helper from that same fresh copy,
-    // so the route's `err instanceof HttpError` check sees a matching class.
+    // Import the conflict helper from the same `../errors.js` instance the
+    // route module loaded, so the route's `err instanceof HttpError` check sees
+    // a matching class.
     const { conflict: freshConflict } =
       await vi.importActual<typeof import("../errors.js")>("../errors.js");
     mockSecretService.create.mockRejectedValueOnce(

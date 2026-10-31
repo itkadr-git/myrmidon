@@ -5,6 +5,7 @@ import {
   uuid,
   text,
   timestamp,
+  boolean,
   integer,
   jsonb,
   index,
@@ -20,7 +21,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata, IssueBlockerMetadata } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata, IssueBlockerMetadata } from "@myrmidon/shared";
 
 export const issues = pgTable(
   "issues",
@@ -38,6 +39,7 @@ export const issues = pgTable(
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
+    titleNeedsGeneration: boolean("title_needs_generation").notNull().default(false),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
@@ -72,6 +74,7 @@ export const issues = pgTable(
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
     responsibleUserId: text("responsible_user_id"),
+    responsibleAgentId: uuid("responsible_agent_id").references(() => agents.id),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
@@ -138,6 +141,7 @@ export const issues = pgTable(
       table.status,
     ),
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
+    responsibleAgentIdx: index("issues_company_responsible_agent_idx").on(table.companyId, table.responsibleAgentId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),

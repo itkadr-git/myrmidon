@@ -9,7 +9,7 @@ import {
   costEvents,
   createDb,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { budgetService } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -636,5 +636,41 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("delegates invocation blocking to resolveBudgetLimitAdmissionBlock hook when provided", async () => {
+    const dbStub = createDbStub([
+      [{
+        status: "idle",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+    ]);
+
+    const hookMock = vi.fn().mockResolvedValue({
+      scopeType: "issue",
+      scopeId: "issue-1",
+      scopeRef: "OPE-1234",
+      reason: "Issue budget limit exceeded.",
+    });
+
+    const service = budgetService(dbStub.db as any, {
+      resolveBudgetLimitAdmissionBlock: hookMock,
+    });
+
+    const block = await service.getInvocationBlock("company-1", "agent-1", { issueId: "issue-1" });
+
+    expect(hookMock).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: "agent-1",
+      context: { issueId: "issue-1" },
+    });
+    expect(block).toEqual({
+      scopeType: "issue",
+      scopeId: "issue-1",
+      scopeName: "OPE-1234",
+      reason: "Issue budget limit exceeded.",
+    });
   });
 });

@@ -5,7 +5,7 @@ import type {
   SmokeRun,
   SmokeRunStep,
   UpdateSmokeRun,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "./client";
 
 /**

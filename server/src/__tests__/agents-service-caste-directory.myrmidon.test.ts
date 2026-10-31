@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb } from "@paperclipai/db";
+import { agents, companies, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -138,7 +138,7 @@ describeEmbeddedPostgres("agent service role validation against the caste direct
 
 describe("agent role validator format (no database)", () => {
   it("accepts caste-key roles and refuses malformed ones", async () => {
-    const { createAgentSchema } = await import("@paperclipai/shared");
+    const { createAgentSchema } = await import("@myrmidon/shared");
     expect(createAgentSchema.parse({ name: "agent-a", role: "reviewer", adapterType: "process" }).role).toBe(
       "reviewer",
     );

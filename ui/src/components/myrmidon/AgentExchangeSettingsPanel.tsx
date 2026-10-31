@@ -5,7 +5,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessagesSquare } from "lucide-react";
-import type { AgentExchangeSettings, AgentExchangeSettingsPatch } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
+import type { AgentExchangeSettings, AgentExchangeSettingsPatch } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -63,6 +64,7 @@ export function AgentExchangeSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<AgentExchangeSettings | null>(null);
   const current = draft ?? view?.settings ?? null;
   const dirty = draft !== null && view != null;
@@ -77,12 +79,10 @@ export function AgentExchangeSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Discussion rooms (agent exchange)</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.agent-exchange-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          A room on an issue card: 2–4 agents on different models answer independently, a finisher writes the
-          summary as an issue document with the cost, and the owner can stop the room at any point. Saving takes
-          effect at the next room open — no server restart.
+          {t("area.settings-integrations.agent-exchange-settings-panel.description")}
         </p>
       </div>
 
@@ -98,20 +98,22 @@ export function AgentExchangeSettingsPanelView({
             <ToggleSwitch
               checked={current.enabled}
               onCheckedChange={(checked) => patch({ enabled: checked })}
-              aria-label="Discussion rooms enabled"
+              aria-label={t("area.settings-integrations.agent-exchange-settings-panel.enabledAria")}
             />
             <span className="text-sm">
-              Rooms enabled
+              {t("area.settings-integrations.agent-exchange-settings-panel.enabledLabel")}
               <span className="block text-xs text-muted-foreground">
-                Source: {describeAgentExchangeSource(view.sources.enabled)}
+                {t("area.settings-integrations.agent-exchange-settings-panel.source", { source: describeAgentExchangeSource(view.sources.enabled) })}
               </span>
             </span>
           </label>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <NumberField
-              label="Max participants"
-              hint={`2–4 agents per room. Source: ${describeAgentExchangeSource(view.sources.maxParticipants)}`}
+              label={t("area.settings-integrations.agent-exchange-settings-panel.maxParticipants")}
+              hint={t("area.settings-integrations.agent-exchange-settings-panel.maxParticipantsHint", {
+                source: describeAgentExchangeSource(view.sources.maxParticipants),
+              })}
               value={current.maxParticipants}
               min={2}
               max={4}
@@ -119,8 +121,10 @@ export function AgentExchangeSettingsPanelView({
               testId="agent-exchange-max-participants"
             />
             <NumberField
-              label="Max rounds"
-              hint={`Rounds after the independent first answers. Source: ${describeAgentExchangeSource(view.sources.maxRounds)}`}
+              label={t("area.settings-integrations.agent-exchange-settings-panel.maxRounds")}
+              hint={t("area.settings-integrations.agent-exchange-settings-panel.maxRoundsHint", {
+                source: describeAgentExchangeSource(view.sources.maxRounds),
+              })}
               value={current.maxRounds}
               min={0}
               max={8}
@@ -128,8 +132,10 @@ export function AgentExchangeSettingsPanelView({
               testId="agent-exchange-max-rounds"
             />
             <NumberField
-              label="Token budget per room"
-              hint={`The room stops when the budget is spent. Source: ${describeAgentExchangeSource(view.sources.tokenBudget)}`}
+              label={t("area.settings-integrations.agent-exchange-settings-panel.tokenBudget")}
+              hint={t("area.settings-integrations.agent-exchange-settings-panel.tokenBudgetHint", {
+                source: describeAgentExchangeSource(view.sources.tokenBudget),
+              })}
               value={current.tokenBudget}
               min={1000}
               max={1000000}
@@ -137,8 +143,10 @@ export function AgentExchangeSettingsPanelView({
               testId="agent-exchange-token-budget"
             />
             <NumberField
-              label="Response timeout (ms)"
-              hint={`A participant that misses the timeout is marked as an error and the room goes on. Source: ${describeAgentExchangeSource(view.sources.responseTimeoutMs)}`}
+              label={t("area.settings-integrations.agent-exchange-settings-panel.responseTimeout")}
+              hint={t("area.settings-integrations.agent-exchange-settings-panel.responseTimeoutHint", {
+                source: describeAgentExchangeSource(view.sources.responseTimeoutMs),
+              })}
               value={current.responseTimeoutMs}
               min={5000}
               max={600000}
@@ -156,18 +164,19 @@ export function AgentExchangeSettingsPanelView({
                 if (draft) onSave(draft);
               }}
             >
-              {pending ? "Saving..." : "Save room rules"}
+              {pending ? t("area.settings-integrations.agent-exchange-settings-panel.saving") : t("area.settings-integrations.agent-exchange-settings-panel.saveRules")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading the room rules...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-integrations.agent-exchange-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function AgentExchangeSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -178,7 +187,7 @@ export function AgentExchangeSettingsPanel() {
   const save = useMutation({
     mutationFn: agentExchangeApi.update,
     onMutate: () => setError(null),
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the room rules failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-integrations.agent-exchange-settings-panel.saveError")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: agentExchangeQueryKey });
@@ -188,7 +197,7 @@ export function AgentExchangeSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load the room rules."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-integrations.agent-exchange-settings-panel.loadError")}
       </div>
     );
   }

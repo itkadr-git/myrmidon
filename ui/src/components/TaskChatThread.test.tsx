@@ -12,10 +12,10 @@ import type {
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
-import type { HeartbeatRunEvent } from "@paperclipai/shared";
+import type { HeartbeatRunEvent } from "@myrmidon/shared";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -1069,7 +1069,7 @@ describe("TaskChatThread runtime transcript selection", () => {
             phase: continued ? "completed" : "recovery_needed", label: continued ? "Continued in another run" : "Stopped",
             cause: "native_continuation_requires_reconciliation", lastConfirmedActivityAt: null,
             retryAt: null, attempt: 1, maxAttempts: 3, recoveryOwner: null, nextAction: null,
-            permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: continued ? "failed-bootstrap" : null,
+            operatorActions: ["inspect_run"], predecessorRunId: null, successorRunId: continued ? "failed-bootstrap" : null,
           },
         },
         {
@@ -2127,7 +2127,7 @@ describe("TaskChatThread runtime transcript selection", () => {
                   maxAttempts: 3,
                   recoveryOwner: null,
                   nextAction: null,
-                  permittedActions: [],
+                  operatorActions: [],
                   predecessorRunId: null,
                   successorRunId: null,
                 },
@@ -2186,7 +2186,7 @@ describe("TaskChatThread runtime transcript selection", () => {
           execution: {
             phase: "recovery_needed", label: "Stopped", cause: testCase.cause,
             lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
-            recoveryOwner: null, nextAction: null, permittedActions: [],
+            recoveryOwner: null, nextAction: null, operatorActions: [],
             predecessorRunId: null, successorRunId: null,
           },
         }]}

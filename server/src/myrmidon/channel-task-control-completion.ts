@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, like } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { chatConversations, chatPublications } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { chatConversations, chatPublications } from "@myrmidon/db";
 import { projectSafeChatPublication } from "../services/chat-publication-projection.js";
 
 /**

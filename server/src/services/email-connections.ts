@@ -7,8 +7,8 @@ import {
   connectionGrants,
   companySecrets,
   toolConnectionInstalls,
-} from "@paperclipai/db";
-import type { EmailConnectionInput } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { EmailConnectionInput } from "@myrmidon/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";

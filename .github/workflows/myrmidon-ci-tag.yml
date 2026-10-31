@@ -52,7 +52,7 @@ env:
 jobs:
   typecheck:
     name: typecheck
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -105,7 +105,7 @@ jobs:
 
   build:
     name: build
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -155,14 +155,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Runner issue-thread viewer
-        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+        run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
         run: pnpm build
 
   tests:
     name: tests (${{ matrix.label }})
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -171,11 +171,16 @@ jobs:
         # `pnpm test:run` equals the union of the general groups and the
         # serialized server suites.
         include:
-          - { label: "server 1/5", mode: general, group: general-server, shard_index: 0, shard_count: 5 }
-          - { label: "server 2/5", mode: general, group: general-server, shard_index: 1, shard_count: 5 }
-          - { label: "server 3/5", mode: general, group: general-server, shard_index: 2, shard_count: 5 }
-          - { label: "server 4/5", mode: general, group: general-server, shard_index: 3, shard_count: 5 }
-          - { label: "server 5/5", mode: general, group: general-server, shard_index: 4, shard_count: 5 }
+        # general-server: 6 shards balanced by recorded suite cost
+        # (scripts/general-server-shard-durations.json). shard_count must equal
+        # the number of entries; scripts/myrmidon/ci/general-server-shards.test.mjs
+        # checks that the shards cover every suite exactly once.
+          - { label: "server 1/6", mode: general, group: general-server, shard_index: 0, shard_count: 6 }
+          - { label: "server 2/6", mode: general, group: general-server, shard_index: 1, shard_count: 6 }
+          - { label: "server 3/6", mode: general, group: general-server, shard_index: 2, shard_count: 6 }
+          - { label: "server 4/6", mode: general, group: general-server, shard_index: 3, shard_count: 6 }
+          - { label: "server 5/6", mode: general, group: general-server, shard_index: 4, shard_count: 6 }
+          - { label: "server 6/6", mode: general, group: general-server, shard_index: 5, shard_count: 6 }
           - { label: "workspaces-a 1/2", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
           - { label: "workspaces-a 2/2", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
@@ -238,7 +243,7 @@ jobs:
     # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
     # servers, several adapters...): scripts/myrmidon/ci/extra-test-lanes.json.
     name: tests (other packages)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -274,7 +279,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Run tests of the other packages
         run: node scripts/myrmidon/ci/affected-tests.mjs extra
@@ -283,7 +288,7 @@ jobs:
     # The vendor verifies the runner in its own lane (check:all: TypeScript,
     # protocol, Rust and API authority checks).
     name: tests (runner)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -331,14 +336,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify the runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+        run: pnpm --filter @myrmidon/paperclip-runner check:all
 
   checks:
     # Cheap checks: node:test suites of our scripts, gitleaks, the
     # internal-address scan, dependency licenses and plugin compatibility.
     # Every step runs even if an earlier one failed.
     name: checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -459,24 +464,24 @@ jobs:
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Plugin compatibility — manifest snapshots (offline)
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+        run: pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
 
       - name: Plugin compatibility — installed plugins against the host
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
         run: |
           set -euo pipefail
           node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
-          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
 
   fleetd:
     # tools/fleetd: gofmt, go vet and the unit tests, in the same pinned Go
     # image the fleetd image workflow builds from.
     name: fleetd
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -510,7 +515,7 @@ jobs:
     # tools/dockergate: gofmt, go vet, the unit tests, and the contract with
     # the driver (fixtures emitted afresh from the TypeScript of this commit).
     name: dockergate
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -571,7 +576,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/dockergate-contract"
           rm -rf "$out" && mkdir -p "$out"
-          pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
+          pnpm --filter @myrmidon/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
@@ -585,7 +590,7 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [typecheck, build, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Check lane results

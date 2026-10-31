@@ -12,6 +12,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessagesSquare } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,12 +39,12 @@ type NonNegativeKey =
   | "chatCrossChannelLookbackHours";
 
 /** Integer >= 0; blank, malformed or negative is an error the panel refuses to save. */
-function parseNonNegative(raw: string, label: string): { value?: number; error?: string } {
+function parseNonNegative(raw: string): { value?: number; error?: string } {
   const trimmed = raw.trim();
-  if (!trimmed) return { error: `Enter ${label}` };
+  if (!trimmed) return { error: i18n.t("area.settings-integrations.channel-settings-panel.errEnterNumber") };
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value) || value < 0) {
-    return { error: "Enter a whole number of 0 or more" };
+    return { error: i18n.t("area.settings-integrations.channel-settings-panel.errNonNegative") };
   }
   return { value };
 }
@@ -71,13 +72,13 @@ export function parseChannelSettingsDraft(draft: {
   };
 
   const positive = (key: "telegramFileLimitBytes" | "paperclipAttachmentMaxBytes", raw: string) => {
-    const { value, error } = parseNonNegative(raw, "a whole number");
+    const { value, error } = parseNonNegative(raw);
     if (error) errors[key] = error;
-    else if (!value || value <= 0) errors[key] = "Enter a whole number above 0";
+    else if (!value || value <= 0) errors[key] = i18n.t("area.settings-integrations.channel-settings-panel.errPositive");
     else patch[key] = value;
   };
   const nonNegative = (key: NonNegativeKey, raw: string) => {
-    const { value, error } = parseNonNegative(raw, "a whole number");
+    const { value, error } = parseNonNegative(raw);
     if (error) errors[key] = error;
     else patch[key] = value;
   };
@@ -96,7 +97,7 @@ export function parseChannelSettingsDraft(draft: {
   } else {
     const value = Number(reconcileRaw);
     if (!Number.isSafeInteger(value) || value <= 0) {
-      errors.chatReconcileIntervalMs = "Enter a whole number above 0, or leave it empty";
+      errors.chatReconcileIntervalMs = i18n.t("area.settings-integrations.channel-settings-panel.errReconcile");
     } else {
       patch.chatReconcileIntervalMs = value;
     }
@@ -139,35 +140,34 @@ const NUMERIC_FIELDS = [
   "chatReconcileIntervalMs",
 ] as const;
 
-const FIELD_LABELS: Record<(typeof NUMERIC_FIELDS)[number], string> = {
-  telegramSplitMaxParts: "Long-answer split parts",
-  telegramFileLimitBytes: "Telegram file ceiling, bytes",
-  paperclipAttachmentMaxBytes: "Board attachment ceiling, bytes",
-  chatCrossChannelMessages: "Cross-channel quoted messages",
-  chatCrossChannelMessageChars: "Cross-channel message chars",
-  chatCrossChannelTotalChars: "Cross-channel total chars",
-  chatCrossChannelLookbackHours: "Cross-channel lookback, hours",
-  chatReconcileIntervalMs: "Milestone sweep interval, ms",
-};
+/** Labels are resolved at render time so a language switch applies at once. */
+function fieldLabels(): Record<(typeof NUMERIC_FIELDS)[number], string> {
+  return {
+    telegramSplitMaxParts: i18n.t("area.settings-integrations.channel-settings-panel.labelSplitParts"),
+    telegramFileLimitBytes: i18n.t("area.settings-integrations.channel-settings-panel.labelTelegramFile"),
+    paperclipAttachmentMaxBytes: i18n.t("area.settings-integrations.channel-settings-panel.labelBoardAttachment"),
+    chatCrossChannelMessages: i18n.t("area.settings-integrations.channel-settings-panel.labelCrossMessages"),
+    chatCrossChannelMessageChars: i18n.t("area.settings-integrations.channel-settings-panel.labelCrossMessageChars"),
+    chatCrossChannelTotalChars: i18n.t("area.settings-integrations.channel-settings-panel.labelCrossTotalChars"),
+    chatCrossChannelLookbackHours: i18n.t("area.settings-integrations.channel-settings-panel.labelCrossLookback"),
+    chatReconcileIntervalMs: i18n.t("area.settings-integrations.channel-settings-panel.labelReconcile"),
+  };
+}
 
-const FIELD_HINTS: Record<(typeof NUMERIC_FIELDS)[number] | "telegramDmConversations" | "telegramDmStatus", string> = {
-  telegramDmConversations:
-    "Comma-separated Telegram endpoint ids, or * for all: the bot's DM becomes one permanent conversation (bridge). Empty — the vendor path.",
-  telegramDmStatus:
-    "For a bridged DM: one editable status message instead of milestone silence.",
-  telegramSplitMaxParts:
-    "How many parts a long structured answer may split into inline. 0 — the vendor's single attachment.",
-  telegramFileLimitBytes:
-    "Ceiling on one downloaded Telegram file, bytes. The effective limit is the lesser of this and the board attachment ceiling.",
-  paperclipAttachmentMaxBytes: "Overall board attachment size limit, bytes.",
-  chatCrossChannelMessages:
-    "Newest messages of the same person's adjacent conversation (web ↔ Telegram) quoted into the turn prompt. 0 — the digest is off.",
-  chatCrossChannelMessageChars: "Truncation of one quoted message, characters.",
-  chatCrossChannelTotalChars: "Total character limit on the quote block.",
-  chatCrossChannelLookbackHours: "How old adjacent-conversation messages are still quoted.",
-  chatReconcileIntervalMs:
-    "Minimum interval between run-milestone sweep passes, ms. Empty — the standard pace.",
-};
+function fieldHints(): Record<(typeof NUMERIC_FIELDS)[number] | "telegramDmConversations" | "telegramDmStatus", string> {
+  return {
+    telegramDmConversations: i18n.t("area.settings-integrations.channel-settings-panel.hintDmConversations"),
+    telegramDmStatus: i18n.t("area.settings-integrations.channel-settings-panel.hintDmStatus"),
+    telegramSplitMaxParts: i18n.t("area.settings-integrations.channel-settings-panel.hintSplitParts"),
+    telegramFileLimitBytes: i18n.t("area.settings-integrations.channel-settings-panel.hintTelegramFile"),
+    paperclipAttachmentMaxBytes: i18n.t("area.settings-integrations.channel-settings-panel.hintBoardAttachment"),
+    chatCrossChannelMessages: i18n.t("area.settings-integrations.channel-settings-panel.hintCrossMessages"),
+    chatCrossChannelMessageChars: i18n.t("area.settings-integrations.channel-settings-panel.hintCrossMessageChars"),
+    chatCrossChannelTotalChars: i18n.t("area.settings-integrations.channel-settings-panel.hintCrossTotalChars"),
+    chatCrossChannelLookbackHours: i18n.t("area.settings-integrations.channel-settings-panel.hintCrossLookback"),
+    chatReconcileIntervalMs: i18n.t("area.settings-integrations.channel-settings-panel.hintReconcile"),
+  };
+}
 
 function sourceLabel(view: ChannelSettingsView, key: ChannelSettingKey): string {
   return describeChannelSettingSource(view[key].source);
@@ -178,12 +178,17 @@ export function ChannelSettingsPanelView({
   onSave,
   pending,
   error,
+  saved,
 }: {
   view: ChannelSettingsView | null | undefined;
   onSave: (patch: ChannelSettingsPatch) => void;
   pending: boolean;
   error: string | null;
+  saved: boolean;
 }) {
+  const { t } = useTranslation();
+  const FIELD_LABELS = fieldLabels();
+  const FIELD_HINTS = fieldHints();
   const [draft, setDraft] = useState<StringDraft | null>(null);
 
   const numbers = draft ?? (view ? toDraft(view) : null);
@@ -195,9 +200,9 @@ export function ChannelSettingsPanelView({
       <section className="space-y-4" data-testid="myrmidon-channel-settings">
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Channels (Telegram &amp; chat bridges)</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.channel-settings-panel.title")}</h2>
         </div>
-        <p className="text-sm text-muted-foreground">Loading channel settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-integrations.channel-settings-panel.loading")}</p>
       </section>
     );
   }
@@ -221,29 +226,30 @@ export function ChannelSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <MessagesSquare className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Channels (Telegram &amp; chat bridges)</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.channel-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The Telegram bridge switches, the attachment ceilings and the
-          cross-channel numbers. Every value applies without a restart — the
-          consumers re-read these settings on use. Environment variables stay
-          forced overrides above the saved value; a pinned key is read-only and
-          shows its variable name.
+          {t("area.settings-integrations.channel-settings-panel.description")}
         </p>
       </div>
 
+      {saved && !pending && !error ? (
+        <div role="status" data-testid="channel-settings-saved" className="text-sm text-muted-foreground">
+          {t("area.settings-integrations.channel-settings-panel.saved")}
+        </div>
+      ) : null}
       {error ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div role="alert" data-testid="channel-settings-save-error" className="text-sm text-destructive">
           {error}
         </div>
       ) : null}
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1 md:col-span-2">
-          <Label htmlFor="channel-settings-telegramDmConversations">Bridged DM endpoints</Label>
+          <Label htmlFor="channel-settings-telegramDmConversations">{t("area.settings-integrations.channel-settings-panel.dmEndpoints")}</Label>
           <Input
             id="channel-settings-telegramDmConversations"
-            placeholder="Empty = off"
+            placeholder={t("area.settings-integrations.channel-settings-panel.emptyOff")}
             value={numbers.telegramDmConversations}
             onChange={(event) => setField("telegramDmConversations", event.target.value)}
             disabled={view.telegramDmConversations.overridden}
@@ -262,7 +268,7 @@ export function ChannelSettingsPanelView({
         <div className="space-y-2 md:col-span-2">
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-1">
-              <Label htmlFor="channel-settings-telegramDmStatus">DM status message</Label>
+              <Label htmlFor="channel-settings-telegramDmStatus">{t("area.settings-integrations.channel-settings-panel.dmStatus")}</Label>
               <p className="text-xs text-muted-foreground">
                 <span data-testid="channel-settings-source-telegramDmStatus">
                   {sourceLabel(view, "telegramDmStatus")}
@@ -291,7 +297,7 @@ export function ChannelSettingsPanelView({
             <Input
               id={`channel-settings-${key}`}
               inputMode="numeric"
-              placeholder={key === "chatReconcileIntervalMs" ? "Standard pace" : "Required"}
+              placeholder={key === "chatReconcileIntervalMs" ? t("area.settings-integrations.channel-settings-panel.standardPace") : t("area.settings-integrations.channel-settings-panel.required")}
               value={numbers[key]}
               onChange={(event) => setField(key, event.target.value)}
               disabled={view[key].overridden}
@@ -314,9 +320,9 @@ export function ChannelSettingsPanelView({
         ))}
 
         <div className="space-y-1 md:col-span-2 text-xs text-muted-foreground" data-testid="channel-settings-deployment-only">
-          <span>Deployment-only: Telegram API base URL = </span>
+          <span>{t("area.settings-integrations.channel-settings-panel.deploymentOnly")} </span>
           <span className="font-mono" data-testid="channel-settings-telegramApiBaseUrl">
-            {view.telegramApiBaseUrl.value ?? "(unset)"}
+            {view.telegramApiBaseUrl.value ?? t("area.settings-integrations.channel-settings-panel.unset")}
           </span>
           <span className="ml-2 font-mono">{view.telegramApiBaseUrl.envName}</span>
         </div>
@@ -328,7 +334,7 @@ export function ChannelSettingsPanelView({
             disabled={pending || !canSave}
             onClick={() => onSave(currentPatch)}
           >
-            {pending ? "Saving..." : "Save channel settings"}
+            {pending ? t("area.settings-integrations.channel-settings-panel.saving") : t("area.settings-integrations.channel-settings-panel.save")}
           </Button>
         </div>
       </div>
@@ -337,8 +343,10 @@ export function ChannelSettingsPanelView({
 }
 
 export function ChannelSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const query = useQuery({
     queryKey: channelSettingsQueryKey,
     queryFn: () => channelSettingsApi.get(),
@@ -346,11 +354,15 @@ export function ChannelSettingsPanel() {
   });
   const save = useMutation({
     mutationFn: channelSettingsApi.update,
-    onMutate: () => setError(null),
+    onMutate: () => {
+      setError(null);
+      setSaved(false);
+    },
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the channel settings failed."),
+      setError(err instanceof Error ? err.message : t("area.settings-integrations.channel-settings-panel.saveError")),
     onSuccess: async () => {
       setError(null);
+      setSaved(true);
       await queryClient.invalidateQueries({ queryKey: channelSettingsQueryKey });
     },
   });
@@ -358,7 +370,7 @@ export function ChannelSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load channel settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-integrations.channel-settings-panel.loadError")}
       </div>
     );
   }
@@ -369,6 +381,7 @@ export function ChannelSettingsPanel() {
       onSave={(patch) => save.mutate(patch)}
       pending={save.isPending}
       error={error}
+      saved={saved}
     />
   );
 }

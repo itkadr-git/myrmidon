@@ -11,7 +11,7 @@ implements the HTTP contract of
 | `POST /sessions/<id>/heartbeat?activity=0\|1` | keep-alive; no heartbeat for 120 s and the watchdog releases the unit itself |
 | `POST /browsers/<id>/pause` | `systemctl stop mcp-reaper-proxy.service` — kills the bot write path 8932→18932→CDP |
 | `POST /browsers/<id>/resume` | `systemctl start mcp-reaper-proxy.service` |
-| `POST /browsers/<id>/clear-site-data?domain=` | CDP on 127.0.0.1: `Network.clearBrowserCookies` + `Storage.clearDataForOrigin` (https and http origins) |
+| `POST /browsers/<id>/clear-site-data?domain=` | CDP on 127.0.0.1: `Network.getAllCookies` + `Network.deleteCookies` (only cookies of the domain and its subdomains) + `Storage.clearDataForOrigin` (https and http origins) |
 | `GET /health` | liveness only (`{"ok": true, "sessions": N}`), no auth, no internals |
 
 ## Why stdlib python

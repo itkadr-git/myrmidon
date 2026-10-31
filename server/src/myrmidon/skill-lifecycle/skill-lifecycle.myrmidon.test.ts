@@ -98,6 +98,19 @@ function fakeStore(seed: {
     async getApproval(approvalId) {
       return approvals.get(approvalId) ?? null;
     },
+    async consumeApproval(approvalId, companyId, skillId) {
+      const record = records.get(skillId);
+      if (companyId !== COMPANY || !record || (record.state !== "candidate" && record.state !== "deprecated")) {
+        return null;
+      }
+      const approval = approvals.get(approvalId);
+      if (
+        !approval || approval.type !== "skill_promotion" ||
+        approval.status !== "approved" || approval.payload.skillId !== skillId
+      ) return null;
+      approvals.set(approvalId, { ...approval, status: "used" });
+      return { ...approval };
+    },
     async setSkillCurrentVersion(companyId, skillId, versionId) {
       if (companyId !== COMPANY) return;
       const skill = skills.get(skillId);
@@ -202,6 +215,31 @@ describe("myrmidon(1.6-SKILL-LIFE): promotion needs an approved approval", () =>
       code: "promotion_requires_approved_status",
     });
     expect(harness.records.get(SKILL)).toBeUndefined();
+  });
+
+  it("consumes an approval so it cannot authorize a second promotion", async () => {
+    const harness = fakeStore({
+      skills: [{ ...SKILL_REF }],
+      versions: { [V1]: version(V1, 1, "first") },
+      records: [{
+        skillId: SKILL,
+        companyId: COMPANY,
+        state: "candidate",
+        verifiedVersionId: V1,
+        previousVerifiedVersionId: null,
+        approvedBy: null,
+        approvedAt: null,
+        reason: null,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      }],
+      approvals: [approved()],
+    });
+    const service = serviceWith(harness.store);
+    await service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor });
+    await expect(service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor })).rejects.toMatchObject({
+      code: "promotion_requires_approved_status",
+    });
+    expect(harness.events).toHaveLength(1);
   });
 });
 

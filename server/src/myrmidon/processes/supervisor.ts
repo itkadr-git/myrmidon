@@ -10,6 +10,8 @@
 // One instance per process; the worker owns it. An api child never constructs
 // one — its role profile has no supervisor duties, and the settings service
 // on an api node only stores the row (the worker applies it on its own read).
+// myrmidon(OPE-10011): that read is triggered by `settings_changed` on the
+// process bus, which the settings service publishes after every save.
 //
 // States the worker's own listener moves through:
 //
@@ -20,7 +22,8 @@
 //                     0.0.0.0:3100 with reusePort; worker keeps 127.0.0.1:3101.
 //   drainingToSingle— worker re-opened :3100 (reusePort, so the children keep
 //                     serving meanwhile) and is draining children one by one.
-//   emergencySingle — no child stayed alive for the grace window; worker
+//   emergencySingle — no child stayed alive for the grace window, or (OPE-10011)
+//                     the children did not report ready in time; worker
 //                     opened :3100 itself and raised the attention signal.
 //
 // The public surface is deliberately small: `createProcessSupervisor` builds
@@ -36,7 +39,7 @@ import {
   PROCESS_ROLE_API_HOST,
   PROCESS_ROLE_API_PORT,
 } from "../../services/process-role.js";
-import type { ProcessesSettings } from "@paperclipai/shared";
+import type { ProcessesSettings } from "@myrmidon/shared";
 
 /** Env var the child reads to correlate its boot with the worker's. */
 export const PARENT_BOOT_ID_ENV = "PAPERCLIP_PARENT_BOOT_ID";
@@ -53,9 +56,25 @@ export const SUPERVISOR_BACKOFF_MAX_MS = 30_000;
 export const SUPERVISOR_NO_CHILD_GRACE_MS = 15_000;
 /** Grace before `closeAllConnections()` on a drain (design §7.2). */
 export const SUPERVISOR_DRAIN_GRACE_MS = 30_000;
+/**
+ * myrmidon(OPE-10011): how long a forked api child may take to report ready.
+ * A child that is alive but silent never trips the no-child grace, so without
+ * this the worker hung in startingSplit for good. In startingSplit the split is
+ * abandoned (emergency single + attention signal); in split the silent child is
+ * restarted with the backoff.
+ */
+export const SUPERVISOR_READY_TIMEOUT_MS = 180_000;
 
 /** Memory ceilings per role (design §7.1; the real numbers land with П7). */
 export const SUPERVISOR_API_MAX_OLD_SPACE_MB = 1_024;
+/** myrmidon(OPE-10011): env override of the api child's old-space ceiling, MB. */
+export const SUPERVISOR_API_MAX_OLD_SPACE_ENV = "MYRMIDON_API_MAX_OLD_SPACE_MB";
+
+/** The api child's `--max-old-space-size`: the env override when it is 256..8192, else 1024. */
+export function apiChildMaxOldSpaceMb(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number((env[SUPERVISOR_API_MAX_OLD_SPACE_ENV] ?? "").trim());
+  return Number.isInteger(raw) && raw >= 256 && raw <= 8_192 ? raw : SUPERVISOR_API_MAX_OLD_SPACE_MB;
+}
 
 /** The board port the api children share (design §7.1). */
 export interface SupervisorListenerHandle {
@@ -111,6 +130,13 @@ export interface SupervisorChildRecord {
 export interface ProcessSupervisor {
   /** Apply a new settings value; no-op when nothing relevant changed. */
   apply(settings: ProcessesSettings): Promise<void>;
+  /**
+   * myrmidon(OPE-10011): registers the worker's startup listener on the public
+   * port as the supervisor's own. In single it is the single-mode listener; in
+   * split it is closed once the children are ready (right away if they already
+   * are).
+   */
+  adoptPublicListener(handle: SupervisorListenerHandle): Promise<void>;
   /** Current lifecycle state, for the settings view and for tests. */
   state(): SupervisorState;
   /** Live children registry snapshot. */
@@ -148,7 +174,7 @@ export function defaultForkChild(env: NodeJS.ProcessEnv, execArgv: string[]): Ch
     },
     execArgv: [
       ...execArgv,
-      `--max-old-space-size=${SUPERVISOR_API_MAX_OLD_SPACE_MB}`,
+      `--max-old-space-size=${apiChildMaxOldSpaceMb()}`,
     ],
     // The IPC channel is the whole point; `silent: false` keeps stdio shared
     // so the child's pino lines land in the same container log stream.
@@ -177,6 +203,8 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
   let nextSlotId = 1;
   const slots = new Map<number, ChildSlot>();
   const pendingRestarts = new Map<number, ReturnType<typeof setTimeout>>();
+  /** myrmidon(OPE-10011): per-slot readiness deadline of the current child. */
+  const readyTimers = new Map<number, ReturnType<typeof setTimeout>>();
   let noChildGraceTimer: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
   /** The settings value the supervisor is converging on. */
@@ -245,12 +273,58 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
     }, SUPERVISOR_NO_CHILD_GRACE_MS);
   }
 
+  function clearReadyTimer(slotId: number): void {
+    const timer = readyTimers.get(slotId);
+    if (timer === undefined) return;
+    d.clearTimeout(timer);
+    readyTimers.delete(slotId);
+  }
+
+  /**
+   * myrmidon(OPE-10011): a child alive but silent past the readiness deadline.
+   * In startingSplit the split is abandoned: the worker keeps (or re-opens)
+   * :3100, every child is drained and the attention signal goes out. In split
+   * the silent child is restarted through the ordinary crash path (backoff).
+   */
+  function onReadyTimeout(slot: ChildSlot): void {
+    const { record } = slot;
+    if (shuttingDown || record.ready || record.draining) return;
+    if (record.child.exitCode !== null || record.child.signalCode !== null) return;
+    if (state !== "startingSplit") {
+      d.log.warn(
+        { slotId: slot.slotId, pid: record.pid, readyTimeoutMs: SUPERVISOR_READY_TIMEOUT_MS },
+        "myrmidon(OPE-10011): api child did not report ready in time — restarting it",
+      );
+      record.child.kill("SIGTERM");
+      return;
+    }
+    state = "emergencySingle";
+    clearNoChildGrace();
+    const details = {
+      reason: "api_children_not_ready",
+      readyTimeoutMs: SUPERVISOR_READY_TIMEOUT_MS,
+      desiredApiCount: desired?.apiCount ?? null,
+      readyApiCount: readyChildren().length,
+    };
+    d.writeAttentionSignal(details);
+    d.log.error(details, "myrmidon(OPE-10011): api children did not report ready in time — worker falling back to single");
+    void (async () => {
+      await openOwnListener().catch((err) => {
+        d.log.error({ err }, "myrmidon(PROCS-1.2): emergency public listener open failed");
+      });
+      for (const live of liveChildren()) drainChild(live);
+    })();
+  }
+
   function forkSlot(slotId: number, attempt: number, fromRestart = false): void {
     if (shuttingDown) return;
     // A crashed child's restart timer fired, but the desired split may have
     // shrunk since — do not over-fork past the desired count. Initial forks
     // (fromRestart=false) always go through: moveToSplit sized them itself.
     if (fromRestart) {
+      // myrmidon(OPE-10011): restarts belong to a split lane; after a fall
+      // back to single (emergency included) a late backoff timer forks nothing.
+      if (state !== "split" && state !== "startingSplit") return;
       const desiredCount = desired?.mode === "split" ? desired.apiCount : 0;
       if (liveChildren().length >= desiredCount) {
         d.log.debug(
@@ -271,10 +345,19 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
       draining: false,
       restartAttempts: attempt,
     };
-    slots.set(slotId, { record, slotId });
+    const slot: ChildSlot = { record, slotId };
+    slots.set(slotId, slot);
     d.log.info(
       { slotId, pid: child.pid, attempt },
       "myrmidon(PROCS-1.2): forked api child",
+    );
+    clearReadyTimer(slotId);
+    readyTimers.set(
+      slotId,
+      d.setTimeout(() => {
+        readyTimers.delete(slotId);
+        onReadyTimeout(slot);
+      }, SUPERVISOR_READY_TIMEOUT_MS),
     );
 
     child.on("message", (message: unknown) => {
@@ -282,13 +365,17 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
       const kind = (message as { type?: unknown }).type;
       if (kind === SUPERVISOR_IPC_READY) {
         record.ready = true;
+        if (slots.get(slotId) === slot) clearReadyTimer(slotId);
         d.log.info({ slotId, pid: child.pid }, "myrmidon(PROCS-1.2): api child ready");
         void onChildReady();
       }
     });
 
     child.on("exit", (code, signal) => {
-      slots.delete(slotId);
+      if (slots.get(slotId) === slot) {
+        slots.delete(slotId);
+        clearReadyTimer(slotId);
+      }
       if (shuttingDown) return;
       if (record.draining) {
         d.log.info({ slotId, pid: record.pid, code, signal }, "myrmidon(PROCS-1.2): drained api child exited");
@@ -344,17 +431,27 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
       scheduleNoChildGrace();
       return;
     }
-    if (state === "split") {
+    // myrmidon(OPE-10011): startingSplit resizes too — it used to fall through
+    // here, so an apiCount change while the children were still booting was
+    // silently dropped.
+    if (state === "split" || state === "startingSplit") {
       if (want > have) {
         for (let i = 0; i < want - have; i += 1) {
           forkSlot(nextSlotId++, 0);
         }
       } else if (want < have) {
-        const victims = liveChildren().slice(0, have - want);
+        // Children that are not ready yet go first (stable sort: oldest first
+        // within each group) — they hold no share of the traffic.
+        const victims = liveChildren()
+          .sort((a, b) => Number(a.record.ready) - Number(b.record.ready))
+          .slice(0, have - want);
         for (const victim of victims) {
           drainChild(victim);
         }
       }
+      // A smaller quorum may be met by the children already ready (the same
+      // fire-and-forget as the IPC ready path: the drain must not hold the queue).
+      if (state === "startingSplit") void onChildReady();
     }
   }
 
@@ -380,10 +477,20 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
     // startup listener is registered with the supervisor at wiring time, so
     // `publicListener` non-null is the single-mode steady state.
     if (state === "single" && publicListener !== null) return;
+    const before = state;
     state = "drainingToSingle";
     clearNoChildGrace();
     // reusePort lets the worker open :3100 while the children still serve it.
-    await openOwnListener();
+    try {
+      await openOwnListener();
+    } catch (err) {
+      // myrmidon(OPE-10011): nothing was drained yet — go back to where the
+      // move started, so the next apply retries it instead of finding the
+      // supervisor stuck in drainingToSingle (where moveToSplit is a no-op).
+      state = before;
+      if (before === "split" || before === "startingSplit") scheduleNoChildGrace();
+      throw err;
+    }
     for (const slot of liveChildren()) {
       drainChild(slot);
     }
@@ -391,17 +498,46 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
     d.log.info({}, "myrmidon(PROCS-1.2): back to single — worker serves the public port alone");
   }
 
-  return {
-    apply: async (next: ProcessesSettings) => {
-      if (shuttingDown) return;
-      const previous = desired;
-      desired = next;
+  async function applyNow(next: ProcessesSettings): Promise<void> {
+    if (shuttingDown) return;
+    const previous = desired;
+    desired = next;
+    try {
       if (next.mode === "split") {
-        if (previous?.mode === "split" && previous.apiCount === next.apiCount) return;
+        // myrmidon(OPE-10011): after an emergency fall back the same split
+        // applied again is a retry, not "already converged".
+        if (previous?.mode === "split" && previous.apiCount === next.apiCount && state !== "emergencySingle") return;
         await moveToSplit(next);
         return;
       }
       await moveToSingle();
+    } catch (err) {
+      // myrmidon(OPE-10011): a failed move is not "converged" — forget it, so
+      // the same value applied again retries instead of hitting the no-op.
+      desired = previous;
+      throw err;
+    }
+  }
+
+  // myrmidon(OPE-10011): applies run one at a time in arrival order. The first
+  // apply of a worker waits for its startup listener (index.ts); an apply that
+  // arrives meanwhile must not see the transient drainingToSingle and drop.
+  let applyQueue: Promise<void> = Promise.resolve();
+
+  return {
+    apply: (next: ProcessesSettings) => {
+      const run = applyQueue.then(() => applyNow(next));
+      applyQueue = run.catch(() => undefined);
+      return run;
+    },
+
+    async adoptPublicListener(handle: SupervisorListenerHandle) {
+      if (shuttingDown) return;
+      if (!publicListener?.listening) publicListener = handle;
+      d.log.info({ state }, "myrmidon(OPE-10011): worker startup listener registered with the supervisor");
+      // The children got ready before the worker bound its listener: split is
+      // already in force, so the worker leaves the public port right away.
+      if (state === "split") await closeOwnListener(SUPERVISOR_DRAIN_GRACE_MS);
     },
 
     state: () => state,
@@ -416,6 +552,10 @@ export function createProcessSupervisor(deps: Partial<ProcessSupervisorDeps> = {
         d.clearTimeout(timer);
       }
       pendingRestarts.clear();
+      for (const timer of readyTimers.values()) {
+        d.clearTimeout(timer);
+      }
+      readyTimers.clear();
       // Mark every slot draining BEFORE the kills — a synchronous exit
       // listener otherwise re-arms restarts for the children we just killed.
       const live = liveChildren();

@@ -239,7 +239,7 @@ export function createLoop(deps) {
         // is protected by the hook (it gets `startedAt`), older entries are retired.
         if (typeof deps.retention === "function") {
           try {
-            await deps.retention({ startedAt });
+            await deps.retention({ startedAt, desired: desiredOk ? desired.state : null });
           } catch (err) {
             log(`botd loop: archive retention failed: ${errMessage(err)}`);
           }
@@ -290,6 +290,13 @@ export function createLoop(deps) {
           return action ? { path: action.path, reason: action.detail || "foreign-uid" } : null;
         })(),
         actions: results,
+        metrics: {
+          copies_without_assignee: desiredOk ? (g.parts.copies ?? []).filter((copy) =>
+            copy.class === "E" && copy.key && !(desired.state.workspaces ?? []).some((workspace) =>
+              workspace.key === copy.key && workspace.state === "active",
+            ),
+          ).length : undefined,
+        },
       });
       sent = await deps.report.send(report);
     } catch (err) {

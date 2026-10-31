@@ -65,7 +65,7 @@ import {
   type TeamsInlineImageLocator,
   type TeamsInlineImageScope,
 } from "./chat-teams-inline-image-intake.js";
-import { normalizeTelegramVideoNoteAttachments } from "./chat-telegram-video-note.js";
+import { normalizeTelegramVideoNoteAttachments } from "../myrmidon/channel-connectors/bridge/telegram-video-note.js";
 import {
   hasTelegramMediaProvenance,
   normalizeTelegramMediaAttachments,
@@ -75,14 +75,14 @@ import {
   type TelegramMediaLocator,
   type TelegramMediaScope,
 } from "./chat-telegram-media-intake.js";
-import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
+import { normalizeTelegramRichMessage } from "../myrmidon/channel-connectors/bridge/telegram-rich.js";
 import {
   captureTelegramGenerationStopped,
   telegramPrivateDraftDestination,
   type TelegramDraftControl,
   type TelegramDraftStopped,
   type TelegramGenerationStoppedProof,
-} from "./chat-telegram-draft-stop.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-draft-stop.js";
 import {
   applySlackReceiptReaction,
   type SlackReceiptMutation,
@@ -91,13 +91,15 @@ import {
   applyGitHubReceiptReaction,
   type GitHubReceiptMutation,
 } from "./chat-github-receipt-reactions.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the ephemeral-callback theme is reached
+// through the bridge seam, so a channel connector can serve it.
 import {
   captureTelegramCallbackProvenance,
   hasTelegramEphemeralInput,
   sendTelegramCallbackNotice,
   type TelegramCallbackProvenance,
   type TelegramCallbackReceipt,
-} from "./chat-telegram-ephemeral.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-ephemeral.js";
 import {
   installTeamsFileConsentHook,
   parseTeamsFileConsentCard,

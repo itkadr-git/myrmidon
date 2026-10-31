@@ -118,6 +118,8 @@ export interface WakeQueueTransaction {
   claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;
   /** Undo a claim made for a sibling drain that found nothing to drain. */
   releaseIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<void>;
+  /** Claim a stable continuation head before queue/promotion side effects. */
+  claimContinuationKey(input: { companyId: string; issueId: string; key: string }): Promise<"created" | "deduped">;
   findNextDeferredWake(input: { companyId: string; issueId: string; excludedWakeIds?: string[] }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
@@ -241,7 +243,7 @@ export interface WakeQueueTransaction {
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
-    input: { companyId: string; runId: string; now: Date },
+    input: { companyId: string; runId: string; now: Date; deferredWakesPostdateRun?: boolean; ignoreUnrecordedReconciliation?: boolean },
     fn: (
       locked: LockedIssueExecution,
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },

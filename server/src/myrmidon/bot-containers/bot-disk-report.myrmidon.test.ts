@@ -14,7 +14,7 @@ import {
   WS_DISK_REPORT_MAX_BODY_BYTES,
   wsDiskReportResponseSchema,
   wsDiskReportSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { BOT_DISK_NEXT_REPORT_SEC, botDiskReportRoutes } from "./bot-disk-report-routes.js";
 import { readBotDiskReport, readBotDiskReports, resetBotDiskReports } from "./bot-disk-report-store.js";

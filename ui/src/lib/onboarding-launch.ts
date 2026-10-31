@@ -1,4 +1,4 @@
-import type { Goal, Project } from "@paperclipai/shared";
+import type { Goal, Project } from "@myrmidon/shared";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 
@@ -46,7 +46,13 @@ export function selectReusableOnboardingProject<T extends Pick<Project, "name" |
 
 export function buildOnboardingIssuePayload(input: {
   title: string;
-  assigneeAgentId: string;
+  /**
+   * The hired agent in the full run. `null` on the connect step's skip path
+   * (OPE-10206): onboarding finishes with no agent, and the first task is
+   * created unassigned so the board the customer lands on is complete and
+   * working — the agent is hired later, in settings, with any source.
+   */
+  assigneeAgentId: string | null;
   projectId: string;
   goalId: string | null;
 }) {
@@ -56,7 +62,7 @@ export function buildOnboardingIssuePayload(input: {
     title,
     // No client description: the server assembles the first task's brief from
     // its own markdown and ignores any description sent here.
-    assigneeAgentId: input.assigneeAgentId,
+    ...(input.assigneeAgentId ? { assigneeAgentId: input.assigneeAgentId } : {}),
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),
     status: "todo" as const,

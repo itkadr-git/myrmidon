@@ -4,7 +4,7 @@
 // scheduler starts runs. After that every settings write applies itself
 // (see service.ts), so changed weights reach the queue without a restart.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
 import { scheduleQueuedResweep } from "../run-admission.js";

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -11,6 +13,7 @@ import {
 } from "../general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+import { createIsolatedTestEnv } from "../vitest-isolated-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -48,6 +51,98 @@ test("the serialized shards form a complete, non-overlapping partition", () => {
   const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
   assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
   assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
+});
+
+test("a serialized shard runs in one isolated Vitest process, not one process per suite", () => {
+  const shard = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "2"]);
+  assert.ok(shard.selectedSerializedSuites.length > 1, "expected a multi-suite shard");
+  assert.equal(shard.serializedVitestProcesses, 1, "the whole shard must share one Vitest process");
+
+  // Isolation is the point of the serialized lane: one suite at a time, a fresh
+  // child process per suite (forks + isolate), and a fail-fast shard.
+  for (const arg of ["--no-file-parallelism", "--maxWorkers=1", "--pool=forks", "--isolate", "--bail=1"]) {
+    assert.ok(shard.serializedVitestArgs.includes(arg), `missing ${arg} in ${shard.serializedVitestArgs.join(" ")}`);
+  }
+
+  // Each forked suite must get its own PAPERCLIP_HOME/TMPDIR through the preload.
+  const execArgv = shard.serializedVitestArgs.find((arg) => arg.startsWith("--execArgv=--import="));
+  assert.ok(execArgv, "the per-suite environment preload must be passed through --execArgv");
+  const preload = new URL(execArgv.slice("--execArgv=--import=".length));
+  assert.equal(preload.protocol, "file:");
+  assert.ok(existsSync(fileURLToPath(preload)), `preload module does not exist: ${preload}`);
+
+  const server = path.join(repoRoot, "server");
+  assert.equal(shard.serializedVitestArgs[shard.serializedVitestArgs.indexOf("--root") + 1], server);
+  assert.equal(
+    shard.serializedVitestArgs[shard.serializedVitestArgs.indexOf("--config") + 1],
+    path.join(server, "vitest.config.ts"),
+  );
+});
+
+test("--no-bail keeps running the serialized shard after a failing suite", () => {
+  const shard = dryRunJson(["--mode", "serialized", "--shard-index", "0", "--shard-count", "2", "--no-bail"]);
+  assert.ok(!shard.serializedVitestArgs.some((arg) => arg.startsWith("--bail")));
+  assert.equal(shard.serializedVitestProcesses, 1);
+});
+
+test("an empty serialized shard starts no Vitest process (it would run the whole project)", () => {
+  const shard = dryRunJson(["--mode", "serialized", "--shard-index", "499", "--shard-count", "500"]);
+  assert.deepEqual(shard.selectedSerializedSuites, []);
+  assert.equal(shard.serializedVitestProcesses, 0);
+});
+
+test("createIsolatedTestEnv hands out a private, existing, canonical environment per call", () => {
+  const parent = realpathSync(mkdtempSync(path.join(os.tmpdir(), "rvs-env-test-")));
+  try {
+    const first = createIsolatedTestEnv({ tempRootParent: parent, instanceId: "vt-1-1" });
+    const second = createIsolatedTestEnv({ tempRootParent: parent, instanceId: "vt-1-2" });
+
+    assert.notEqual(first.testRoot, second.testRoot);
+    for (const { testRoot, env } of [first, second]) {
+      assert.equal(path.dirname(testRoot), parent);
+      assert.equal(realpathSync(testRoot), testRoot, "the root must be the canonical path");
+      assert.equal(env.PAPERCLIP_HOME, path.join(testRoot, "h"));
+      assert.equal(env.PAPERCLIP_CONFIG, path.join(env.PAPERCLIP_HOME, "config.json"));
+      assert.equal(env.TMPDIR, path.join(testRoot, "t"));
+      assert.ok(existsSync(env.PAPERCLIP_HOME) && existsSync(env.TMPDIR));
+    }
+    assert.equal(first.env.PAPERCLIP_INSTANCE_ID, "vt-1-1");
+    assert.equal(second.env.PAPERCLIP_INSTANCE_ID, "vt-1-2");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("the worker preload gives every forked test file its own environment", () => {
+  const parent = realpathSync(mkdtempSync(path.join(os.tmpdir(), "rvs-preload-test-")));
+  const preload = path.join(repoRoot, "scripts", "vitest-isolated-worker-env.mjs");
+  const probe = "console.log(JSON.stringify({home: process.env.PAPERCLIP_HOME, cfg: process.env.PAPERCLIP_CONFIG, " +
+    "id: process.env.PAPERCLIP_INSTANCE_ID, tmp: process.env.TMPDIR}))";
+  const runProbe = () => {
+    const result = spawnSync(process.execPath, ["--import", preload, "-e", probe], {
+      encoding: "utf8",
+      // The runner's own values, which the preload must replace.
+      env: { ...process.env, TMPDIR: parent, PAPERCLIP_HOME: "/shared/home", PAPERCLIP_INSTANCE_ID: "shared" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  try {
+    const first = runProbe();
+    const second = runProbe();
+    for (const env of [first, second]) {
+      assert.ok(env.home.startsWith(parent + path.sep), `home not under the runner tmp: ${env.home}`);
+      assert.ok(env.tmp.startsWith(parent + path.sep), `tmp not under the runner tmp: ${env.tmp}`);
+      assert.equal(env.cfg, path.join(env.home, "config.json"));
+      assert.notEqual(env.id, "shared");
+      assert.ok(existsSync(env.home) && existsSync(env.tmp));
+    }
+    assert.notEqual(first.home, second.home);
+    assert.notEqual(first.tmp, second.tmp);
+    assert.notEqual(first.id, second.id);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test("the general-server shards form a complete, non-overlapping partition", () => {
@@ -174,7 +269,7 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   );
 });
 
-test("the measured chat integration cohort does not share a general-server shard", () => {
+test("the measured chat integration cohort runs on exactly one balanced general-server shard", () => {
   const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
   const durations = loadShardDurations(durationsManifest);
   assert.ok(
@@ -202,10 +297,13 @@ test("the measured chat integration cohort does not share a general-server shard
     1,
     "the full chat cohort must run exactly once",
   );
-  assert.deepEqual(
-    chatShards[0].files,
-    [chatSuite],
-    "its measured cost must reserve one existing shard without other suites",
+  // The chat cohort was once heavy enough (645 s of a 2177 s manifest) to need a
+  // shard of its own. With the whole lane measured it is ~7 of ~90 minutes, so
+  // it is balanced like any other suite instead of being isolated.
+  const totals = shards.map((shard) => shard.totalWeight);
+  assert.ok(
+    Math.max(...totals) / Math.min(...totals) <= 1.1,
+    `the shard holding the chat cohort must not be heavier than the rest: ${totals.join(", ")}`,
   );
   assert.deepEqual(
     shards.flatMap((shard) => shard.files).sort(),
@@ -284,7 +382,7 @@ test("release server shards plus the dedicated chat file cover the original serv
 });
 
 const lineShardFile = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
-const caseAt = (line, name) => ({ name, file: lineShardFile, projectName: "@paperclipai/server", location: { line, column: 3 } });
+const caseAt = (line, name) => ({ name, file: lineShardFile, projectName: "@myrmidon/server", location: { line, column: 3 } });
 
 test("test-line shards cover nested and parameterized cases exactly once without splitting a source line", () => {
   const cases = [caseAt(10, "suite > nested > first"), caseAt(10, "suite > nested > second"),

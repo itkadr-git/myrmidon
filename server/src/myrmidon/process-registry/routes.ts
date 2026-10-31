@@ -5,7 +5,7 @@
 // are written by the processes themselves, never by an operator.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { assertBoardOrgAccess } from "../../routes/authz.js";
 import {
   BOARD_PROCESS_PULSE_MS,

@@ -6,7 +6,7 @@ import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 import type { PromptBreakdown } from "./prompt-meter.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@myrmidon/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -213,6 +213,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  runGuard?: import("./run-guard.js").RunGuard;
+  onModelCall?: () => void;
+  /** Called when a guard trips; implementations should stop their active process. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
@@ -227,6 +231,13 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  paperclipCancellation?: {
+    current: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    } | null;
+  };
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -273,6 +284,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  pricing?: "free" | "paid";
+  accounts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -497,6 +510,11 @@ export interface ServerAdapterModule {
     baseUrl: string;
     apiKey: string;
     gatewayRunId: string;
+    cancellation?: {
+      correlationId: string;
+      source: { code: string; endpoint?: string; actor?: string };
+      reason: string;
+    };
   }) => Promise<{ stopped: boolean }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */

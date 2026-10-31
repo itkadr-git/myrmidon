@@ -11,16 +11,18 @@
 //   "next agent of the caste" guess made here.
 
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   readStoredSwarmSettings,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { planClaim } from "./domain.js";
 import { findLiveClaimForIssue, heartbeatClaim, insertClaim, releaseClaim } from "./store.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
+import { invalidateFailedRunsCache } from "./effective-pheromone.js";
+import { invalidateLastRunRowsCache } from "./matcher.js";
 
 /** Shared ports shape both hooks need. */
 interface HookDeps {
@@ -73,10 +75,15 @@ export async function recordSwarmClaimOnCheckoutImpl(
     agentId: input.agent.id,
     role: input.agent.role,
     runId: input.run.id,
+    origin: "checkout",
     now,
     settings,
   });
-  const claim = await insertClaim(deps.db, { companyId: input.run.companyId, ...plan });
+  const claim = await insertClaim(deps.db, {
+    companyId: input.run.companyId,
+    ...plan,
+    origin: plan.origin ?? "checkout",
+  });
   if (claim) {
     await logActivityService(deps.db, {
       companyId: input.run.companyId,
@@ -105,17 +112,30 @@ export async function releaseSwarmClaimsForRunImpl(
   run: { id: string; companyId: string },
   now = new Date(),
 ): Promise<string[]> {
+  invalidateLastRunRowsCache(run.companyId);
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return [];
 
   // The claims of this run's agent on this company's issues — restricted to
   // the issue the run actually held, which the heartbeat run row knows.
   const runRow = await deps.db
-    .select({ nativeIssueId: heartbeatRuns.nativeIssueId, agentId: heartbeatRuns.agentId })
+    .select({
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+    })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
     .limit(1);
   const held = runRow[0];
+  if (
+    held?.status === "failed" ||
+    held?.status === "blocked" ||
+    held?.status === "needs_followup" ||
+    held?.status === "timed_out"
+  ) {
+    invalidateFailedRunsCache(run.companyId);
+  }
   if (!held?.nativeIssueId) return [];
 
   const live = await findLiveClaimForIssue(deps.db, held.nativeIssueId);

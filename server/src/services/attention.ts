@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -29,8 +29,8 @@ import {
   projects,
   projectWorkspaces,
   secretAccessEvents,
-} from "@paperclipai/db";
-import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@myrmidon/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -50,7 +50,7 @@ import type {
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
@@ -87,6 +87,9 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
+import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
 import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
@@ -146,7 +149,7 @@ import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
 import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the recorded prompt-budget signals.
 import { readPromptBudgetSignals } from "../myrmidon/prompt-budget/signal.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
@@ -155,7 +158,7 @@ import {
   readForagingLimitSignal,
 } from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
-import { resolveBudgetEnforcement } from "@paperclipai/shared";
+import { resolveBudgetEnforcement } from "@myrmidon/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"
@@ -177,6 +180,17 @@ import {
   decisionRetentionSyncScheduler,
   type DecisionRetentionSyncSink,
 } from "./decision-retention-sync.js";
+import { createHash as createFeatureSubjectHash } from "node:crypto"; // myrmidon(FEATURES)
+
+/**
+ * myrmidon(FEATURES): a stable uuid-shaped subject id per (company, feature),
+ * for the same reason the tracing card has one: the attention enrichment joins
+ * subject ids against uuid columns.
+ */
+function featureHealthSubjectId(companyId: string, key: string): string {
+  const hex = createFeatureSubjectHash("sha1").update(`${companyId}:${key}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -2968,7 +2982,7 @@ async function buildAttentionFeedSnapshot(
             companyId,
             title: signal.title ?? "Task",
             identifier: signal.identifier,
-            status: "in_progress",
+            status: signal.targetStatus ?? "in_progress",
             href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
             metadata: {
               liftedAt: signal.liftedAt,
@@ -3049,7 +3063,8 @@ async function buildAttentionFeedSnapshot(
       // /issues/:id/execution-hold/confirm-continue: the person attests the
       // failed run left no external action, the hold is superseded and the
       // assignee is woken explicitly.
-      for (const card of await listExecutionHoldCards(db, companyId)) {
+      const executionHoldCards = await listExecutionHoldCards(db, companyId);
+      for (const card of executionHoldCards) {
         add(createItem({
           companyId,
           sourceKind: "replay_blocked",
@@ -3096,6 +3111,44 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(OPE-7707): company-level visibility alarm when tasks are held by replay=blocked
+      if (executionHoldCards.length > 0) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "company",
+            id: `execution-holds-aggregate:${companyId}`,
+            companyId,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
+            identifier: null,
+            status: "active",
+            href: `/${prefix}/company/settings`,
+            metadata: {
+              heldCount: executionHoldCards.length,
+            },
+          },
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
+          ),
+          inlineResolvable: false,
+          entryRule: "at least one issue is held by execution recovery replay=blocked",
+          exitRule: "no issues are held by execution recovery replay=blocked",
+          dedupKey: `execution-holds-aggregate:${companyId}`,
+          severity: executionHoldCards.length >= 5 ? "critical" : "high",
+          activityAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: `${executionHoldCards.length} open issues are currently excluded from swarm pickup by execution recovery holds.`,
             images: [],
           },
         }));
@@ -3882,6 +3935,73 @@ async function buildAttentionFeedSnapshot(
             }));
           }
         }
+      }
+
+      // myrmidon(FEATURES): a feature that is enabled and has been
+      // misconfigured or failing for over 30 minutes raises ONE card on the
+      // operator desk (the Features page holds the detail). The signals come
+      // from the process-level clock the health pass feeds (features/
+      // attention.ts); the card disappears when the feature is healthy again.
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: featureHealthSubjectId(companyId, feature.key),
+            companyId,
+            title: feature.title,
+            identifier: null,
+            status: feature.status,
+            href: `/${prefix}/company/settings/instance/features`,
+            metadata: { featureHealth: true, featureKey: feature.key, status: feature.status },
+          },
+          whyNow: feature.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Features page." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "an enabled feature has been misconfigured or failing for more than 30 minutes.",
+          exitRule: "the feature is healthy, off or unknown again, or the row is dismissed.",
+          dedupKey: feature.dedupKey,
+          severity: feature.severity,
+          activityAt: feature.activityAt,
+          createdAt: feature.activityAt,
+          updatedAt: feature.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(feature.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
+      // the existing attention runtime. Recovery removes the card automatically.
+      for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
+        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
+            title: signal.title, identifier: null, status: "warning",
+            href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
+          exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
+          dedupKey: signal.dedupKey, severity: "medium",
+          activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },
+        }));
       }
 
       const deduped = new Map<string, AttentionItem>();

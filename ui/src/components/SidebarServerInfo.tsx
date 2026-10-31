@@ -3,11 +3,12 @@ import { Clock3, FileDiff, GitCommit, type LucideIcon } from "lucide-react";
 import { healthApi, type HealthStatus } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
+import { t, useTranslation } from "@/i18n";
 
 function formatTimestamp(value: string | null | undefined): string {
-  if (!value) return "Unavailable";
+  if (!value) return t("area.shell-sidebar-layout-2.sidebar-server-info.unavailable");
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unavailable";
+  if (Number.isNaN(date.getTime())) return t("area.shell-sidebar-layout-2.sidebar-server-info.unavailable");
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -24,27 +25,29 @@ function restartTimestamp(health: HealthStatus | undefined): string | null {
 
 function commitLabel(health: HealthStatus | undefined): string {
   const git = health?.serverInfo?.git;
-  if (!git?.available) return "Commit unavailable";
+  if (!git?.available) return t("area.shell-sidebar-layout-2.sidebar-server-info.commitUnavailable");
   return `${git.shortSha} · ${git.subject}`;
 }
 
 function localChangesLabel(health: HealthStatus | undefined): string {
   const git = health?.serverInfo?.git;
-  if (!git?.available) return "Unavailable";
+  if (!git?.available) return t("area.shell-sidebar-layout-2.sidebar-server-info.unavailable");
   const localChanges = git.localChanges;
-  if (!localChanges) return "Change status unavailable";
-  if (!localChanges.available) return "Change status unavailable";
-  if (!localChanges.hasLocalChanges) return "Clean checkout";
+  if (!localChanges) return t("area.shell-sidebar-layout-2.sidebar-server-info.changeStatusUnavailable");
+  if (!localChanges.available) return t("area.shell-sidebar-layout-2.sidebar-server-info.changeStatusUnavailable");
+  if (!localChanges.hasLocalChanges) return t("area.shell-sidebar-layout-2.sidebar-server-info.cleanCheckout");
 
   const parts = [
-    [localChanges.stagedFileCount, "staged"],
-    [localChanges.unstagedFileCount, "unstaged"],
-    [localChanges.untrackedFileCount, "untracked"],
+    [localChanges.stagedFileCount, "stagedCount"],
+    [localChanges.unstagedFileCount, "unstagedCount"],
+    [localChanges.untrackedFileCount, "untrackedCount"],
   ]
     .filter(([count]) => Number(count) > 0)
-    .map(([count, label]) => `${count} ${label}`);
+    .map(([count, labelKey]) => t(`area.shell-sidebar-layout-2.sidebar-server-info.${labelKey}`, { n: count }));
 
-  return parts.length > 0 ? `Local changes present (${parts.join(", ")})` : "Local changes present";
+  return parts.length > 0
+    ? t("area.shell-sidebar-layout-2.sidebar-server-info.localChangesPresentWithCounts", { details: parts.join(", ") })
+    : t("area.shell-sidebar-layout-2.sidebar-server-info.localChangesPresent");
 }
 
 function ServerInfoRow({
@@ -78,6 +81,8 @@ function ServerInfoRow({
 }
 
 export function SidebarServerInfo() {
+  // Subscribe to language changes; the label helpers above use the global t().
+  useTranslation();
   const experimentalQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -106,34 +111,34 @@ export function SidebarServerInfo() {
   const restartedAt = restartTimestamp(health);
   const restartedAtIsValid = isValidTimestamp(restartedAt);
   const lastRestartedLabel = healthUnavailable
-    ? "Health unavailable"
+    ? t("area.shell-sidebar-layout-2.sidebar-server-info.healthUnavailable")
     : isWaitingForHealth
-      ? "Loading..."
+      ? t("common.loading")
       : formatTimestamp(restartedAt);
   const commit = healthUnavailable
-    ? "Health unavailable"
+    ? t("area.shell-sidebar-layout-2.sidebar-server-info.healthUnavailable")
     : isWaitingForHealth
-      ? "Loading..."
+      ? t("common.loading")
       : commitLabel(health);
   const localChanges = healthUnavailable
-    ? "Health unavailable"
+    ? t("area.shell-sidebar-layout-2.sidebar-server-info.healthUnavailable")
     : isWaitingForHealth
-      ? "Loading..."
+      ? t("common.loading")
       : localChangesLabel(health);
 
   return (
     <div className="mt-2 border-t border-border pt-2">
       <p className="px-3 pb-1 pt-1 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-        Server
+        {t("area.shell-sidebar-layout-2.sidebar-server-info.heading")}
       </p>
       <ServerInfoRow
         icon={Clock3}
-        label="Last restarted"
+        label={t("area.shell-sidebar-layout-2.sidebar-server-info.lastRestarted")}
         value={lastRestartedLabel}
         dateTime={!healthUnavailable && !isWaitingForHealth && restartedAtIsValid ? restartedAt : null}
       />
-      <ServerInfoRow icon={GitCommit} label="Running commit" value={commit} />
-      <ServerInfoRow icon={FileDiff} label="Checkout state" value={localChanges} />
+      <ServerInfoRow icon={GitCommit} label={t("area.shell-sidebar-layout-2.sidebar-server-info.runningCommit")} value={commit} />
+      <ServerInfoRow icon={FileDiff} label={t("area.shell-sidebar-layout-2.sidebar-server-info.checkoutState")} value={localChanges} />
     </div>
   );
 }

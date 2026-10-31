@@ -1,10 +1,10 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { heartbeatRuns, instanceUserRoles, invites } from "@myrmidon/db";
+import type { DeploymentExposure, DeploymentMode } from "@myrmidon/shared";
 import {
   readPersistedDevServerStatus,
   removeDevServerRestartRequest,
@@ -42,7 +42,7 @@ import {
   removeHotRestartIntent,
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,

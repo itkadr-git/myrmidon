@@ -21,6 +21,19 @@ to the canonical revision. This links existing content without duplicating the
 knowledge item. The current interface and import flow do not provide translation
 editing; this is a storage and read-selection capability.
 
+## Seeded decisions and product knowledge
+
+The knowledge base is initially populated with 46 dated owner decisions in
+`decisions/` and four curated pages in `product/`: the product vision,
+principles P1-P14, the colony-model map and the open-core model. Decision
+records carry the decision maker, date, verbatim quote and a source pointer to
+the decision registry. Product pages retain their own source references.
+
+The seeder creates knowledge items in a nest and publishes them. It skips
+existing slugs on rerun, and applies supersede links in a second pass so that
+both records exist first; superseded decisions remain available as history.
+The seed corpus and seeder are part of release 1.6.6.
+
 ## Foraging: gathering fresh knowledge
 
 Foraging lets the colony collect fresh knowledge from approved external
@@ -58,6 +71,7 @@ rate is visible as a number, not a feeling.
 
 ## In detail
 
+- [Knowledge seed corpus: decisions and product reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.md)
 - [Foraging: knowledge gathering from approved sources](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Reference-task evals and the LLM judge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Evals: cross-family judge selection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)

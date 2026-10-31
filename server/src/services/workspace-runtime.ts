@@ -6,9 +6,9 @@ import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { AdapterRuntimeServiceReport } from "@myrmidon/adapter-utils";
+import type { Db } from "@myrmidon/db";
+import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@myrmidon/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
   deriveViteHmrPort,
@@ -31,7 +31,7 @@ import {
   type WorkspaceOperationPhase,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
@@ -103,7 +103,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -5210,11 +5210,11 @@ function isPaperclipDevRuntimeService(input: { serviceName?: string | null; comm
   );
 }
 
-export const MANAGED_RUNTIME_PUBLIC_URL_ENV = "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL";
+export const MANAGED_RUNTIME_PUBLIC_URL_ENV = "MYRMIDON_MANAGED_RUNTIME_PUBLIC_URL";
 
 const EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS = [
-  "PAPERCLIP_PUBLIC_URL",
-  "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+  "PUBLIC_URL",
+  "AUTH_PUBLIC_BASE_URL",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_BASE_URL",
 ] as const;
@@ -5230,7 +5230,7 @@ function isLoopbackRuntimeHostname(hostname: string) {
 function managedRuntimeOriginError(serviceName: string, reason: string) {
   return new Error(
     `Runtime service "${serviceName}" cannot derive a browser-reachable OAuth callback origin: ${reason}. `
-    + "Configure PAPERCLIP_PUBLIC_URL or BETTER_AUTH_URL for this service, or publish an HTTPS expose.urlTemplate "
+    + "Configure MYRMIDON_PUBLIC_URL or BETTER_AUTH_URL for this service, or publish an HTTPS expose.urlTemplate "
     + "that the operator's browser can reach (loopback HTTP is also supported).",
   );
 }
@@ -5285,7 +5285,9 @@ export function resolveManagedPaperclipRuntimePublicOrigin(input: {
   exposedUrlTemplate?: string | null;
 }) {
   if (!isPaperclipDevRuntimeService(input)) return null;
-  if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => input.environment[key]?.trim())) return null;
+  if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => readProductEnvFrom(input.environment, key)?.trim())
+    || input.environment.BETTER_AUTH_URL?.trim()
+    || input.environment.BETTER_AUTH_BASE_URL?.trim()) return null;
   if (!input.exposedUrl) {
     throw managedRuntimeOriginError(input.serviceName, "the managed service does not report an exposed URL");
   }

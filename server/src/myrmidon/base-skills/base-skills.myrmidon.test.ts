@@ -21,8 +21,8 @@ import {
   companyBaseSkills,
   companySkills,
   createDb,
-} from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import { readPaperclipSkillSyncPreference } from "@myrmidon/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   authUsers,
@@ -11,7 +11,7 @@ import {
   principalPermissionGrants,
   projects,
   userInboxAgentPolicies,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AgentApiKeyScope,
   InboxAgentPolicyMode,
@@ -19,8 +19,8 @@ import type {
   PrincipalType,
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
-} from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@myrmidon/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -32,7 +32,7 @@ import { logger } from "../middleware/logger.js";
 import { decideAgentSelfConfigUpdate } from "../myrmidon/agent-self-update.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type AuthorizationActor =
   {
@@ -400,6 +400,32 @@ async function scopeAllows(
   const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
   let constrained = false;
 
+  // myrmidon(1.6.6 POOL-CHAT): chat grants must bind the complete router
+  // identity tuple; partial or unrelated structured scopes are insufficient.
+  if (
+    options.requireStructuredScope
+    && requestedScope
+    && ("moduleId" in requestedScope || "channelId" in requestedScope || "subjectId" in requestedScope)
+  ) {
+    for (const key of ["moduleId", "channelId", "subjectId"] as const) {
+      const allowedValues = scopeValueList(grantScope[key]);
+      const requested = typeof requestedScope[key] === "string" ? requestedScope[key] : null;
+      if (allowedValues.length === 0 || !scopeIncludesId(allowedValues, requested)) return false;
+    }
+  }
+
+  // myrmidon(1.6.6 POOL-CHAT): chat grants are scoped to the exact router
+  // identity tuple; never treat these metadata keys as informational.
+  for (const key of ["moduleId", "channelId", "subjectId"] as const) {
+    const allowedValues = scopeValueList(grantScope[key]);
+    if (allowedValues.length > 0) {
+      constrained = true;
+      if (!scopeIncludesId(allowedValues, typeof requestedScope[key] === "string" ? requestedScope[key] : null)) {
+        return false;
+      }
+    }
+  }
+
   const projectIds = [
     ...scopeValueList(grantScope.projectId),
     ...scopeValueList(grantScope.projectIds),
@@ -720,7 +746,7 @@ export function authorizationService(db: Db | DbTransaction) {
 
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
-        requireStructuredScope: input.permissionKey === "tasks:assign_scope",
+        requireStructuredScope: input.permissionKey === "tasks:assign_scope" || input.permissionKey === "chat:invoke",
       }))
     ) {
       return deny({

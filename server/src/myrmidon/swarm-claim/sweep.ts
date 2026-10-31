@@ -37,7 +37,7 @@
 // row for the next pass.
 
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
+import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@myrmidon/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -48,8 +48,11 @@ import {
   readStoredSwarmSettings,
   resolveSwarmClaimSettings,
   type SwarmClaimSettings,
-} from "@paperclipai/shared";
+  type SwarmClaimLease,
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
+import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
+import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
 import { currentHostCpuGate, currentHostMemoryGate, type HostCpuGate, type HostMemoryGate } from "../run-admission.js";
 import { matchCompany, matchIssue, type SwarmMatcherDeps } from "./matcher.js";
 import type { SwarmClaimServicePorts } from "./service.js";
@@ -59,6 +62,26 @@ import {
   listExpiredClaims,
   releaseClaim,
 } from "./store.js";
+
+/**
+ * myrmidon(FEATURES): one pass of the sweeper reported to the features page —
+ * "the loop is alive", what it woke, and what the idle pass saw. A release that
+ * threw or an idle pass that failed is a failed pass.
+ */
+function recordSwarmPass(result: SwarmClaimSweepResult, failure: string | null): void {
+  const detail = {
+    idleRoles: result.idleRoles,
+    idleUnmatchedTasks: result.idleUnmatchedTasks,
+    idleWoken: result.idleWoken,
+    idleSkippedReason: result.idleSkippedReason,
+  };
+  const effect = result.woken + result.idleWoken;
+  const error = failure ?? (result.failed > 0 ? `${result.failed} claim release(s) failed` : null);
+  recordFeatureOutcome(
+    SWARM_CLAIM_SWEEP_FEATURE_KEY,
+    error ? { ok: false, error, effect, detail } : { ok: true, effect, detail },
+  );
+}
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
@@ -102,8 +125,8 @@ export interface SwarmClaimSweepResult {
   idleClaimLost: number;
   /** Roles with a non-empty ready queue the idle pass examined. */
   idleRoles: number;
-  /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
-  idleFreeAgents: number;
+  /** Ready tasks left without an available agent in this pass. */
+  idleUnmatchedTasks: number;
   /**
    * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): roles that have ready tasks queued
    * but no agent at all — a configuration gap (a `role:<key>` label naming a
@@ -167,7 +190,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleClaimed: 0,
         idleClaimLost: 0,
         idleRoles: 0,
-        idleFreeAgents: 0,
+        idleUnmatchedTasks: 0,
         idleUnstaffedRoles: 0,
         idleSkippedReason: null,
       };
@@ -271,10 +294,11 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
 
       for (const row of expiredRows) {
         result.inspected += 1;
-        const lease = {
+        const lease: SwarmClaimLease = {
           id: row.id,
           issueId: row.issueId,
           agentId: row.agentId,
+          origin: row.origin === "auto_match" || row.origin === "checkout" ? row.origin : null,
           heartbeatAt: row.heartbeatAt,
           expiresAt: row.expiresAt,
           releasedAt: row.releasedAt,
@@ -284,7 +308,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           const released = await releaseClaim(deps.db, {
             claimId: row.id,
             reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
-            now,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
           });
           if (!released) continue;
           result.expiredReleased += 1;
@@ -299,21 +323,34 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             entityId: row.issueId,
             details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED, claimId: row.id },
           });
-          // design §4.1 (review item 2): the lease ran out and no run holds the
-          // task any more, so the task goes back to the queue WITHOUT its
-          // owner. The old pass left the assignee in place and woke the next
-          // agent of the caste on a task that still belonged to somebody else —
-          // that wake was cancelled as `reassigned` before its checkout, the
-          // very failure this ticket exists for. Clearing the owner first and
-          // then matching wakes exactly the agent that now owns the task.
-          const rematched = await reclaimExpiredTask(
-            deps,
-            settings,
-            { companyId: row.companyId, issueId: row.issueId, agentId: row.agentId },
-            now,
-            hostGateOpen,
-          ).catch(() => false);
-          if (rematched) result.woken += 1;
+          if (await hasLiveRunForTask(deps.db, row.companyId, row.agentId, row.issueId)) continue;
+          const expired = await clearExpiredAssignee(deps.db, {
+            companyId: row.companyId,
+            issueId: row.issueId,
+            agentId: row.agentId,
+            claimId: row.id,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
+          });
+          if (expired) {
+            await deps.logActivity?.({
+              companyId: row.companyId,
+              actorType: "system",
+              actorId: "swarm_claim_sweep",
+              agentId: row.agentId,
+              runId: null,
+              action: SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION,
+              entityType: "issue",
+              entityId: row.issueId,
+              details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
+            });
+            // Without a wake enqueuer there is nobody to start the re-match for.
+            if (!deps.enqueueWakeup) continue;
+            const rematched = await matchIssue(
+              matcherDeps(deps, settings, now, hostGateOpen),
+              row.issueId,
+            ).catch(() => null);
+            if (rematched) result.woken += 1;
+          }
         } catch {
           result.failed += 1;
           logger.warn(
@@ -337,7 +374,10 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         }
       }
 
-      if (!hostGateOpen) return result;
+      if (!hostGateOpen) {
+        recordSwarmPass(result, null); // myrmidon(FEATURES): a closed host gate is a skipped pass, not a failed one
+        return result;
+      }
       try {
         const matched = await runMatcherPass(deps, settings, now, hostGateOpen);
         result.idleClaimed += matched.claimed;
@@ -345,7 +385,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         result.idleRoles += matched.companies;
         // Ready tasks no free agent of their caste was found for — the number
         // an operator watches while the fleet is saturated.
-        result.idleFreeAgents += matched.unmatched;
+        result.idleUnmatchedTasks += matched.unmatched;
         if (matched.claimed > 0) {
           logger.warn(
             {
@@ -357,12 +397,16 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           );
         }
       } catch {
-        // CONSTANT errorKind only (the exception can carry a credential).
+        // Keep exception details out of logs; errors may carry credentials.
         logger.warn(
           { errorKind: "swarm_match_failed" },
           "swarm matcher pass failed; the next tick retries",
         );
+        // myrmidon(FEATURES): constant text too, the exception can carry a credential.
+        recordSwarmPass(result, "the idle wake pass failed");
+        return result;
       }
+      recordSwarmPass(result, null); // myrmidon(FEATURES)
       return result;
     },
   };
@@ -475,52 +519,6 @@ export async function issueHasLiveClaimOrWake(
 }
 
 /**
- * 1.6.5 (OPE-6608 §4.1, review item 2): one expired lease, re-matched. A task
- * whose lease lapsed with no live run behind it is nobody's again — the owner
- * is cleared (only while the task is still in a queue status and still carries
- * that owner, so a task that moved on is left alone), the activity records it,
- * and the matcher pairs the task again on this same pass. A live run keeps its
- * task: an idle lease expiring must never take work away from a running agent.
- */
-async function reclaimExpiredTask(
-  deps: SwarmClaimSweeperDeps,
-  settings: SwarmClaimSettings,
-  target: { companyId: string; issueId: string; agentId: string },
-  now: Date,
-  hostGateOpen: boolean,
-): Promise<boolean> {
-  // The gate first (review item 6): with the host's run admission closed the
-  // owner is not taken off the task, because nothing could be started for it
-  // afterwards. The sweep does not even release an expired lease then (it reads
-  // none while the gate is closed); this guard keeps the function safe on its own.
-  if (!hostGateOpen) return false;
-  if (await hasLiveRunForTask(deps.db, target.companyId, target.agentId, target.issueId)) return false;
-
-  const cleared = await clearExpiredAssignee(deps.db, {
-    companyId: target.companyId,
-    issueId: target.issueId,
-    agentId: target.agentId,
-    now,
-  });
-  if (cleared) {
-    await deps.logActivity?.({
-      companyId: target.companyId,
-      actorType: "system",
-      actorId: "swarm_claim_sweep",
-      agentId: target.agentId,
-      runId: null,
-      action: SWARM_CLAIM_UNASSIGNED_ON_EXPIRY_ACTION,
-      entityType: "issue",
-      entityId: target.issueId,
-      details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
-    });
-  }
-  if (!deps.enqueueWakeup) return false;
-  const matched = await matchIssue(matcherDeps(deps, settings, now, hostGateOpen), target.issueId);
-  return Boolean(matched);
-}
-
-/**
  * True while a queued/running/scheduled_retry run of the agent covers THIS task
  * (review item 8). The old read asked "has the agent any live run", so an agent
  * busy with another task kept an expired lease on a task nobody was working.
@@ -610,6 +608,13 @@ function matcherDeps(
     hostGateOpen,
     now,
     casteDirectory: deps.castes,
+    resolveTaskCaste: deps.resolveTaskCaste,
+    agentNests: deps.agentNests,
+    isIssueCoolingDown: deps.isIssueCoolingDown,
+    coolingSettings: deps.coolingSettings,
+    isAgentAvailable: deps.isAgentAvailable,
+    isTaskBudgetBlocked: deps.isTaskBudgetBlocked,
+    pickAgentForTask: deps.pickAgentForTask,
     logActivity: deps.logActivity,
   };
 }

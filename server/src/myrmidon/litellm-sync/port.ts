@@ -6,6 +6,21 @@
 // calls to register models dynamically. This module provides the client surface
 // for those calls, abstracting the HTTP transport and credential handling.
 
+export interface LitellmChannelView {
+  /** Gateway deployment/channel id (`model_info.id`), when reported. */
+  id: string | null;
+  /** The model group name in LiteLLM (`model_name`). */
+  group: string;
+  /** The upstream provider type (e.g. 'openai', 'azure', 'dashscope'). */
+  provider: string;
+  /** The provider's model identifier (e.g. 'openai/gpt-4o', 'gpt-4o'). */
+  providerModel: string;
+  /** Routing fallback order / priority, if set. */
+  order: number | null;
+  /** Routing weight for load balancing, if set. */
+  weight: number | null;
+}
+
 export interface LitellmSyncPort {
   /**
    * Registers a model in LiteLLM with credential reference.
@@ -21,6 +36,12 @@ export interface LitellmSyncPort {
     baseUrl: string | null;
     /** The name of the secret that holds the credential (not the value itself). */
     credentialSecretName: string;
+    /** Priority order of the channel within the model group. */
+    order?: number;
+    /** Routing weight for load balancing. */
+    weight?: number;
+    /** Whether the channel is disabled. */
+    disabled?: boolean;
     /** Additional LiteLLM-specific configuration. */
     additionalConfig?: Record<string, unknown>;
   }): Promise<void>;
@@ -31,9 +52,34 @@ export interface LitellmSyncPort {
   unregisterModel(litellmModelName: string): Promise<void>;
 
   /**
+   * Updates the credential reference of an existing deployment in place
+   * (`POST /model/update`, addressed by deployment id). No second deployment is
+   * created and the model is never absent from the gateway.
+   */
+  updateDeployment(input: {
+    modelId: string;
+    litellmModelName: string;
+    providerType: string;
+    baseUrl: string | null;
+    credentialSecretName: string;
+    /** Priority order of the channel within the model group. */
+    order?: number;
+    /** Routing weight for load balancing. */
+    weight?: number;
+    /** Whether the channel is disabled. */
+    disabled?: boolean;
+    additionalConfig?: Record<string, unknown>;
+  }): Promise<void>;
+
+  /** Removes one deployment by its id (`POST /model/delete` with `{ id }`). */
+  deleteDeployment(modelId: string): Promise<void>;
+
+  /**
    * Fetches the list of currently registered models from LiteLLM.
    */
   listRegisteredModels(): Promise<Array<{
+    /** The gateway deployment id (`model_info.id`), when the gateway reports one. */
+    modelId?: string;
     /** The model name as registered in LiteLLM. */
     litellmModelName: string;
     /** The provider type. */
@@ -43,4 +89,10 @@ export interface LitellmSyncPort {
     /** The credential secret name reference. */
     credentialSecretName: string;
   }>>;
+
+  /**
+   * Fetches the model groups and channels from LiteLLM /model/info.
+   * Returns key-free channel views (group, provider, providerModel, order, weight).
+   */
+  listChannels(): Promise<LitellmChannelView[]>;
 }

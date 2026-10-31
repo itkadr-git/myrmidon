@@ -3,7 +3,7 @@ import {
   CHAT_PUBLICATION_STATES,
   type ChatPublicationSummary,
   type ChatPublicationBatchStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { ApiError } from "@/api/client";
 
 export type BoardSendRejection = {

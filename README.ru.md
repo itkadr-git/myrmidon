@@ -6,7 +6,7 @@
 
 [![Последний выпуск](https://img.shields.io/github/v/release/itkadr-git/myrmidon?sort=semver&label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7)](https://github.com/itkadr-git/myrmidon/releases/latest)
 
-[Что это](#что-такое-myrmidon) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
+[Что это](#что-такое-myrmidon) &middot; [Адресация агентов в Telegram](docs/myrmidon/guides/telegram-alias-addressing.ru.md) &middot; [Зачем](#зачем-myrmidon) &middot; [Быстрый старт](#быстрый-старт--развёртывание) &middot; [Архитектура](#архитектура-одним-взглядом) &middot; [Настройка](#настройка) &middot; [Что умеет сегодня](#что-умеет-сегодня) &middot; [Идея](#идея-модель-муравейника) &middot; [Путь к 2.0](#куда-мы-идём-путь-к-20) &middot; [Обновление](#обновление)
 
 [English](README.md) &middot; Русский
 
@@ -139,8 +139,9 @@ flowchart LR
 ## Что умеет сегодня
 
 Релизные заметки — в [docs/myrmidon/CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)
-(английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Главное на
-версии 1.6.4 (последний выпуск; 1.6.5-rc.14 — текущий кандидат в выпуски):
+(английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Текущий
+предварительный выпуск — [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18);
+последний стабильный выпуск — [1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5).
 
 ### Работа и агенты
 
@@ -233,7 +234,7 @@ flowchart LR
   ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.ru.md)).
 - **Облачные хранилища.** Облака, подключённые владельцем, с выдачей папок
   агентам; токены остаются в хранилище секретов компании
-  ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.ru.md)).
+  ([cloud-connector](docs/myrmidon/guides/cloud-connector.ru.md)).
 - **Клиентские коннекторы (браузерный мост).** Расширение браузера на машине
   клиента само подключается к доске; бот управляет этим браузером, а действия,
   помеченные для подтверждения человеком, ждут человека за тем ПК. Подробнее:
@@ -279,15 +280,17 @@ flowchart LR
 - **Интерфейс 2.0 и язык.** Оболочка 2.0 и шесть экранов на новых данных (за
   флагом `enableMyrmidonUi2`, по умолчанию выключено) и язык доски RU/EN на
   пользователя ([ui2-shell](docs/myrmidon/guides/ui2-shell.ru.md)).
+- **1.6.6 — ограниченные guardrails для вывода прогонов.** Необязательное
+  обнаружение по флагу сканирует ограниченное окно вывода, ограничивает число
+  событий и редактирует/обрезает фрагменты; см. [руководство](docs/myrmidon/guides/guardrails-run-output.ru.md).
 
 ### Новое в линейке 1.6
 
 Полные заметки по каждому выпуску:
 [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md) и [страница
-выпусков](https://github.com/itkadr-git/myrmidon/releases) — последний:
-[1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
-— текущий кандидат в выпуски.
+выпусков](https://github.com/itkadr-git/myrmidon/releases). Последний стабильный:
+[1.6.5](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5);
+текущий предварительный: [1.6.6-rc.18](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.6-rc.18).
 
 - **1.6.3 — один выкат для всех компонентов.** `deploy.sh --release`
   обновляет доску, dockergate, fleetd и образы ботов в одно окно
