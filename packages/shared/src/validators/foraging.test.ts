@@ -45,8 +45,8 @@ describe("shared foraging validator", () => {
 
   it("normalizeForagingAllowlistDomains trims, lowercases and dedupes", () => {
     expect(normalizeForagingAllowlistDomains([" Example.COM ", "example.com", "a.example.com"])).toEqual([
-      "example.com",
       "a.example.com",
+      "example.com",
     ]);
   });
 
