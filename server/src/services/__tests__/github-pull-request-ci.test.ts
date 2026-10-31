@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { getTableName } from "drizzle-orm";
+import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import {
   fetchCommitCheckRuns,
   summarizeCheckRuns,
@@ -484,14 +486,19 @@ describe("createPullRequestCiResolver", () => {
             return {
               where: vi.fn().mockImplementation(async () => {
                 // Table checks
-                const tableName = (table as { _?: { name?: string } })?._?.name;
-                if (tableName === "issue_work_products") {
+                let tableName: string | undefined;
+                try {
+                  tableName = getTableName(table as Parameters<typeof getTableName>[0]);
+                } catch {
+                  tableName = (table as { _?: { name?: string } })?._?.name;
+                }
+                if (table === issueWorkProducts || tableName === "issue_work_products") {
                   return mockWorkProducts;
                 }
-                if (tableName === "issue_comments") {
+                if (table === issueComments || tableName === "issue_comments") {
                   return mockComments;
                 }
-                if (tableName === "issues") {
+                if (table === issues || tableName === "issues") {
                   if (fields && typeof fields === "object" && "parentId" in (fields as Record<string, unknown>)) {
                     return [];
                   }

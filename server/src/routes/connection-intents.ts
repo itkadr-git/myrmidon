@@ -40,7 +40,10 @@ function resultContent(value: unknown) {
 }
 
 export { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
-import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
+import {
+  RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+  RUNTIME_INTENT_TOOL_DEFINITIONS,
+} from "../services/connection-tool-definitions.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
@@ -98,7 +101,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
         jsonrpc: "2.0",
         id,
         result: {
-          tools: RUNTIME_CONNECTION_TOOL_DEFINITIONS,
+          tools: RUNTIME_INTENT_TOOL_DEFINITIONS,
         },
       });
       return;

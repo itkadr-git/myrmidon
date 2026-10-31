@@ -392,8 +392,8 @@ export function createPullRequestCiResolver(
     ): Promise<PullRequestCiResult> {
       const repoKey = `${reference.owner}/${reference.repo}`;
       const prDetails = await prResolver(companyId, reference);
-      const headSha = prDetails.headSha;
-      const headRef = prDetails.headRef;
+      let headSha = prDetails.headSha;
+      let headRef = prDetails.headRef;
 
       if ((prDetails as { access?: string }).access === "denied") {
         return {
@@ -413,6 +413,70 @@ export function createPullRequestCiResolver(
           failedJobs: [],
           runs: [],
         };
+      }
+
+      if (!headSha) {
+        try {
+          const token = await tokenProvider(companyId, repoKey);
+          const headers: Record<string, string> = {
+            Accept: "application/vnd.github+json",
+            "User-Agent": "Myrmidon-CI-Resolver",
+          };
+          if (token) {
+            headers.Authorization = `Bearer ${token}`;
+          }
+          const response = await fetchImpl(
+            `https://api.github.com/repos/${reference.owner}/${reference.repo}/pulls/${reference.number}`,
+            { headers },
+          );
+          if (response.ok) {
+            const data = (await response.json()) as { head?: { sha?: string; ref?: string } };
+            if (data.head?.sha) {
+              headSha = data.head.sha;
+            }
+            if (data.head?.ref) {
+              headRef = data.head.ref;
+            }
+          } else if (response.status === 401 || response.status === 403) {
+            return {
+              repository: repoKey,
+              pullNumber: reference.number,
+              headSha: null,
+              headRef: null,
+              status: "unavailable",
+              conclusion: "denied",
+              summary: "checks unavailable (access denied)",
+              authoritative: false,
+              checkedAt: new Date().toISOString(),
+              completedAt: null,
+              totalRuns: 0,
+              successfulRuns: 0,
+              failedRuns: 0,
+              failedJobs: [],
+              runs: [],
+            };
+          } else if (response.status === 404) {
+            return {
+              repository: repoKey,
+              pullNumber: reference.number,
+              headSha: null,
+              headRef: null,
+              status: "unavailable",
+              conclusion: "missing",
+              summary: "pull request not found",
+              authoritative: false,
+              checkedAt: new Date().toISOString(),
+              completedAt: null,
+              totalRuns: 0,
+              successfulRuns: 0,
+              failedRuns: 0,
+              failedJobs: [],
+              runs: [],
+            };
+          }
+        } catch {
+          // ignore
+        }
       }
 
       if (!headSha) {
