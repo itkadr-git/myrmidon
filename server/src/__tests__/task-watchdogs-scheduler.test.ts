@@ -13,6 +13,7 @@ import {
   issueComments,
   issueDocuments,
   issueApprovals,
+  issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
@@ -54,6 +55,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(issueComments);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueRelations);
     await db.delete(issueWatchdogs);
     await db.delete(issues);
     await db.delete(agents);
@@ -696,6 +698,39 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(metadata?.sections?.[0]?.rows).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "Pending waits", text: "2" }),
     ]));
+  });
+
+  it("allows recovery when a stopped source is blocked only by its running reusable watchdog", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const scope = {
+      kind: "watchdog" as const, watchdogId: watchdog!.id, companyId,
+      watchedIssueId: sourceId, stopFingerprint: watchdog!.lastObservedFingerprint!,
+    };
+    await db.insert(issueRelations).values({
+      companyId, issueId: watchdog!.watchdogIssueId!, relatedIssueId: sourceId, type: "blocks",
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, status: "running", invocationSource: "assignment",
+      contextSnapshot: { issueId: watchdog!.watchdogIssueId! },
+    });
+    const revalidated = await service.revalidateMutationScope(scope);
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    // An unrelated dependency remains material: it must invalidate the old review.
+    const externalId = await seedIssue(companyId, { status: "blocked" });
+    await db.insert(issueRelations).values({
+      companyId, issueId: externalId, relatedIssueId: sourceId, type: "blocks",
+    });
+    const changed = await service.revalidateMutationScope(scope);
+    expect(changed.allowed).toBe(false);
+    expect(changed.classification?.state).toBe("stopped");
   });
 
   it("revalidates a stale watchdog review as live when the source gets a fresh run path", async () => {

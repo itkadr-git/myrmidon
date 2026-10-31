@@ -3374,6 +3374,7 @@ type IssueBlockerAttentionNode = {
   identifier: string | null;
   title: string;
   status: string;
+  originKind?: string | null;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3388,7 +3389,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "status"
   | "assigneeAgentId"
   | "assigneeUserId"
-> & { executionRunId?: string | null };
+> & { originKind?: string | null; executionRunId?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -3764,6 +3765,7 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3774,6 +3776,8 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            // Recovery machinery must not count as source continuation.
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
           ),
@@ -3788,6 +3792,7 @@ async function listIssueBlockerAttentionMap(
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3797,6 +3802,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
@@ -3843,6 +3849,7 @@ async function listIssueBlockerAttentionMap(
           identifier: row.identifier,
           title: row.title,
           status: row.status,
+          originKind: row.originKind,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,

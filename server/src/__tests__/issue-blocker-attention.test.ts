@@ -180,6 +180,32 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not count its own running watchdog as a live blocker but preserves external work", async () => {
+    const { companyId, agentId } = await createCompany("PBW");
+    const sourceId = await insertIssue({ companyId, identifier: "PBW-1", title: "Source", status: "blocked" });
+    const watchdogId = await insertIssue({
+      companyId, identifier: "PBW-2", title: "Watchdog", status: "in_progress",
+      parentId: sourceId, originKind: "task_watchdog", originId: sourceId, assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: watchdogId, blockedIssueId: sourceId });
+    await activeRun({ companyId, agentId, issueId: watchdogId });
+    let source = await svc.getById(sourceId);
+    expect(source?.blockerAttention).toMatchObject({
+      blockingTreeLive: false, coveredBlockerCount: 0, unresolvedBlockerCount: 0,
+    });
+
+    const externalId = await insertIssue({
+      companyId, identifier: "PBW-3", title: "External work", status: "in_progress", assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: externalId, blockedIssueId: sourceId });
+    await activeRun({ companyId, agentId, issueId: externalId });
+    source = await svc.getById(sourceId);
+    expect(source?.blockerAttention).toMatchObject({
+      blockingTreeLive: true, reason: "active_dependency", unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1, sampleBlockerIdentifier: "PBW-3",
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });
