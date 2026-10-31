@@ -372,7 +372,7 @@ export async function seedPaperclip(options = {}) {
     {
       companyIndex: 0,
       name: "Архитектор платформы",
-      role: "architect",
+      role: "engineer",
       title: "Главный архитектор систем",
       paletteId: agentPalettes[0],
     },
@@ -400,7 +400,7 @@ export async function seedPaperclip(options = {}) {
     {
       companyIndex: 1,
       name: "Ведущий фронтенд разработчик",
-      role: "frontend",
+      role: "designer",
       title: "Разработчик интерфейсов и дизайн-системы",
       paletteId: agentPalettes[4],
     },

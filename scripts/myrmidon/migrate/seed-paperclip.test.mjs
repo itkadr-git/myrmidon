@@ -278,6 +278,8 @@ describe("seedPaperclip mock flow execution", () => {
 
       // Verify agent appearance payload format
       assert.equal(capturedAgents.length, 6);
+      assert.equal(capturedAgents[0].role, "engineer");
+      assert.equal(capturedAgents[4].role, "designer");
       for (const ag of capturedAgents) {
         assert.equal(ag.adapterType, "process");
         assert.ok(ag.adapterConfig?.command);
