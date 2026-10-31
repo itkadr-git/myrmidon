@@ -411,6 +411,7 @@ import {
   isExternalChatPresentationContext,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
+  deliverHeartbeatRunResponseComment,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
   type RunPresentationDecision,
@@ -1368,6 +1369,7 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "hermes_transient_upstream" ||
     run.errorCode === "codex_harness_crash" ||
     run.errorCode === "continuation_source_context_missing" ||
     run.errorCode === "controller_lease_lost" ||
@@ -9452,6 +9454,82 @@ export function postWorkspaceReadyComment(input: {
       metadata: buildWorkspaceReadyMetadata(workspaceReadyInput),
     },
   );
+}
+
+type HeartbeatResponseCommentWriter = {
+  addComment: (
+    issueId: string,
+    body: string,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+    options?: { authorizationReason?: string | null } & Record<string, unknown>,
+  ) => Promise<unknown>;
+};
+
+export async function finalizeHeartbeatRunResponseComment(input: {
+  db?: any;
+  issuesSvc: HeartbeatResponseCommentWriter;
+  agentId: string;
+  runId: string;
+  companyId: string;
+  issueId: string | null;
+  resolved: ReturnType<typeof resolveHeartbeatRunResponse>;
+  skipRunIssueComment?: boolean;
+  issueRef?: { identifier?: string | null; title?: string | null } | null;
+}) {
+  return await deliverHeartbeatRunResponseComment({
+    resolved: input.resolved,
+    issueId: input.issueId,
+    skipRunIssueComment: input.skipRunIssueComment,
+    addComment: async (text) => {
+      if (input.db) {
+        await guardrailsOnRunOutput({
+          db: input.db,
+          companyId: input.companyId,
+          runId: input.runId,
+          issueId: input.issueId!,
+          text,
+        }).catch(() => null);
+      }
+      const presentationAuthorizationReason = input.db
+        ? await resolveChatRunPresentationAuthorizationReason(input.db, {
+            companyId: input.companyId,
+            issueId: input.issueId!,
+            runId: input.runId,
+          })
+        : null;
+      const comment = await input.issuesSvc.addComment(
+        input.issueId!,
+        text,
+        { agentId: input.agentId, runId: input.runId },
+        { authorizationReason: presentationAuthorizationReason },
+      );
+      if (input.db) {
+        await logActivity(input.db, {
+          companyId: input.companyId,
+          actorType: "agent",
+          actorId: input.agentId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: input.issueId!,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: input.issueId!,
+          details: {
+            commentId: (comment as { id?: string } | null | undefined)?.id,
+            bodySnippet: (
+              (comment as { body?: string } | null | undefined)?.body ?? ""
+            ).slice(0, 120),
+            identifier: input.issueRef?.identifier ?? null,
+            issueTitle: input.issueRef?.title ?? null,
+            authorizationReason: presentationAuthorizationReason,
+            source: "run_presentation_resolver",
+            presentationSource: input.resolved.decision.chosenSource,
+          },
+        }).catch(() => null);
+      }
+      return comment;
+    },
+  });
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -27207,82 +27285,19 @@ export function heartbeatService(
                 externalChatPresentationAuthorization ===
                   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
             });
+            const delivery = await finalizeHeartbeatRunResponseComment({
+              db,
+              issuesSvc,
+              agentId: agent.id,
+              runId: livenessRun.id,
+              companyId: livenessRun.companyId,
+              issueId,
+              resolved,
+              skipRunIssueComment,
+              issueRef,
+            });
             let presentationDecision: RunPresentationDecision =
-              resolved.decision;
-
-            if (
-              issueId &&
-              !skipRunIssueComment &&
-              presentationDecision.commentAction === "create" &&
-              resolved.text
-            ) {
-              // myrmidon(1.6-GRD): flag-only output scan of the final run text
-              // before it becomes the visible issue comment; never blocks,
-              // never masks here — the event journal records the hits.
-              await guardrailsOnRunOutput({
-                db,
-                companyId: livenessRun.companyId,
-                runId: livenessRun.id,
-                issueId,
-                text: resolved.text,
-              }).catch(() => null);
-              // The presentation resolver exposes only the final assistant
-              // surface selected from completed final messages or accepted
-              // semantic results. For an exactly bound external-chat run,
-              // authorize that narrow presentation as the provider reply;
-              // ordinary internal runs retain the private default.
-              const presentationAuthorizationReason =
-                await resolveChatRunPresentationAuthorizationReason(db, {
-                  companyId: livenessRun.companyId,
-                  issueId,
-                  runId: livenessRun.id,
-                });
-              const comment = await issuesSvc.addComment(
-                issueId,
-                resolved.text,
-                { agentId: agent.id, runId: livenessRun.id },
-                { authorizationReason: presentationAuthorizationReason },
-              );
-              presentationDecision = {
-                ...presentationDecision,
-                commentId: comment.id,
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  "resolved_response_materialized",
-                ],
-              };
-              await logActivity(db, {
-                companyId: livenessRun.companyId,
-                actorType: "agent",
-                actorId: agent.id,
-                agentId: agent.id,
-                runId: livenessRun.id,
-                issueId,
-                action: "issue.comment_added",
-                entityType: "issue",
-                entityId: issueId,
-                details: {
-                  commentId: comment.id,
-                  bodySnippet: comment.body.slice(0, 120),
-                  identifier: issueRef?.identifier ?? null,
-                  issueTitle: issueRef?.title ?? null,
-                  authorizationReason: presentationAuthorizationReason,
-                  source: "run_presentation_resolver",
-                  presentationSource: presentationDecision.chosenSource,
-                },
-              });
-            } else if (presentationDecision.commentAction === "create") {
-              presentationDecision = {
-                ...presentationDecision,
-                commentAction: "none",
-                reasonCodes: [
-                  ...presentationDecision.reasonCodes,
-                  skipRunIssueComment
-                    ? "issue_comment_suppressed"
-                    : "run_has_no_issue",
-                ],
-              };
-            }
+              delivery.decision;
 
             await db
               .update(heartbeatRuns)
