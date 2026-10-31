@@ -35,6 +35,7 @@ const SETTINGS: TaskPrSyncSettings = {
 function fakeResolver(
   stateByNumber: Record<number, "open" | "draft" | "merged" | "closed" | "unknown">,
   mergeableByNumber: Record<number, "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null> = {},
+  baseRefByNumber: Record<number, string | null> = {},
 ): PullRequestMergeDetailsResolver {
   return vi.fn<PullRequestMergeDetailsResolver>(async (_companyId, reference) => {
     const state = stateByNumber[reference.number] ?? "unknown";
@@ -45,6 +46,7 @@ function fakeResolver(
       workProductState: state === "unknown" ? undefined : state,
       draft: state === "draft",
       mergeable: mergeableByNumber[reference.number] ?? null,
+      baseRef: baseRefByNumber[reference.number] ?? null,
     };
   });
 }
@@ -421,5 +423,47 @@ describeEmbeddedPostgres("task PR sync sweep", () => {
     expect(secondResult.returned).toBe(0);
     const secondComments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(secondComments).toHaveLength(1);
+  });
+
+  it("does not settle task and posts warning when merged PR has base bot/x", async () => {
+    const seeded = await seed({
+      status: "in_progress",
+      products: [{ number: 2028 }],
+    });
+
+    const sweep = sweepFor(fakeResolver({ 2028: "merged" }, {}, { 2028: "bot/x" }));
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+    expect(result.settled).toBe(0);
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(updated!.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toBe("PR влит в bot/x, не в main: нужен PR в main");
+
+    // Second sweep run dedupes and does not duplicate comment
+    const secondResult = await sweep.sweep({ settings: SETTINGS, force: true });
+    expect(secondResult.deduped).toBe(1);
+    const secondComments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(secondComments).toHaveLength(1);
+  });
+
+  it("settles task when merged PR has base main", async () => {
+    const seeded = await seed({
+      status: "in_progress",
+      products: [{ number: 2119 }],
+    });
+
+    const sweep = sweepFor(fakeResolver({ 2119: "merged" }, {}, { 2119: "main" }));
+    const result = await sweep.sweep({ settings: SETTINGS, force: true });
+    expect(result.settled).toBe(1);
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(updated!.status).toBe("done");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("Delivered: PR");
   });
 });

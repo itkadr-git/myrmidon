@@ -47,6 +47,8 @@ import {
   readLastMergedSha,
   readPullRequestMetadata,
   taskPrReference,
+  buildNonMainBaseComment,
+  buildForeignBotBaseWarningComment,
   type TaskPrSyncDecision,
   type TaskPrSyncFacts,
   type TaskPrSyncPrFact,
@@ -94,6 +96,8 @@ export const TASK_PR_SYNC_ACTIVITY_ACTOR = "task_pr_sync";
 export const TASK_PR_SYNC_SETTLED_ACTION = "myrmidon.task_pr_sync.settled";
 export const TASK_PR_SYNC_RETURNED_ACTION = "myrmidon.task_pr_sync.returned";
 export const TASK_PR_SYNC_CONFLICT_ACTION = "myrmidon.task_pr_sync.conflict";
+export const TASK_PR_SYNC_NON_MAIN_ACTION = "myrmidon.task_pr_sync.non_main_base";
+export const TASK_PR_SYNC_WARN_FOREIGN_BASE_ACTION = "myrmidon.task_pr_sync.warn_foreign_bot_base";
 
 /** A resolved PR fact plus the bookkeeping the sweep needs but the policy does not. */
 export interface TaskPrSyncResolvedPr extends TaskPrSyncPrFact {
@@ -269,6 +273,10 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       }
       const resolvedState = details ? resolvedPullRequestState(details) : undefined;
       const state = effectivePullRequestState({ storedStatus: product.status, resolvedState });
+      const productMeta = (product.metadata ?? {}) as Record<string, unknown>;
+      const baseRef = details?.baseRef ?? (typeof productMeta.baseRef === "string" ? productMeta.baseRef : null);
+      const defaultBranch = details?.defaultBranch ?? (typeof productMeta.defaultBranch === "string" ? productMeta.defaultBranch : "main");
+      const headRef = details?.headRef ?? (typeof productMeta.headRef === "string" ? productMeta.headRef : null);
       facts.push({
         workProductId: product.id,
         state,
@@ -276,6 +284,9 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         number: number ?? reference?.number ?? null,
         mergedSha: details?.headSha ?? null,
         mergeable: details?.mergeable ?? null,
+        baseRef,
+        defaultBranch,
+        headRef,
         recordedSha: readLastMergedSha(product),
         recordedUpdatedAt: product.updatedAt,
       });
@@ -289,6 +300,9 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               ...(product.metadata ?? {}),
               state: resolvedState,
               draft: resolvedState === "draft",
+              ...(baseRef ? { baseRef } : {}),
+              ...(defaultBranch ? { defaultBranch } : {}),
+              ...(headRef ? { headRef } : {}),
             },
           });
         } catch {
@@ -352,6 +366,8 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               state: "merged",
               draft: false,
               ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+              ...(pr.baseRef ? { baseRef: pr.baseRef } : {}),
+              ...(pr.defaultBranch ? { defaultBranch: pr.defaultBranch } : {}),
             },
           })
           .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
@@ -542,6 +558,147 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     return true;
   }
 
+  async function hasRecentNonMainComment(issueId: string, baseRef: string): Promise<boolean> {
+    const comments = await deps.db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(5);
+    return comments.some((c) => c.body.includes(`PR влит в ${baseRef}, не в main`));
+  }
+
+  async function warnNonMainBase(
+    issue: { id: string; companyId: string; identifier?: string | null; status: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "non_main_base" }>,
+    prFacts: TaskPrSyncResolvedPr[],
+    at: Date,
+  ): Promise<boolean> {
+    const body = buildNonMainBaseComment({ baseRef: decision.baseRef });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const warned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+
+      for (const pr of prFacts) {
+        if (pr.state !== "merged") continue;
+        const [product] = await tx
+          .select({ id: issueWorkProducts.id, metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)))
+          .limit(1);
+        if (!product) continue;
+        await tx
+          .update(issueWorkProducts)
+          .set({
+            status: "merged",
+            metadata: {
+              ...((product.metadata && typeof product.metadata === "object") ? product.metadata as Record<string, unknown> : {}),
+              state: "merged",
+              draft: false,
+              ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+              ...(pr.baseRef ? { baseRef: pr.baseRef } : {}),
+              ...(pr.defaultBranch ? { defaultBranch: pr.defaultBranch } : {}),
+            },
+          })
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
+      }
+
+      const svc = services.issueService(deps.db);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_NON_MAIN_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          currentStatus: locked.status,
+          prRefs: decision.prRefs,
+          baseRef: decision.baseRef,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!warned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
+  async function hasRecentForeignBotBaseWarning(issueId: string, baseRef: string): Promise<boolean> {
+    const comments = await deps.db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(5);
+    return comments.some((c) => c.body.includes(`база ${baseRef} является чужой веткой bot/*`));
+  }
+
+  async function warnForeignBotBase(
+    issue: { id: string; companyId: string; identifier?: string | null; status: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "warn_foreign_bot_base" }>,
+  ): Promise<boolean> {
+    const body = buildForeignBotBaseWarningComment({
+      baseRef: decision.baseRef,
+      prRefs: decision.prRefs,
+    });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const warned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+
+      const svc = services.issueService(deps.db);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_WARN_FOREIGN_BASE_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          currentStatus: locked.status,
+          prRefs: decision.prRefs,
+          baseRef: decision.baseRef,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!warned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
   return {
     /** Runs one pass. Options exist for tests; production reads settings and the clock. */
     sweep: async (opts?: {
@@ -701,6 +858,40 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               }
               const returned = await returnIssueOnConflict(issue, decision, prFacts, at);
               if (returned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
+            if (decision.kind === "warn_foreign_bot_base") {
+              if (await hasRecentForeignBotBaseWarning(issue.id, decision.baseRef)) {
+                result.deduped += 1;
+                continue;
+              }
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const warned = await warnForeignBotBase(issue, decision);
+              if (warned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
+            if (decision.kind === "non_main_base") {
+              const merged = prFacts.filter((pr) => pr.state === "merged");
+              const alreadyRecorded =
+                merged.length > 0 &&
+                merged.every((pr) => pr.mergedSha !== null && pr.recordedSha === pr.mergedSha);
+              if (alreadyRecorded || (await hasRecentNonMainComment(issue.id, decision.baseRef))) {
+                result.deduped += 1;
+                continue;
+              }
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const warned = await warnNonMainBase(issue, decision, prFacts, at);
+              if (warned) result.returned += 1;
               else result.skipped += 1;
               continue;
             }

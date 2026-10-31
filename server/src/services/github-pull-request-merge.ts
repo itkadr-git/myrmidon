@@ -23,6 +23,7 @@ export type PullRequestMergeDetails = {
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
+  defaultBranch?: string | null;
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
@@ -135,6 +136,7 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
       ...(workProductState ? { workProductState } : {}),
       draft: data?.draft === true,
       baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,
+      defaultBranch: typeof data?.defaultBranch === "string" ? data.defaultBranch : (typeof data?.default_branch === "string" ? data.default_branch : "main"),
       additions: typeof data?.additions === "number" ? data.additions : null,
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
