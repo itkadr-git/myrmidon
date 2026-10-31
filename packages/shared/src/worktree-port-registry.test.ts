@@ -47,12 +47,17 @@ describe("worktree port registry lock", () => {
         ...owner,
         processIdentity: "unavailable-process-identity",
       })}\n`);
-      const oldTimestamp = new Date(Date.now() - 10_000);
-      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
-      // Capture the staleness synchronously: the lock heartbeat worker runs in
-      // a separate thread and refreshes mtime roughly every second, so reading
-      // it after an `await` would race the refresh and produce a ~0 age.
-      observedLockAgeMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const oldTimestamp = new Date(Date.now() - 10_000);
+        fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+        // Capture the staleness synchronously: the lock heartbeat worker runs in
+        // a separate thread and refreshes mtime roughly every second, so reading
+        // it after an `await` would race the refresh and produce a ~0 age.
+        observedLockAgeMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (observedLockAgeMs > 5_000) {
+          break;
+        }
+      }
       firstEntered.resolve();
       await releaseFirst.promise;
     });
