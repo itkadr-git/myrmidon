@@ -421,6 +421,7 @@ export type {
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
+export type { ProjectDevelopmentProcess } from "./project-development-process.js";
 export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
