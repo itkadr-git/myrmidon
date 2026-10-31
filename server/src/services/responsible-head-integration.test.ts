@@ -488,7 +488,8 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       });
 
       // Head agent was idle: directly queued
-      expect(wakeResult.kind).toBe("queued");
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
 
       const headRuns = await db
         .select()
@@ -563,8 +564,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         continuationPolicy: "wake_assignee" as const,
         payload: {
           version: 1 as const,
-          title: "Approve migration plan",
-          toolAction: "db:migrate",
+          prompt: "Approve migration plan?",
         },
       };
 
@@ -598,7 +598,8 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         },
       });
 
-      expect(wakeResult.kind).toBe("queued");
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
       const headRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -712,7 +713,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       });
 
       // Wake is deferred behind active execution
-      expect(wakeResult.kind).toBe("deferred");
+      expect(wakeResult).toBeNull();
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
       const wakeRequests = await db
@@ -820,7 +821,8 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         },
       });
 
-      expect(wakeResult.kind).toBe("queued");
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
       const queuedRun = await db
         .select()
         .from(heartbeatRuns)
