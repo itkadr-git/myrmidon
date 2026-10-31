@@ -32,9 +32,14 @@ vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
-vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
-}));
+vi.mock("react-i18next", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    initReactI18next: { type: "3rdParty", init: () => {} },
+    useTranslation: () => ({ t: (k: string) => k }),
+  };
+});
 
 vi.mock("../lib/router", () => ({
   Link: ({ children, to, ...props }: any) => (

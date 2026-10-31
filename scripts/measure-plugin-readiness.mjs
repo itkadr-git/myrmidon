@@ -23,15 +23,20 @@ function sleep(ms) {
 }
 
 function ensureBundledPluginsBuilt() {
-  const kubeManifest = path.join(
+  const kubeDir = path.join(
     REPO_ROOT,
-    "packages/plugins/sandbox-providers/kubernetes/dist/manifest.js",
+    "packages/plugins/sandbox-providers/kubernetes",
   );
+  const kubeManifest = path.join(kubeDir, "dist/manifest.js");
   if (!fs.existsSync(kubeManifest)) {
     console.log("Building kubernetes plugin bundle...");
     try {
-      execSync("pnpm --filter @myrmidon/plugin-kubernetes build", {
-        cwd: REPO_ROOT,
+      const lockfile = path.join(kubeDir, "pnpm-lock.yaml");
+      const installArgs = fs.existsSync(lockfile)
+        ? "install --ignore-workspace --frozen-lockfile"
+        : "install --ignore-workspace --no-lockfile";
+      execSync(`pnpm ${installArgs} && pnpm build`, {
+        cwd: kubeDir,
         stdio: "inherit",
       });
     } catch (err) {
@@ -39,15 +44,20 @@ function ensureBundledPluginsBuilt() {
     }
   }
 
-  const modalManifest = path.join(
+  const modalDir = path.join(
     REPO_ROOT,
-    "packages/plugins/sandbox-providers/modal/dist/manifest.js",
+    "packages/plugins/sandbox-providers/modal",
   );
+  const modalManifest = path.join(modalDir, "dist/manifest.js");
   if (!fs.existsSync(modalManifest)) {
     console.log("Building modal plugin bundle...");
     try {
-      execSync("pnpm --filter @myrmidon/plugin-modal build", {
-        cwd: REPO_ROOT,
+      const lockfile = path.join(modalDir, "pnpm-lock.yaml");
+      const installArgs = fs.existsSync(lockfile)
+        ? "install --ignore-workspace --frozen-lockfile"
+        : "install --ignore-workspace --no-lockfile";
+      execSync(`pnpm ${installArgs} && pnpm build`, {
+        cwd: modalDir,
         stdio: "inherit",
       });
     } catch (err) {

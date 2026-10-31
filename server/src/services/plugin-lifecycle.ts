@@ -456,6 +456,7 @@ export function pluginLifecycleManager(
         ?? `Failed to activate plugin ${loadResult.plugin?.pluginKey ?? pluginId}`,
       );
     }
+    emitDomain("plugin.ready", { pluginId, pluginKey: loadResult.plugin.pluginKey });
   }
 
   async function rollbackAndRecoverRunningPlugin(
@@ -505,7 +506,6 @@ export function pluginLifecycleManager(
         "plugin lifecycle: failed to reactivate plugin runtime during recovery",
       );
     }
-    emitDomain("plugin.ready", { pluginId, pluginKey: loadResult.plugin.pluginKey });
   }
 
   async function deactivatePluginRuntime(
