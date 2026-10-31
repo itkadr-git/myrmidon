@@ -1,6 +1,7 @@
 import { useContext, useEffect, useState } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi, type InstanceExperimentalSettings } from "@/api/instanceSettings";
+import type { InstanceExperimentalSettings } from "@myrmidon/shared";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 
 export const UI_OVERRIDE_STORAGE_KEY = "myr.ui2.personal";
