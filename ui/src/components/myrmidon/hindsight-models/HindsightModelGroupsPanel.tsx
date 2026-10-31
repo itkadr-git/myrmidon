@@ -121,7 +121,9 @@ export function HindsightModelGroupsPanel({
         search: "gpt-4o-mini",
       };
       for (const g of groups) {
-        next[g.role] = g.model;
+        if (g.role === "write" || g.role === "summarize" || g.role === "search") {
+          next[g.role] = g.model;
+        }
       }
       setModels(next);
       setDirty(false);

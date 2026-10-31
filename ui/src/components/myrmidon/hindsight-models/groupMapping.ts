@@ -13,6 +13,7 @@ import {
   HINDSIGHT_ROLE_META,
   HINDSIGHT_ROLES,
   type HindsightApiLimitations,
+  type HindsightModelCatalogView,
   type HindsightModelGroupView,
   type HindsightRole,
 } from "@myrmidon/shared";
@@ -23,6 +24,7 @@ export {
   HINDSIGHT_ROLE_META,
   HINDSIGHT_ROLES,
   type HindsightApiLimitations,
+  type HindsightModelCatalogView,
   type HindsightModelGroupView,
   type HindsightRole,
 };
