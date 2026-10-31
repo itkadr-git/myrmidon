@@ -55,7 +55,7 @@ export async function writeGitHubSharedIdentitySettings(
   next: GitHubSharedIdentitySettings,
 ): Promise<{ previous: GitHubSharedIdentitySettings; next: GitHubSharedIdentitySettings; changed: boolean }> {
   const key = normalizeCompanyId(companyId);
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await tx
       .insert(instanceSettings)
       .values({ singletonKey: SINGLETON_KEY, general: {}, experimental: {} })
@@ -78,9 +78,10 @@ export async function writeGitHubSharedIdentitySettings(
         general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${GITHUB_SHARED_IDENTITY_GENERAL_KEY}}`}::text[], ${JSON.stringify(companiesNext)}::jsonb, true)`,
       })
       .where(eq(instanceSettings.id, row.id));
-    resetGitHubAppTokenCacheForTests();
     return { previous, next, changed: true };
   });
+  if (result.changed) resetGitHubAppTokenCacheForTests();
+  return result;
 }
 
 /** Carry our key over a vendor write of instance_settings.general. */
