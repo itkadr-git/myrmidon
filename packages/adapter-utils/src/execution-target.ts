@@ -1771,6 +1771,11 @@ function buildBridgeResponseHeaders(response: Response): Record<string, string> 
     const value = response.headers.get(key);
     if (value && value.trim().length > 0) out[key] = value.trim();
   }
+  const bridgeOutcome = out["x-myrmidon-bridge-outcome"] ?? out["x-paperclip-bridge-outcome"];
+  if (bridgeOutcome) {
+    out["x-paperclip-bridge-outcome"] = bridgeOutcome;
+    out["x-myrmidon-bridge-outcome"] = bridgeOutcome;
+  }
   return out;
 }
 
@@ -4498,6 +4503,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         status: 504,
         headers: {
           "content-type": "application/json",
+          "x-paperclip-bridge-outcome": "indeterminate",
           "x-myrmidon-bridge-outcome": "indeterminate",
         },
         body: Buffer.from(

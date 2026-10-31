@@ -2542,6 +2542,10 @@ async function runFileGateway() {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
       }
+      if (bridgeOutcome) {
+        res.setHeader("x-paperclip-bridge-outcome", bridgeOutcome);
+        res.setHeader("x-myrmidon-bridge-outcome", bridgeOutcome);
+      }
       res.end(decodeSandboxBridgeBody(response, maxBodyBytes));
     } catch (error) {
       // Capacity rejection before dispatch is retryable. After a mutation was
@@ -2788,6 +2792,10 @@ function runHttp2Gateway() {
       for (const [key, value] of Object.entries(response.headers || {})) {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
+      }
+      if (bridgeOutcome) {
+        res.setHeader("x-paperclip-bridge-outcome", bridgeOutcome);
+        res.setHeader("x-myrmidon-bridge-outcome", bridgeOutcome);
       }
       res.end(response.body);
     } catch (error) {
