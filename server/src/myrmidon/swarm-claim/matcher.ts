@@ -93,6 +93,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -1203,11 +1205,18 @@ export async function listIdleRolePairs(
     .filter((role) => !wanted || wanted.has(role))
     .sort();
 
+  const failedRunsMap = await getCachedFailedRunsMap(
+    db,
+    companyId,
+    options.order?.now,
+  );
+
   const queues = await Promise.all(
     roles.map((role) =>
       listReadyQueueCandidates(db, companyId, role, {
         order: options.order,
         issueId: options.issueId,
+        failedRunsMap,
       }),
     ),
   );
@@ -1605,7 +1614,11 @@ async function listReadyQueueCandidates(
   db: Db,
   companyId: string,
   role: string,
-  options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
+  options: {
+    order?: SwarmQueueOrderOptions;
+    issueId?: string;
+    failedRunsMap?: ReadonlyMap<string, number>;
+  } = {},
 ): Promise<SwarmMatcherQueueCandidate[]> {
   const conditions = [
     ...readyQueueConditions(db, companyId),
@@ -1615,6 +1628,9 @@ async function listReadyQueueCandidates(
     ),
   ];
   if (options.issueId) conditions.push(eq(issues.id, options.issueId));
+  const failedRunsMap =
+    options.failedRunsMap ??
+    (await getCachedFailedRunsMap(db, companyId, options.order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -1628,8 +1644,8 @@ async function listReadyQueueCandidates(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once (#1047).
-    .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(failedRunsMap), failedRunsJoinOnSql())
     .where(and(...conditions))
     .orderBy(...swarmQueueOrderBy(options.order))
     .limit(SWARM_POOL_READ_LIMIT);
