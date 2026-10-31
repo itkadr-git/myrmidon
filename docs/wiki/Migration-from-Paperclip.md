@@ -127,7 +127,7 @@ environment variables; the command redacts URLs and keys from its errors and its
    `AGENT_JWT_SECRET` if you want existing browser sessions and agent tokens to keep working.
    Point the new installation at the **target** master key via the `MYRMIDON_SECRETS_MASTER_KEY_FILE`
    environment variable (path to key file) or `MYRMIDON_SECRETS_MASTER_KEY` (inline 32-byte key material).
-   Legacy Paperclip variable names `PAPERCLIP_SECRETS_MASTER_KEY_FILE` and `PAPERCLIP_SECRETS_MASTER_KEY`
+   Legacy `Paperclip` variable names `PAPERCLIP_SECRETS_MASTER_KEY_FILE` and `PAPERCLIP_SECRETS_MASTER_KEY`
    are supported aliases (with `MYRMIDON_*` taking precedence if both are set).
 
 ## 4. Dry run (no writes)
