@@ -12,6 +12,7 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueComments,
   issueRecoveryActions,
   issues,
   litellmCostEvents,
@@ -20,7 +21,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES, renderMetricsText } from "./metrics.js";
+import { collectMetricsSnapshot, renderMetricsText, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { createRecoveryFactoryMetrics } from "@myrmidon/shared";
 import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -94,6 +96,8 @@ describeEmbeddedPostgres("metrics collector", () => {
       startedAt?: Date;
       finishedAt?: Date;
       createdAt?: Date;
+      livenessState?: string | null;
+      livenessReason?: string | null;
     },
   ) {
     const runId = randomUUID();
@@ -106,9 +110,23 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: input.status,
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
+      livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
     return runId;
+  }
+
+  async function seedIssue(companyId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return issueId;
   }
 
   it("reads active recovery age and counts manually seeded addressless actions", async () => {
@@ -299,6 +317,33 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.runsFailedTotal).toBe(1);
     expect(snapshot.runsFailedWindow).toBe(1);
     expect(snapshot.scrapeErrors).toBe(0);
+  });
+
+  it("exports empty-response run counts by agent to the monitoring scrape", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    const runId = await seedRun(companyId, agentId, {
+      status: "succeeded",
+      finishedAt: NOW,
+    });
+    const issueId = await seedIssue(companyId);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: runId,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    const exposition = renderMetricsText(snapshot);
+    expect(exposition).toContain(`myrmidon_empty_runs_total{role="all",agent_id="${agentId}"} 1`);
   });
 
   it("counts failed runs only inside the error window", async () => {

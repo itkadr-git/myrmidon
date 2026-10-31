@@ -612,6 +612,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
+  isIssueWaitingForPullRequestCi,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
   isSuccessfulRunHandoffValidPathSkip,
@@ -13510,6 +13511,10 @@ export function heartbeatService(
       livenessState,
       livenessReason: run.livenessReason,
       nextAction: run.nextAction,
+      hasOpenPullRequestWaitingForCi: await isIssueWaitingForPullRequestCi(db, {
+        companyId: run.companyId,
+        issueId,
+      }),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -13733,6 +13738,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      hasOpenPullRequestWaitingForCi,
     ] = await Promise.all([
       issue
         ? db
@@ -13878,6 +13884,12 @@ export function heartbeatService(
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? isIssueWaitingForPullRequestCi(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+          })
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -13899,6 +13911,7 @@ export function heartbeatService(
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
+      hasOpenPullRequestWaitingForCi: Boolean(hasOpenPullRequestWaitingForCi),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
