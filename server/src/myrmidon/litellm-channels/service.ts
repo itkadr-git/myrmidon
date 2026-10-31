@@ -43,7 +43,7 @@ export function createLitellmChannelsService(deps: LitellmChannelsDeps): Litellm
 
     const settings = readGatewayKeySettings(env);
     const baseUrl = env.MYRMIDON_LITELLM_BASE_URL || settings.baseUrl;
-    const directKey = env.MYRMIDON_LITELLM_ADMIN_KEY || env.LITELLM_ADMIN_KEY;
+    const directKey = env.LITELLM_ADMIN_KEY || env.LITELLM_MASTER_KEY;
 
     if (!baseUrl) {
       throw serviceUnavailable("LLM gateway channel management is not enabled (missing base URL)");
