@@ -1,5 +1,5 @@
 {
-  "id": "f5703ace-7e48-4f44-a5d4-0be73a173bf6",
+  "id": "2315dd65-f4b2-47c5-94ef-554651257945",
   "prevId": "b0e3cca4-7e1b-4a7c-953d-cfc0dbdbb847",
   "version": "7",
   "dialect": "postgresql",
@@ -35529,6 +35529,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "responsible_agent_id": {
+          "name": "responsible_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -36284,6 +36290,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "issues_company_responsible_agent_idx": {
+          "name": "issues_company_responsible_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "responsible_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -36428,6 +36455,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issues_responsible_agent_id_agents_id_fk": {
+          "name": "issues_responsible_agent_id_agents_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "responsible_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -46382,12 +46422,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "development_process": {
-          "name": "development_process",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
