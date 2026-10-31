@@ -328,6 +328,21 @@ export const en = {
             settings: "Settings",
           },
           subtitle: "How the dispatch of runs is configured",
+          swarmClaim: {
+            enable: "Enable self-organization",
+            leaseTtlSec: "Task lease TTL (seconds)",
+            loadError: "Could not load swarm-claim settings",
+            maxActiveTasks: "Per-agent task limit",
+            saveError: "Could not save swarm-claim settings",
+            source: {
+              default: "Default",
+              env: "Set by environment",
+              settings: "Saved",
+            },
+            statusLine: "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+            subtitle: "Automatic task matching and claim settings",
+            title: "Self-organization (swarm-claim)",
+          },
           title: "Runs",
         },
         system: {
@@ -740,6 +755,21 @@ export type Ui2Catalog = {
             settings: string;
           };
           subtitle: string;
+          swarmClaim: {
+            enable: string;
+            leaseTtlSec: string;
+            loadError: string;
+            maxActiveTasks: string;
+            saveError: string;
+            source: {
+              default: string;
+              env: string;
+              settings: string;
+            };
+            statusLine: string;
+            subtitle: string;
+            title: string;
+          };
           title: string;
         };
         system: {
