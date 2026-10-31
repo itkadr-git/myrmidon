@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
@@ -132,6 +133,32 @@ jobs:
           path: ${{ runner.temp }}/plan.json
           retention-days: 3
 
+  migration-guard:
+    name: migration guard
+    needs: plan
+    if: ${{ github.event_name == 'pull_request' && (needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Run migration collision guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/myrmidon/ci/migration-guard.mjs pr "$HEAD_SHA" "$PR_NUMBER"
+
   typecheck:
     name: typecheck + build
     # typecheck and build share one checkout, install and Rust cache; the build
@@ -195,6 +222,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: install
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck all workspaces
@@ -210,15 +238,15 @@ jobs:
           pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
 
       - name: Build Runner issue-thread viewer
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'full' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
       - name: Build (runner TypeScript only, no Rust release binary)
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'fast' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'fast' }}
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
@@ -518,6 +546,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
 
+      - name: i18n guard (repo guard scanner and English catalog key precheck)
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types scripts/myrmidon/i18n/precheck.mts ui/src
+
+      - name: Migration numbers are unique in packages/db/src/migrations
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          d=packages/db/src/migrations
+          dup=$(ls "$d" | grep -E '^[0-9]+_.*\.sql$' | grep -oE '^[0-9]+_' | sort | uniq -d || true)
+          if [ -n "$dup" ]; then
+            echo "::error::duplicate migration numbers (renumber your migration): $dup"
+            ls "$d" | grep -E "^($(echo $dup | tr ' ' '|'))" || true
+            exit 1
+          fi
+          echo "migration numbers unique: $(ls "$d" | grep -cE '^[0-9]+_.*\.sql$') SQL migrations"
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
@@ -694,7 +739,7 @@ jobs:
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
+    needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
