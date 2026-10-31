@@ -10,7 +10,7 @@ import {
   type AgentEvent,
 } from "./index.js";
 
-type WakeupMock = Mock<(agentId: string, context: Record<string, unknown>) => Promise<unknown>>;
+type WakeupMock = (agentId: string, context?: Record<string, unknown>) => Promise<unknown>;
 
 describe("WAKE-10.2: Event Digest and Priority Wake", () => {
   let service: EventDigestService;
@@ -226,7 +226,7 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
     it("dispatchAgentEvent accumulates P4/P3 in shared service without waking, and wakes on P0 with accumulated digest", async () => {
       const agentId = "agent-behavioral-1";
       const heartbeatMock: { wakeup: WakeupMock } = {
-        wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>().mockResolvedValue({ created: true }),
+        wakeup: vi.fn<WakeupMock>().mockResolvedValue({ created: true }),
       };
 
       // 1. Dispatch P4 heartbeat event through dispatchAgentEvent
@@ -295,7 +295,7 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
     it("wakes immediately on P1 and delivers pending digest", async () => {
       const agentId = "agent-behavioral-2";
       const heartbeatMock: { wakeup: WakeupMock } = {
-        wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>().mockResolvedValue({ created: true }),
+        wakeup: vi.fn<WakeupMock>().mockResolvedValue({ created: true }),
       };
 
       // Accumulate a P4 log event
@@ -330,13 +330,13 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       // 1. Accumulate P4 event
       await dispatchAgentEvent(
         { agentId, type: "heartbeat", payload: { step: "checkpoint-1" } },
-        { wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>() },
+        { wakeup: vi.fn<WakeupMock>() },
       );
       expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
 
       // 2. Dispatch P0 event, but downstream wakeup throws an error (e.g., db failure)
       const failingHeartbeat: { wakeup: WakeupMock } = {
-        wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>().mockRejectedValue(
+        wakeup: vi.fn<WakeupMock>().mockRejectedValue(
           new Error("Downstream database connection failure"),
         ),
       };
@@ -359,7 +359,7 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
 
       // 4. Verify subsequent successful wake delivers the preserved events along with new wake
       const succeedingHeartbeat: { wakeup: WakeupMock } = {
-        wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>().mockResolvedValue({ created: true }),
+        wakeup: vi.fn<WakeupMock>().mockResolvedValue({ created: true }),
       };
 
       const retryResult = await dispatchAgentEvent(
@@ -462,13 +462,13 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       // Accumulate P4
       await dispatchAgentEvent(
         { agentId, type: "heartbeat", payload: { seq: 1 } },
-        { wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>() },
+        { wakeup: vi.fn<WakeupMock>() },
       );
       expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
 
       // Downstream wakeup returns null (early return / no wake run created)
       const nullHeartbeat: { wakeup: WakeupMock } = {
-        wakeup: vi.fn<Parameters<WakeupMock>, ReturnType<WakeupMock>>().mockResolvedValue(null),
+        wakeup: vi.fn<WakeupMock>().mockResolvedValue(null),
       };
 
       const result = await dispatchAgentEvent(
