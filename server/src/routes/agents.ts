@@ -14,6 +14,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
+import { getCompanyEmptyRunStats } from "../services/empty-run.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -7169,6 +7170,29 @@ function getActorIdentityPart(req: Request): string {
     const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
+  });
+
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10066)
+  router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/empty-run-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/external-sessions", async (req, res) => {
