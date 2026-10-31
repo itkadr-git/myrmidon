@@ -1695,19 +1695,3 @@ General) задаёт два окна, с которыми собирается 
 `MYRMIDON_CONTINUATION_MESSAGE_CHARS` и `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS`
 (лимиты символов истории продолжения, DBC-3). Они не входят в роевую настройку и
 приведены здесь только ради зелёного гейта.
-
-## 1.7 — API runtime-настроек: behavior-settings (SETTINGS-TO-UI)
-
-Начиная с Myrmidon 1.7 (SETTINGS-TO-UI, OPE-3942 / OPE-4097), настройки ограждений, режима egress, лимитов выполнения инструментов, сверки контейнеров и списков безопасности флота контейнеров управляются на лету через Behavior Settings API (`/api/myrmidon/behavior-settings`) и панели интерфейса без необходимости перезапуска сервера.
-
-### Приоритет и вычисление значений
-1. `ui` (сохранённое значение): значение, сохранённое в `instance_settings.general.behaviorSettings` через UI или API.
-2. `env` (окружение сервера): значение соответствующей переменной `MYRMIDON_*`, если в UI значение ещё не сохранено.
-3. `default` (встроенное по умолчанию): резервное значение из декларации реестра (`packages/shared/src/myrmidon-behavior-settings.ts`).
-
-### Панели интерфейса и подтверждение границ безопасности
-- **Панель «Ограждения»** (`InstanceGeneralSettings.tsx`): Настройки инстанса → Общие. Управляет режимом egress (`bot_egress_mode`), предохранителем инструментов (`tool_breaker_*`), таймаутами (`tool_timeout_*`) и разрешёнными именами унаследованных переменных (`run_env_allow`).
-- **Панель «Ограждения флота»** (`CompanySettings.tsx`): Настройки компании. Управляет запуском контейнеров (`bot_containers`), интервалом сверки (`bot_reconcile_interval_sec`), белым списком образов (`bot_image_allowlist`), списком монтирования (`bot_mount_sources`), списком переменных GitHub (`bot_container_github_env_allowlist`), режимом YOLO (`bot_yolo`), банками Hindsight (`bot_hindsight_allowed_banks`), серверами MCP (`bot_mcp_servers`), флотом браузеров (`browser_fleet`) и интервалом проверки стека (`stack_check_interval_sec`).
-- **Подтверждение границ безопасности**: изменение белых списков (`bot_image_allowlist`, `bot_mount_sources` и др.) или включение режима YOLO (`bot_yolo` = true) требует обязательного модального подтверждения в UI.
-
-Изменения применяются немедленно в памяти без перезапуска сервера. Полный каталог ключей и детали выпуска: [changes/ope-4097-guardrails-fleet-settings.md](changes/ope-4097-guardrails-fleet-settings.md) и [docs/wiki/Settings-in-the-interface.ru.md](../wiki/Settings-in-the-interface.ru.md).
