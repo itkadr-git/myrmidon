@@ -122,7 +122,14 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsScreen container", () => {
     guardrailsApiMock.listEvents.mockResolvedValue({ events: [], count: 0, limit: 50 });
     agentsApiMock.list.mockResolvedValue([]);
     render();
-    await act(async () => {});
+    // The settings rejection lands after the render act() block resolves;
+    // retry within a time budget until react-query surfaces the error state
+    // (vi.waitFor, same pattern as App.activity-routing.test.tsx).
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="myrmidon-guardrails-error"]'),
+      ).not.toBeNull();
+    });
     const error = container.querySelector('[data-testid="myrmidon-guardrails-error"]');
     expect(error?.textContent).toContain("settings down");
   });
