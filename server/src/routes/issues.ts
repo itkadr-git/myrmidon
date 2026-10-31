@@ -14328,6 +14328,8 @@ export function issueRoutes(
 
       const transitionIssue: IssueRouteSnapshot & {
         assigneeAgentRole?: string | null;
+        terminatedReturnAssigneeAgentId?: string | null;
+        fallbackReturnAssigneeAgentId?: string | null;
         executionReviewParticipantAgentIds?: string[];
         defaultEscalationAgentIds?: string[];
       } = { ...existing };
@@ -14335,6 +14337,26 @@ export function issueRoutes(
         transitionIssue,
         await withDefaultEscalationChain(db, existing, nextExecutionPolicy),
       );
+      // A terminated return assignee is historical execution state, not a valid
+      // target for the next work transition. Resolve a live same-role engineer
+      // before the policy builds its assignee patch; otherwise issues.update()
+      // rejects the otherwise valid review decision with agent_not_assignable.
+      const persistedReturnAssignee =
+        (existing.executionState as { returnAssignee?: { type?: string; agentId?: string | null } } | null)
+          ?.returnAssignee;
+      if (persistedReturnAssignee?.type === "agent" && persistedReturnAssignee.agentId) {
+        const returnAgent = await agentsSvc.getById(persistedReturnAssignee.agentId);
+        if (returnAgent?.status === "terminated") {
+          const liveAgents = await agentsSvc.list(existing.companyId);
+          const replacement = liveAgents
+            .filter((candidate) => candidate.role === returnAgent.role && candidate.status !== "terminated")
+            .sort((left, right) => left.id.localeCompare(right.id))[0];
+          if (replacement) {
+            transitionIssue.terminatedReturnAssigneeAgentId = returnAgent.id;
+            transitionIssue.fallbackReturnAssigneeAgentId = replacement.id;
+          }
+        }
+      }
       const reviewParticipantAgentIds = nextExecutionPolicy
         ? summarizeExecutionParticipants(nextExecutionPolicy, "review").flatMap(
             (participant) => participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
