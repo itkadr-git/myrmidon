@@ -10,6 +10,7 @@
 // and stays hidden.
 
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { activityApi } from "@/api/activity";
@@ -31,8 +32,6 @@ import {
 // myrmidon(OPE-3789): the Telegram notifications panel (TG-NOTIFY part F)
 // — five editable sections plus the settings change log, all off by default.
 import { Ui2TelegramNotifySettings } from "./Ui2TelegramNotifySettings";
-// myrmidon(SETTINGS-UI E2.1): instance settings that read a secret reference.
-import { Ui2InstanceSecretSettings } from "./Ui2InstanceSecretSettings";
 
 const CHANGE_LOG_LIMIT = 30;
 
@@ -118,8 +117,9 @@ export function Ui2SystemSettings() {
       {/* myrmidon(OPE-3789): the Telegram notifications panel — the TG-NOTIFY-SETTINGS
           settings screen (part F), rendered as a section of the Channels screen. */}
       <Ui2TelegramNotifySettings />
-
-      <Ui2InstanceSecretSettings />
+      <Link className="text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="ui2-system-secrets-link">
+        {t("ui2.settings.system.secretsLink")}
+      </Link>
 
       <Ui2Section title={t("ui2.settings.system.members.title")}>
         {memberRows.length === 0 ? (
