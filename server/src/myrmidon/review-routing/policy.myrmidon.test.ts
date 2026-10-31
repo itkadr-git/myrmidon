@@ -12,11 +12,13 @@ import {
   excludedReviewerIds,
   evaluateReviewerAvailability,
   hoursSince,
+  isEscalatedReviewStage,
   isReviewOverdue,
   issueNeedsReviewer,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
   type RoutingIssue,
 } from "./policy.js";
@@ -150,6 +152,25 @@ describe("pickReviewer", () => {
       pickReviewer({ candidates: [{ id: AUTHOR, role: "reviewer", load: 0 }], excluded: excludedReviewerIds(issue()), maxLoad: 5 }),
     ).toBeNull();
   });
+
+  it("filters out reviewers whose model matches authorModel", () => {
+    const list: ReviewerCandidate[] = [
+      { id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true },
+      { id: REV_B, role: "reviewer", load: 1, model: "model-y", invokable: true },
+    ];
+    // Author has model-x: REV_A is excluded despite lower load; REV_B is picked.
+    const picked = pickReviewer({ candidates: list, excluded: new Set(), maxLoad: 5, authorModel: "model-x" });
+    expect(picked?.id).toBe(REV_B);
+
+    // If both have model-x, nobody is eligible.
+    const none = pickReviewer({
+      candidates: [{ id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true }],
+      excluded: new Set(),
+      maxLoad: 5,
+      authorModel: "model-x",
+    });
+    expect(none).toBeNull();
+  });
 });
 
 describe("evaluateReviewerAvailability", () => {
@@ -184,6 +205,20 @@ describe("evaluateReviewerAvailability", () => {
       loadByAgent: new Map(),
       issue: issue(),
       maxLoad: 2,
+    });
+    expect(result.selected?.id).toBe(REV_B);
+  });
+
+  it("passes authorModel to filter candidates by model", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: REV_A, role: "reviewer", invokable: true, model: "model-x" },
+        { id: REV_B, role: "reviewer", invokable: true, model: "model-y" },
+      ],
+      loadByAgent: new Map([[REV_A, 0], [REV_B, 1]]),
+      issue: issue(),
+      maxLoad: 5,
+      authorModel: "model-x",
     });
     expect(result.selected?.id).toBe(REV_B);
   });
@@ -278,6 +313,42 @@ describe("pending review and reassignment", () => {
       wakeRole: "reviewer",
       stageType: "review",
       allowedActions: ["approve", "request_changes"],
+    });
+  });
+
+  describe("isEscalatedReviewStage", () => {
+    it("returns false for a non-escalated review stage", () => {
+      expect(isEscalatedReviewStage(issue())).toBe(false);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 2 } }))).toBe(false);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionState", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 3 } }))).toBe(true);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 4 } }))).toBe(true);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionPolicy stage", () => {
+      const policy = {
+        stages: [{ id: "s", type: "review", changesRequestedCount: 3, participants: [] }],
+      };
+      expect(isEscalatedReviewStage(issue({ executionPolicy: policy }))).toBe(true);
+    });
+
+    it("returns true when escalationReason is review_round_limit", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { escalationReason: "review_round_limit" } }))).toBe(true);
+    });
+  });
+
+  describe("resolveAgentGroupKey", () => {
+    it("uses metadata telegramGroup when provided", () => {
+      expect(resolveAgentGroupKey({ name: "eng-1", metadata: { telegramGroup: "-100123" } })).toBe("-100123");
+    });
+
+    it("derives group from agent name prefix", () => {
+      expect(resolveAgentGroupKey({ name: "adm-dev-eng-24" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "adm-dev-review-8" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "bbq-dev-review-1" })).toBe("bbq");
+      expect(resolveAgentGroupKey({ name: "work-dev-lead-1" })).toBe("work");
     });
   });
 });

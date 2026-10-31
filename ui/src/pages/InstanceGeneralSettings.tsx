@@ -1,5 +1,6 @@
 import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -24,6 +25,8 @@ import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsS
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
@@ -43,7 +46,6 @@ import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSet
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
-import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel"; // myrmidon(SETTINGS-UI E2.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
@@ -160,6 +162,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           {visibleActionError}
         </div>
       )}
+      <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
+        {t("area.settings-company.instance-general-settings.secretReferencesLink")}
+      </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
@@ -167,6 +172,8 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
+      <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
@@ -186,7 +193,6 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
-      <InstanceSecretSettingsPanel /> {/* myrmidon(SETTINGS-UI E2.1) */}
 
       {showDeploymentStatus && (
       <section>

@@ -38,6 +38,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   function isHeartbeatRunDependentFkError(error: unknown) {
     const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
@@ -62,6 +63,10 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   }
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -92,6 +97,11 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   }, 60_000);
 
   async function insertAgentAndIssue() {
