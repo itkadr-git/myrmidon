@@ -271,19 +271,19 @@ describe("myrmidon(1.6-BASELINE) metrics", () => {
 
     // Regression: byProject and byRole remain intact
     expect(metrics.byProject).toHaveLength(2);
-    expect(metrics.byRole).toHaveLength(3);
+    expect(metrics.byRole).toHaveLength(2);
 
-    // t1 cycle: 23, t2: 10, t3: 5 -> mean = 38/3 = 12.67, median = 10, p90 = 20.4
+    // t1 cycle: 23, t2: 10, t3: 5 -> mean = 38/3 = 12.67, median = 10
     expect(metrics.overall.cycleTimeHours.mean).toBe(12.67);
     expect(metrics.overall.cycleTimeHours.median).toBe(10);
     // review: t1: 9, t2: 2, t3: 0 -> mean = 11/3 = 3.67, median = 2
     expect(metrics.overall.timeInReviewHours.mean).toBe(3.67);
     expect(metrics.overall.timeInReviewHours.median).toBe(2);
-    // runs: t1: 2, t2: 1, t3: 0 -> total = 3, mean = 1
-    expect(metrics.overall.runsPerTask).toEqual({ total: 3, mean: 1 });
-    // cost: t1: 50, t2: 0, t3: 0 -> total = 50, mean = 16.67
-    expect(metrics.overall.costPerTask).toEqual({ totalCents: 50, meanCents: 16.67 });
-    // returns: t1 returned, t2 no return -> entered: 2, returned: 1, rate: 0.5
+    // runs: t1: 3, t2: 1, t3: 0 -> total = 4, mean = 1.33
+    expect(metrics.overall.runsPerTask).toEqual({ total: 4, mean: 1.33 });
+    // cost: t1: 250, t2: 50, t3: 0 -> total = 300, mean = 100
+    expect(metrics.overall.costPerTask).toEqual({ totalCents: 300, meanCents: 100 });
+    // returns: t1 returned once, t2 no return -> entered: 2, returned: 1, rate: 0.5
     expect(metrics.overall.returnRate).toEqual({ enteredReview: 2, returned: 1, rate: 0.5 });
   });
 
@@ -291,11 +291,10 @@ describe("myrmidon(1.6-BASELINE) metrics", () => {
     const empty: BaselineMetricsInput = {
       tasks: [],
       transitions: [],
-      blockers: [],
       runs: [],
       costs: [],
-      agents: [],
-      projects: [],
+      blockers: [],
+      roles: [],
     };
     const metrics = computeBaselineMetrics(empty, WINDOW);
     expect(metrics.overall).toEqual({
