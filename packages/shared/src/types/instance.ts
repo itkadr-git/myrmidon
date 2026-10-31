@@ -416,6 +416,14 @@ export interface InstanceGeneralSettings {
    */
   authSelfSignUp?: AuthSelfSignUpSettings;
   /**
+   * myrmidon(1.7 USERS-ADMIN-UI A): the user blocklist — `userId` → blocked
+   * record — carried over vendor writes of instance_settings.general (see the
+   * preserve line in server/src/services/instance-settings.ts). Kept in sync
+   * with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  myrmidonAuthBlockedUsers?: Record<string, unknown>;
+  /**
    * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
    * generator/critic/judge roles (cross-family validated), rounds and the
    * token ceiling; changed from `GET`/`PATCH /api/myrmidon/debate`. Absent

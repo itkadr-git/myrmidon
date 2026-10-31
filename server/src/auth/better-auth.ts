@@ -263,8 +263,8 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   const usersAdminPlugin = usersAdminAuthPlugin({
     db,
     readGeneral: async () => {
-      const { getInstanceSettings } = await import("../services/instance-settings.js");
-      return (await getInstanceSettings(db)).general;
+      const { instanceSettingsService } = await import("../services/instance-settings.js");
+      return (await instanceSettingsService(db).get()).general;
     },
     env: process.env,
   });
