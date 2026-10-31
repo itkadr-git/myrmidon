@@ -27,6 +27,7 @@ import {
   knowledgeLinks,
   knowledgeRevisions,
   knowledgeSources,
+  knowledgeSuggestions,
   myrmidonWikiRegulations,
 } from "@myrmidon/db";
 import {
@@ -691,6 +692,19 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(sug1.id).toBe(sug2.id);
     expect(sug1.createdAt).toBe(sug2.createdAt);
     expect((await store.listSuggestions(companyId, "pending")).length).toBe(1);
+    // Exactly one knowledge.suggested event was appended — the loser of the
+    // race returned the winner's row instead of writing its own.
+    const concurrentEvents = await store.listEvents(companyId, sug1.targetItemId!);
+    const suggested = concurrentEvents.filter((e) => e.event === "knowledge.suggested");
+    expect(suggested.length).toBe(1);
+    // The DB-side contract behind the race: exactly one row per
+    // (nest_id, idempotency_key) — enforced by the partial unique index from
+    // migration 0425, not by the read-before-insert fast path alone.
+    const withKey = await db
+      .select()
+      .from(knowledgeSuggestions)
+      .where(and(eq(knowledgeSuggestions.nestId, companyId), eq(knowledgeSuggestions.idempotencyKey, "concurrent-idem-key-1")));
+    expect(withKey.length).toBe(1);
   });
 
   it("the pg SearchIndex (tsvector + pg_trgm) finds delivered content through the module (S9 wiring)", async () => {
