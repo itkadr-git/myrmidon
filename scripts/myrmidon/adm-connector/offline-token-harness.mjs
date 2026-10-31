@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import { createHooks, classify } from './hooks.mjs';
 import { BASELINE, estimateTokens, generateBaselineSessionStart, generateBaselineMemoryRead } from './token-benchmark.mjs';
 
