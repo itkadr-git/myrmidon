@@ -986,6 +986,7 @@ except Exception:
   fi
 
   log "phase session_maintenance starting"
+  log "phase hermes_session_maintenance starting"
   local t_0 t_1
   t_0="$(now_monotonic_ms)"
 
