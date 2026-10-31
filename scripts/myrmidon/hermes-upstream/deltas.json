@@ -315,6 +315,23 @@
         "path": "tools/terminal_tool.py",
         "upstreamMarker": "foreground.{0,80}(ignor|drop)"
       }
+    },
+    {
+      "id": "19-redact-auth-bearer-template-syntax",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-redact-auth-bearer-template-syntax.patch",
+      "files": [
+        "agent/redact.py"
+      ],
+      "reason": "Upstream _AUTH_HEADER_RE in agent/redact.py unconditionally masked any token following Authorization: Bearer, swallowing enclosing backticks and leading Bearer into *** when inspecting code template strings (e.g. `authorization: `Bearer ${token}``). This resulted in syntax corruption (`authorization: *** ${token}`) in tool outputs, leading to false-positive review rejections. The patch preserves enclosing quotes and backticks in _AUTH_HEADER_RE and introduces _is_probable_auth_secret to distinguish genuine high-entropy credentials (Bearer ghp_... 36+ chars, JWTs, opaque tokens) from code template syntax (${...}, <...>, {...}) and variable names ($token, authToken).",
+      "dropCondition": "Upstream distinguishes code template syntax and variable identifiers from genuine credentials in authorization header redaction and preserves enclosing quote delimiters.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/redact.py",
+        "upstreamMarker": "_is_probable_auth_secret|_AUTH_KNOWN_SECRET_PREFIXES"
+      }
     }
   ]
 }

@@ -56,7 +56,8 @@ import {
 // myrmidon(1.6.5-F11-A): the single media-token source — the card env entry the
 // MEDIA-PROVISION exporter (media-acl-export.ts) hashes into the facade's bots.json.
 import { mediaTokenFromEnv } from "./media-acl-export.js";
-import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { cardFleetHost, type FleetHostConfig } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
+import { effectiveBotSettings } from "./fleetd-placement.js";
 import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, botdProfileEnv, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G, 1.6.5-BOT-DISK-H5c)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
@@ -243,6 +244,8 @@ export interface BotProfilePorts {
 export interface BotProfileCompileOptions {
   env?: NodeJS.ProcessEnv;
   onWarnings?: BotProfileWarningSink;
+  /** Resolve the persisted site's effective profile for a card pinned to a fleet host. */
+  fleetHostForAgent?(agent: BotProfileAgentRecord, hostName: string): Promise<FleetHostConfig | null>;
 }
 
 /**
@@ -348,17 +351,44 @@ export function createBotProfileCompile(
     if (agent.adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) {
       throw new BotProfileInputError(`agent adapter type is "${agent.adapterType}", not ${HERMES_GATEWAY_ADAPTER_TYPE}`);
     }
+    const fleetHostName = cardFleetHost(agent.adapterConfig as { container?: unknown });
+    const fleetHost = fleetHostName
+      ? await opts.fleetHostForAgent?.(agent, fleetHostName)
+      : null;
+    if (fleetHostName && opts.fleetHostForAgent && !fleetHost) {
+      throw new BotProfileInputError(`fleet site "${fleetHostName}" is not registered for company ${agent.companyId}`);
+    }
+    const effective = effectiveBotSettings(
+      {
+        hindsightUrl: settings.hindsightApiUrl ?? "",
+        llmBaseUrl: settings.llmBaseUrl ?? "",
+        volumeRoot: "",
+        network: "",
+        imageAllowlist: [],
+        boardHost: settings.boardUrl ? new URL(settings.boardUrl).hostname : "",
+        mcpEndpoints: settings.mcpServers.map((server) => server.url),
+      },
+      fleetHost,
+    );
+    const profileSettings: BotProfileSettings = fleetHost
+      ? {
+          ...settings,
+          llmBaseUrl: effective.llmBaseUrl || null,
+          hindsightApiUrl: effective.hindsightUrl || null,
+        }
+      : settings;
+
     // A card that needs the LLM gateway (provider empty/auto/custom) fails here, by
     // the missing setting's name, before the ports below create any key for the bot.
-    assertBotLlmSettingsForCard(settings, agent.adapterConfig);
+    assertBotLlmSettingsForCard(profileSettings, agent.adapterConfig);
     // myrmidon(MEMORY-ISOLATION): a bank outside the allowlist fails here too,
     // same fail-fast slot — no secret is created for a bot whose profile would
     // have been wrong anyway.
-    assertBotHindsightBankForCard(settings, agent.adapterConfig);
+    assertBotHindsightBankForCard(profileSettings, agent.adapterConfig);
 
     // Read-only lookups first: a missing MCP token secret fails here, before the
     // ports below create the bot's keys, so a broken instance setting leaves nothing behind.
-    const staticMcpServers = await resolveStaticMcpServers(ports, agent.companyId, settings);
+    const staticMcpServers = await resolveStaticMcpServers(ports, agent.companyId, profileSettings);
     // myrmidon(1.6.5-F11-A): a token-less media block is the F-11 incident itself,
     // so a statically declared `media` server does NOT survive a missing card
     // token: the compiler drops it here, before the card-key ports below create
@@ -554,7 +584,7 @@ export function createBotProfileCompile(
         ...(agent.role ? { role: agent.role } : {}),
         botLspSettings,
       },
-      settings,
+      profileSettings,
     );
 
     const result = compileHermesProfileDetailed(built.input);

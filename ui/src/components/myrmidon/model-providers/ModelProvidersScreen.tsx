@@ -499,6 +499,11 @@ function ProviderCard({
                             {ch.email && (
                               <div className="text-[10px] text-muted-foreground">{ch.email}</div>
                             )}
+                            {ch.models && ch.models.length > 0 && (
+                              <div className="text-[10px] text-muted-foreground/80 mt-0.5" data-testid={`myrmidon-pool-channel-models-${ch.n}`}>
+                                {ch.models.join(", ")}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             <span

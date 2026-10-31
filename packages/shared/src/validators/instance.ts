@@ -395,6 +395,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // means the default (10). Same contract comment as the field in
   // packages/shared/src/types/instance.ts.
   blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
+  issueRewakeFreezeThreshold: z.number().int().min(2).max(8).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the

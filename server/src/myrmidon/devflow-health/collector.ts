@@ -7,11 +7,13 @@ import {
   instanceSettings,
   issueComments,
   issueExecutionDecisions,
+  projects,
   type Db,
 } from "@myrmidon/db";
 import { parseReviewReworkVerdictMarkers } from "@myrmidon/shared";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { issueNeedsReviewer } from "../review-routing/policy.js";
+import { isDevProjectCodeIssue } from "../guard-return/domain.js";
 import {
   buildDevflowSignals,
   redCiSince,
@@ -24,7 +26,7 @@ import {
   type ReviewVerdict,
 } from "./signals.js";
 
-function extractPrMarker(
+export function extractPrMarker(
   meta: Record<string, unknown>,
   events: { event: string; payload: any; at: Date | null; receivedAt: Date }[],
 ): PrMarkerState {
@@ -65,7 +67,7 @@ function extractPrMarker(
   return { hasMarker: false };
 }
 
-function extractReviewVerdict(
+export function extractReviewVerdict(
   issueId: string,
   prNumber: number,
   decisions: (typeof issueExecutionDecisions.$inferSelect)[],
@@ -108,6 +110,7 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     ["engineerIdleMs", ["MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS"]],
     ["reviewQueueAgeMs", ["MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS"]],
     ["redCiMs", ["MYRMIDON_DEVFLOW_RED_CI_MS"]],
+    ["codeTasksOnNoncodingRolesMs", ["MYRMIDON_DEVFLOW_CODE_TASKS_NONCODING_MS"]],
     ["staleMarkerMs", ["MYRMIDON_DEVFLOW_STALE_MARKER_MS", "MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS"]],
     ["stalledMergeMs", ["MYRMIDON_DEVFLOW_STALLED_MERGE_MS", "MYRMIDON_DEVFLOW_AUTO_MERGE_MS"]],
     ["stalledRouterMs", ["MYRMIDON_DEVFLOW_STALLED_ROUTER_MS", "MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS"]],
@@ -342,6 +345,59 @@ export async function collectDevflowHealth(db: Db, companyId: string, now = new 
     }
   }
 
+  const candidateIssues = await db
+    .select({
+      id: issues.id,
+      title: issues.title,
+      casteKey: issues.casteKey,
+      harnessKind: issues.harnessKind,
+      executionWorkspacePreference: issues.executionWorkspacePreference,
+      executionState: issues.executionState,
+      since: sql<Date>`coalesce((select max(a.created_at) from ${activityLog} a where a.company_id = ${issues.companyId} and a.entity_type = 'issue' and a.entity_id = ${issues.id}::text and a.action = 'issue.updated' and a.details->>'assigneeAgentId' = ${issues.assigneeAgentId}::text), ${issues.updatedAt}, ${issues.createdAt})`,
+      updatedAt: issues.updatedAt,
+      projectDefaultCasteKey: projects.defaultCasteKey,
+      projectName: projects.name,
+    })
+    .from(issues)
+    .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    .leftJoin(projects, eq(projects.id, issues.projectId))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        inArray(issues.status, ["in_progress", "in_review"]),
+        ne(agents.role, "engineer"),
+      ),
+    );
+
+  for (const issue of candidateIssues) {
+    const prs = await db
+      .select({ id: issueWorkProducts.id })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.issueId, issue.id), eq(issueWorkProducts.type, "pull_request")))
+      .limit(1);
+
+    if (
+      isDevProjectCodeIssue({
+        casteKey: issue.casteKey,
+        projectDefaultCasteKey: issue.projectDefaultCasteKey,
+        projectName: issue.projectName,
+        harnessKind: issue.harnessKind,
+        executionWorkspacePreference: issue.executionWorkspacePreference,
+        hasEngineerPr: prs.length > 0,
+        hasReviewState: Boolean(issue.executionState && (issue.executionState as any).stages),
+      })
+    ) {
+      samples.push({
+        companyId,
+        subjectId: issue.id,
+        subjectKind: "issue",
+        title: issue.title,
+        metric: "codeTasksOnNoncodingRolesMs",
+        since: new Date((issue as any).since ?? issue.updatedAt).toISOString(),
+      });
+    }
+  }
   // One card per subject/metric even when a PR has multiple registered products.
   const signals = buildDevflowSignals(samples, thresholds, now);
   return [...new Map(signals.map((s) => [s.dedupKey, s])).values()];
