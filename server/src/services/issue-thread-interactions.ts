@@ -3470,15 +3470,21 @@ export function issueThreadInteractionService(
         actor.agentId &&
         data.kind === "request_confirmation"
       ) {
-        let issueOwnerUserId: string | null =
-          (issue as { responsibleUserId?: string | null; createdByUserId?: string | null }).responsibleUserId ??
-          (issue as { responsibleUserId?: string | null; createdByUserId?: string | null }).createdByUserId ??
-          null;
-        if (issueOwnerUserId === null) {
+        let issueOwnerUserId: string | null = null;
+        const isConversationIssue = Boolean(
+          (issue as { conversationAgentId?: string | null }).conversationAgentId,
+        );
+        let issueHasAssignedAgent = Boolean(
+          (issue as { assigneeAgentId?: string | null }).assigneeAgentId,
+        );
+        if (!isConversationIssue) {
           const [issueRow] = await db
             .select({
               responsibleUserId: issues.responsibleUserId,
               createdByUserId: issues.createdByUserId,
+              assigneeUserId: issues.assigneeUserId,
+              assigneeAgentId: issues.assigneeAgentId,
+              conversationAgentId: issues.conversationAgentId,
             })
             .from(issues)
             .where(
@@ -3487,13 +3493,17 @@ export function issueThreadInteractionService(
                 eq(issues.companyId, issue.companyId),
               ),
             );
-          issueOwnerUserId =
-            issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? null;
+          if (!issueRow?.conversationAgentId) {
+            issueOwnerUserId =
+              issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? issueRow?.assigneeUserId ?? null;
+            issueHasAssignedAgent =
+              issueHasAssignedAgent || Boolean(issueRow?.assigneeAgentId);
+          }
         }
 
         if (issueOwnerUserId) {
           normalizedData.addresseeUserId = issueOwnerUserId;
-        } else {
+        } else if (!isConversationIssue && !issueHasAssignedAgent) {
           throw unprocessable(
             "An issue-thread interaction must specify an addressee (addresseeAgentId or addresseeUserId) or have an issue owner",
           );
