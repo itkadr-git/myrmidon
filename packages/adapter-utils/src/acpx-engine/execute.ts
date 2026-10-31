@@ -5491,4 +5491,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
 
 export const execute = createAcpxEngineExecutor();
-export { emitRuntimeEvent as emitRuntimeEventForTest };
+export const emitRuntimeEventForTest = emitRuntimeEvent as (
+  ctx: AdapterExecutionContext,
+  event: any,
+  toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
+) => Promise<void>;

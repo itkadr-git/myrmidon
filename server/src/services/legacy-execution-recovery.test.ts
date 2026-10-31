@@ -142,7 +142,7 @@ it("deduplicates repeated failed tool call updates by callId through production 
     status: "failed",
     title: "patch",
     input: args,
-  });
+  } as any);
   expect(guard.stats().toolRetryCount).toBe(1);
   expect(onRunGuardStop).not.toHaveBeenCalled();
 
@@ -153,14 +153,14 @@ it("deduplicates repeated failed tool call updates by callId through production 
     status: "failed",
     title: "patch",
     input: args,
-  });
+  } as any);
   await emitRuntimeEventForTest(ctx, {
     type: "tool_call",
     toolCallId: "call-1",
     status: "failed",
     title: "patch",
     input: args,
-  });
+  } as any);
   expect(guard.stats().toolRetryCount).toBe(1);
   expect(onRunGuardStop).not.toHaveBeenCalled();
 
@@ -171,7 +171,7 @@ it("deduplicates repeated failed tool call updates by callId through production 
     status: "failed",
     title: "patch",
     input: args,
-  });
+  } as any);
   expect(guard.stats().toolRetryCount).toBe(2);
   expect(onRunGuardStop).not.toHaveBeenCalled();
 
@@ -182,7 +182,7 @@ it("deduplicates repeated failed tool call updates by callId through production 
     status: "failed",
     title: "patch",
     input: args,
-  });
+  } as any);
   expect(guard.stats().toolRetryCount).toBe(3);
   expect(guard.stopped).toBe(true);
   expect(guard.stopReason).toBe("tool_retry_loop");
