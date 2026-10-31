@@ -144,7 +144,7 @@ export function liveStrandedSettings(env: NodeJS.ProcessEnv = process.env) {
 /** Fine-tuning: infra interrupt codes, write lock, cross-issue influence, continuation history, stale lease grace. */
 export function liveRunPipelineSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
-    infraInterruptCodes: resolve(env, "MYRMIDON_INFRA_INTERRUPT_CODES", "runsQueue.infraInterrupt.codes", parseStringList, ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned"]),
+    infraInterruptCodes: resolve(env, "MYRMIDON_INFRA_INTERRUPT_CODES", "runsQueue.infraInterrupt.codes", parseStringList, ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned", "site_lost"]),
     writeLockRequiresLiveRun: resolve(env, "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN", "runsQueue.writeLock.requiresLiveRun", parseDisabledUnlessExplicitlyOff, true),
     crossIssueInfluenceLimit: resolve(env, "MYRMIDON_CROSS_ISSUE_INFLUENCE_LIMIT", "runsQueue.crossIssueInfluence.limit", parseIntInRange(1, Number.MAX_SAFE_INTEGER), 20),
     continuationHistoryLimit: resolve(env, "MYRMIDON_CONTINUATION_HISTORY_LIMIT", "runsQueue.continuationHistory.limit", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 30),

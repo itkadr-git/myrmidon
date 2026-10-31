@@ -350,7 +350,7 @@ register({
 register({
   key: "runsQueue.infraInterrupt.codes",
   envName: "MYRMIDON_INFRA_INTERRUPT_CODES",
-  default: ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned"],
+  default: ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned", "site_lost"],
   scope: "instance",
   section: RUNS_QUEUE_SECTION,
   valueType: "json",
