@@ -96,6 +96,53 @@
           "listLabel": "Recent runs",
           "sourceRun": "{{source}} run",
           "footer": "Showing the {{limit}} most recent runs."
+        },
+        "outcomePanel": {
+          "title": "Runs with outcome",
+          "description": "Outcome rate, model calls, token usage, and costs by agent and wake reason.",
+          "kpi": {
+            "outcomeRate": "Outcome rate",
+            "outcomeRateSub": "{{numerator}} / {{denominator}} completed runs",
+            "modelCalls": "Model calls",
+            "modelCallsSub": "{{outcomeCalls}} with outcome · {{idleCalls}} idle",
+            "tokens": "Tokens",
+            "tokensSub": "in: {{input}} · cached: {{cached}} · out: {{output}}",
+            "totalCost": "Total cost",
+            "idleCost": "Cost of idle runs",
+            "idleCostSub": "without outcome: {{cost}}"
+          },
+          "filters": {
+            "wakeReason": "Wake reason",
+            "allWakeReasons": "All reasons",
+            "timeRange": "Time period",
+            "periods": {
+              "6h": "Last 6 hours",
+              "24h": "Last 24 hours",
+              "48h": "Last 48 hours",
+              "7d": "Last 7 days",
+              "all": "All time"
+            }
+          },
+          "categories": {
+            "title": "Breakdown by outcome",
+            "artifact": "Artifact",
+            "commit_push": "Commit / PR",
+            "status": "Status decision",
+            "other_work_product": "Work product",
+            "comment_only": "Comment only",
+            "nothing": "No outcome"
+          },
+          "reasonsTable": {
+            "title": "Breakdown by wake reason",
+            "wakeReason": "Wake reason",
+            "totalRuns": "Total runs",
+            "outcomeRuns": "With outcome",
+            "rate": "Outcome rate",
+            "calls": "Calls",
+            "tokens": "Tokens",
+            "totalCost": "Total cost",
+            "idleCost": "Idle cost"
+          }
         }
       },
       "audit-feed-production": {
