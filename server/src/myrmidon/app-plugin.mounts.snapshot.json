@@ -68,6 +68,7 @@
   "api.use(myrmidonChannelSettingsRoutes(db))",
   "api.use(myrmidonUsersAdminRoutes(db, { authPublicBaseUrl: opts.authPublicBaseUrl }))",
   "api.use(channelAllowlistRoutes(db, channelAllowlistService(db)))",
+  "api.use(myrmidonOwnerActiveChannelRoutes(db))",
   "api.use(myrmidonParallelHelpersRoutes(db))",
   "api.use(myrmidonTeamLivenessRoutes(db))",
   "api.use(myrmidonBotLspRoutes(db))",
