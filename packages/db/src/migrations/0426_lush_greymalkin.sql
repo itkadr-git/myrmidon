@@ -1,0 +1,16 @@
+-- myrmidon(1.6.6 OPE-9967): retention compaction scans heartbeat_runs for
+-- terminal runs older than cutoff that carry uncompacted keys.
+-- The partial index keeps the scan off tens of thousands of already compacted runs.
+--
+-- Production rollout follows the 0307/0308/0415 pattern: the index is created by
+-- hand on the production board database BEFORE the deploy (ADM 30.10,
+-- pg_get_indexdef-identical statement):
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx"
+--     ON "heartbeat_runs" USING btree ("company_id","created_at")
+--     WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
+--
+-- CONCURRENTLY takes no SHARE lock. This migration is then a no-op on production
+-- (CREATE INDEX IF NOT EXISTS keeps the hand-made index; deploy-time lock window is zero)
+-- and builds the index on fresh databases / CI / local setups.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally so CONCURRENTLY is unavailable; the index exists on the production instance already (built concurrently by operator per ADM 30.10) and this statement is a no-op there.
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
