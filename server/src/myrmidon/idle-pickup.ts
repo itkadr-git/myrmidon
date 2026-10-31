@@ -447,6 +447,16 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         // unblock clears a settled hold (settled-holds/human-unblock.ts), and
         // the issue comes back here on the next pass.
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): do not wake an agent on a task waiting for an
+        // interaction or external unblock (prevents idle pickup looping on pending questions).
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        isNull(issues.unblockDescriptor),
       ),
     )
     .orderBy(asc(issues.createdAt))

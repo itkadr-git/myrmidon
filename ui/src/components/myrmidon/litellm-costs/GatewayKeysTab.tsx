@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/EmptyState";
 import { agentsApi } from "@/api/agents";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   countKeyedAgents,
@@ -150,9 +151,14 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
     });
   };
 
-  const handleCopyKey = () => {
+  const handleCopyKey = async () => {
     if (!createdKeyDialog) return;
-    navigator.clipboard.writeText(createdKeyDialog.value);
+    try {
+      await copyTextToClipboard(createdKeyDialog.value);
+    } catch {
+      // Clipboard unavailable: the key stays visible in the dialog to select by hand.
+      return;
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -311,7 +317,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
               value={createdKeyDialog?.value ?? ""}
               className="font-mono text-xs"
             />
-            <Button size="sm" onClick={handleCopyKey}>
+            <Button size="sm" onClick={() => void handleCopyKey()}>
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </Button>
           </div>

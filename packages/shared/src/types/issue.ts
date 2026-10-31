@@ -565,6 +565,7 @@ export interface IssueUnblockDescriptor {
   owner: IssueUnblockOwner;
   action: string;
   reasonRef?: IssueUnblockReasonRef;
+  reason?: string;
 }
 
 export interface IssueRecoveryAction {
