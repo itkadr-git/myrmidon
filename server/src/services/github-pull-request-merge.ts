@@ -1,5 +1,8 @@
 import type { Db } from "@myrmidon/db";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  type GitHubExternalObjectProviderOptions,
+} from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -95,8 +98,11 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 
 const DENIED_ERROR_CODES = new Set(["github_auth_required", "github_forbidden", "github_token_unavailable"]);
 
-export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db).resolvers
+export function createPullRequestMergeDetailsResolver(
+  db: Db,
+  opts?: GitHubExternalObjectProviderOptions,
+): PullRequestMergeDetailsResolver {
+  const resolver = createGitHubExternalObjectProvider(db, opts).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
