@@ -29,6 +29,7 @@ export interface PullRequestHeadState extends PrRef {
   url?: string | null;
   authorLogin?: string | null;
   baseRef?: string | null;
+  labels?: readonly string[];
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */
