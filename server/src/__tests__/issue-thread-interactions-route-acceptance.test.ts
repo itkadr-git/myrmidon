@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, issues, issueThreadInteractions, users } from "@myrmidon/db";
+import { activityLog, agents, issues, issueThreadInteractions } from "@myrmidon/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres,
@@ -102,12 +102,6 @@ describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)"
   it("creates interaction with explicit user addressee via HTTP route and persists route_type and timeout_at in DB", async () => {
     const seeded = await seed();
     const targetUserId = `user-${randomUUID()}`;
-
-    await ctx.db.insert(users).values({
-      id: targetUserId,
-      email: `${targetUserId}@example.com`,
-      displayName: "Target User",
-    });
 
     const res = await request(appFor(seeded))
       .post(`/api/issues/${seeded.issueId}/interactions`)

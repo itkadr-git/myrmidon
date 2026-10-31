@@ -632,7 +632,7 @@ describe.sequential("issue thread interaction routes", () => {
   }, 10_000);
 
   it("returns 422 when creating an interaction without addressee fails recipient resolution (OPE-9150)", async () => {
-    const { unprocessable } = await import("../services/errors.js");
+    const { unprocessable } = await import("../errors.js");
     mockInteractionService.create.mockRejectedValueOnce(
       unprocessable(
         "Cannot determine recipient for interaction: decision requires a typed human or matching project role",

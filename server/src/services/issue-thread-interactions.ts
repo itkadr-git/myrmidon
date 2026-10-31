@@ -3629,10 +3629,9 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           }
         } else if (
-          normalizedData.kind === "ask_user_questions" &&
           policy.effectiveResolverPolicy !== "human_only" &&
-          actor.agentId &&
-          actor.agentId === issueContextRow?.assigneeAgentId
+          ((actor.agentId && actor.agentId === issueContextRow?.assigneeAgentId) ||
+            (actor.userId && actor.userId === issueContextRow?.assigneeUserId))
         ) {
           recipientCandidate = { serviceQueue: "default" };
         }
@@ -3647,7 +3646,13 @@ export function issueThreadInteractionService(
       ) {
         routeType = "operator_action";
       } else if (
+        (recipientCandidate && "agentId" in recipientCandidate) ||
+        (normalizedData as any).addresseeAgentId
+      ) {
+        routeType = "decision";
+      } else if (
         (recipientCandidate && "userId" in recipientCandidate) ||
+        (normalizedData as any).addresseeUserId ||
         normalizedData.kind === "ask_user_questions" ||
         policy.effectiveResolverPolicy === "human_only"
       ) {
