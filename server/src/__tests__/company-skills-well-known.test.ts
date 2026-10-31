@@ -13,6 +13,7 @@ import {
   companySkillService,
   extractRequiredEnvFromMarkdown,
   parseSkillImportSourceInput,
+  resolveWellKnownArchiveUrl,
 } from "../services/company-skills.ts";
 import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 
@@ -20,7 +21,9 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 const ORIGIN = "https://skills.example";
-const INDEX_URL = `${ORIGIN}/.well-known/agent-skills/index.json`;
+const WELL_KNOWN_DIR = `${ORIGIN}/.well-known/agent-skills`;
+const INDEX_URL = `${WELL_KNOWN_DIR}/index.json`;
+const ARCHIVE_URL = `${WELL_KNOWN_DIR}/demo-skill.tar.gz`;
 
 function sha256Hex(bytes: Buffer) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -148,6 +151,50 @@ describe("extractRequiredEnvFromMarkdown", () => {
   });
 });
 
+describe("resolveWellKnownArchiveUrl", () => {
+  const indexUrl = "https://kie.ai/.well-known/agent-skills/index.json";
+
+  it("resolves relative kie-models.tar.gz against the index URL path", () => {
+    expect(resolveWellKnownArchiveUrl(indexUrl, "kie-models.tar.gz")).toBe(
+      "https://kie.ai/.well-known/agent-skills/kie-models.tar.gz",
+    );
+  });
+
+  it("resolves /abs/path.tar.gz from the origin root", () => {
+    expect(resolveWellKnownArchiveUrl(indexUrl, "/abs/path.tar.gz")).toBe(
+      "https://kie.ai/abs/path.tar.gz",
+    );
+  });
+
+  it("rejects an archive URL on a different origin", () => {
+    expect(() => resolveWellKnownArchiveUrl(indexUrl, "https://evil.com/kie-models.tar.gz")).toThrow();
+    try {
+      resolveWellKnownArchiveUrl(indexUrl, "https://evil.com/kie-models.tar.gz");
+      expect.unreachable("should have thrown");
+    } catch (err: any) {
+      expect(err?.status).toBe(422);
+      expect(err?.details?.code).toBe("skill_source_validation_failed");
+    }
+  });
+
+  it("rejects non-HTTPS archive URLs", () => {
+    try {
+      resolveWellKnownArchiveUrl(indexUrl, "http://kie.ai/.well-known/agent-skills/kie-models.tar.gz");
+      expect.unreachable("should have thrown");
+    } catch (err: any) {
+      expect(err?.status).toBe(422);
+      expect(err?.details?.code).toBe("skill_source_validation_failed");
+    }
+  });
+
+  it("resolves relative archive URLs when origin is supplied directly", () => {
+    expect(resolveWellKnownArchiveUrl("https://kie.ai", "kie-models.tar.gz")).toBe(
+      "https://kie.ai/.well-known/agent-skills/kie-models.tar.gz",
+    );
+  });
+});
+
+
 describeEmbeddedPostgres("companySkillService well-known discovery + import", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof companySkillService>;
@@ -199,7 +246,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     expect(result.skills).toHaveLength(1);
     expect(result.skills[0]!.name).toBe("demo-skill");
     expect(result.skills[0]!.description).toBe("Demo well-known skill");
-    expect(result.skills[0]!.url).toBe(`${ORIGIN}/demo-skill.tar.gz`);
+    expect(result.skills[0]!.url).toBe(ARCHIVE_URL);
     expect(result.skills[0]!.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
@@ -227,7 +274,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     const digest = `sha256:${sha256Hex(archive)}`;
     stubFetch([
       { match: INDEX_URL, respond: () => jsonResponse(indexPayload({ digest })) },
-      { match: `${ORIGIN}/demo-skill.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
+      { match: ARCHIVE_URL, respond: () => new Response(archive, { status: 200 }) },
     ]);
 
     const result = await svc.importFromSource(companyId, ORIGIN, { skillName: "demo-skill" });
@@ -258,7 +305,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
         match: INDEX_URL,
         respond: () => jsonResponse(indexPayload({ digest: `sha256:${"f".repeat(64)}` })),
       },
-      { match: `${ORIGIN}/demo-skill.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
+      { match: ARCHIVE_URL, respond: () => new Response(archive, { status: 200 }) },
     ]);
     await expect(svc.importFromSource(companyId, ORIGIN, { skillName: "demo-skill" })).rejects.toMatchObject({
       status: 422,
@@ -274,7 +321,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     const digest = `sha256:${sha256Hex(traversal)}`;
     stubFetch([
       { match: INDEX_URL, respond: () => jsonResponse(indexPayload({ digest, name: "evil-skill", description: null })) },
-      { match: `${ORIGIN}/evil-skill.tar.gz`, respond: () => new Response(traversal, { status: 200 }) },
+      { match: `${WELL_KNOWN_DIR}/evil-skill.tar.gz`, respond: () => new Response(traversal, { status: 200 }) },
     ]);
     await expect(svc.importFromSource(companyId, ORIGIN, { skillName: "evil-skill" })).rejects.toMatchObject({ status: 422 });
 
@@ -288,7 +335,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
         match: INDEX_URL,
         respond: () => jsonResponse(indexPayload({ digest: absoluteDigest, name: "abs-skill", url: "abs-skill.tar.gz" })),
       },
-      { match: `${ORIGIN}/abs-skill.tar.gz`, respond: () => new Response(absolute, { status: 200 }) },
+      { match: `${WELL_KNOWN_DIR}/abs-skill.tar.gz`, respond: () => new Response(absolute, { status: 200 }) },
     ]);
     await expect(svc.importFromSource(companyId, ORIGIN, { skillName: "abs-skill" })).rejects.toMatchObject({ status: 422 });
   });
@@ -301,7 +348,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     const digest = `sha256:${sha256Hex(archive)}`;
     stubFetch([
       { match: INDEX_URL, respond: () => jsonResponse(indexPayload({ digest, name: "link-skill", url: "link-skill.tar.gz" })) },
-      { match: `${ORIGIN}/link-skill.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
+      { match: `${WELL_KNOWN_DIR}/link-skill.tar.gz`, respond: () => new Response(archive, { status: 200 }) },
     ]);
     await expect(svc.importFromSource(companyId, ORIGIN, { skillName: "link-skill" })).rejects.toMatchObject({ status: 422 });
   });
@@ -311,7 +358,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     const firstDigest = `sha256:${sha256Hex(firstArchive)}`;
     const routes: StubRoute[] = [
       { match: INDEX_URL, respond: () => jsonResponse(indexPayload({ digest: firstDigest, name: "cycle-skill", url: "cycle-skill.tar.gz" })) },
-      { match: `${ORIGIN}/cycle-skill.tar.gz`, respond: () => new Response(firstArchive, { status: 200 }) },
+      { match: `${WELL_KNOWN_DIR}/cycle-skill.tar.gz`, respond: () => new Response(firstArchive, { status: 200 }) },
     ];
     stubFetch(routes);
     const first = await svc.importFromSource(companyId, ORIGIN, { skillName: "cycle-skill" });
