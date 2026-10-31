@@ -112,6 +112,7 @@ export const knowledgeProposeSchema = z.object({
   folderPath: z.string().max(500).optional(),
   lang: z.string().max(16).optional(),
   sources: z.array(knowledgeSourceInputSchema).min(1, "knowledge_propose requires at least one source").max(50),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 export type KnowledgeProposeInput = z.infer<typeof knowledgeProposeSchema>;
 

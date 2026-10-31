@@ -665,6 +665,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
             targetSlug: body.targetSlug ?? undefined,
             sourceKind: body.sources[0]!.kind,
             sourceRef: body.sources[0]!.ref,
+            idempotencyKey: body.idempotencyKey ?? undefined,
           },
         );
         res.status(201).json({ suggestion });
