@@ -4422,6 +4422,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     }
     headers.set("authorization", `Bearer ${hostApiToken}`);
     headers.set("x-myrmidon-run-id", input.runId);
+    headers.set("x-paperclip-run-id", input.runId);
     // Abort the forward when the caller aborts the request (its per-iteration
     // timeout or watchdog fired, or the broker's forward budget ended), or after
     // the forward budget here, whichever comes first.

@@ -1160,6 +1160,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             status: 504,
             headers: {
               "content-type": "application/json",
+              "x-paperclip-bridge-outcome": "indeterminate",
               "x-myrmidon-bridge-outcome": "indeterminate",
             },
             body: JSON.stringify({
@@ -1224,6 +1225,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             status: 504,
             headers: {
               "content-type": "application/json",
+              "x-paperclip-bridge-outcome": "indeterminate",
               "x-myrmidon-bridge-outcome": "indeterminate",
             },
             body: JSON.stringify({ error: message, outcome: "indeterminate", retryable: false }),
@@ -2546,7 +2548,10 @@ async function runFileGateway() {
       // dispatched, a missing or corrupt receipt cannot prove that it failed.
       const uncertainWrite = dispatched && !["GET", "HEAD", "OPTIONS", "TRACE"].includes(req.method || "GET");
       const status = uncertainWrite ? 409 : error instanceof BridgeProcessCapacityError ? 503 : 502;
-      if (uncertainWrite) res.setHeader("x-myrmidon-bridge-outcome", "indeterminate");
+      if (uncertainWrite) {
+        res.setHeader("x-paperclip-bridge-outcome", "indeterminate");
+        res.setHeader("x-myrmidon-bridge-outcome", "indeterminate");
+      }
       writeJsonResponse(res, status, {
         error: error instanceof Error ? error.message : String(error),
         ...(uncertainWrite ? { outcome: "indeterminate", retryable: false } : {}),
