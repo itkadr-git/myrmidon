@@ -149,7 +149,8 @@ describePg("recovery-factory-ope8079-replay PostgreSQL acceptance", () => {
         kind: classification!.kind,
         candidates: ownerCandidates,
       });
-      expect(policyResolution.role).toBe("operator");
+      expect("agentId" in policyResolution.owner).toBe(true);
+      expect(policyResolution.owner).toEqual({ agentId: operatorAgentId });
       expect(policyResolution.slaMinutes).toBe(RECOVERY_SLA_MINUTES_BY_KIND.operator_action);
       expect(policyResolution.slaMinutes).toBe(120);
 
@@ -165,7 +166,7 @@ describePg("recovery-factory-ope8079-replay PostgreSQL acceptance", () => {
         kind: classification!.kind,
         dedupeKey,
         sourceIssueId,
-        owner: { agentId: policyResolution.owner.agentId },
+        owner: policyResolution.owner,
         slaMinutes: policyResolution.slaMinutes,
         nextCheckAt,
         runbookRef: `runbooks/recovery/${classification!.kind}.md`,
