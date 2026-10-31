@@ -1847,7 +1847,7 @@ export function mapFinalResultForTest(input: {
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
     failedBeforeModel,
-    retryNotBefore: retryNotBefore ?? undefined,
+    retryNotBefore,
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to

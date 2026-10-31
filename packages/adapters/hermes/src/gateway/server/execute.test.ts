@@ -3758,7 +3758,7 @@ describe("model input limit (OPE-6168)", () => {
 });
 
 describe("OPE-9476: cooldown, structured rate-limits, model response start lifecycle and failed-before-model", () => {
-  const wsBaseConfig = { apiBaseUrl: "http://hermes:8642", apiKey: "test-key" };
+  const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-key" };
 
   it("extracts structured cooldown and retry-after from HTTP 429 create response and marks failedBeforeModel", async () => {
     const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
@@ -3788,7 +3788,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3832,7 +3832,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3870,7 +3870,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3913,13 +3913,13 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
     expect(result.failedBeforeModel).toBe(true);
     expect(result.errorFamily).toBe("provider_quota");
-    expect(result.retryNotBefore).toBeUndefined();
+    expect(result.retryNotBefore).toBeNull();
     expect(result.resultJson?.modelResponseStarted).toBe(false);
     expect(result.resultJson?.failedBeforeModel).toBe(true);
   });
