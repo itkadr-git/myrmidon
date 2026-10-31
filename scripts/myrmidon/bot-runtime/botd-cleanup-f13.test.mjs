@@ -506,6 +506,7 @@ describe("archiveTree: bounded like the fallback tar", () => {
     const archiveMod = {
       archive: (...args) => { calls.push("repo"); return archive(...args); },
       archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
     };
     const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
     const item = { path: copy, key: KEY };
@@ -516,6 +517,58 @@ describe("archiveTree: bounded like the fallback tar", () => {
     fs.writeFileSync(path.join(copy, "new-work.txt"), "new\\n");
     assert.equal(archiveThenRemove(item, deps), "archived, removed");
     assert.equal(calls.length, 2, "changed source gets a fresh archive");
+  });
+
+  it("regression: archive reuse refuses stale/duplicate keys, missing parts, and corrupted archives", () => {
+    const dir = path.join(tmp, "archive-regression");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+
+    // Initial archive creation
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+
+    const mPath = path.join(archiveRoot, "manifest.json");
+    const readM = () => JSON.parse(fs.readFileSync(mPath, "utf8"));
+    const writeM = (m) => fs.writeFileSync(mPath, JSON.stringify(m, null, 2));
+
+    // 1. Stale duplicate entry with same key but outdated/unrelated content should not hijack snapshot
+    const m1 = readM();
+    const goodEntry = m1.archives[0];
+    const staleEntry = {
+      key: KEY,
+      bundle: path.join(archiveRoot, "stale.bundle"),
+      createdAt: new Date(Date.now() - 100000).toISOString(),
+      // no sourceSnapshot or different sourceSnapshot
+    };
+    fs.writeFileSync(staleEntry.bundle, "dummy");
+    m1.archives.unshift(staleEntry);
+    writeM(m1);
+
+    // Should still reuse because the valid matching entry exists
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1);
+
+    // 2. Missing required archive part: if bundle of the valid entry is removed, cannot reuse
+    fs.rmSync(goodEntry.bundle, { force: true });
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "re-archived because archive part was missing");
+
+    // 3. Corrupted archive content: if bundle is corrupted, cannot reuse
+    const m2 = readM();
+    // Latest entry is the last one in archives
+    const latestGood = m2.archives[m2.archives.length - 1];
+    fs.writeFileSync(latestGood.bundle, "corrupted-content");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 3, "re-archived because archive content was corrupt");
   });
 
   it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {
