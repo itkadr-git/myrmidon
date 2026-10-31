@@ -1415,11 +1415,10 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     );
     agentApp.use(errorHandler);
 
-    // Agent attempts to reassign the task. The route gates assignment changes
-    // behind the tasks:assign authorization (assertCanAssignTasks) for agent
-    // actors, so the request is refused with 403 before the service-level
-    // channel-binding guard could answer. The 409 chat_binding_agent_locked
-    // binding lock itself is covered service-level in this suite.
+    // This fixture's synthetic agent context does not create a persisted heartbeat
+    // run, so the route may reject the reassignment at run-attribution before the
+    // tasks:assign/channel-binding checks. The service-level 409 assertion above
+    // remains the coverage for the binding lock itself.
     const reassignRes = await request(agentApp)
       .patch(`/api/issues/${secondBoundTask.id}`)
       .set("X-Paperclip-Run-Id", agentRunId)
