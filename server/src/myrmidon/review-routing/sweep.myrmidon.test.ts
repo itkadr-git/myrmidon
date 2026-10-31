@@ -84,6 +84,7 @@ type SettingsOverride = {
   reviewerRoles?: string[];
   maxLoadPerReviewer?: number;
   reassignAfterHours?: number;
+  rebalanceAfterMinutes?: number;
   prWatch?: Partial<ReviewRoutingSettings["prWatch"]> & {
     steward?: Partial<ReviewRoutingSettings["prWatch"]["steward"]>;
   };
@@ -471,6 +472,202 @@ describe("overdue review", () => {
     t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
     const result = await t.sweep.sweep(new Date(NOW.getTime() + 500 * 3_600_000), { force: true });
     expect(result).toMatchObject({ reassigned: 0, signaled: 0 });
+  });
+});
+
+describe("review rebalancing", () => {
+  const LEAD = "dddddddd-0000-4000-8000-000000000001";
+
+  it("rebalances an overdue-waiting pending review to an idle reviewer or lead with empty queue and wakes them", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: LEAD, role: "lead" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [LEAD, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000), // 45 min ago
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+
+    const updated = t.fixture.rows.get("1");
+    expect(updated?.assigneeAgentId).toBe(LEAD);
+    const nextState = updated?.executionState as Record<string, unknown>;
+    expect((nextState.currentParticipant as { agentId: string }).agentId).toBe(LEAD);
+
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0].agentId).toBe(LEAD);
+    expect(t.wakes[0].issueId).toBe("1");
+
+    expect(t.comments).toHaveLength(1);
+    expect(t.comments[0].body).toContain("rebalanced to @" + LEAD);
+    expect(t.activities).toContainEqual(
+      expect.objectContaining({
+        action: "issue.execution_reviewer_reassigned",
+        details: expect.objectContaining({
+          reviewerAgentId: LEAD,
+          reviewerRole: "lead",
+          previousReviewerAgentId: REV_A,
+          rebalanced: true,
+        }),
+      }),
+    );
+  });
+
+  it("skips rebalancing when no eligible pool member has an empty queue (load === 0)", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 2], // queue is not empty
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("skips rebalancing if wait time is less than rebalanceAfterMinutes", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 15 * 60 * 1000), // only 15 min, threshold 30
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("never rebalances an escalated review stage", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      escalationToParticipant: { type: "agent", agentId: REV_A },
+      escalationReason: "max_review_rounds_exceeded",
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("never rebalances to the returnAssignee (author)", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: ASSIGNEE, role: "lead" }, // ASSIGNEE is returnAssignee!
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [ASSIGNEE, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
   });
 });
 

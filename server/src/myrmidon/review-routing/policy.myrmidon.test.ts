@@ -132,6 +132,28 @@ describe("pickReviewer", () => {
     expect(picked?.id).toBe(REV_A);
   });
 
+  it("excludes returnAssignee from review candidates", () => {
+    const RETURN_ASSIGNEE = "eeeeeeee-0000-4000-8000-000000000001";
+    const issueWithReturn = issue({
+      executionState: {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: RETURN_ASSIGNEE },
+      },
+    });
+    const excluded = excludedReviewerIds(issueWithReturn);
+    expect(excluded.has(RETURN_ASSIGNEE)).toBe(true);
+    expect(
+      pickReviewer({
+        candidates: [{ id: RETURN_ASSIGNEE, role: "lead", load: 0 }],
+        excluded,
+        maxLoad: 5,
+      }),
+    ).toBeNull();
+  });
+
   it("breaks ties by id so the choice is deterministic", () => {
     const picked = pickReviewer({ candidates, excluded: excludedReviewerIds(issue()), maxLoad: 5 });
     const again = pickReviewer({ candidates: [...candidates].reverse(), excluded: excludedReviewerIds(issue()), maxLoad: 5 });

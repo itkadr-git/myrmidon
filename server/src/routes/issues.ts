@@ -5037,7 +5037,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+      ) || ["reviewer", "lead"].includes((await agentsSvc.getById(String(nextAssigneeAgentId)))?.role ?? ""))
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
@@ -13965,7 +13965,6 @@ export function issueRoutes(
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
-        nextExecutionPolicy === null &&
         existing.assigneeAgentId &&
         (existing.status === "in_review" || updateFields.status === "in_review")
       ) {
@@ -13984,6 +13983,15 @@ export function issueRoutes(
             ? undefined
             : (updateFields.assigneeUserId as string | null),
       };
+      let candidateLoads: Map<string, number> | undefined;
+      if (
+        (updateFields.status === "in_review" || existing.status === "in_review") &&
+        nextExecutionPolicy &&
+        summarizeExecutionParticipants(nextExecutionPolicy, "review").length > 1
+      ) {
+        const routingStore = createPgReviewRoutingStore(db);
+        candidateLoads = await routingStore.loadByAgent(existing.companyId);
+      }
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -14003,6 +14011,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        candidateLoads,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as

@@ -26,13 +26,16 @@ export const REVIEW_ROUTING_SETTINGS_KEY = "reviewRouting";
 
 export const DEFAULT_REVIEW_ROUTING_ENABLED = true;
 /** Caste keys (`agents.role`) whose agents may be picked as reviewers. */
-export const DEFAULT_REVIEW_ROUTING_REVIEWER_ROLES: readonly string[] = ["reviewer"];
+export const DEFAULT_REVIEW_ROUTING_REVIEWER_ROLES: readonly string[] = ["reviewer", "lead"];
 /** A reviewer already holding this many tasks in flight is not picked. */
 export const DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER = 5;
 export const MAX_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER = 100;
 /** Hours without a verdict before the review is signalled and reassigned; 0 = never. */
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
+/** Minutes a pending review waits before being rebalanced to an idle pool member; 0 = never. */
+export const DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES = 30;
+export const MAX_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES = 60 * 24 * 30;
 
 /** PR-watch defaults: the lane mirrors the board task it replaced, off only on request. */
 export const DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED = true;
@@ -207,6 +210,12 @@ export const reviewRoutingSettingsSchema = z
       .min(0)
       .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS)
       .default(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS),
+    rebalanceAfterMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES)
+      .default(DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES),
     prWatch: reviewRoutingPrWatchField,
   })
   .strict();

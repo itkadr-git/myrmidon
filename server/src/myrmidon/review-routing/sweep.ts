@@ -49,6 +49,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
+  asRecord,
   buildPrRoutingTaskPatch,
   buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
@@ -331,6 +332,60 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         signals.push(signal);
         result.failed += 1;
         log.warn({ err, issueId: row.id }, "review routing failed to reassign a reviewer");
+      }
+    }
+
+    if (settings.rebalanceAfterMinutes > 0 && moves < REVIEW_ROUTING_MAX_MOVES_PER_PASS) {
+      const overdueIds = new Set(overdue.map((entry) => entry.row.id));
+      for (const { row, review } of pending) {
+        if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) break;
+        if (overdueIds.has(row.id)) continue;
+
+        const stateRecord = asRecord(row.executionState);
+        if (
+          stateRecord?.escalationToParticipant ||
+          stateRecord?.escalationPolicyRevision ||
+          stateRecord?.escalationReason
+        ) {
+          continue;
+        }
+
+        const routed = history.get(row.id);
+        const waitingSince = routed?.lastAt ?? row.updatedAt;
+        const waitingMinutes = Math.max(0, Math.floor((now.getTime() - waitingSince.getTime()) / 60_000));
+        if (waitingMinutes < settings.rebalanceAfterMinutes) {
+          continue;
+        }
+
+        const candidates = await pool();
+        const excluded = excludedReviewerIds(row, [
+          ...(routed?.reviewerAgentIds ?? []),
+          review.reviewerAgentId,
+          ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
+        ]);
+
+        const emptyCandidates = candidates.filter(
+          (c) => c.invokable !== false && !excluded.has(c.id) && c.load === 0,
+        );
+        if (emptyCandidates.length === 0) {
+          continue;
+        }
+
+        emptyCandidates.sort((a, b) => a.id.localeCompare(b.id));
+        const picked = emptyCandidates[0];
+
+        try {
+          const state = await rebalance(row, review.reviewerAgentId, picked, waitingMinutes);
+          if (state) {
+            moves += 1;
+            result.reassigned += 1;
+            bumpLoad(picked.id, 1);
+            bumpLoad(review.reviewerAgentId, -1);
+          }
+        } catch (err) {
+          result.failed += 1;
+          log.warn({ err, issueId: row.id }, "review routing failed to rebalance a reviewer");
+        }
       }
     }
 
@@ -676,6 +731,50 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reviewerAgentId: reviewer.id,
         previousReviewerAgentId: previousReviewerId,
         hoursInReview,
+      },
+    });
+    return applied;
+  }
+
+  async function rebalance(
+    row: InReviewIssueRow,
+    previousReviewerId: string,
+    reviewer: ReviewerCandidate,
+    waitingMinutes: number,
+  ) {
+    const applied = await deps.store.applyPatch({
+      issueId: row.id,
+      companyId: row.companyId,
+      guard: (fresh) => readPendingAgentReview(fresh)?.reviewerAgentId === previousReviewerId,
+      build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: reviewer.id }),
+    });
+    if (!applied) return null;
+    await deps.addComment(
+      row.id,
+      `Automatic review routing: this review was waiting for ${waitingMinutes} min while another member of the ` +
+        `review pool had an empty queue, so it was rebalanced to @${reviewer.id}.`,
+      {
+        presentation: notice("Review rebalanced"),
+        metadata: metadataFor({
+          "Previous reviewer": previousReviewerId,
+          "New reviewer": reviewer.id,
+          "Role": reviewer.role,
+          "Wait minutes": String(waitingMinutes),
+        }),
+      },
+    );
+    await wake(row, reviewer.id, applied.executionState, "myrmidon_review_routing_rebalance");
+    await deps.logActivity({
+      companyId: row.companyId,
+      action: REVIEW_ROUTING_REASSIGNED_ACTION,
+      issueId: row.id,
+      details: {
+        identifier: row.identifier,
+        reviewerAgentId: reviewer.id,
+        reviewerRole: reviewer.role,
+        previousReviewerAgentId: previousReviewerId,
+        rebalanced: true,
+        waitingMinutes,
       },
     });
     return applied;
