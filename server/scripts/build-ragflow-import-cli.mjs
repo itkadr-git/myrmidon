@@ -34,6 +34,14 @@ const allDeps = new Set([
 
 const externals = Array.from(allDeps).filter((dep) => !dep.startsWith("@myrmidon/"));
 
+// The entry point lives outside the server package, so Node-style resolution
+// cannot find workspace packages from it. Bundle them explicitly from their
+// known source locations.
+const workspaceSources = {
+  "@myrmidon/corpus": resolve(repoRoot, "packages/corpus/src/index.ts"),
+  "@myrmidon/db": resolve(repoRoot, "packages/db/src/index.ts"),
+};
+
 await esbuild.build({
   entryPoints: [entryPoint],
   bundle: true,
@@ -43,6 +51,7 @@ await esbuild.build({
   outfile: outFile,
   banner: { js: "#!/usr/bin/env node\n" },
   external: externals,
+  alias: workspaceSources,
   treeShaking: true,
   sourcemap: true,
 });
