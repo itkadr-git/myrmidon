@@ -10,6 +10,10 @@
 // module that touches no port, and a parser failure that retries and then fails
 // the document.
 //
+// The shadow-mode search of the bot path (`createCorpusShadowSearch`) runs over the
+// same contour: a RAGFlow dataset id finds the imported dataset, the chunk ids it
+// returns are rows of `corpus_chunks`, and another company's data stays out of sight.
+//
 // Needs embedded PostgreSQL with pgvector; skipped (with a warning) where the
 // host cannot provide it, exactly like the package tests of part A.
 
@@ -21,10 +25,12 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   applyPendingMigrations,
+  corpusChunks,
+  corpusDocuments,
   createDb,
   getEmbeddedPostgresTestSupport,
   instanceSettings,
@@ -43,6 +49,7 @@ import {
 } from "./index.js";
 import { myrmidonCorpusRoutes } from "./routes.js";
 import { corpusService } from "./service.js";
+import { createCorpusShadowSearch } from "./shadow-search.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const pgvector = support.supported
@@ -317,5 +324,85 @@ run("corpus end to end over the production adapters", () => {
     } finally {
       parserMode = "ok";
     }
+  });
+
+  it("shadow search finds a dataset by its RAGFlow id and returns chunks that exist in corpus_chunks", { timeout: 60_000 }, async () => {
+    await setCorpusBlock(enabledBlock());
+    const shadow = createCorpusShadowSearch(db);
+    const query = "warranty period espresso machine";
+    const sorted = (values: string[]) => [...values].sort();
+
+    // Datasets named as the RAGFlow importer names them: `RAGFlow: <name> [<RAGFlow dataset id>]`.
+    const importDataset = async (app: ReturnType<typeof restApp>, companyId: string, name: string, withDocument: boolean) => {
+      const created = await request(app).post(restUrl(companyId, "datasets")).send({ name }).expect(201);
+      const datasetId = created.body.dataset.id as string;
+      if (withDocument) {
+        await request(app)
+          .post(restUrl(companyId, `datasets/${datasetId}/documents`))
+          .attach("file", Buffer.from(TEXT, "utf8"), { filename: "warranty.txt", contentType: "text/plain" })
+          .expect(202);
+        expect(await newWorker().sweep()).toMatchObject({ claimed: 1, parsed: 1, failed: 0 });
+      }
+      return datasetId;
+    };
+    const own = await importDataset(restApp(COMPANY), COMPANY, "RAGFlow: demo [abc123]", true);
+    const sibling = await importDataset(restApp(COMPANY), COMPANY, "RAGFlow: sibling [def456]", true);
+    // The other company reuses the very same dataset name and text; it also has a dataset the first one lacks.
+    const foreign = await importDataset(restApp(OTHER_COMPANY), OTHER_COMPANY, "RAGFlow: demo [abc123]", true);
+    await importDataset(restApp(OTHER_COMPANY), OTHER_COMPANY, "RAGFlow: foreign only [fed987]", false);
+
+    const storedChunks = (ids: string[]) =>
+      db
+        .select({
+          id: corpusChunks.id,
+          companyId: corpusChunks.companyId,
+          datasetId: corpusDocuments.datasetId,
+          content: corpusChunks.content,
+        })
+        .from(corpusChunks)
+        .innerJoin(corpusDocuments, eq(corpusChunks.documentId, corpusDocuments.id))
+        .where(inArray(corpusChunks.id, ids));
+
+    // The RAGFlow dataset id alone selects the dataset, and every chunk id it returns is a stored chunk of it.
+    const hits = await shadow.search({ companyId: COMPANY, dataset: "abc123", text: query });
+    const ids = hits.map((hit) => hit.chunkId);
+    expect(ids.length).toBeGreaterThan(0);
+    const stored = await storedChunks(ids);
+    expect(sorted(stored.map((row) => row.id))).toEqual(sorted(ids));
+    expect(stored.some((row) => row.content.includes("espresso machine"))).toBe(true);
+    for (const row of stored) {
+      expect(row.companyId).toBe(COMPANY);
+      expect(row.datasetId).toBe(own);
+    }
+
+    // The module dataset id and the exact imported name reach the same chunks as the RAGFlow id.
+    for (const dataset of [own, "RAGFlow: demo [abc123]"]) {
+      const same = await shadow.search({ companyId: COMPANY, dataset, text: query });
+      expect(sorted(same.map((hit) => hit.chunkId))).toEqual(sorted(ids));
+    }
+
+    // A sibling dataset of the same company holds the same text but is a different dataset.
+    const siblingHits = await shadow.search({ companyId: COMPANY, dataset: "def456", text: query });
+    const siblingIds = siblingHits.map((hit) => hit.chunkId);
+    expect(siblingIds.length).toBeGreaterThan(0);
+    expect(siblingIds.filter((id) => ids.includes(id))).toEqual([]);
+    for (const row of await storedChunks(siblingIds)) expect(row.datasetId).toBe(sibling);
+
+    // Company isolation: the same RAGFlow id in the other company finds only that company's chunks ...
+    const foreignHits = await shadow.search({ companyId: OTHER_COMPANY, dataset: "abc123", text: query });
+    const foreignIds = foreignHits.map((hit) => hit.chunkId);
+    expect(foreignIds.length).toBeGreaterThan(0);
+    expect(foreignIds.filter((id) => ids.includes(id) || siblingIds.includes(id))).toEqual([]);
+    for (const row of await storedChunks(foreignIds)) {
+      expect(row.companyId).toBe(OTHER_COMPANY);
+      expect(row.datasetId).toBe(foreign);
+    }
+    // ... a search without a dataset stays inside the company ...
+    const wide = await shadow.search({ companyId: OTHER_COMPANY, text: query });
+    expect(wide.length).toBeGreaterThan(0);
+    for (const row of await storedChunks(wide.map((hit) => hit.chunkId))) expect(row.companyId).toBe(OTHER_COMPANY);
+    // ... and a dataset of the other company is not found at all.
+    await expect(shadow.search({ companyId: COMPANY, dataset: "fed987", text: query })).rejects.toThrow("dataset not found");
+    await expect(shadow.search({ companyId: OTHER_COMPANY, dataset: "def456", text: query })).rejects.toThrow("dataset not found");
   });
 });
