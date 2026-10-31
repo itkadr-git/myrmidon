@@ -132,7 +132,7 @@ test("generateStandbyConfig includes required streaming parameters and credentia
   const cfg = generateStandbyConfig("board");
   assert.match(cfg, /primary_conninfo = 'host=(?:10\.10\.100\.1|primary\.internal)/);
   assert.match(cfg, /primary_slot_name = 'standby_board_slot'/);
-  assert.match(cfg, /passfile=/);
+  assert.match(cfg, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
   assert.doesNotMatch(cfg, /password=/);
   assert.match(cfg, /hot_standby = 'on'/);
   assert.match(cfg, /restore_command = /);
@@ -364,11 +364,48 @@ test("executeSwitchback resynchronizes standby from active primary", () => {
     rmSync: () => {},
   };
 
-  const res = executeSwitchback("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = executeSwitchback("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.equal(res.resynchronized, true);
   assert.equal(res.inRecovery, true);
   assert.equal(res.streamingActive, true);
+});
+
+test("executeSwitchback fails closed without explicit force flag", () => {
+  const executedCmds = [];
+  let rmCalled = false;
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => ["existing_pg_file"],
+    readFileSync: () => "",
+    rmSync: () => {
+      rmCalled = true;
+    },
+  };
+
+  const res = executeSwitchback("board", {}, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.match(res.error, /force/);
+  assert.equal(rmCalled, false);
+  // Ensure container stop was not called
+  const stopCmd = executedCmds.find((c) => c.cmd === "docker" && c.args.includes("stop"));
+  assert.equal(stopCmd, undefined);
+  // Ensure pg_basebackup was not called
+  const backupCmd = executedCmds.find((c) => c.cmd === "pg_basebackup");
+  assert.equal(backupCmd, undefined);
 });
 
 test("executeRehearsal conducts isolated drill, smoke tests both databases, and measures RTO", () => {
@@ -497,10 +534,12 @@ test("setupStandby uses credential path, sets PGPASSFILE env on basebackup, and 
   // Verify container .pgpass was written into dataDir
   assert.ok(fsWrites.some((f) => f.file.endsWith(".pgpass")));
 
-  // Verify postgresql.auto.conf uses passfile and does not embed raw password
+  // Verify postgresql.auto.conf uses container passfile (/var/lib/postgresql/data/.pgpass)
+  // and does NOT use host credential path (/etc/standby/pgpass) nor embed raw password
   const autoConf = fsWrites.find((f) => f.file.endsWith("postgresql.auto.conf"));
   assert.ok(autoConf);
-  assert.match(autoConf.content, /passfile=/);
+  assert.match(autoConf.content, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
+  assert.doesNotMatch(autoConf.content, /\/etc\/standby\/pgpass/);
   assert.doesNotMatch(autoConf.content, /password=/);
 });
 

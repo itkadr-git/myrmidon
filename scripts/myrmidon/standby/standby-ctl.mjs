@@ -33,6 +33,7 @@ export const DEFAULT_CONFIG = {
   replicatorPassword: process.env.PG_REPLICATOR_PASSWORD || "",
   passfilePath: process.env.PG_PASSFILE_PATH || "",
   credentialPath: process.env.STANDBY_CREDENTIAL_PATH || "",
+  containerPassfilePath: "/var/lib/postgresql/data/.pgpass",
   rpoMaxSeconds: 900, // RPO <= 15 min
   rtoTargetSeconds: 1800, // RTO <= 30 min
 };
@@ -226,13 +227,11 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
     : overrides.hindsightWalArchiveDir || DEFAULT_CONFIG.hindsightWalArchiveDir;
   const appName = isBoard ? "myrmidon_board_standby" : "myrmidon_hindsight_standby";
 
-  // Use passfile for standby authentication; never embed raw password in primary_conninfo
+  // Use passfile for standby authentication; never embed raw password in primary_conninfo.
+  // PostgreSQL inside the container accesses the passfile copied into data directory at /var/lib/postgresql/data/.pgpass.
   const passfilePath =
     overrides.containerPassfilePath ||
-    overrides.passfilePath ||
-    overrides.credentialPath ||
-    DEFAULT_CONFIG.passfilePath ||
-    DEFAULT_CONFIG.credentialPath ||
+    DEFAULT_CONFIG.containerPassfilePath ||
     "/var/lib/postgresql/data/.pgpass";
   const passParam = passfilePath ? ` passfile=${passfilePath}` : "";
 
@@ -865,7 +864,16 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 2. Stop standby container before resync
+  // 2. Fail-closed without explicit force flag before destructive container stop / data removal
+  if (!options.force) {
+    return {
+      success: false,
+      target,
+      error: `Switchback requires explicit --force to stop standby container, remove data directory '${dataDir}', and resynchronize`,
+    };
+  }
+
+  // 3. Stop standby container before resync
   const stopRes = runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
   if (stopRes.exitCode !== 0) {
     return {
