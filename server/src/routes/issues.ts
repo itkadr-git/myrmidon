@@ -1528,6 +1528,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "approval_approved",
   "budget.blocked",
   "company.inactive",
+  "deferred_issue_execution_expired",
   "dev_project_queue_empty",
   "email_received",
   "execution_changes_requested",
