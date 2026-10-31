@@ -3675,7 +3675,7 @@ export function issueRoutes(
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean }>;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3686,7 +3686,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
-  const insertReviewAdmissionWakeup =
+  const insertReviewAdmissionWakeup: NonNullable<typeof opts.insertReviewAdmissionWakeup> =
     opts.insertReviewAdmissionWakeup ??
     (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
       ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
@@ -9910,13 +9910,19 @@ export function issueRoutes(
             });
             Object.assign(updateFields, transition.patch);
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                lockedIssue.responsibleAgentId &&
+                (!actor.agentId || lockedIssue.responsibleAgentId !== actor.agentId)
+                  ? lockedIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 lockedIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   sourceRunId: actor.runId ?? undefined,
                   title: transition.recoveryInteraction.title,
@@ -14018,13 +14024,19 @@ export function issueRoutes(
       }
       Object.assign(updateFields, transition.patch);
       if (transition.recoveryInteraction) {
+        const targetAgentId =
+          existing.responsibleAgentId &&
+          (!actor.agentId || existing.responsibleAgentId !== actor.agentId)
+            ? existing.responsibleAgentId
+            : null;
         await issueThreadInteractionService(db).create(
           existing,
           {
             kind: "ask_user_questions",
             idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-            resolverPolicy: "human_only",
-            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            resolverPolicy: targetAgentId ? "anyone" : "human_only",
+            addresseeAgentId: targetAgentId,
+            addresseeUserId: targetAgentId ? null : (existing.responsibleUserId ?? existing.createdByUserId ?? null),
             continuationPolicy: "none",
             title: transition.recoveryInteraction.title,
             summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
@@ -14125,14 +14137,35 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (
-        enteringBlocked &&
-        req.actor.type === "agent" &&
-        blockerMetadataRaw == null
-      ) {
-        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+      if (enteringBlocked && blockerMetadataRaw == null) {
+        const missingFields = [
+          "blockReason",
+          "owner",
+          "nextCheckAt",
+          "timeoutAt",
+          "escalationPolicy",
+          "blockedByIssueIds or externalRef",
+        ];
+        res.status(422).json({
+          error: "Entering blocked requires complete blockerMetadata",
+          missingFields,
+        });
         return;
       }
+      if (
+        enteringBlocked &&
+        !blockerMetadataRaw.blockedByIssueIds?.length &&
+        !blockerMetadataRaw.externalRef &&
+        !updateFields.blockedByIssueIds?.length &&
+        !(typeof req.body?.unblockDescriptor?.reasonRef === "object" && req.body.unblockDescriptor.reasonRef !== null)
+      ) {
+        res.status(422).json({
+          error: "Entering blocked requires a blocker reference in blockerMetadata",
+          missingFields: ["blockedByIssueIds or externalRef"],
+        });
+        return;
+      }
+
       // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
       // a transition out of blocked without new metadata clears it, so no stale reason survives.
       const leavingBlocked =
@@ -15121,7 +15154,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
                   );
@@ -15148,7 +15181,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
@@ -19512,13 +19545,19 @@ export function issueRoutes(
             if (!updated) throw new AutoApprovalIssueMissingError();
 
             if (transition.recoveryInteraction) {
+              const targetAgentId =
+                currentIssue.responsibleAgentId &&
+                (!actor.agentId || currentIssue.responsibleAgentId !== actor.agentId)
+                  ? currentIssue.responsibleAgentId
+                  : null;
               await issueThreadInteractionService(tx as unknown as Db).create(
                 currentIssue,
                 {
                   kind: "ask_user_questions",
                   idempotencyKey: transition.recoveryInteraction.idempotencyKey,
-                  resolverPolicy: "human_only",
-                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  resolverPolicy: targetAgentId ? "anyone" : "human_only",
+                  addresseeAgentId: targetAgentId,
+                  addresseeUserId: targetAgentId ? null : (currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null),
                   continuationPolicy: "none",
                   title: transition.recoveryInteraction.title,
                   summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
