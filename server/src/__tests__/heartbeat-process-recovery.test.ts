@@ -4280,7 +4280,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toEqual({
-      status: "in_progress",
+      status: "in_review",
       executionRunId: retryRun?.id ?? null,
     });
 
@@ -4478,7 +4478,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toEqual({
-      status: "in_progress",
+      status: "in_review",
       executionRunId: retryRun?.id ?? null,
     });
 
