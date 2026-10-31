@@ -617,6 +617,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   // layout patch (they used to live only under wsBotDiskSettingsSchema).
   if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
   if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
+  if (typeof parsed.data.sessionRetentionDays === "number") out.sessionRetentionDays = parsed.data.sessionRetentionDays;
   if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
   if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
   if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
@@ -645,6 +646,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   // myrmidon(1.6.5-BOT-DISK-H5c): the C7 mechanics keys.
   if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
   if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
+  if (typeof parsed.data.sessionRetentionDays === "number") out.sessionRetentionDays = parsed.data.sessionRetentionDays;
   if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
   if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
   if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
@@ -690,11 +692,21 @@ export function resolveBotDiskSettings(options: {
       enabled: enabled[0],
       idleTtlMs: idleTtlMs[0],
       ...optionalWorkspaceLifecycleKeys(stored),
+      ...(stored.sessionRetentionDays !== undefined ? { sessionRetentionDays: stored.sessionRetentionDays } : {}),
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
     },
-    sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
+    sources: {
+      enabled: enabled[1],
+      idleTtlMs: idleTtlMs[1],
+      graceClosingMinutes: stored.graceClosingMinutes !== undefined ? "stored" : "default",
+      scratchTtlHours: stored.scratchTtlHours !== undefined ? "stored" : "default",
+      sessionRetentionDays: stored.sessionRetentionDays !== undefined ? "stored" : "default",
+      partitionThresholdPercent: stored.partitionThresholdPercent !== undefined ? "stored" : "default",
+      partitionRefuseOpenPercent: stored.partitionRefuseOpenPercent !== undefined ? "stored" : "default",
+      partitionCriticalPercent: stored.partitionCriticalPercent !== undefined ? "stored" : "default",
+    },
   };
 }
 
