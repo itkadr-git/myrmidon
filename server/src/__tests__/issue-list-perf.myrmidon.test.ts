@@ -12,7 +12,7 @@ import {
 } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("issue list route performance (OPE-9997)", () => {
-  const ctx = useEmbeddedPostgres();
+  const ctx = useEmbeddedPostgres("issue-list-perf");
 
   beforeEach(async () => {
     await resetCompanyIssueFixtures(ctx.db);
