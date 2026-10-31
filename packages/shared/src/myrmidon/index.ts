@@ -15,6 +15,8 @@ export * from "../myrmidon-agent-tool-permissions.js";
 export * from "../myrmidon-alert-recovery.js";
 export * from "../myrmidon-architect-data.js";
 export * from "../myrmidon-attention-feed.js";
+export * from "../myrmidon-auth-noemail.js";
+export * from "../myrmidon-auth-self-signup.js";
 export * from "../myrmidon-autonomy.js";
 export * from "../myrmidon-base-skills.js";
 export * from "../myrmidon-behavior-settings.js";

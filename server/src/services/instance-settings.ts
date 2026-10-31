@@ -98,6 +98,7 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -902,6 +903,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
               ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
+              ...preserveUsersAdminAGeneralKey(current.general), // myrmidon(1.7 USERS-ADMIN-UI A)
+              ...(patch.myrmidonAuthBlockedUsers !== undefined
+                ? { myrmidonAuthBlockedUsers: nextGeneral.myrmidonAuthBlockedUsers }
+                : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
               // The preserve line above restores the stored value: a patch that
