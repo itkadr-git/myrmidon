@@ -319,13 +319,14 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       },
     });
 
-    const result = await heartbeatService(db).tickTimers(new Date("2026-04-11T12:05:00.000Z"));
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const result = await heartbeatService(db).tickTimers(tickAt);
     expect(result.enqueued).toBe(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
 
     const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated.monitorNextCheckAt).not.toBeNull();
-    expect(new Date(updated.monitorNextCheckAt!).getTime()).toBeGreaterThan(new Date("2026-04-11T12:05:00.000Z").getTime());
+    expect(new Date(updated.monitorNextCheckAt!).getTime()).toBeGreaterThan(tickAt.getTime());
     expect(updated.monitorAttemptCount).toBe(1);
 
     const activity = await db
