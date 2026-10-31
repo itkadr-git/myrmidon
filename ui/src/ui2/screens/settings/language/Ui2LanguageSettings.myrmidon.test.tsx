@@ -76,6 +76,7 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     await flushReact();
 
     expect(window.localStorage.getItem("myrmidon.ui2.locale")).toBe("ru");
+    expect(window.localStorage.getItem("myrmidon:ui-language")).toBe("ru");
     // The preview card re-rendered in Russian.
     expect(container.textContent).toContain("Поднять мягкий лимит на день");
 

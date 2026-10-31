@@ -135,6 +135,20 @@ describe("fleet site enroll routes", () => {
     await request(app).post(path).send(body()).expect(201);
   });
 
+  it("enrolls a site with privateNetwork / tunnel profile flags", async () => {
+    const { app, deps } = harness();
+    await request(app)
+      .post(path)
+      .send(body({ privateNetwork: true, tunnel: true }))
+      .expect(201);
+    expect(deps.createSite).toHaveBeenCalledTimes(1);
+    const input = deps.createSite.mock.calls[0]![0];
+    expect(input.profile).toMatchObject({
+      privateNetwork: true,
+      tunnel: true,
+    });
+  });
+
   it("rejects http, paths and credentials in the url", async () => {
     const { app, deps } = harness();
     for (const url of ["http://192.0.2.10:9100", "https://192.0.2.10:9100/v1", "https://u:p@192.0.2.10:9100", "not a url"]) {

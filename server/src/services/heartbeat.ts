@@ -79,9 +79,11 @@ import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
+  buildContinuationKey,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
 } from "@myrmidon/shared";
+import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-dedupe.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -399,7 +401,7 @@ import {
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -439,6 +441,11 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import {
+  classifyEmptyRun,
+  evaluateCompletionGate,
+  checkAndHandleEmptyRunEscalation,
+} from "./empty-run.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -686,6 +693,9 @@ import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolveSessionCompactionPolicy,
+  RunGuard,
+  resolveRunGuardOptions,
+  type RunGuardStopReason,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
 } from "@myrmidon/adapter-utils";
@@ -901,6 +911,7 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
@@ -1189,6 +1200,9 @@ const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
+// Ten bounded attempts at the maximum five-minute delay fit in one hour.
+// The actual claim also covers a later dueAt supplied by retry policy.
+const CONTINUATION_RETRY_CLAIM_TTL_MS = 60 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
   "scheduled_retry",
   "queued",
@@ -3180,7 +3194,7 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
   return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
 }
 
-function isConfigurationIncompleteFailure(
+export function isConfigurationIncompleteFailure(
   error: unknown,
 ): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
@@ -9690,7 +9704,7 @@ export function heartbeatService(
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
-  const budgetHooks = {
+  const budgetHooks: BudgetServiceHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
     // myrmidon(M3): owner signal on a budget hard-stop — delivered into the
     // interrupted issue threads, deduped per incident, off via
@@ -9713,6 +9727,23 @@ export function heartbeatService(
         ? (input: BudgetSignalOnlyInput) =>
             deliverBudgetSignalOnly(db, budgetSignalOnlyPorts, input).then(() => undefined)
         : undefined,
+    // myrmidon(1.7-BUDGET-CONFIG): the A-hierarchy limits on run admission.
+    // Every evaluation resolves fresh: effective limit for the issue (issue →
+    // foraging → caste → project nest → company nest), spend of the period,
+    // the limit row's own mode, and the global signal-only flag (default ON =
+    // report-only, the corrupt-data-safe direction A chose). Only a hard,
+    // active, over-its-period limit refuses — see admission.ts.
+    resolveBudgetLimitAdmissionBlock: async ({ companyId, agentId, context }) =>
+      evaluateBudgetLimitAdmission(
+        { db, now: () => new Date(), env: runtimeEnv },
+        {
+          companyId,
+          agentId,
+          issueId: context?.issueId ?? null,
+          projectId: context?.projectId ?? null,
+          settings: { getGeneral: () => instanceSettings.getGeneral() },
+        },
+      ),
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, {
@@ -11887,7 +11918,59 @@ export function heartbeatService(
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
-      } else
+      } else {
+        const prProducts = await db.select().from(issueWorkProducts)
+          .where(and(
+            eq(issueWorkProducts.companyId, claimed.companyId),
+            eq(issueWorkProducts.issueId, claimed.id),
+            eq(issueWorkProducts.type, "pull_request"),
+            eq(issueWorkProducts.provider, "github"),
+          ));
+
+        let activeCiRecord: Record<string, unknown> | null = null;
+        for (const pr of prProducts) {
+          const metadata = pr.metadata && typeof pr.metadata === "object" ? pr.metadata as Record<string, unknown> : null;
+          const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
+          if (ci && (ci.status === "queued" || ci.status === "in_progress")) {
+            activeCiRecord = ci;
+            break;
+          }
+        }
+
+        if (activeCiRecord) {
+          const attempt = claimed.monitorAttemptCount ?? 0;
+          const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(attempt, 4)));
+          const nextCheckAt = new Date(input.now.getTime() + backoffMs);
+
+          await db.update(issues).set({
+            monitorNextCheckAt: nextCheckAt,
+            monitorAttemptCount: nextAttemptCount,
+            monitorWakeRequestedAt: null,
+            updatedAt: input.now,
+          }).where(eq(issues.id, claimed.id));
+
+          await logActivity(db, {
+            companyId: claimed.companyId,
+            actorType: input.actorType,
+            actorId: input.actorId,
+            agentId: input.agentId,
+            runId: input.runId,
+            action: "issue.monitor_deferred",
+            entityType: "issue",
+            entityId: claimed.id,
+            details: {
+              identifier: claimed.identifier,
+              reason: "ci_in_progress",
+              nextCheckAt: nextCheckAt.toISOString(),
+              attemptCount: nextAttemptCount,
+              activeCi: activeCiRecord,
+              source: input.activitySource,
+            },
+          });
+
+          return { outcome: "skipped" as const, reason: "ci_in_progress" };
+        }
+
         await enqueueWakeup(targetAgentId, {
           source: input.source,
           triggerDetail: input.triggerDetail,
@@ -11918,6 +12001,7 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+      }
 
       await db
         .update(issues)
@@ -13831,6 +13915,80 @@ export function heartbeatService(
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
+
+    // 1.7 AGENT-RUNTIME: гейт завершения прогона и эскалация холостых прогонов (OPE-10066)
+    const initialStatus =
+      typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
+        ? String((context.issue as any).status)
+        : null;
+
+    const hasProgressEvidence =
+      Boolean(detectedProgressSummary) ||
+      run.livenessState === "progress" ||
+      run.livenessState === "completed" ||
+      run.livenessState === "advanced";
+
+    const blockerReason =
+      issue?.status === "blocked"
+        ? (typeof (issue as any)?.blockerMetadata === "object" && (issue as any)?.blockerMetadata !== null
+            ? ((issue as any).blockerMetadata.blockReason ?? (issue as any).blockerMetadata.reason ?? null)
+            : null)
+        : null;
+
+    const isRepeatedToolFailure = Boolean(run.error?.includes("Repeated tool failure"));
+
+    const emptyClassification = classifyEmptyRun({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    const gateResult = evaluateCompletionGate({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      const escalation = await checkAndHandleEmptyRunEscalation(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+        runId: run.id,
+        classification: emptyClassification,
+        gateResult,
+      });
+
+      if (escalation.escalated || !escalation.shouldRewake) {
+        if (isSuccessfulRunHandoffValidPathSkip(decision)) {
+          await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            agentId: run.agentId,
+            runId: run.id,
+            skipReason: decision.reason,
+          });
+        }
+        return;
+      }
+    }
 
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
       await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
@@ -15905,14 +16063,13 @@ export function heartbeatService(
       run,
       retryContextSnapshot,
     );
-    const continuationRetryIdempotencyKey =
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-        ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-        : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
-          ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-          : null;
+    const isContinuationRetry =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+    let continuationRetryIdempotencyKey: string | null = null;
 
     type ScheduledRetryTransactionResult =
+      | { outcome: "deduped" }
       | {
           outcome: "scheduled";
           run: typeof heartbeatRuns.$inferSelect;
@@ -15964,6 +16121,33 @@ export function heartbeatService(
               reusedExisting: true,
             };
         }
+        if (isContinuationRetry) {
+          if (issueId) {
+            await tx.execute(
+              sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+            );
+            const [humanComment] = await tx.select({ id: issueComments.id })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId),
+                isNotNull(issueComments.authorUserId),
+                isNull(issueComments.authorAgentId),
+                or(isNull(issueComments.authorType), eq(issueComments.authorType, "user")),
+                gt(issueComments.createdAt, run.startedAt ?? run.createdAt),
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+            continuationRetryIdempotencyKey = buildContinuationKey({
+              issueId, event: "issue_continuation_needed",
+              head: `${retryReason}:${humanComment?.id ?? run.id}`,
+            });
+          } else {
+            // Taskless retries have no issue registry row; keep their old path.
+            const prefix = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+              ? "max-turn-continuation" : "interaction-continuation";
+            continuationRetryIdempotencyKey = `${prefix}:${run.companyId}:no-issue:${run.id}:${schedule.attempt}`;
+          }
+        }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
             await tx.execute(
@@ -15984,6 +16168,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16051,6 +16238,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16204,6 +16394,18 @@ export function heartbeatService(
           }
         }
 
+        const claimInput = isContinuationRetry && issueId && continuationRetryIdempotencyKey
+          ? { companyId: run.companyId, issueId, key: continuationRetryIdempotencyKey,
+              ttl: Math.max(CONTINUATION_RETRY_CLAIM_TTL_MS,
+                Math.max(0, schedule.dueAt.getTime() - now.getTime()) * schedule.maxAttempts) }
+          : null;
+        if (claimInput && await tryClaimContinuationKey(tx as unknown as Db, claimInput) === "deduped") {
+          return { outcome: "deduped" };
+        }
+        // A savepoint rolls back partial wake/run writes before we release our
+        // claim. Never remove another producer's claim or scan its successors.
+        try {
+          return await tx.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -16251,6 +16453,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!wakeupRequest) throw new Error("continuation_retry_enqueue_null");
         const scheduledRun = await tx
           .insert(heartbeatRuns)
           .values({
@@ -16277,6 +16480,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!scheduledRun) throw new Error("continuation_retry_enqueue_null");
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -16411,9 +16615,26 @@ export function heartbeatService(
           run: scheduledRun,
           reusedExisting: false,
         };
+          });
+        } catch (error) {
+          if (claimInput) await releaseContinuationKey(tx as unknown as Db, claimInput);
+          if (error instanceof Error && error.message === "continuation_retry_enqueue_null") {
+            return { outcome: "not_scheduled", reason: "Continuation retry enqueue returned no run",
+              errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+          throw error;
+        }
       },
     );
 
+    if (scheduleResult.outcome === "deduped") {
+      await appendRunEvent(run, {
+        eventType: "lifecycle", stream: "system", level: "info",
+        message: "Reused existing continuation retry claim",
+        payload: { retryReason, idempotencyKey: continuationRetryIdempotencyKey, outcome: "deduped" },
+      });
+      return { outcome: "not_scheduled" as const, reason: "Continuation retry already claimed", issueId };
+    }
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -22053,6 +22274,16 @@ export function heartbeatService(
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
+    let runGuard = new RunGuard();
+    let runGuardStopReason: RunGuardStopReason | null = null;
+    const stopForRunGuard = (reason: RunGuardStopReason) => {
+      runGuardStopReason ??= reason;
+      runGuard.stop(reason);
+      runGuard.clearIdleWatch();
+      if (!executionControl.controller.signal.aborted) {
+        executionControl.controller.abort(new Error(reason));
+      }
+    };
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
     let githubLauncherLocation:
@@ -22097,6 +22328,12 @@ export function heartbeatService(
         if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
         return;
       }
+
+      const teamLiveness = await teamLivenessRead().catch(() => null);
+      runGuard = new RunGuard(resolveRunGuardOptions({
+        agentConfig: agent.adapterConfig,
+        teamLiveness: teamLiveness?.settings,
+      }));
 
       // The claimed adapter identity is immutable recovery evidence. Do not
       // execute a newly selected adapter under a previous adapter's claim.
@@ -25020,6 +25257,7 @@ export function heartbeatService(
           const sanitizedChunk = compactRunLogChunk(
             redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
+          if (sanitizedChunk) runGuard.event();
           // myrmidon(DM-PROGRESS): Hermes tool lines feed the step history of
           // the live Telegram DM status (legacy adapters write no step events).
           recordDmProgressLogChunk(run.id, stream, sanitizedChunk);
@@ -25201,6 +25439,18 @@ export function heartbeatService(
         const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
           const eventType = event.eventType.trim();
           if (!eventType) return;
+          const payload = event.payload ?? {};
+          if (eventType === "tool_call") {
+            const toolName = String(payload.toolName ?? payload.name ?? "tool");
+            const decision = payload.status === "failed" || payload.isError === true
+              ? runGuard.toolFailure(toolName, payload.input ?? payload.args)
+              : payload.status === "completed" || payload.isError === false
+                ? runGuard.toolSuccess()
+                : runGuard.event();
+            if (decision.stop) stopForRunGuard(decision.reason!);
+          } else if (eventType === "assistant") {
+            runGuard.event();
+          }
           await appendRunEvent(currentRun, {
             eventType: eventType.slice(0, 120),
             stream: event.stream,
@@ -25951,20 +26201,13 @@ export function heartbeatService(
                 localAgentJwtScope,
               )
             : null;
-        if (
-          nativeRuntimeResolution.kind === "legacy" &&
-          adapter.supportsLocalAgentJwt &&
-          !authToken
-        ) {
-          logger.warn(
-            {
-              companyId: agent.companyId,
-              agentId: agent.id,
-              runId: run.id,
-              adapterType: agent.adapterType,
-            },
-            "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
-          );
+        if (nativeRuntimeResolution.kind === "legacy" && adapter.supportsLocalAgentJwt) {
+          if (!authToken) {
+            throw new ConfigurationIncompleteFailure(
+              `Cannot issue PAPERCLIP_API_KEY for adapter ${agent.adapterType}; refusing to start run without a valid run token`,
+              { code: "local_agent_jwt_unavailable" },
+            );
+          }
         }
         let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
         const inspectFinalizeWorkspaceBranch = async () => {
@@ -26543,10 +26786,12 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
-            const dispatch = () =>
-              dispatchResolvedInteractionContinuationWithAtomicGate(
+            try {
+              const dispatch = () =>
+                dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
                   legacyAdapterEntered = true;
+                  runGuard.startIdleWatch(() => stopForRunGuard("idle_timeout"));
                   return adapter.execute({
                     runId: run.id,
                     agent,
@@ -26554,6 +26799,8 @@ export function heartbeatService(
                     config: runtimeConfig,
                     context: adapterContext,
                     paperclipCancellation: executionControl.cancellation,
+                    runGuard,
+                    onRunGuardStop: async (reason) => stopForRunGuard(reason),
                     executionContinuation: executionContinuation ?? null,
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
@@ -26656,6 +26903,9 @@ export function heartbeatService(
               : await dispatch();
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
+            } finally {
+              runGuard.clearIdleWatch();
+            }
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
@@ -26845,6 +27095,7 @@ export function heartbeatService(
           }
           throw adapterErr;
         } finally {
+          runGuard.clearIdleWatch();
           try {
             await revokeHeartbeatRunGatewayTokens({
               db,
@@ -27009,7 +27260,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode =
+        const runErrorCode = runGuardStopReason ?? (
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -27018,7 +27269,8 @@ export function heartbeatService(
                 ? (adapterResult.errorCode ??
                   recordedResponsibleUserDenialCode ??
                   "adapter_failed")
-                : null;
+                : null
+        );
 
         let logSummary: {
           bytes: number;
@@ -27141,6 +27393,7 @@ export function heartbeatService(
                   ? parseObject(latestRun?.resultJson)
                   : {}),
                 ...parseObject(adapterResult.resultJson),
+                ...(runGuardStopReason ? { runGuardStopReason } : {}),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
@@ -27407,13 +27660,14 @@ export function heartbeatService(
           const conversationSettled = await settleConversationTurn(db, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
             suppressImmediateRecovery: conversationSettled ||
+              runGuardStopReason !== null ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
               ) !== null ||
               parseObject(livenessRun.contextSnapshot)
                 .resumeSessionGoalHeartbeat === true,
           });
-          if (!conversationSettled) {
+          if (!conversationSettled && runGuardStopReason === null) {
           await handleRunLivenessContinuation(livenessRun);
           await handleIssueReviewPathDisposition(livenessRun);
           await handleSuccessfulRunHandoff(
@@ -27781,17 +28035,20 @@ export function heartbeatService(
         });
 
         const stoppedDuringFailure = executionControl.controller.signal.aborted;
+        const stopReason = runGuardStopReason;
+        const stopMessage = stopReason ? `Run stopped by guard: ${stopReason}` : message;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
-          error: message,
-          errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
+          error: stopMessage,
+          errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
           finishedAt: new Date(),
           resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
-            errorCode: failureErrorCode,
-            errorMessage: message,
+            errorCode: stopReason ?? stopSnapshot?.errorCode ?? failureErrorCode,
+            errorMessage: stopMessage,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
+              ...(stopReason ? { runGuardStopReason: stopReason } : {}),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
@@ -27873,7 +28130,7 @@ export function heartbeatService(
             // exhaustion. Once its durable coordinator has classified a
             // terminal failure, generic issue recovery must not create a
             // replacement retryOfRunId chain for the same provider work.
-            suppressImmediateRecovery: nativeTerminalFailureCode !== null,
+            suppressImmediateRecovery: nativeTerminalFailureCode !== null || runGuardStopReason !== null,
           });
           await handleIssueReviewPathDisposition(livenessRun);
 
@@ -32575,6 +32832,8 @@ export function heartbeatService(
       limit?: number,
       summary?: boolean,
       actorShape?: string,
+      wakeReason?: string,
+      hasResult = false,
     ): Promise<string> => {
       const [agg] = await db
         .select({
@@ -32583,12 +32842,14 @@ export function heartbeatService(
         })
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
+              : sql`true`,
+            hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         );
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
@@ -32596,6 +32857,8 @@ export function heartbeatService(
         limit ?? "default",
         summary ? "summary" : "full",
         actorShape ?? "all",
+        wakeReason ?? "all",
+        hasResult ? "with-result" : "all-results",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -32604,7 +32867,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -32629,12 +32892,14 @@ export function heartbeatService(
         )
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            options.wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
+              : sql`true`,
+            options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 

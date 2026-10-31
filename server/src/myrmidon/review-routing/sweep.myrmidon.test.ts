@@ -51,14 +51,15 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
-  managerChain?: Map<string, Array<{ id: string; role: string }>>;
-  reviewers: Array<{ id: string; role: string; invokable?: boolean }>;
+  managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
+  reviewers: Array<{ id: string; role: string; invokable?: boolean; model?: string | null }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
   wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
+  agentModels?: Map<string, string | null>;
 }
 
 function makeStore(fx: Fixture) {
@@ -71,6 +72,7 @@ function makeStore(fx: Fixture) {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
+    getAgentModel: async (_company: string, agentId: string) => fx.agentModels?.get(agentId) ?? null,
     loadByAgent: async () => new Map(fx.load),
     countActiveRunsForAgent: async (_companyId: string, agentId: string) => {
       return fx.reviewerActiveRuns?.get(agentId) ?? 0;
@@ -495,6 +497,25 @@ describe("assignment", () => {
     const reviewers = ["1", "2", "3", "4"].map((id) => t.fixture.rows.get(id)!.assigneeAgentId);
     expect(reviewers.filter((id) => id === REV_A)).toHaveLength(2);
     expect(reviewers.filter((id) => id === REV_B)).toHaveLength(2);
+  });
+
+  it("filters out reviewers whose model matches the author's model", async () => {
+    const t = setup(
+      {},
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer", invokable: true, model: "model-author" },
+          { id: REV_B, role: "reviewer", invokable: true, model: "model-other" },
+        ],
+        load: new Map([[REV_A, 0], [REV_B, 1]]),
+        agentModels: new Map([[AUTHOR, "model-author"]]),
+      },
+    );
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    // REV_A has lower load (0) but matches author model; REV_B is assigned.
+    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_B);
   });
 
   it("excludes the task author and current assignee from reviewer candidates", async () => {

@@ -103,6 +103,8 @@ export type RuntimeRequestResolution =
 
 export interface HeartbeatRunListOptions {
   summary?: boolean;
+  wakeReason?: string;
+  hasResult?: boolean;
 }
 
 export interface ExternalSessionRun {
@@ -141,6 +143,8 @@ export const heartbeatsApi = {
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
+    if (options.wakeReason) searchParams.set("wakeReason", options.wakeReason);
+    if (options.hasResult) searchParams.set("hasResult", "true");
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(
       `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,
