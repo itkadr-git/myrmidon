@@ -18,8 +18,11 @@
 import { agents, type Db } from "@myrmidon/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { BotContainerAgent } from "./index.js";
+import type { BotContainerRouteAgent } from "./routes.js";
 
 export const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Agents the sweep reconciles; see the module comment. */
 export function listBotContainerAgents(db: Db): () => Promise<BotContainerAgent[]> {
@@ -47,3 +50,34 @@ export function listBotContainerAgents(db: Db): () => Promise<BotContainerAgent[
     }));
   };
 }
+
+/**
+ * Agents of a company that have bot-container enabled on a hermes_gateway card.
+ * Used by GET /myrmidon/companies/:companyId/bot-containers/status.
+ */
+export function listCompanyBotContainerAgents(db: Db): (companyId: string) => Promise<BotContainerRouteAgent[]> {
+  return async (companyId: string) => {
+    if (!UUID_PATTERN.test(companyId)) return [];
+    const rows = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+        runtimeConfig: agents.runtimeConfig,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          eq(agents.adapterType, HERMES_GATEWAY_ADAPTER_TYPE),
+          ne(agents.status, "terminated"),
+          sql`${agents.adapterConfig} #> '{container,enabled}' = 'true'::jsonb`,
+        ),
+      )
+      .orderBy(agents.id);
+    return rows;
+  };
+}
+
