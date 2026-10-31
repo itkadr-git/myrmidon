@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -429,6 +430,27 @@ async function promoteDeferredWake(
     return null;
   }
 
+  if (workingCandidate.wakeReason === "issue_continuation_needed" || workingCandidate.reason === "issue_continuation_needed") {
+    const claimed = await ports.transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({
+        issueId: issue.id,
+        event: "issue_continuation_needed",
+        head: readNonEmptyString(workingCandidate.deferredContextSeed.continuationHead) ?? workingCandidate.id,
+      }),
+    });
+    if (claimed === "deduped") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Deferred execution wake continuation already claimed",
+        now: input.now,
+      });
+      return null;
+    }
+  }
+
   // Claim before reopening. A reopen write and its post-commit effect must
   // never survive a lost race on this compare-and-set.
   const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
@@ -774,6 +796,15 @@ async function runReleaseRecoveryTail(
         wakeReason: recoveryReason,
       },
     );
+  }
+
+  if (recoveryReason === "issue_continuation_needed") {
+    const claimed = await transaction.claimContinuationKey({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      key: buildContinuationKey({ issueId: issue.id, event: "issue_continuation_needed", head: run.id }),
+    });
+    if (claimed === "deduped") return { outcome: { kind: "released" }, postCommitEffects };
   }
 
   const queuedRun = await transaction.queueImmediateRecoveryRun({

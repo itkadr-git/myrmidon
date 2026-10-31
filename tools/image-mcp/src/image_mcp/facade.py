@@ -66,16 +66,28 @@ def build_app(cfg: Settings | None = None, *, gateway=None) -> object:
         return bot.quota_bytes or cfg.bot_quota_bytes
 
     def public(meta: dict) -> dict:
-        return {k: meta[k] for k in ("id", "name", "size", "sha256", "kind", "created")} | {
-            "download": f"/v1/files/{meta['id']}"}
+        return {
+            "id": meta["id"],
+            "file_id": meta["id"],
+            "name": meta["name"],
+            "size": meta["size"],
+            "bytes": meta["size"],
+            "content_type": meta["kind"],
+            "sha256": meta["sha256"],
+            "kind": meta["kind"],
+            "created": meta["created"],
+            "download": f"/v1/files/{meta['id']}",
+        }
 
     def with_inline(bot, entry: dict, inline: bool) -> dict:
         if not inline:
             return entry
-        if entry["bytes"] > cfg.max_inline_result_bytes:
+        file_bytes = entry.get("bytes") if "bytes" in entry else entry.get("size", 0)
+        file_id = entry.get("file_id") or entry.get("id")
+        if file_bytes > cfg.max_inline_result_bytes:
             entry["inline_skipped"] = f"larger than {cfg.max_inline_result_bytes} bytes, use download"
         else:
-            entry["base64"] = base64.b64encode(store.blob(bot.key, entry["file_id"]).read_bytes()).decode()
+            entry["base64"] = base64.b64encode(store.blob(bot.key, file_id).read_bytes()).decode()
         return entry
 
     def wrap(fn):

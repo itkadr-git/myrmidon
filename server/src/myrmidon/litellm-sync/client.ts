@@ -29,9 +29,27 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
     });
 
     if (!response.ok) {
-      throw unprocessable(`LiteLLM ${path} answered ${response.status}`, {
+      let detail: string | undefined;
+      try {
+        const text = await response.text();
+        try {
+          const parsed = JSON.parse(text);
+          detail = parsed?.error?.message ?? parsed?.detail ?? parsed?.message ?? text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        // ignore read error
+      }
+
+      const message = detail
+        ? `LiteLLM ${path} answered ${response.status}: ${detail}`
+        : `LiteLLM ${path} answered ${response.status}`;
+
+      throw unprocessable(message, {
         code: "litellm_request_failed",
         status: response.status,
+        detail,
       });
     }
 
@@ -48,7 +66,15 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
           api_base: input.baseUrl || undefined,
           // Pass the secret name reference, not the value
           api_key: `secrets/${input.credentialSecretName}`,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
           ...input.additionalConfig,
+        },
+        model_info: {
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         },
       };
 
@@ -64,9 +90,17 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
           api_base: input.baseUrl || undefined,
           // Pass the secret name reference, not the value
           api_key: `secrets/${input.credentialSecretName}`,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
           ...input.additionalConfig,
         },
-        model_info: { id: input.modelId },
+        model_info: {
+          id: input.modelId,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
+        },
       });
     },
 

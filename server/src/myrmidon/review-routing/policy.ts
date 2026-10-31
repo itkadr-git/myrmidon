@@ -29,6 +29,7 @@ export interface RoutingIssue {
 export interface ReviewerCandidate {
   id: string;
   role: string;
+  model?: string | null;
   /** Tasks the agent holds in flight (in progress + in review). */
   load: number;
   readonly invokable?: boolean;
@@ -126,10 +127,11 @@ export interface ReviewerAvailability {
 
 /** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
 export function evaluateReviewerAvailability(input: {
-  reviewers: readonly { id: string; role: string; invokable?: boolean }[];
+  reviewers: readonly { id: string; role: string; invokable?: boolean; model?: string | null }[];
   loadByAgent: ReadonlyMap<string, number>;
   issue: RoutingIssue;
   maxLoad: number;
+  authorModel?: string | null;
 }): ReviewerAvailability {
   return {
     selected: pickReviewer({
@@ -137,10 +139,12 @@ export function evaluateReviewerAvailability(input: {
         id: reviewer.id,
         role: reviewer.role,
         invokable: reviewer.invokable,
+        model: reviewer.model,
         load: input.loadByAgent.get(reviewer.id) ?? 0,
       })),
       excluded: excludedReviewerIds(input.issue),
       maxLoad: input.maxLoad,
+      authorModel: input.authorModel,
     }),
   };
 }
@@ -149,9 +153,11 @@ export function pickReviewer(input: {
   candidates: readonly ReviewerCandidate[];
   excluded: ReadonlySet<string>;
   maxLoad: number;
+  authorModel?: string | null;
 }): ReviewerCandidate | null {
   const eligible = input.candidates.filter((candidate) => {
     if (candidate.invokable === false) return false;
+    if (input.authorModel != null && candidate.model === input.authorModel) return false;
     return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
   });
   if (eligible.length === 0) return null;

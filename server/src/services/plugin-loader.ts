@@ -682,6 +682,11 @@ export interface PluginLoader {
    * Whether runtime services are available for plugin activation.
    */
   hasRuntimeServices(): boolean;
+
+  /**
+   * Optional cache invalidation hook.
+   */
+  clearCache?(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1987,6 +1992,10 @@ export function pluginLoader(
 
     hasRuntimeServices(): boolean {
       return runtimeServices !== undefined;
+    },
+
+    clearCache(): void {
+      // Optional cache invalidation hook; no-op for standard loader
     },
 
     // -----------------------------------------------------------------------

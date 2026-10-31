@@ -1,5 +1,5 @@
 {
-  "id": "7b90fc48-be1f-4991-859f-83ae6ba9d1e3",
+  "id": "b0e3cca4-7e1b-4a7c-953d-cfc0dbdbb847",
   "prevId": "aa8ac63f-1948-4cf3-8b0c-1eb94776d1e7",
   "version": "7",
   "dialect": "postgresql",
@@ -35529,6 +35529,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "responsible_agent_id": {
+          "name": "responsible_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -36284,6 +36290,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "issues_company_responsible_agent_idx": {
+          "name": "issues_company_responsible_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "responsible_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -36428,6 +36455,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issues_responsible_agent_id_agents_id_fk": {
+          "name": "issues_responsible_agent_id_agents_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "responsible_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -46636,94 +46676,6 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.redaction_substitutions": {
-      "name": "redaction_substitutions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "redaction_id": {
-          "name": "redaction_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token": {
-          "name": "token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original": {
-          "name": "original",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "redaction_substitutions_lookup_idx": {
-          "name": "redaction_substitutions_lookup_idx",
-          "columns": [
-            {
-              "expression": "redaction_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "token",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "redaction_substitutions_expiry_idx": {
-          "name": "redaction_substitutions_expiry_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

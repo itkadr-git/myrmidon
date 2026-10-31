@@ -46,6 +46,8 @@ H1–H10 пишут код только против этих схем и фик
 - `closedKeys[]`: issue keys of done/cancelled tasks the bot holds or held, with no lookback limit.
   botd removes a legacy directory named like a task only for a key listed here; a key in `protectKeys`
   or listed in `workspaces` but not closed is kept; without the field nothing under `/workspace` is removed.
+- `closedTasks[]` (1.6.6 DISK, OPE-9673): structured metadata for closed tasks (`key`, `closedAt`, `issueId`)
+  with authoritative closure timestamps for safe session retention without relying on `updatedAt`.
 - `grace.legacyPressureIdleDays` (1..90, default 7): idle days before a named directory without a closing
   task is archived under hard pressure.
 - The route answers 503 when `general.botDisk.enabled` is false; botd treats it as no desired state.
