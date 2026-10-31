@@ -284,8 +284,11 @@ jobs:
           docker run -d --name paperclip-1012 --network host \
             -e HOST=127.0.0.1 -e PORT=3100 \
             -e DATABASE_URL="postgres://postgres:postgrespassword@localhost:5432/paperclip_vendor_seed" \
-            -e PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
+            -e PAPERCLIP_DEPLOYMENT_MODE=authenticated \
             -e PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+            -e BETTER_AUTH_SECRET=seed-only-better-auth-secret-2026 \
+            -e AUTH_DISABLE_SIGN_UP=false \
+            -e BETTER_AUTH_TRUSTED_ORIGINS=http://127.0.0.1:3100 \
             -e PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=false \
             ghcr.io/paperclipai/paperclip:2026.1012.0
 
