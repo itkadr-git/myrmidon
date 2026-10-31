@@ -3935,7 +3935,7 @@ export function issueRoutes(
               and(
                 eq(agents.companyId, input.companyId),
                 eq(agents.role, "engineer"),
-                ne(agents.status, "retired"),
+                notInArray(agents.status, ["retired", "terminated"]),
               ),
             )
             .limit(1);
@@ -13849,6 +13849,45 @@ export function issueRoutes(
     },
   );
 
+  router.patch(
+    "/issues/:id/execution-participants",
+    async (req, res) => {
+      assertBoard(req);
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue) return;
+      const body = req.body as { returnAssignee?: { type?: string; agentId?: string | null } | null; currentParticipant?: { type?: string; agentId?: string | null } | null };
+      const currentState = parseIssueExecutionState(issue.executionState);
+      if (!currentState) {
+        res.status(409).json({ error: "Issue has no valid execution state" });
+        return;
+      }
+      const nextState = { ...currentState };
+      for (const key of ["returnAssignee", "currentParticipant"] as const) {
+        if (!(key in body)) continue;
+        const value = body[key];
+        if (value !== null && (value?.type !== "agent" || !value.agentId)) {
+          res.status(400).json({ error: `${key} must be an agent participant or null` });
+          return;
+        }
+        if (value?.agentId) {
+          const agent = await agentsSvc.getById(value.agentId);
+          const previous = currentState[key];
+          const previousAgent = previous?.type === "agent" && previous.agentId ? await agentsSvc.getById(previous.agentId) : null;
+          if (!agent || agent.companyId !== issue.companyId || agent.status === "terminated" || agent.status === "retired") {
+            res.status(409).json({ error: `${key} agent is not assignable` });
+            return;
+          }
+          if (previousAgent && agent.role !== previousAgent.role) {
+            res.status(422).json({ error: `${key} replacement must keep the participant role` });
+            return;
+          }
+        }
+        nextState[key] = value as typeof nextState[typeof key];
+      }
+      const updated = await svc.update(issue.id, { executionState: nextState, companyGuard: issue.companyId, actorUserId: req.actor.userId ?? null });
+      res.json(updated);
+    },
+  );
   router.patch(
     "/issues/:id",
     validateIssueMutationBody(updateIssueRouteSchema),
