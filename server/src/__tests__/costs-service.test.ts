@@ -86,6 +86,7 @@ const mockCostService = vi.hoisted(() => ({
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  byIssue: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -164,8 +165,8 @@ describe("cost routes", () => {
   }
 
   function loadCostParsers() {
-    const { parseCostDateRange, parseCostLimit } = routeModules.value;
-    return { parseCostDateRange, parseCostLimit };
+    const { parseCostDateRange, parseCostLimit, parseIssueCostLimit } = routeModules.value;
+    return { parseCostDateRange, parseCostLimit, parseIssueCostLimit };
   }
 
   beforeEach(() => {
@@ -276,6 +277,58 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+  });
+
+  it("parses valid and invalid limits for by-issue endpoint", () => {
+    const { parseIssueCostLimit } = loadCostParsers();
+    expect(parseIssueCostLimit({})).toBe(20);
+    expect(parseIssueCostLimit({ limit: "" })).toBe(20);
+    expect(parseIssueCostLimit({ limit: "2" })).toBe(2);
+    expect(parseIssueCostLimit({ limit: "100" })).toBe(100);
+    expect(() => parseIssueCostLimit({ limit: "0" })).toThrow(/invalid 'limit'/i);
+    expect(() => parseIssueCostLimit({ limit: "-1" })).toThrow(/invalid 'limit'/i);
+    expect(() => parseIssueCostLimit({ limit: "101" })).toThrow(/invalid 'limit'/i);
+    expect(() => parseIssueCostLimit({ limit: "foo" })).toThrow(/invalid 'limit'/i);
+  });
+
+  it("handles GET /companies/:companyId/costs/by-issue with query params", async () => {
+    const app = createApp();
+    const rows = [
+      {
+        issueId: "issue-1",
+        identifier: "PAP-1",
+        title: "Heavy task",
+        costCents: 500,
+        inputTokens: 1000,
+        cachedInputTokens: 100,
+        outputTokens: 200,
+        runs: 2,
+      },
+    ];
+    mockCostService.byIssue.mockResolvedValueOnce(rows);
+
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-issue?from=2026-04-01T00:00:00.000Z&to=2026-04-15T23:59:59.999Z&limit=2")
+      .expect(200);
+
+    expect(mockCostService.byIssue).toHaveBeenCalledWith(
+      "company-1",
+      {
+        from: new Date("2026-04-01T00:00:00.000Z"),
+        to: new Date("2026-04-15T23:59:59.999Z"),
+      },
+      2,
+    );
+    expect(res.body).toEqual(rows);
+  });
+
+  it("returns 400 when by-issue limit exceeds 100", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-issue?limit=101")
+      .expect(400);
+
+    expect(res.body.error).toMatch(/invalid 'limit'/i);
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
@@ -932,5 +985,290 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+
+  it("aggregates costs by issue ordered by cost descending, respecting limit, company boundary and consistency with summary", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    const issue1Id = randomUUID();
+    const issue2Id = randomUUID();
+    const issue3Id = randomUUID();
+    const otherCompanyIssueId = randomUUID();
+
+    const run1Id = randomUUID();
+    const run2Id = randomUUID();
+    const run3Id = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip Primary",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Paperclip Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Primary Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId: otherCompanyId,
+        name: "Other Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: issue1Id,
+        companyId,
+        title: "Expensive Task",
+        status: "in_progress",
+        priority: "high",
+        issueNumber: 1,
+        identifier: "EXP-1",
+      },
+      {
+        id: issue2Id,
+        companyId,
+        title: "Cheap Task",
+        status: "done",
+        priority: "low",
+        issueNumber: 2,
+        identifier: "CHP-2",
+      },
+      {
+        id: issue3Id,
+        companyId,
+        title: "Medium Task",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 3,
+        identifier: "MED-3",
+      },
+      {
+        id: otherCompanyIssueId,
+        companyId: otherCompanyId,
+        title: "Other Company Task",
+        status: "todo",
+        priority: "high",
+        issueNumber: 1,
+        identifier: "OTH-1",
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: run1Id,
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-04-10T10:00:00.000Z"),
+      },
+      {
+        id: run2Id,
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-04-10T11:00:00.000Z"),
+      },
+      {
+        id: run3Id,
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+    ]);
+
+    // Issue 1: 500 cents total (two events with run1Id, one with run2Id -> 2 runs)
+    // Issue 2: 100 cents total (one event with run3Id -> 1 run)
+    // Issue 3: 300 cents total (one event with run3Id -> 1 run)
+    // Other company issue: 999 cents
+    // Unassigned event (no issue_id): 50 cents
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId: issue1Id,
+        heartbeatRunId: run1Id,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 1000,
+        cachedInputTokens: 200,
+        outputTokens: 300,
+        costCents: 200,
+        occurredAt: new Date("2026-04-10T10:05:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issue1Id,
+        heartbeatRunId: run1Id,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 500,
+        cachedInputTokens: 50,
+        outputTokens: 100,
+        costCents: 100,
+        occurredAt: new Date("2026-04-10T10:15:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issue1Id,
+        heartbeatRunId: run2Id,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 1000,
+        cachedInputTokens: 100,
+        outputTokens: 200,
+        costCents: 200,
+        occurredAt: new Date("2026-04-10T11:05:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issue2Id,
+        heartbeatRunId: run3Id,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 500,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 100,
+        occurredAt: new Date("2026-04-10T12:05:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: issue3Id,
+        heartbeatRunId: run3Id,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 1500,
+        cachedInputTokens: 300,
+        outputTokens: 150,
+        costCents: 300,
+        occurredAt: new Date("2026-04-10T12:15:00.000Z"),
+      },
+      {
+        companyId: otherCompanyId,
+        agentId: otherAgentId,
+        issueId: otherCompanyIssueId,
+        heartbeatRunId: null,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 5000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+        costCents: 999,
+        occurredAt: new Date("2026-04-10T12:30:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: null,
+        heartbeatRunId: null,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 200,
+        cachedInputTokens: 0,
+        outputTokens: 20,
+        costCents: 50,
+        occurredAt: new Date("2026-04-10T12:45:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-30T23:59:59.999Z"),
+    };
+
+    // 1. Fixture of 3 issues with different costs -> order by cost descending, limit=2 returns the 2 most expensive
+    const top2 = await costs.byIssue(companyId, range, 2);
+    expect(top2).toHaveLength(2);
+    expect(top2[0]).toMatchObject({
+      issueId: issue1Id,
+      identifier: "EXP-1",
+      title: "Expensive Task",
+      costCents: 500,
+      inputTokens: 2500,
+      cachedInputTokens: 350,
+      outputTokens: 600,
+      runs: 2,
+    });
+    expect(top2[1]).toMatchObject({
+      issueId: issue3Id,
+      identifier: "MED-3",
+      title: "Medium Task",
+      costCents: 300,
+      inputTokens: 1500,
+      cachedInputTokens: 300,
+      outputTokens: 150,
+      runs: 1,
+    });
+
+    // 2. Issue of another company does not appear in the response
+    const allForCompany = await costs.byIssue(companyId, range, 20);
+    expect(allForCompany).toHaveLength(3);
+    const returnedIssueIds = allForCompany.map((r) => r.issueId);
+    expect(returnedIssueIds).not.toContain(otherCompanyIssueId);
+    expect(allForCompany[2]).toMatchObject({
+      issueId: issue2Id,
+      identifier: "CHP-2",
+      title: "Cheap Task",
+      costCents: 100,
+      runs: 1,
+    });
+
+    const otherResults = await costs.byIssue(otherCompanyId, range, 20);
+    expect(otherResults).toHaveLength(1);
+    expect(otherResults[0]?.issueId).toBe(otherCompanyIssueId);
+
+    // 3. Sum of costCents across all issues + events without issue = costs/summary.spendCents
+    const summary = await costs.summary(companyId, range);
+    const sumIssueCosts = allForCompany.reduce((acc, r) => acc + r.costCents, 0);
+    const eventWithoutIssueCost = 50;
+    expect(sumIssueCosts + eventWithoutIssueCost).toBe(summary.spendCents);
+    expect(summary.spendCents).toBe(950);
   });
 });
