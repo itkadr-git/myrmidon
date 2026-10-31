@@ -1,68 +1,26 @@
-# Warm standby compose configuration for central databases (T9 Option A2 on myr-vm1)
-# Standby services run on dedicated, isolated ports (5433 for board DB, 5434 for Hindsight DB)
-# and dedicated directories to avoid conflicts with any local processes or databases.
-# Configured for streaming replication directly from primary with WAL archive fallback.
+# Docker Compose for Myrmidon center warm standby on myr-vm1 (T9).
+# Single PostgreSQL 18 standby cluster replicating vm-core myrmidon-pg
+# containing both 'paperclip' and 'myrmidon_hindsight' databases.
 services:
   myrmidon-pg-standby:
-    image: docker.io/pgvector/pgvector:pg18
+    image: ghcr.io/itkadr-git/myrmidon-pg:18
     container_name: myrmidon-pg-standby
     restart: unless-stopped
     ports:
-      - "${STANDBY_BOARD_PORT:-5433}:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
-      - ${STANDBY_BOARD_DATA_DIR:-/srv/standby/myrmidon-pg/data}:/var/lib/postgresql/data
-      - ${BOARD_WAL_ARCHIVE_DIR:-/srv/backups/wal/myrmidon-pg}:/wal-archive:ro
+      - /srv/standby/myrmidon-pg/data:/var/lib/postgresql/data
+      - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
     environment:
-      POSTGRES_USER: ${STANDBY_PG_USER:-paperclip}
-      POSTGRES_PASSWORD: ${STANDBY_PG_PASSWORD:-paperclip}
-      POSTGRES_DB: ${STANDBY_BOARD_DB:-paperclip}
-      PRIMARY_HOST: ${PRIMARY_PG_HOST:-primary.internal}
-      PRIMARY_PORT: ${PRIMARY_BOARD_PORT:-5432}
-      PRIMARY_SLOT: ${BOARD_REPL_SLOT:-standby_board_slot}
-    command:
-      - postgres
-      - -c
-      - hot_standby=on
-      - -c
-      - primary_conninfo=host=${PRIMARY_PG_HOST:-primary.internal} port=${PRIMARY_BOARD_PORT:-5432} user=${BOARD_REPL_USER:-myr_replicator} application_name=myrmidon_board_standby connect_timeout=10
-      - -c
-      - primary_slot_name=${BOARD_REPL_SLOT:-standby_board_slot}
-      - -c
-      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      PGDATA: /var/lib/postgresql/data
+    command: >
+      postgres
+      -c hot_standby=on
+      -c restore_command='cp /srv/backups/wal/%f %p'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${STANDBY_PG_USER:-paperclip} -p 5432 && psql -U ${STANDBY_PG_USER:-paperclip} -p 5432 -d ${STANDBY_BOARD_DB:-paperclip} -t -A -c 'SELECT pg_is_in_recovery();' | grep -q 't'"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "pg_isready -p 5432 -U paperclip && psql -U paperclip -d paperclip -c 'SELECT pg_is_in_recovery();' | grep -q t"]
+      interval: 10s
+      timeout: 5s
       retries: 5
-
-  hindsight-pg-standby:
-    image: docker.io/pgvector/pgvector:pg18
-    container_name: hindsight-pg-standby
-    restart: unless-stopped
-    ports:
-      - "${STANDBY_HINDSIGHT_PORT:-5434}:5432"
-    volumes:
-      - ${STANDBY_HINDSIGHT_DATA_DIR:-/srv/standby/hindsight-pg/data}:/var/lib/postgresql/data
-      - ${HINDSIGHT_WAL_ARCHIVE_DIR:-/srv/backups/wal/hindsight-pg}:/wal-archive:ro
-    environment:
-      POSTGRES_USER: ${STANDBY_HINDSIGHT_USER:-hindsight}
-      POSTGRES_PASSWORD: ${STANDBY_HINDSIGHT_PASSWORD:-hindsight}
-      POSTGRES_DB: ${STANDBY_HINDSIGHT_DB:-hindsight}
-      PRIMARY_HOST: ${PRIMARY_PG_HOST:-primary.internal}
-      PRIMARY_PORT: ${PRIMARY_HINDSIGHT_PORT:-5432}
-      PRIMARY_SLOT: ${HINDSIGHT_REPL_SLOT:-standby_hindsight_slot}
-    command:
-      - postgres
-      - -c
-      - hot_standby=on
-      - -c
-      - primary_conninfo=host=${PRIMARY_PG_HOST:-primary.internal} port=${PRIMARY_HINDSIGHT_PORT:-5432} user=${HINDSIGHT_REPL_USER:-hindsight_replicator} application_name=hindsight_standby connect_timeout=10
-      - -c
-      - primary_slot_name=${HINDSIGHT_REPL_SLOT:-standby_hindsight_slot}
-      - -c
-      - restore_command=test -f /wal-archive/%f && cp /wal-archive/%f %p
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${STANDBY_HINDSIGHT_USER:-hindsight} -p 5432 && psql -U ${STANDBY_HINDSIGHT_USER:-hindsight} -p 5432 -d ${STANDBY_HINDSIGHT_DB:-hindsight} -t -A -c 'SELECT pg_is_in_recovery();' | grep -q 't'"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      start_period: 15s

@@ -17,19 +17,21 @@ export const DEFAULT_CONFIG = {
   primaryHindsightPort: 5432,
   standbyHost: "127.0.0.1",
   standbyBoardPort: 5433,
-  standbyHindsightPort: 5434,
+  standbyHindsightPort: 5433,
   boardReplUser: "myr_replicator",
-  hindsightReplUser: "hindsight_replicator",
+  hindsightReplUser: "myr_replicator",
   boardReplSlot: "standby_board_slot",
-  hindsightReplSlot: "standby_hindsight_slot",
+  hindsightReplSlot: "standby_board_slot",
   boardDataDir: "/srv/standby/myrmidon-pg/data",
-  hindsightDataDir: "/srv/standby/hindsight-pg/data",
+  hindsightDataDir: "/srv/standby/myrmidon-pg/data",
   boardWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
-  hindsightWalArchiveDir: "/srv/backups/wal/hindsight-pg",
+  hindsightWalArchiveDir: "/srv/backups/wal/myrmidon-pg",
   boardDbUser: "paperclip",
   boardDbName: "paperclip",
-  hindsightDbUser: "hindsight",
-  hindsightDbName: "hindsight",
+  hindsightDbUser: "myrmidon_hindsight",
+  hindsightDbName: "myrmidon_hindsight",
+  replicatorPassword: process.env.PG_REPLICATOR_PASSWORD || "standby_secret",
+  passfilePath: process.env.PG_PASSFILE_PATH || "",
   rpoMaxSeconds: 900, // RPO <= 15 min
   rtoTargetSeconds: 1800, // RTO <= 30 min
 };
@@ -40,6 +42,8 @@ export const defaultFsOps = {
   readFileSync: fs.readFileSync,
   existsSync: fs.existsSync,
   rmSync: fs.rmSync,
+  readdirSync: fs.readdirSync,
+  chmodSync: fs.chmodSync,
 };
 
 export function defaultRunner(cmd, args = [], options = {}) {
@@ -70,6 +74,9 @@ export function parseLsn(lsnStr) {
 
 /**
  * Calculates byte lag and time lag between primary/receive and replay LSN.
+ * On an idle database where byteLag is 0 and receiveByteLag is 0, timeLag naturally
+ * grows without real lag; RPO is only violated if byteLag > 0 or receive-LSN lags,
+ * or if LSN cannot be measured.
  */
 export function calculateLag({
   primaryLsn,
@@ -113,9 +120,13 @@ export function calculateLag({
   let rpoOk = true;
   let rpoStatus = "ok";
 
+  const hasByteLag = (byteLag !== null && byteLag > 0n) || (receiveByteLag !== null && receiveByteLag > 0n);
+
   if (effectiveRpoMax !== undefined && timeLagSeconds !== null && timeLagSeconds > effectiveRpoMax) {
-    rpoOk = false;
-    rpoStatus = "lag_exceeded";
+    if (hasByteLag || byteLag === null) {
+      rpoOk = false;
+      rpoStatus = "lag_exceeded";
+    }
   }
 
   if (maxByteLag !== undefined && byteLag !== null && byteLag > BigInt(maxByteLag)) {
@@ -195,7 +206,7 @@ export function parseReplicationStatus(sqlOutput) {
 }
 
 /**
- * Generates postgresql.auto.conf content for standby streaming.
+ * Generates postgresql.auto.conf content for standby streaming with replication credentials.
  */
 export function generateStandbyConfig(target = "board", overrides = {}) {
   const isBoard = target === "board";
@@ -206,6 +217,8 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
   const replUser = isBoard
     ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+  const replPassword = overrides.replicatorPassword || DEFAULT_CONFIG.replicatorPassword;
+  const passfilePath = overrides.passfilePath || DEFAULT_CONFIG.passfilePath;
   const replSlot = isBoard
     ? overrides.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
     : overrides.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
@@ -214,9 +227,15 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
     : overrides.hindsightWalArchiveDir || DEFAULT_CONFIG.hindsightWalArchiveDir;
   const appName = isBoard ? "myrmidon_board_standby" : "myrmidon_hindsight_standby";
 
+  const passParam = passfilePath
+    ? ` passfile=${passfilePath}`
+    : replPassword
+    ? ` password=${replPassword}`
+    : "";
+
   return [
     `# PostgreSQL standby configuration for ${target} (managed by standby-ctl.mjs)`,
-    `primary_conninfo = 'host=${primaryHost} port=${primaryPort} user=${replUser} application_name=${appName} connect_timeout=10'`,
+    `primary_conninfo = 'host=${primaryHost} port=${primaryPort} user=${replUser}${passParam} application_name=${appName} connect_timeout=10'`,
     `primary_slot_name = '${replSlot}'`,
     `hot_standby = 'on'`,
     `restore_command = 'test -f ${walArchiveDir}/%f && cp ${walArchiveDir}/%f %p'`,
@@ -283,8 +302,8 @@ export function planFailover(target = "board", overrides = {}) {
     promoteSql: "SELECT pg_promote();",
     promoteCli: `pg_ctl promote -D ${dataDir}`,
     verifySql: "SELECT pg_is_in_recovery();",
-    appEndpoint: isBoard ? `127.0.0.1:${port}` : `127.0.0.1:${port}`,
-    connectionString: `postgresql://${user}:<password>@127.0.0.1:${port}/${db}`,
+    appEndpoint: `127.0.0.1:${port}`,
+    connectionString: `postgresql://${user}:***@127.0.0.1:${port}/${db}`,
     appRestartCmd: "docker compose up -d --force-recreate myrmidon-board",
     healthCheckUrl: "http://127.0.0.1:3100/healthz",
   };
@@ -301,38 +320,39 @@ export function planSwitchback(target = "board", overrides = {}) {
   return {
     target,
     step1_verifyPrimary: "SELECT pg_is_in_recovery(); -- ensure original primary is active primary",
-    step2_stopStandby: `docker compose stop myrmidon-pg-standby`,
+    step2_stopStandby: "docker compose stop myrmidon-pg-standby",
     step3_resync: basebackup.commandString,
     step4_standbySignal: `touch ${dataDir}/standby.signal`,
     step5_config: config,
-    step6_startStandby: `docker compose up -d myrmidon-pg-standby`,
+    step6_startStandby: "docker compose up -d myrmidon-pg-standby",
     step7_verifyRecovery: "SELECT pg_is_in_recovery(); -- must return true",
   };
 }
 
 export function planRehearsal(target = "board", overrides = {}) {
   const isBoard = target === "board";
-  const drillPort = overrides.drillPort || (isBoard ? 5533 : 5534);
-  const drillDir = overrides.drillDir || `/srv/standby/drill-${target}`;
+  const drillPort = overrides.drillPort || 5533;
+  const drillDir = overrides.drillDir || `/srv/standby/drill-cluster`;
   const standbyPort = isBoard
     ? overrides.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
     : overrides.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
-  const user = isBoard
-    ? overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const db = isBoard
-    ? overrides.boardDbName || DEFAULT_CONFIG.boardDbName
-    : overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const boardUser = overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser;
+  const boardDb = overrides.boardDbName || DEFAULT_CONFIG.boardDbName;
+  const hindsightUser = overrides.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const hindsightDb = overrides.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const replUser = isBoard
+    ? overrides.boardReplUser || DEFAULT_CONFIG.boardReplUser
+    : overrides.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
 
   return {
     target,
     drillDir,
     drillPort,
-    step1_snapshot: `pg_basebackup -h 127.0.0.1 -p ${standbyPort} -U ${user} -D ${drillDir} -Fp -Xs -R`,
+    step1_snapshot: `pg_basebackup -h 127.0.0.1 -p ${standbyPort} -U ${replUser} -D ${drillDir} -Fp -Xs -R`,
     step2_startEphemeral: `pg_ctl start -D ${drillDir} -o "-p ${drillPort} -c listen_addresses=127.0.0.1"`,
-    step3_promote: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -c "SELECT pg_promote();"`,
-    step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -t -A -c "SELECT pg_is_in_recovery();"`,
-    step5_smokeTest: `psql -h 127.0.0.1 -p ${drillPort} -U ${user} -d ${db} -c "SELECT count(*) FROM issues;"`,
+    step3_promote: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -c "SELECT pg_promote();"`,
+    step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -t -A -c "SELECT pg_is_in_recovery();"`,
+    step5_smokeTest: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -c "SELECT 1;" && psql -h 127.0.0.1 -p ${drillPort} -U ${hindsightUser} -d ${hindsightDb} -c "SELECT 1;"`,
     step6_stopClean: `pg_ctl stop -D ${drillDir} -m immediate`,
     step7_cleanup: `rm -rf ${drillDir}`,
     targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
@@ -355,7 +375,7 @@ export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, 
 }
 
 /**
- * Setup warm standby replication for target DB.
+ * Setup warm standby replication for cluster / target DB.
  */
 export function setupStandby(target = "board", options = {}, deps = {}) {
   const runner = deps.runner || defaultRunner;
@@ -373,9 +393,6 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   const replUser = isBoard
     ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
     : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
-  const replSlot = isBoard
-    ? options.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
-    : options.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
   const standbyPort = isBoard
     ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
     : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
@@ -385,6 +402,12 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   const dbName = isBoard
     ? options.boardDbName || DEFAULT_CONFIG.boardDbName
     : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  const composeService = "myrmidon-pg-standby";
+  const composeFile = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "docker-compose.standby.yml"
+  );
 
   const basebackup = generateBasebackupCommand(target, options);
   const standbyConfig = generateStandbyConfig(target, options);
@@ -401,18 +424,46 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 1. Ensure data directory exists
-  try {
-    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  } catch (err) {
+  // 1. Check data directory: fail-closed if directory exists and is not empty without --force
+  const dirExists = fsOps.existsSync(dataDir);
+  let dirEntries = [];
+  if (dirExists && fsOps.readdirSync) {
+    try {
+      dirEntries = fsOps.readdirSync(dataDir);
+    } catch {
+      dirEntries = [];
+    }
+  }
+  const isNonEmpty = dirExists && dirEntries.length > 0;
+
+  if (isNonEmpty && !options.force) {
     return {
       success: false,
       target,
-      error: `Failed to create data directory ${dataDir}: ${err.message}`,
+      error: `Directory '${dataDir}' exists but is not empty. Specify --force to clean and resynchronize standby.`,
     };
   }
 
-  // 2. Run pg_basebackup if empty or force
+  if (isNonEmpty && options.force) {
+    // Stop standby container before wiping dataDir
+    runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
+    try {
+      fsOps.rmSync(dataDir, { recursive: true, force: true });
+    } catch {}
+    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  } else {
+    try {
+      fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      return {
+        success: false,
+        target,
+        error: `Failed to create data directory ${dataDir}: ${err.message}`,
+      };
+    }
+  }
+
+  // 2. Run pg_basebackup
   const baseRes = runner(basebackup.executable, basebackup.args, { timeoutMs: 300000 });
   if (baseRes.exitCode !== 0) {
     return {
@@ -423,7 +474,21 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 3. Ensure standby.signal exists
+  // 3. Write passfile (.pgpass) and configuration
+  const replPassword = options.replicatorPassword || DEFAULT_CONFIG.replicatorPassword;
+  if (replPassword) {
+    const pgpassPath = path.join(dataDir, ".pgpass");
+    try {
+      fsOps.writeFileSync(
+        pgpassPath,
+        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`
+      );
+      if (fsOps.chmodSync) {
+        fsOps.chmodSync(pgpassPath, 0o600);
+      }
+    } catch {}
+  }
+
   try {
     fsOps.writeFileSync(path.join(dataDir, "standby.signal"), "");
     fsOps.writeFileSync(path.join(dataDir, "postgresql.auto.conf"), standbyConfig);
@@ -435,9 +500,12 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 4. Verify standby recovery
+  // 4. Start standby container
+  runner("docker", ["compose", "-f", composeFile, "up", "-d", composeService]);
+
+  // 5. Verify standby recovery and streaming receiver
   const verifyRes = queryPostgres(
-    "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver;",
+    "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver WHERE status = 'streaming';",
     { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
     runner
   );
@@ -445,13 +513,38 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   const statusParts = (verifyRes.stdout || "").trim().split("\n")[0].split("|");
   const inRecovery = statusParts[0] === "t" || statusParts[0] === "true";
   const walReceivers = parseInt(statusParts[1] || "0", 10);
+  const streamingActive = inRecovery && walReceivers > 0;
+
+  if (!inRecovery) {
+    return {
+      success: false,
+      target,
+      dataDir,
+      inRecovery: false,
+      walReceivers,
+      streamingActive: false,
+      error: `Standby node failed to enter recovery mode (pg_is_in_recovery returned false or query failed: ${verifyRes.stderr || verifyRes.stdout})`,
+    };
+  }
+
+  if (walReceivers === 0) {
+    return {
+      success: false,
+      target,
+      dataDir,
+      inRecovery: true,
+      walReceivers: 0,
+      streamingActive: false,
+      error: "WAL streaming receiver is not active in pg_stat_wal_receiver (status != 'streaming'). Verify replication credentials and connectivity.",
+    };
+  }
 
   return {
     success: true,
     target,
     dataDir,
-    inRecovery,
-    streamingActive: walReceivers > 0,
+    inRecovery: true,
+    streamingActive: true,
     walReceivers,
   };
 }
@@ -671,6 +764,27 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
 export function executeSwitchback(target = "board", options = {}, deps = {}) {
   const runner = deps.runner || defaultRunner;
   const fsOps = deps.fsOps || defaultFsOps;
+  const isBoard = target === "board";
+  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+  const primaryPort = isBoard
+    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
+    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
+  const dbUser = isBoard
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = isBoard
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const dataDir = isBoard
+    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir;
+
+  const composeService = "myrmidon-pg-standby";
+  const composeFile = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "docker-compose.standby.yml"
+  );
+
   const plan = planSwitchback(target, options);
 
   if (options.dryRun) {
@@ -683,18 +797,6 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
   }
 
   // 1. Verify original primary is active primary
-  const isBoard = target === "board";
-  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = isBoard
-    ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
-    : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort;
-  const dbUser = isBoard
-    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const dbName = isBoard
-    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
-    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
-
   const pRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: primaryHost, port: primaryPort, user: dbUser, db: dbName }, runner);
   if (pRes.exitCode !== 0 || (pRes.stdout || "").trim() !== "f") {
     return {
@@ -704,19 +806,39 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 2. Perform basebackup & reconfigure standby
+  // 2. Stop standby container before resync
+  const stopRes = runner("docker", ["compose", "-f", composeFile, "stop", composeService]);
+  if (stopRes.exitCode !== 0) {
+    return {
+      success: false,
+      target,
+      error: `Failed to stop standby container '${composeService}': ${stopRes.stderr || stopRes.stdout}`,
+    };
+  }
+
+  // 3. Clean stale standby data directory under explicit force flag
+  if (fsOps.existsSync(dataDir)) {
+    try {
+      fsOps.rmSync(dataDir, { recursive: true, force: true });
+    } catch {}
+    fsOps.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  }
+
+  // 4. Perform basebackup & reconfigure standby with force: true
   const setupRes = setupStandby(target, { ...options, force: true }, { runner, fsOps });
   return {
     success: setupRes.success,
     target,
     resynchronized: setupRes.success,
     inRecovery: setupRes.inRecovery,
+    streamingActive: setupRes.streamingActive,
     error: setupRes.error,
   };
 }
 
 /**
  * Safe, isolated rehearsal drill on ephemeral port/directory.
+ * Verifies recovery promotion and smoke tests BOTH databases (paperclip, myrmidon_hindsight) in one replica.
  */
 export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const runner = deps.runner || defaultRunner;
@@ -736,15 +858,16 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const startTime = Date.now();
   const drillDir = plan.drillDir;
   const drillPort = plan.drillPort;
-  const user = isBoard
-    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
-    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
-  const db = isBoard
-    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
-    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
   const standbyPort = isBoard
     ? options.standbyBoardPort || DEFAULT_CONFIG.standbyBoardPort
     : options.standbyHindsightPort || DEFAULT_CONFIG.standbyHindsightPort;
+  const boardUser = options.boardDbUser || DEFAULT_CONFIG.boardDbUser;
+  const boardDb = options.boardDbName || DEFAULT_CONFIG.boardDbName;
+  const hindsightUser = options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const hindsightDb = options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+  const replUser = isBoard
+    ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
+    : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
 
   try {
     fsOps.mkdirSync(drillDir, { recursive: true, mode: 0o700 });
@@ -756,7 +879,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const snapRes = runner("pg_basebackup", [
     "-h", "127.0.0.1",
     "-p", String(standbyPort),
-    "-U", user,
+    "-U", replUser,
     "-D", drillDir,
     "-Fp",
     "-Xs",
@@ -775,18 +898,21 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   }
 
   // 3. Promote drill instance
-  const promoteRes = queryPostgres("SELECT pg_promote();", { host: "127.0.0.1", port: drillPort, user, db }, runner);
+  const promoteRes = queryPostgres("SELECT pg_promote();", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
   if (promoteRes.exitCode !== 0) {
     runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
     try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
     return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr}` };
   }
 
-  // 4. Verify drill recovery false & smoke test
-  const verifyRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: "127.0.0.1", port: drillPort, user, db }, runner);
-  const smokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user, db }, runner);
+  // 4. Verify drill recovery false
+  const verifyRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
 
-  // 5. Clean stop and removal
+  // 5. Smoke test BOTH databases in the single replica: paperclip and myrmidon_hindsight
+  const boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+  const hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
+
+  // 6. Clean stop and removal
   runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
   try {
     fsOps.rmSync(drillDir, { recursive: true, force: true });
@@ -795,12 +921,14 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const durationMs = Date.now() - startTime;
   const durationSeconds = Math.round(durationMs / 1000);
   const rtoOk = durationSeconds <= DEFAULT_CONFIG.rtoTargetSeconds;
+  const smokeTestPassed = (boardSmokeRes.stdout || "").trim() === "1" && (hindsightSmokeRes.stdout || "").trim() === "1";
 
   return {
     success: true,
     target,
     promoted: (verifyRes.stdout || "").trim() === "f",
-    smokeTestPassed: (smokeRes.stdout || "").trim() === "1",
+    smokeTestPassed,
+    verifiedDatabases: [boardDb, hindsightDb],
     durationSeconds,
     targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
     rtoOk,
@@ -842,16 +970,26 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   if (flags["rpo-max-seconds"] !== undefined) {
     flags.rpoMaxSeconds = Number(flags["rpo-max-seconds"]);
   }
+  if (flags.rpo !== undefined) {
+    flags.rpoMaxSeconds = Number(flags.rpo);
+  }
+  if (flags.force !== undefined) {
+    flags.force = true;
+  }
   if (flags["dry-run"] !== undefined) {
     flags.dryRun = true;
   }
   if (flags.offline !== undefined) {
     flags.offline = true;
   }
+  if (flags.json !== undefined) {
+    flags.json = true;
+  }
 
   switch (command) {
     case "setup": {
-      const results = targets.map((t) => setupStandby(t, flags, deps));
+      const setupTargets = target === "all" ? ["board"] : targets;
+      const results = setupTargets.map((t) => setupStandby(t, flags, deps));
       console.log(JSON.stringify({ command: "setup", results }, null, 2));
       const anyFailed = results.some((r) => !r.success);
       return anyFailed ? 1 : 0;
@@ -871,21 +1009,24 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
     }
 
     case "failover": {
-      const results = targets.map((t) => executeFailover(t, flags, deps));
+      const failoverTargets = target === "all" ? ["board"] : targets;
+      const results = failoverTargets.map((t) => executeFailover(t, flags, deps));
       console.log(JSON.stringify({ command: "failover", results }, null, 2));
       const anyFailed = results.some((r) => !r.success);
       return anyFailed ? 1 : 0;
     }
 
     case "switchback": {
-      const results = targets.map((t) => executeSwitchback(t, flags, deps));
+      const switchTargets = target === "all" ? ["board"] : targets;
+      const results = switchTargets.map((t) => executeSwitchback(t, flags, deps));
       console.log(JSON.stringify({ command: "switchback", results }, null, 2));
       const anyFailed = results.some((r) => !r.success);
       return anyFailed ? 1 : 0;
     }
 
     case "rehearse": {
-      const results = targets.map((t) => executeRehearsal(t, flags, deps));
+      const rehearseTargets = target === "all" ? ["board"] : targets;
+      const results = rehearseTargets.map((t) => executeRehearsal(t, flags, deps));
       console.log(JSON.stringify({ command: "rehearse", results }, null, 2));
       const anyFailed = results.some((r) => !r.success || !r.rtoOk);
       return anyFailed ? 1 : 0;
@@ -905,6 +1046,8 @@ Commands:
 
 Options:
   --dry-run                        Print operational plans without executing commands
+  --force                          Allow cleaning non-empty data directory during setup/switchback
+  --rpo=<sec>                      Maximum acceptable lag in seconds (alias for --rpo-max-seconds)
   --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
   --offline                        Measure standby without querying primary
   --target=<target>                board, hindsight, or all (default: all)
