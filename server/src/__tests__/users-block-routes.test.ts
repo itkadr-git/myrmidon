@@ -3,7 +3,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { boardApiKeys, userBlocks, createDb, companies } from "@myrmidon/db";
-import { createBoardApiToken, hashBearerToken } from "../services/board-api-keys.js";
+import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
 import { actorMiddleware } from "../middleware/actor.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { usersAdminRoutes } from "../myrmidon/users-admin-a/routes.js";

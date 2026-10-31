@@ -45,6 +45,7 @@ describe("users block API and audit routes", () => {
           orderBy: vi.fn(() => ({
             limit: vi.fn().mockResolvedValue(mockAuditEntries),
           })),
+          then: vi.fn().mockResolvedValue([{ id: "company-1" }]),
         })),
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(mockAuditEntries),
