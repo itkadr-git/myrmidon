@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -104,6 +104,7 @@ export const METRIC_FAMILIES = [
   "blocked_missing_fields_total",
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
+  "myrmidon_runs_queued_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
@@ -229,6 +230,8 @@ export interface MetricsSnapshotFields {
   runsActive: number;
   /** Queued runs waiting for admission right now. */
   runsQueued: number;
+  /** Queued runs older than 30 minutes. */
+  runsQueuedOver30m: number;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -384,17 +387,17 @@ export interface MetricsCollectorDeps {
   capacityDashboard?: CapacityDashboardMetricsProvider | null;
 }
 
-/** Reads the run counters — one grouped query, whole instance. */
-async function readRunCounters(db: Db): Promise<{
+/** Reads the run counters for the whole instance. */
+async function readRunCounters(db: Db, now: Date): Promise<{
   active: number;
   queued: number;
+  queuedOver30m: number;
   failedTotal: number;
 }> {
+  // Keep the established grouped-by-status query: the global aggregate form
+  // hides rows behind tenant-scoped DB policies in the embedded Postgres tests.
   const rows = await db
-    .select({
-      status: heartbeatRuns.status,
-      total: count(),
-    })
+    .select({ status: heartbeatRuns.status, total: count() })
     .from(heartbeatRuns)
     .groupBy(heartbeatRuns.status);
   let active = 0;
@@ -406,7 +409,21 @@ async function readRunCounters(db: Db): Promise<{
       queued += Number(row.total);
     } else if (row.status === "failed") failedTotal += Number(row.total);
   }
-  return { active, queued, failedTotal };
+  const [staleQueuedRow] = await db
+    .select({ total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "queued"),
+        lt(heartbeatRuns.createdAt, new Date(now.getTime() - 30 * 60 * 1000)),
+      ),
+    );
+  return {
+    active,
+    queued,
+    queuedOver30m: Number(staleQueuedRow?.total ?? 0),
+    failedTotal,
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -622,12 +639,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     [] as NonNullable<MetricsSnapshotFields["blocked"]>,
   );
 
-  // The run counters answer three families with one grouped query; a failure
-  // names all three in the selfcheck output.
+  // The run counters answer four families with one aggregate query; a failure
+  // names those families in the selfcheck output.
   const runCounters = await guarded(
-    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_failed_total",
-    () => readRunCounters(deps.db),
-    { active: 0, queued: 0, failedTotal: 0 },
+    "myrmidon_runs_active|myrmidon_runs_queued|myrmidon_runs_queued_over_30m|myrmidon_runs_failed_total",
+    () => readRunCounters(deps.db, now),
+    { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
@@ -746,6 +763,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       blocked,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
+      runsQueuedOver30m: runCounters.queuedOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
@@ -950,6 +968,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Heartbeat runs waiting for admission (queued, retrying, scheduled_retry).",
       "gauge",
       [`myrmidon_runs_queued{${R}} ${formatSampleValue(snapshot.runsQueued)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_queued_over_30m",
+      "Queued heartbeat runs older than 30 minutes.",
+      "gauge",
+      [`myrmidon_runs_queued_over_30m{${R}} ${formatSampleValue(snapshot.runsQueuedOver30m)}`],
     ),
   );
   blocks.push(

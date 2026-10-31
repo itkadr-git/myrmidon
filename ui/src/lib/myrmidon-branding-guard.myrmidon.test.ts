@@ -290,5 +290,15 @@ describe("myrmidon(B1a): company export README names Myrmidon, not the upstream 
     expect(source).not.toContain("paperclip.ing");
     expect(source).toContain("Exported from ${PRODUCT_NAME}");
     expect(source).toContain("UPSTREAM_ATTRIBUTION.text");
+    expect(source).toContain("npx myrmidon company import");
+    expect(source).not.toContain("npx paperclipai company import");
+  });
+});
+
+describe("myrmidon(B1a): announcement previews and smoke specs use Myrmidon branding", () => {
+  it("announcement-preview.ts links to Myrmidon docs, not upstream", () => {
+    const source = readFileSync(path.join(UI_SRC, "lib", "announcement-preview.ts"), "utf-8");
+    expect(source).not.toContain("paperclip.ing");
+    expect(source).toContain("DOCS_URL");
   });
 });

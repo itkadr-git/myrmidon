@@ -4456,6 +4456,9 @@ function reviewPathLabel(
         : "Queued review wake";
     case "recovery":
       return "Open review recovery";
+    // myrmidon(OPE-10045)
+    case "approved_pending_merge":
+      return "Approved, waiting for the PR merge";
   }
 }
 
