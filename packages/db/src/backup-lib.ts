@@ -1086,12 +1086,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
+        atttypmod: number | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
+        SELECT c.column_name, c.data_type, c.udt_schema, c.udt_name, c.is_nullable, c.column_default,
+               c.character_maximum_length, c.numeric_precision, c.numeric_scale,
+               a.atttypmod
+        FROM information_schema.columns c
+        LEFT JOIN pg_class cl ON cl.relname = c.table_name
+        LEFT JOIN pg_namespace n ON n.oid = cl.relnamespace AND n.nspname = c.table_schema
+        LEFT JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attname = c.column_name
+        WHERE c.table_schema = ${schema_name} AND c.table_name = ${tablename}
+        ORDER BY c.ordinal_position
       `;
 
       emit(`-- Table: ${schema_name}.${tablename}`);
@@ -1101,7 +1106,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for (const col of columns) {
         let typeStr: string;
         if (col.data_type === "USER-DEFINED") {
-          typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
+          const typeName = quoteQualifiedName(col.udt_schema, col.udt_name);
+          typeStr = col.atttypmod != null && col.atttypmod > 0 ? `${typeName}(${col.atttypmod})` : typeName;
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
           typeStr = col.udt_schema === "pg_catalog"
