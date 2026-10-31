@@ -100,6 +100,13 @@ export interface TelegramProactivitySettings {
   rarelyMaxPerDay: number;
 }
 
+/** Optional notices emitted when an operator-run board deploy finishes. */
+export interface TelegramDeploySettings {
+  enabled: boolean;
+  chatId: string | null;
+  topicId: string | null;
+}
+
 /** The settings document every company reads and edits. All fields always present. */
 export interface TelegramNotifySettings {
   digest: TelegramDigestSettings;
@@ -107,6 +114,7 @@ export interface TelegramNotifySettings {
   inbound: TelegramInboundSettings;
   escalations: TelegramEscalationsSettings;
   proactivity: TelegramProactivitySettings;
+  deploys: TelegramDeploySettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,12 +194,19 @@ export const telegramProactivitySettingsSchema = z.object({
     .max(50),
 }).strict();
 
+export const telegramDeploySettingsSchema = z.object({
+  enabled: z.boolean(),
+  chatId: chatIdSchema,
+  topicId: topicIdSchema,
+}).strict();
+
 export const telegramNotifySettingsSchema = z.object({
   digest: telegramDigestSettingsSchema,
   errors: telegramErrorsSettingsSchema,
   inbound: telegramInboundSettingsSchema,
   escalations: telegramEscalationsSettingsSchema,
   proactivity: telegramProactivitySettingsSchema,
+  deploys: telegramDeploySettingsSchema,
 });
 
 export const telegramNotifyChangeLogEntrySchema = z.object({
@@ -215,6 +230,7 @@ export const telegramNotifySettingsPatchSchema = z
     inbound: z.optional(telegramInboundSettingsSchema.partial()),
     escalations: z.optional(telegramEscalationsSettingsSchema.partial()),
     proactivity: z.optional(telegramProactivitySettingsSchema.partial()),
+    deploys: z.optional(telegramDeploySettingsSchema.partial()),
   })
   .strict()
   .refine(
@@ -223,7 +239,8 @@ export const telegramNotifySettingsPatchSchema = z
       value.errors !== undefined ||
       value.inbound !== undefined ||
       value.escalations !== undefined ||
-      value.proactivity !== undefined,
+      value.proactivity !== undefined ||
+      value.deploys !== undefined,
     { message: "at least one section is required" },
   );
 
@@ -263,6 +280,11 @@ export function defaultTelegramNotifySettings(): TelegramNotifySettings {
     proactivity: {
       mode: "only_on_owner_request",
       rarelyMaxPerDay: 3,
+    },
+    deploys: {
+      enabled: false,
+      chatId: null,
+      topicId: null,
     },
   };
 }
@@ -325,6 +347,7 @@ export function parseTelegramNotifyDocument(raw: unknown): TelegramNotifyDocumen
   const i = isRecord(raw.inbound) ? raw.inbound : {};
   const s = isRecord(raw.escalations) ? raw.escalations : {};
   const p = isRecord(raw.proactivity) ? raw.proactivity : {};
+  const deploys = isRecord(raw.deploys) ? raw.deploys : {};
   const settings: TelegramNotifySettings = {
     digest: {
       enabled: bool(d.enabled, defaults.digest.enabled),
@@ -360,6 +383,11 @@ export function parseTelegramNotifyDocument(raw: unknown): TelegramNotifyDocumen
         // Same literal as the schema above: 50, the merged rarely ceiling.
         50,
       ),
+    },
+    deploys: {
+      enabled: bool(deploys.enabled, defaults.deploys.enabled),
+      chatId: str(deploys.chatId),
+      topicId: str(deploys.topicId),
     },
   };
   const changelog = Array.isArray(raw.changelog)

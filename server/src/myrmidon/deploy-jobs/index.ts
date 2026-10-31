@@ -6,10 +6,10 @@
 
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
+import { heartbeatService } from "../../services/index.js";
 import { maintenanceService } from "../maintenance/service.js";
 import { maintenanceHeartbeatPort } from "../maintenance/index.js";
 import { readZabbixSettings, zabbixMaintenanceHooks } from "../maintenance/zabbix.js";
-import { heartbeatService } from "../../services/index.js";
 import { hostReportReader } from "./host-report.js";
 import { readDeployJobsSettings } from "./settings.js";
 import { deployJobsRoutes } from "./routes.js";

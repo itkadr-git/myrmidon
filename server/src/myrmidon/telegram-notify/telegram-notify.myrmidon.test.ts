@@ -49,6 +49,7 @@ describe("myrmidon(TG-NOTIFY-A): the settings service merge and changelog", () =
     const next = applyTelegramNotifyPatch(emptyTelegramNotifyDocument(), {
       digest: { enabled: true, chatId: "chat-1" },
       errors: { maxPerHour: 5 },
+      deploys: { enabled: true, chatId: "chat-deploy", topicId: "7" },
     });
     expect(next.settings.digest.enabled).toBe(true);
     expect(next.settings.digest.chatId).toBe("chat-1");
@@ -56,6 +57,7 @@ describe("myrmidon(TG-NOTIFY-A): the settings service merge and changelog", () =
     expect(next.settings.errors.maxPerHour).toBe(5);
     expect(next.settings.errors.enabled).toBe(false);
     expect(next.settings.inbound).toEqual({ enabled: false, requireMention: true });
+    expect(next.settings.deploys).toEqual({ enabled: true, chatId: "chat-deploy", topicId: "7" });
   });
 
   it("writes one changelog entry per changed field, newest first", () => {
@@ -124,6 +126,7 @@ describe("myrmidon(TG-NOTIFY-A): the routes", () => {
         inbound: { enabled: false, requireMention: true },
         escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
         proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+        deploys: { enabled: false, chatId: null, topicId: null },
       },
       changelog: [],
     });

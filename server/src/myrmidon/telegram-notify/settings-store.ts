@@ -29,8 +29,8 @@ import {
 
 // myrmidon(TG-NOTIFY-A): the owner settings live under their OWN key of
 // `instance_settings.general`. The key `myrmidonTelegramNotify` already holds the
-// job state (digest/escalation stamps) and the proactivity counters, each with
-// its own shape; sharing one key would let one writer clobber another.
+// job state (digest/escalation stamps) and proactivity counters; sharing a key
+// would let one writer clobber another.
 export const TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY = "myrmidonTelegramNotifySettings";
 const TELEGRAM_NOTIFY_GENERAL_KEY = TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY;
 
