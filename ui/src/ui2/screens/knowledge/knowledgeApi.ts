@@ -36,6 +36,8 @@ interface KnowledgeRevisionDto {
   itemId: string;
   revisionNumber: number;
   status: string;
+  title?: string | null;
+  summary?: string | null;
   content: string;
   changeSummary?: string | null;
   rolledBackFromRevisionId?: string | null;
