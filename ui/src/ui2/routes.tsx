@@ -26,6 +26,7 @@ import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // reader of the knowledge store and the regulations of Autonomy.
 import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
 import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
+import { Ui2ChannelsSettings } from "./screens/settings/channels/Ui2ChannelsSettings";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -35,6 +36,7 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
+  | "settings-channels"
   | "commander-chat"
   | "fleet"
   | "knowledge"
@@ -118,6 +120,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     path: "company/settings/language",
     titleKey: "ui2.screens.language",
     element: ui2Screen(<Ui2LanguageSettings />),
+    legacyPath: "/company/settings",
+  },
+  {
+    key: "settings-channels",
+    path: "company/settings/channels",
+    titleKey: "ui2.screens.channels",
+    element: ui2Screen(<Ui2ChannelsSettings />),
     legacyPath: "/company/settings",
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2

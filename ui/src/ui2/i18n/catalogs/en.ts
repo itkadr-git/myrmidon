@@ -298,6 +298,38 @@ export const en = {
           subtitle: "How the dispatch of runs is configured",
           title: "Runs",
         },
+        channels: {
+          title: "Channels",
+          subtitle: "Channels, voice recognition and connectors",
+          tabs: {
+            voice: "Voice (STT)",
+          },
+          voice: {
+            title: "Voice recognition (STT)",
+            subtitle: "Audio transcription and speech recognition settings",
+            enabled: "Enable speech recognition",
+            enabledDesc: "Process voice messages and audio files",
+            backend: "Recognition engine",
+            backendDesc: "Speech recognition service provider",
+            language: "Language",
+            languageDesc: "Expected audio speech language",
+            languageAuto: "Auto detection",
+            languageRu: "Russian",
+            model: "Model name",
+            modelDesc: "Optional model override for the engine",
+            modelPlaceholder: "Default model",
+            diarization: "Speaker diarization",
+            diarizationDesc: "Separate speakers in transcribed audio",
+            maxDuration: "Max duration (seconds)",
+            maxDurationDesc: "Upper limit per processed audio clip (1-7200 seconds)",
+            save: "Save",
+            saving: "Saving...",
+            saved: "Settings saved",
+            saveError: "Could not save settings",
+            loadError: "Could not load voice STT settings",
+            retry: "Retry",
+          },
+        },
         system: {
           changelog: {
             actor: "Actor",
@@ -677,6 +709,38 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
+        },
+        channels: {
+          title: string;
+          subtitle: string;
+          tabs: {
+            voice: string;
+          };
+          voice: {
+            title: string;
+            subtitle: string;
+            enabled: string;
+            enabledDesc: string;
+            backend: string;
+            backendDesc: string;
+            language: string;
+            languageDesc: string;
+            languageAuto: string;
+            languageRu: string;
+            model: string;
+            modelDesc: string;
+            modelPlaceholder: string;
+            diarization: string;
+            diarizationDesc: string;
+            maxDuration: string;
+            maxDurationDesc: string;
+            save: string;
+            saving: string;
+            saved: string;
+            saveError: string;
+            loadError: string;
+            retry: string;
+          };
         },
         system: {
           changelog: {
