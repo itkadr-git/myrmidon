@@ -86,6 +86,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "more",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",

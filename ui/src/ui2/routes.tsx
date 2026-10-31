@@ -26,6 +26,7 @@ import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // reader of the knowledge store and the regulations of Autonomy.
 import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
 import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
+import { Ui2PhoneMore } from "./screens/more/Ui2PhoneMore";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -39,7 +40,8 @@ export type Ui2ScreenKey =
   | "fleet"
   | "knowledge"
   | "knowledge-page"
-  | "settings-autonomy-regulations";
+  | "settings-autonomy-regulations"
+  | "more";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -156,6 +158,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.regulations",
     element: ui2Screen(<Ui2Regulations />),
     legacyPath: "/company/settings",
+  },
+  // myrmidon(1.7 UI2 PHONE MORE): the phone "More" screen with swarm, costs, quality, settings, agent card and theme switch.
+  {
+    key: "more",
+    path: "more",
+    titleKey: "ui2.screens.more",
+    element: ui2Screen(<Ui2PhoneMore />),
+    legacyPath: "/agents/all",
   },
 ];
 
