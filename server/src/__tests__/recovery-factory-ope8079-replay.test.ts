@@ -7,6 +7,7 @@ import {
   ISSUE_RECOVERY_ACTION_KINDS,
   type IssueRecoveryActionKind,
   type RecoveryFactoryRequest,
+  RECOVERY_SLA_MINUTES_BY_KIND,
   buildRecoveryDedupeKey,
 } from "@myrmidon/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -17,7 +18,6 @@ import {
 } from "../services/recovery-factory/classify-disk-operator.js";
 import {
   resolveRecoveryOwner,
-  RECOVERY_SLA_MINUTES_BY_KIND,
   type RecoveryOwnerCandidate,
 } from "../services/recovery-factory/resolve-owner.js";
 
