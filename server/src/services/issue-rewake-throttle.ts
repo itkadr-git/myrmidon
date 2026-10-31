@@ -39,6 +39,9 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
+/** Instance override; validated at the admission boundary. */
+export const ISSUE_REWAKE_FREEZE_THRESHOLD = 6;
+
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
  * `issue_assigned` is deliberately excluded: assignment events are an explicit
@@ -99,6 +102,8 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",
   "issue.blockers_resolved_wake_emitted",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
 ];
 
 export interface IssueRewakeCandidateInput {
@@ -131,6 +136,7 @@ export interface RecentIssueRunSample {
 
 export interface IssueRewakeThrottleInput {
   now: Date;
+  freezeThreshold?: number;
   /** Terminal runs for the same (agent, issue), newest finish first. */
   recentTerminalRuns: RecentIssueRunSample[];
   /** Runs among the sample that produced issue-visible progress. */
@@ -141,8 +147,10 @@ export interface IssueRewakeThrottleInput {
 
 export type IssueRewakeThrottleDecision =
   | { blocked: false; noProgressStreak: number }
+  | { blocked: true; frozen: true; noProgressStreak: number; frozenAt: Date }
   | {
       blocked: true;
+      frozen: false;
       noProgressStreak: number;
       cooldownMs: number;
       lastRunFinishedAt: Date;
@@ -170,6 +178,15 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
     noProgressStreak += 1;
   }
 
+  const freezeThreshold = input.freezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
+  if (noProgressStreak >= freezeThreshold) {
+    return {
+      blocked: true,
+      frozen: true,
+      noProgressStreak,
+      frozenAt: runs[0]!.finishedAt!,
+    };
+  }
   if (noProgressStreak < ISSUE_REWAKE_NO_PROGRESS_THRESHOLD) {
     return { blocked: false, noProgressStreak };
   }
@@ -180,7 +197,7 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
   if (input.now.getTime() < nextAllowedAt.getTime()) {
-    return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
+    return { blocked: true, frozen: false, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
   }
   return { blocked: false, noProgressStreak };
 }

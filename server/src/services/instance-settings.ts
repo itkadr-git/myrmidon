@@ -444,6 +444,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.blockerRootFanoutAlertLimit !== undefined
         ? { blockerRootFanoutAlertLimit: parsed.data.blockerRootFanoutAlertLimit }
         : {}),
+      ...(parsed.data.issueRewakeFreezeThreshold !== undefined
+        ? { issueRewakeFreezeThreshold: parsed.data.issueRewakeFreezeThreshold }
+        : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
