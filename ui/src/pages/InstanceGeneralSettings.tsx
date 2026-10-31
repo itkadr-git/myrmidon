@@ -25,6 +25,8 @@ import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsS
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
@@ -170,6 +172,8 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
+      <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
