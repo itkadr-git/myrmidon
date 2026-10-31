@@ -189,11 +189,21 @@ export function createLiteLlmAuditService(db: Db): LiteLlmAuditService {
           await handlers.restoreModels(input.companyId, entry.entityId, models);
         } else if (handlers?.restoreProvider) {
           await handlers.restoreProvider(input.companyId, entry.entityId, entry.before);
+        } else {
+          throw badRequest("Model rollback handler is unavailable", { code: "audit_rollback_handler_unavailable" });
         }
-      } else if (entry.category === "fallbacks" && handlers?.restoreFallbacks) {
+      } else if (entry.category === "fallbacks") {
+        if (!handlers?.restoreFallbacks) {
+          throw badRequest("Fallback rollback handler is unavailable", { code: "audit_rollback_handler_unavailable" });
+        }
         await handlers.restoreFallbacks(input.companyId, entry.before);
-      } else if (entry.category === "keys" && handlers?.restoreKeys) {
+      } else if (entry.category === "keys") {
+        if (!handlers?.restoreKeys) {
+          throw badRequest("Key rollback handler is unavailable", { code: "audit_rollback_handler_unavailable" });
+        }
         await handlers.restoreKeys(input.companyId, entry.before);
+      } else {
+        throw badRequest("Audit rollback is unsupported for this category", { code: "audit_rollback_unsupported" });
       }
 
       // Record rollback event in audit log

@@ -32,7 +32,7 @@ import {
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import type { ModelProviderActivityEntry, ModelProviderService } from "./service.js";
 import { reportPoolAccountStatus } from "./signals.js";
 
@@ -84,6 +84,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   const activity = (entry: ModelProviderActivityEntry) =>
     deps.recordActivity ? deps.recordActivity(entry) : Promise.resolve();
 
+  const actorFor = (req: Request) => {
+    const info = getActorInfo(req);
+    return { type: info.actorType, id: info.actorId };
+  };
+
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
     const result = schema.safeParse(body);
     if (!result.success) {
@@ -103,7 +108,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const provider = await deps.service.createProvider({
       companyId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(201).json(provider);
   });
@@ -130,7 +135,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
         companyId,
         providerId,
         key: body.key,
-        activity: (entry) => activity(entry),
+        activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
       });
       res.json(view);
       return;
@@ -139,7 +144,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
       companyId,
       providerId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.json(view);
   });
@@ -152,7 +157,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     await deps.service.removeProvider({
       companyId,
       providerId,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(204).send();
   });

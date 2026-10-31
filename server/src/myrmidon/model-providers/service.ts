@@ -168,6 +168,7 @@ export interface ModelProviderActivityEntry {
     | "model_provider_models_updated"
     | (string & {});
   providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
   details: Record<string, unknown>;
 }
 
