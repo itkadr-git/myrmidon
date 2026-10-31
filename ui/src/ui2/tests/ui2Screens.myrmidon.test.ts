@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isUi2PhoneTabActive } from "../shell/Ui2PhoneNav";
+import { isUi2RailItemActive } from "../shell/Ui2Rail";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
@@ -175,6 +176,26 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(UI2_PHONE_TABS).toHaveLength(6);
     const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents/all"));
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
+  });
+
+  it("activates exactly one tab at /fleet in the six-tab phone grid", () => {
+    expect(UI2_PHONE_TABS).toHaveLength(6);
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/fleet"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.servers"]);
+  });
+
+  it("activates exactly one tab at /{P}/fleet with company prefix in the six-tab phone grid", () => {
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/OPE/fleet"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.servers"]);
+  });
+
+  it("activates exactly one rail item at /fleet and /{P}/fleet", () => {
+    const allItems = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    const activeDirect = allItems.filter((item) => isUi2RailItemActive(item.to, "/fleet"));
+    expect(activeDirect.map((item) => item.labelKey)).toEqual(["ui2.nav.servers"]);
+
+    const activePrefixed = allItems.filter((item) => isUi2RailItemActive(item.to, "/OPE/fleet"));
+    expect(activePrefixed.map((item) => item.labelKey)).toEqual(["ui2.nav.servers"]);
   });
 
   it("maps canonical agent API statuses without treating active as running", () => {
