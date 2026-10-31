@@ -128,7 +128,7 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
   consecutiveToolErrors: {
     toolName: string;
     count: number;
@@ -1095,7 +1095,7 @@ async function logCompactEvent(input: {
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
 
-    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
       const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
       const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
