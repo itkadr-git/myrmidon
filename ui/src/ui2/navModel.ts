@@ -60,7 +60,7 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
       { labelKey: "ui2.nav.agents", to: "/agents", icon: Bot },
       { labelKey: "ui2.nav.servers", to: "/fleet", icon: Server },
       { labelKey: "ui2.nav.costs", to: "/activity/costs", icon: Wallet },
-      { labelKey: "ui2.nav.quality", to: "/dashboard", icon: Activity },
+      { labelKey: "ui2.nav.quality", to: "/quality", icon: Activity },
     ],
   },
   {

@@ -82,6 +82,15 @@ export interface ForagingReaderResult {
   text: string;
   /** How many bytes were fetched, for the cost estimate. */
   bytes: number;
+  /** Edge provenance and scanner verdict, when supplied by the reader. */
+  page?: {
+    request_id: string;
+    url: string;
+    final_url: string;
+    fetched_at: string;
+    content_sha256: string;
+    scanner_verdict: { flagged: boolean; score: number; matched: string[] };
+  };
 }
 
 /** Reads one source. The only network boundary of the pass; injected in tests. */

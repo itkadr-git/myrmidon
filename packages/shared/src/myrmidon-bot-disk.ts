@@ -377,6 +377,10 @@ export const BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS = 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS = 24 * 60 * 60 * 1000;
 export const BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS = 15 * 60 * 1000;
 export const BOT_DISK_MAX_GIT_MIRROR_REPOS = 50;
+export const BOT_DISK_DEFAULT_GIT_MIRROR_REPOS: readonly string[] = Object.freeze([
+  "itkadr-git/myrmidon",
+  "itkadr-git/myrmidon-deploy",
+]);
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the agent roles (`agents.role`) whose bots get the
@@ -459,6 +463,11 @@ const defaultRepoSchema = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "defaultRepo must be owner/repo");
 
+// myrmidon(1.6.6-OPE-9673): hermes session pruning and idle git migration controls
+const hermesPruneEnabledSchema = z.boolean();
+const hermesPruneDaysSchema = z.number().int().min(1).max(365);
+const gitMigrationEnabledSchema = z.boolean();
+
 /** The canonical shape the service writes. */
 export const botDiskSettingsSchema = z
   .object({
@@ -488,6 +497,9 @@ export const botDiskSettingsSchema = z
     botdIntervalSec: botdIntervalSecSchema.optional(),
     legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional(),
     defaultRepo: defaultRepoSchema.optional(),
+    hermesPruneEnabled: hermesPruneEnabledSchema.optional(),
+    hermesPruneDays: hermesPruneDaysSchema.optional(),
+    gitMigrationEnabled: gitMigrationEnabledSchema.optional(),
   })
   .strict();
 
@@ -515,6 +527,9 @@ const storedBotDiskObjectSchema = z
     botdIntervalSec: botdIntervalSecSchema.optional().catch(undefined),
     legacyPressureIdleDays: legacyPressureIdleDaysSchema.optional().catch(undefined),
     defaultRepo: defaultRepoSchema.optional().catch(undefined),
+    hermesPruneEnabled: hermesPruneEnabledSchema.optional().catch(undefined),
+    hermesPruneDays: hermesPruneDaysSchema.optional().catch(undefined),
+    gitMigrationEnabled: gitMigrationEnabledSchema.optional().catch(undefined),
   })
   .passthrough();
 
@@ -556,6 +571,9 @@ export const patchBotDiskSettingsSchema = z
     legacyPressureIdleDays: z.union([legacyPressureIdleDaysSchema, z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H4b): a repository sets the fallback, null or "" clears it.
     defaultRepo: z.union([defaultRepoSchema, z.literal(""), z.null()]).optional(),
+    hermesPruneEnabled: z.union([hermesPruneEnabledSchema, z.null()]).optional(),
+    hermesPruneDays: z.union([hermesPruneDaysSchema, z.null()]).optional(),
+    gitMigrationEnabled: z.union([gitMigrationEnabledSchema, z.null()]).optional(),
   })
   .strict();
 
@@ -629,6 +647,9 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.botdIntervalSec === "number") out.botdIntervalSec = parsed.data.botdIntervalSec;
   if (typeof parsed.data.legacyPressureIdleDays === "number") out.legacyPressureIdleDays = parsed.data.legacyPressureIdleDays;
   if (typeof parsed.data.defaultRepo === "string") out.defaultRepo = parsed.data.defaultRepo;
+  if (typeof parsed.data.hermesPruneEnabled === "boolean") out.hermesPruneEnabled = parsed.data.hermesPruneEnabled;
+  if (typeof parsed.data.hermesPruneDays === "number") out.hermesPruneDays = parsed.data.hermesPruneDays;
+  if (typeof parsed.data.gitMigrationEnabled === "boolean") out.gitMigrationEnabled = parsed.data.gitMigrationEnabled;
   return out;
 }
 
@@ -790,6 +811,9 @@ export interface BotDiskMechanics {
   partitionRefuseOpenPercent: number;
   partitionCriticalPercent: number;
   botdIntervalSec?: number;
+  hermesPruneEnabled?: boolean;
+  hermesPruneDays?: number;
+  gitMigrationEnabled?: boolean;
 }
 
 export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
@@ -801,6 +825,9 @@ export function resolveBotDiskMechanics(stored: unknown): BotDiskMechanics {
     partitionRefuseOpenPercent: values.partitionRefuseOpenPercent ?? 90,
     partitionCriticalPercent: values.partitionCriticalPercent ?? 95,
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
+    ...(values.hermesPruneEnabled !== undefined ? { hermesPruneEnabled: values.hermesPruneEnabled } : {}),
+    ...(values.hermesPruneDays !== undefined ? { hermesPruneDays: values.hermesPruneDays } : {}),
+    ...(values.gitMigrationEnabled !== undefined ? { gitMigrationEnabled: values.gitMigrationEnabled } : {}),
   };
 }
 
@@ -840,7 +867,7 @@ export interface BotDiskLayout {
 export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
   const values = normalizeStoredBotDiskSettings(stored);
   const repos = values.sharedPackageCachePath
-    ? [...new Set((values.gitMirrorRepos ?? []).map((repo) => repo.toLowerCase()))]
+    ? [...new Set((values.gitMirrorRepos ?? BOT_DISK_DEFAULT_GIT_MIRROR_REPOS).map((repo) => repo.toLowerCase()))]
     : [];
   return {
     ...(values.sharedPackageCachePath ? { sharedPackageCachePath: values.sharedPackageCachePath } : {}),
