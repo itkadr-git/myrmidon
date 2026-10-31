@@ -6096,7 +6096,11 @@ export function recoveryService(
           excludeRunId: latestRun.id,
         });
 
-        if (!hasNewInputs) {
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
           if (
             latestRun.status === "succeeded" &&
             !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
