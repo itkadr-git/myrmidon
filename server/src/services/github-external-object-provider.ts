@@ -334,13 +334,19 @@ async function safeJson(response: Response) {
 /** Audit identity of the resolver's secret reads (system consumer, no agent/run). */
 const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
 
-/** The resolver reads PR/issue state only: a read-only, single-repository token. */
+/**
+ * The resolver reads PR/issue state only: a read-only, single-repository token.
+ * `checks: read`: the review-stage recovery reads the check runs of the PR head
+ * with this token (review-stage-recovery/github-ci.ts). Without it GitHub answers
+ * 403, the read falls back to anonymous, and the anonymous per-IP limit runs out,
+ * so a reviewer that waits for CI is blocked as a stalled review (OPE-10246).
+ */
 const READ_ONLY_APP_PERMISSIONS = {
   contents: "read",
   pull_requests: "read",
   issues: "none",
   actions: "none",
-  checks: "none",
+  checks: "read",
   deployments: "none",
   environments: "none",
   workflows: "none",

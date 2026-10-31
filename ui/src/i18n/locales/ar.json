@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "الواجهة",
+    "new": "الجديدة",
+    "legacy": "السابقة",
+    "instanceDefault": "حسب إعداد النسخة",
+    "switchTo": "تبديل إصدار الواجهة"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Main navigation",

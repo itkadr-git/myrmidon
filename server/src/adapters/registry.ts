@@ -100,7 +100,9 @@ import {
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  setFleetSiteSecurityResolver,
 } from "@myrmidon/hermes-paperclip-adapter";
+import { getActiveFleetSite } from "../myrmidon/bot-containers/site-registry.js";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -800,6 +802,18 @@ const hermesGatewayAdapter: ServerAdapterModule = {
   listModels: listGatewayModels,
   refreshModels: refreshGatewayModels,
 };
+
+setFleetSiteSecurityResolver((siteName: string, companyId?: string) => {
+  const site = getActiveFleetSite(siteName, companyId);
+  if (!site) return null;
+  return {
+    name: site.name,
+    url: site.url,
+    status: site.status,
+    profile: site.profile,
+    companyId: site.companyId,
+  };
+});
 
 const hermesLocalAdapter: ServerAdapterModule = {
   ...createHermesLocalServerAdapter(),
