@@ -1137,6 +1137,7 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
   function sweeperDeps(
     overrides: {
       enqueueWakeup?: (...args: unknown[]) => Promise<unknown>;
+      pickupReviewForAgent?: Parameters<typeof createIdlePickupSweeper>[0]["pickupReviewForAgent"];
       invokable?: (agent: { id: string; status: string }) => boolean;
       underMaintenance?: (agentId: string) => boolean;
       env?: Record<string, string | undefined>;
@@ -1154,10 +1155,28 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
         async (agentId: string) => (overrides.underMaintenance ? overrides.underMaintenance(agentId) : false),
       ),
       ...(overrides.env ? { env: overrides.env } : {}),
+      ...(overrides.pickupReviewForAgent ? { pickupReviewForAgent: overrides.pickupReviewForAgent } : {}),
     };
     const sweeper = createIdlePickupSweeper(deps);
     return { sweeper, enqueueWakeup: enqueueWakeup as unknown as ReturnType<typeof vi.fn>, deps };
   }
+
+  it("retries suppressed review work on later ticks before general development work", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Development task", status: "todo",
+      priority: "high", assigneeAgentId: agentId,
+    });
+    const pickupReviewForAgent = vi.fn()
+      .mockResolvedValueOnce({ handled: true, woken: 0 })
+      .mockResolvedValueOnce({ handled: true, woken: 1 });
+    const { sweeper, enqueueWakeup } = sweeperDeps({ pickupReviewForAgent });
+    expect((await sweeper.sweep(new Date("2026-09-30T12:00:00Z"))).woken).toBe(0);
+    expect((await sweeper.sweep(new Date("2026-09-30T12:10:00Z"))).woken).toBe(1);
+    expect(pickupReviewForAgent).toHaveBeenCalledTimes(2);
+    expect(pickupReviewForAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, companyId }));
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
 
   it("wakes a ready issue of an invokable idle agent on the tick", async () => {
     const { companyId, agentId } = await seedAgent();

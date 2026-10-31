@@ -70,7 +70,7 @@ describe("probeSiteHealth over HTTP", () => {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify(HEALTHY));
     });
-    const outcome = await probeSiteHealth({ baseUrl, token: "tok" }, 2000);
+    const outcome = await probeSiteHealth({ baseUrl, token: "tok", mtls: false }, 2000);
     expect(outcome.result).toBe("success");
     expect(seen).toEqual({ url: "/v1/health", auth: "Bearer tok" });
   });
@@ -80,7 +80,7 @@ describe("probeSiteHealth over HTTP", () => {
       /* never answers */
     });
     const started = Date.now();
-    const outcome = await probeSiteHealth({ baseUrl }, 150);
+    const outcome = await probeSiteHealth({ baseUrl, mtls: false }, 150);
     expect(outcome.result).toBe("timeout");
     expect(Date.now() - started).toBeLessThan(2000);
   });
@@ -88,7 +88,7 @@ describe("probeSiteHealth over HTTP", () => {
   it("a refused connection is a miss", async () => {
     const baseUrl = await serve((_req, res) => res.end());
     await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => { s.closeAllConnections(); s.close(resolve); })));
-    expect((await probeSiteHealth({ baseUrl }, 1000)).result).toBe("timeout");
+    expect((await probeSiteHealth({ baseUrl, mtls: false }, 1000)).result).toBe("timeout");
   });
 
   it("a 403 quarantines", async () => {
@@ -96,6 +96,6 @@ describe("probeSiteHealth over HTTP", () => {
       res.statusCode = 403;
       res.end("no");
     });
-    expect((await probeSiteHealth({ baseUrl }, 1000)).result).toBe("invalid_certificate");
+    expect((await probeSiteHealth({ baseUrl, mtls: false }, 1000)).result).toBe("invalid_certificate");
   });
 });
