@@ -77,10 +77,24 @@ describe("provider error responses disguised as content", () => {
 
   it("recognizes the HTTP-200 overload response", () => {
     expect(isProviderErrorAsContent("The server is (sometimes) overloaded due to high user traffic. Please retry!")).toBe(true);
+    expect(
+      isProviderErrorAsContent(
+        "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!"
+      )
+    ).toBe(true);
+    expect(isProviderErrorAsContent("Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry!")).toBe(true);
   });
 
   it("keeps short normal model responses as content", () => {
-    for (const response of ["Hello.", "Try again tomorrow.", "The server is helpful.", "Quota means a limit.", "Please retry this command later."]) {
+    for (const response of [
+      "Hello.",
+      "Try again tomorrow.",
+      "The server is helpful.",
+      "Quota means a limit.",
+      "Please retry this command later.",
+      "Status: OK | Total items processed: 42",
+      "Task completed successfully | Next step: review",
+    ]) {
       expect(isProviderErrorAsContent(response)).toBe(false);
     }
   });
@@ -94,7 +108,8 @@ describe("provider error responses disguised as content", () => {
       exitCode: 0,
       signal: null,
       timedOut: false,
-      stdout: "The server is (sometimes) overloaded due to high user traffic. Please retry!\n\nsession_id: test-session-123\n",
+      stdout:
+        "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!\n\nsession_id: test-session-123\n",
       stderr: "",
       pid: 1234,
       startedAt: new Date().toISOString(),

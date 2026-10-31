@@ -1669,13 +1669,29 @@ describe("mapFinalResultForTest", () => {
   });
 
   it("keeps at least five ordinary short responses out of provider error detection", () => {
-    for (const response of ["Hello.", "Try again tomorrow.", "The server is helpful.", "Quota means a limit.", "Please retry this command later."]) {
+    for (const response of [
+      "Hello.",
+      "Try again tomorrow.",
+      "The server is helpful.",
+      "Quota means a limit.",
+      "Please retry this command later.",
+      "Status: OK | Total items processed: 42",
+      "Task completed successfully | Next step: review",
+    ]) {
       expect(isProviderErrorAsContent(response)).toBe(false);
     }
   });
 
   it("detects the overloaded HTTP-200 response with a newline", () => {
     expect(isProviderErrorAsContent("The server is (sometimes) overloaded\ndue to high user traffic. Please retry!")).toBe(true);
+  });
+
+  it("detects the full production composite overloaded response", () => {
+    expect(
+      isProviderErrorAsContent(
+        "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
+      ),
+    ).toBe(true);
   });
 
   it("does not treat an overload-like tool result as a provider error", () => {

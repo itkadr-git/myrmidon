@@ -259,7 +259,8 @@ interface ParsedOutput {
 }
 
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
-  /^(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
   /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
   /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
   /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
@@ -267,7 +268,16 @@ export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
 
 export function isProviderErrorAsContent(response: string): boolean {
   const normalized = response.trim().replace(/\s+/g, " ");
-  return PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized));
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
