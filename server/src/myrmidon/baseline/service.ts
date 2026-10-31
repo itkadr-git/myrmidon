@@ -31,6 +31,7 @@ export interface BaselineMetricsResponse {
   source: { statusLog: string; costs: BaselineCostSource };
   byProject: BaselineGroupMetrics[];
   byRole: BaselineGroupMetrics[];
+  overall: BaselineGroupMetrics;
 }
 
 // myrmidon(1.6.2-BASELINE-C): comparing the current window against a frozen
@@ -128,6 +129,7 @@ export async function computeBaselineMetrics(
     source: { statusLog: "activity_log", costs: source },
     byProject: metrics.byProject,
     byRole: metrics.byRole,
+    overall: metrics.overall,
   };
 }
 
@@ -223,3 +225,73 @@ function calculateDifference(current: number, baseline: number): BaselineDiffere
   const percentage = baseline !== 0 ? (absolute / baseline) * 100 : null;
   return { absolute, percentage };
 }
+
+export interface BaselineTrendPoint {
+  weekStart: string;
+  weekEnd: string;
+  tasksCompleted: number;
+  cycleTimeMedianHours: number | null;
+  reviewTimeMedianHours: number | null;
+  returnRate: number;
+  runsPerTask: number;
+  costPerTask: number;
+}
+
+export interface UtcWeekWindow {
+  weekStart: string;
+  weekEnd: string;
+  from: Date;
+  to: Date;
+}
+
+export function computeLastCompleteWeeks(weeks: number, now: Date): UtcWeekWindow[] {
+  const utcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dayOfWeek = new Date(utcMidnight).getUTCDay(); // 0 = Sunday, 1 = Monday, ...
+  const mondayOffset = (dayOfWeek + 6) % 7; // days since current week's Monday
+  const currentWeekMondayMs = utcMidnight - mondayOffset * 86_400_000;
+
+  const result: UtcWeekWindow[] = [];
+  for (let i = weeks; i >= 1; i--) {
+    const fromMs = currentWeekMondayMs - i * 7 * 86_400_000;
+    const toMs = fromMs + 7 * 86_400_000 - 1; // Sunday 23:59:59.999Z
+    const from = new Date(fromMs);
+    const to = new Date(toMs);
+    result.push({
+      weekStart: from.toISOString().slice(0, 10),
+      weekEnd: to.toISOString().slice(0, 10),
+      from,
+      to,
+    });
+  }
+  return result;
+}
+
+export async function computeBaselineTrend(
+  db: Db,
+  companyId: string,
+  weeks: number = 8,
+  now: Date = new Date(),
+): Promise<BaselineTrendPoint[]> {
+  const weekWindows = computeLastCompleteWeeks(weeks, now);
+  const points: BaselineTrendPoint[] = [];
+
+  for (const window of weekWindows) {
+    const metrics = await computeBaselineMetrics(db, companyId, { from: window.from, to: window.to }, now);
+    const overall = metrics.overall;
+    const tasksCompleted = overall.tasksCompleted;
+
+    points.push({
+      weekStart: window.weekStart,
+      weekEnd: window.weekEnd,
+      tasksCompleted,
+      cycleTimeMedianHours: tasksCompleted === 0 ? null : overall.cycleTimeHours.median,
+      reviewTimeMedianHours: tasksCompleted === 0 ? null : overall.timeInReviewHours.median,
+      returnRate: overall.returnRate.rate,
+      runsPerTask: overall.runsPerTask.mean,
+      costPerTask: overall.costPerTask.meanCents,
+    });
+  }
+
+  return points;
+}
+
