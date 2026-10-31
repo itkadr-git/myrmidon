@@ -47,6 +47,8 @@ export interface AdapterModel {
   label: string;
   /** MODEL-PROVIDERS D (1.6.1): pricing tier badge from the board DB. */
   pricing?: "free" | "paid";
+  /** 1.6.6 OPE-9932: accounts in the pool providing this model. */
+  accounts?: string[];
 }
 
 export interface DetectedAdapterModel {
