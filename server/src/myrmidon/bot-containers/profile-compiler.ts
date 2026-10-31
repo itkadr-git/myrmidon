@@ -1351,7 +1351,7 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
   }
   // Files-class: hot profile files (skills, AGENTS.md, workspace files). AGENTS.md
   // and skills under /data/hermes/skills/paperclip-managed are picked up on each
-  // run without a restart. Blank instructions write no AGENTS.md at all (an
+  // run without a restart (OPE-10086). Blank instructions write no AGENTS.md at all (an
   // empty file would still be a context file the gateway loads and reports).
   const agentsMdFiles = hasAgentsMd ? [file("workspace/AGENTS.md", input.instructions, { secret: false })] : [];
   // The bundle's sibling files ride the same class: the instructions name them

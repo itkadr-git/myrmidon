@@ -73,6 +73,13 @@
   "sidebar": {
     "version": "Myrmidon {{version}}"
   },
+  "uiSwitch": {
+    "label": "الواجهة",
+    "new": "الجديدة",
+    "legacy": "السابقة",
+    "instanceDefault": "حسب إعداد النسخة",
+    "switchTo": "تبديل إصدار الواجهة"
+  },
   "ui2": {
     "nav": {
       "railLabel": "Main navigation",
@@ -148,7 +155,8 @@
       "autonomy": "Autonomy",
       "guards": "Guardrails",
       "castes": "Castes and models",
-      "system": "System"
+      "system": "System",
+      "language": "Language"
     }
   },
   "connectorPanel": {
@@ -405,6 +413,18 @@
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
       "lastOk": "Last OK"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {

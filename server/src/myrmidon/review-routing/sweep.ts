@@ -106,6 +106,8 @@ export interface ReviewRoutingSweepResult {
   stewardTasksCreated: number;
   /** Routed tasks cancelled because the PR head moved on. */
   prSuperseded: number;
+  /** Pull request review approvals propagated natively to GitHub. */
+  prApprovalsPropagated: number;
 }
 
 export interface ReviewRoutingSweepDeps {
@@ -113,6 +115,14 @@ export interface ReviewRoutingSweepDeps {
   readSettings: () => Promise<ReviewRoutingSettings>;
   /** GitHub head resolver; without it the PR lane stays inert (task lane only). */
   prResolver?: PullRequestHeadResolver;
+  /** PR approval propagator (propagates board review approvals to GitHub PR). */
+  approvalPropagator?: (input: {
+    companyId: string;
+    repository: string;
+    number: number;
+    headSha: string;
+    reviewedHeadSha?: string | null;
+  }) => Promise<{ success: boolean; action?: string }>;
   addComment: (
     issueId: string,
     body: string,
@@ -313,7 +323,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
         deps.store.loadByAgent(companyId),
       ]);
-      const candidates = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      const candidates = agentRows.map((agent) => ({
+        id: agent.id,
+        role: agent.role,
+        model: agent.model ?? null,
+        load: load.get(agent.id) ?? 0,
+      }));
       managerChains.set(engineerId, candidates);
       return candidates;
     };
@@ -327,6 +342,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         id: agent.id,
         role: agent.role,
         invokable: agent.invokable ?? true,
+        model: agent.model ?? null,
         load: load.get(agent.id) ?? 0,
       }));
       return reviewerPool;
@@ -361,10 +377,14 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           result.failed += 1;
           continue;
         }
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
           candidates,
           excluded: excludedReviewerIds(row),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);
@@ -401,6 +421,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         continue;
       }
       try {
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
           candidates: await pool(),
           excluded: excludedReviewerIds(row, [
@@ -409,6 +432,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
             ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
           ]),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);
@@ -596,6 +620,38 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           }
         }
         coverage.set(bucketKey, live);
+      }
+
+      // Native PR approval propagation from board review APPROVE decisions
+      // (or during PR sync review lane processing)
+      if (deps.approvalPropagator) {
+        const hasBoardApproval =
+          head.reviewDecision === "APPROVED" ||
+          (deps.store.hasApprovedBoardReview
+            ? await deps.store.hasApprovedBoardReview({
+                companyId,
+                repository: pr.repository,
+                number: pr.number,
+                headSha: head.headSha,
+              })
+            : false);
+
+        if (hasBoardApproval && !head.labels?.includes("review-approved")) {
+          try {
+            const propRes = await deps.approvalPropagator({
+              companyId,
+              repository: pr.repository,
+              number: pr.number,
+              headSha: head.headSha,
+              reviewedHeadSha: head.headSha,
+            });
+            if (propRes.success) {
+              result.prApprovalsPropagated += 1;
+            }
+          } catch (err) {
+            log.warn({ err, companyId, pr: `${pr.repository}#${pr.number}` }, "approval propagation failed during PR lane sweep");
+          }
+        }
       }
 
       const reviewDue = reviewTaskDueForHead(head);
@@ -836,6 +892,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         prTasksCreated: 0,
         stewardTasksCreated: 0,
         prSuperseded: 0,
+        prApprovalsPropagated: 0,
       };
       if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
         result.skippedPass = true;

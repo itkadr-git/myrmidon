@@ -2,6 +2,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { Ui2Rail } from "./Ui2Rail";
+import { Ui2I18nProvider } from "../i18n/Ui2I18n";
 const state = vi.hoisted(() => ({ slots: [] as unknown[], launchers: [] as unknown[] }));
 vi.mock("@/i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { id: "c1", issuePrefix: "TES" } }) }));
@@ -15,10 +16,10 @@ vi.mock("@/components/myrmidon/MyrmidonLockup", () => ({ MyrmidonLockup: () => <
 describe("Ui2Rail plugin rendering", () => {
   it("renders sidebar slots", () => {
     state.slots = [{ displayName: "Personal bot" }]; state.launchers = [];
-    expect(renderToStaticMarkup(<Ui2Rail />)).toContain("Personal bot");
+    expect(renderToStaticMarkup(<Ui2I18nProvider><Ui2Rail /></Ui2I18nProvider>)).toContain("Personal bot");
   });
   it("renders launcher-only entries", () => {
     state.slots = []; state.launchers = [{ id: "launcher" }];
-    expect(renderToStaticMarkup(<Ui2Rail />)).toContain("launcher-entry");
+    expect(renderToStaticMarkup(<Ui2I18nProvider><Ui2Rail /></Ui2I18nProvider>)).toContain("launcher-entry");
   });
 });

@@ -185,7 +185,7 @@ import {
   telegramPrivateDraftDestination,
   type TelegramDraftControl,
   type TelegramGenerationStoppedProof,
-} from "./chat-telegram-draft-stop.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-draft-stop.js";
 import {
   telegramStopSubscriptionPlan,
   telegramStopSubscriptionConfirmed,
@@ -486,7 +486,7 @@ import {
 import {
   telegramDmStatusEnabled,
   telegramSplitMaxParts,
-} from "../myrmidon/telegram-dm-status-settings.js";
+} from "../myrmidon/channel-connectors/bridge/dm-status-settings.js";
 import type {
   ActionEvent,
   AdapterPostableMessage,

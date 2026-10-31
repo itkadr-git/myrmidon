@@ -86,3 +86,26 @@ export function createServerAdapter(): ServerAdapterModule {
     getConfigSchema,
   };
 }
+
+export {
+  INSECURE_REMOTE_HTTP_ESCAPE_HATCH,
+  BOT_CONTAINER_HOSTNAME_PREFIX,
+  parseBooleanLike,
+  isLoopbackHostname,
+  isBotContainerHostname,
+  isRemotePlainHttp,
+  isFleetHostPlacement,
+  getFleetHostPlacement,
+  isSitePrivateNetwork,
+  isFleetSitePlainHttpAllowed,
+  resolveFleetSiteTarget,
+  setFleetSiteSecurityResolver,
+  setActiveFleetSites,
+  resetFleetSiteSecurityForTests,
+  allowsInsecureRemoteHttp,
+  remotePlainHttpDeniedMessage,
+  type FleetSiteSecurityProfile,
+  type FleetSiteSecurityTarget,
+  type FleetSiteSecurityResolver,
+  type FleetSiteSecurityOptions,
+} from "./server/transport-security.js";
