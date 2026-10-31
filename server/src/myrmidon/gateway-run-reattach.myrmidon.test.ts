@@ -4,6 +4,10 @@ import { eq, inArray } from "drizzle-orm";
 import {
   agents,
   companies,
+  companySecretBindings,
+  companySecretProviderConfigs,
+  companySecretVersions,
+  companySecrets,
   createDb,
   heartbeatRuns,
 } from "@myrmidon/db";
@@ -111,6 +115,10 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
+    await db.delete(companySecretProviderConfigs);
     await db.delete(agents);
     await db.delete(companies);
   });
