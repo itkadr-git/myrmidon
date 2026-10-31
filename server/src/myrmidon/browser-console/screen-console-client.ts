@@ -57,6 +57,30 @@ export function readScreenConsoleSettings(
   return { host, token };
 }
 
+/**
+ * myrmidon(SETTINGS-UI E2.6): a client whose token is resolved per call (env override first,
+ * then the bound secret ref), so a changed or revoked ref takes effect without a restart.
+ * Missing host or token fails the call with a 503-class ScreenConsoleError.
+ */
+export function lazyScreenConsoleClient(
+  getSettings: () => Promise<{ host: string; token: string } | null>,
+  deps: { fetch?: Fetch; timeoutMs?: number } = {},
+): ScreenConsoleClient {
+  async function client(): Promise<ScreenConsoleClient> {
+    const settings = await getSettings();
+    if (!settings) throw new ScreenConsoleError(503, "screen console is not configured");
+    return screenConsoleClient(settings, deps);
+  }
+  return {
+    open: async (browserId) => (await client()).open(browserId),
+    done: async (id) => (await client()).done(id),
+    heartbeat: async (id, activity) => (await client()).heartbeat(id, activity),
+    pauseBots: async (browserId) => (await client()).pauseBots(browserId),
+    resumeBots: async (browserId) => (await client()).resumeBots(browserId),
+    clearSiteData: async (browserId, domain) => (await client()).clearSiteData(browserId, domain),
+  };
+}
+
 export function screenConsoleClient(
   settings: { host: string; token: string },
   deps: { fetch?: Fetch; timeoutMs?: number } = {},

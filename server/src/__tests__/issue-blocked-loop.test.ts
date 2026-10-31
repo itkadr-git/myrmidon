@@ -9,15 +9,20 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentTaskSessions,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueExecutionDecisions,
   issueRelations,
+  issueThreadInteractions,
+  issueWatchdogs,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -65,9 +70,15 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
-    await db.delete(issues);
+    await db.delete(issueExecutionDecisions);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueWatchdogs);
+    await db.delete(agentTaskSessions);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -205,8 +216,126 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await backToWork(s);
     return request(createApp(agentActor(s)))
       .patch(`/api/issues/${s.issueId}`)
-      .send({ status: "blocked", ...body });
+      .send({
+        status: "blocked",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: s.agentId },
+          externalRef: "blocked-loop-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "agent",
+        },
+        unblockDescriptor: descriptorFor(s),
+        ...body,
+      });
   }
+
+  it("rejects an agent-authored blocked transition without blocker metadata", async () => {
+    const s = await seed();
+    await backToWork(s);
+    const res = await request(createApp(agentActor(s)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "blocked", unblockDescriptor: descriptorFor(s) });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("blockerMetadata");
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
+  });
+
+  it("rejects blocked edges without typed metadata and lists the missing fields", async () => {
+    const s = await seed();
+    await db.insert(issueRelations).values({
+      companyId: s.companyId,
+      issueId: s.issueId,
+      relatedIssueId: s.doneBlockerId,
+      type: "blocks",
+    });
+
+    const res = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [s.doneBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
+  });
+
+  it("does not require new blocker metadata when editing a legacy blocked issue", async () => {
+    const s = await seed();
+    await db.update(issues).set({ status: "blocked", blockerMetadata: null }).where(eq(issues.id, s.issueId));
+
+    const res = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ description: "Unrelated legacy edit" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    const stored = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(stored).toBeNull();
+  });
+
+  it("accepts an agent-authored blocked transition with blocker metadata", async () => {
+    const s = await seed();
+    const res = await agentBlocks(s, {});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("blocked");
+  });
+
+  it("rejects an external_wait block without executionPolicy.monitor", async () => {
+    const s = await seed();
+    const res = await agentBlocks(s, {
+      blockerMetadata: {
+        blockReason: "external_wait",
+        owner: { agentId: s.agentId },
+        externalRef: "ci-run-1",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "agent",
+      },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("external_wait requires executionPolicy.monitor");
+  });
+
+  it("clears blocker metadata when the task leaves blocked", async () => {
+    const s = await seed();
+    const blocked = await agentBlocks(s, {});
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+    const stored = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(stored?.blockReason).toBe("dependency");
+
+    const unblocked = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "todo" });
+    expect(unblocked.status, JSON.stringify(unblocked.body)).toBe(200);
+    const cleared = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(cleared).toBeNull();
+  });
 
   async function countActivity(s: Seeded, action: string) {
     const rows = await db
@@ -281,7 +410,18 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
 
   it("does not limit a board actor", async () => {
     const s = await seed();
-    const body = { unblockDescriptor: descriptorFor(s) };
+    const body = {
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { agentId: s.agentId },
+        blockedByIssueIds: [s.doneBlockerId],
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "agent",
+      },
+      blockedByIssueIds: [s.doneBlockerId],
+      unblockDescriptor: descriptorFor(s),
+    };
     await returnTimes(s, 3, body);
     expect((await agentBlocks(s, body)).status).toBe(422);
 
@@ -290,6 +430,14 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       .patch(`/api/issues/${s.issueId}`)
       .send({
         status: "blocked",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: s.agentId },
+          blockedByIssueIds: [s.doneBlockerId],
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "agent",
+        },
         unblockDescriptor: {
           owner: "board",
           action: "Waiting for the external check",

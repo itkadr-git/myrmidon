@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 export const PAPERCLIP_CONFIG_BASENAME = "config.json";
@@ -86,6 +86,19 @@ export function resolveDefaultBackupDir(input: {
   instanceId?: string;
 } = {}): string {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
+}
+
+type BackupDirConfig = { database?: { backup?: { dir?: string } } };
+
+/** Resolve the directory used by every database-backup producer and consumer. */
+export function resolveDatabaseBackupDir(input: {
+  homeDir?: string;
+  instanceId?: string;
+  config?: BackupDirConfig | null;
+} = {}): string {
+  const config = input.config;
+  const configured = readProductEnv("DB_BACKUP_DIR")?.trim() || config?.database?.backup?.dir?.trim();
+  return configured ? path.resolve(expandHomePrefix(configured)) : resolveDefaultBackupDir(input);
 }
 
 export function resolveHomeAwarePath(value: string): string {

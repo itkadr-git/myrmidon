@@ -24,7 +24,7 @@ import {
   projects,
   routineRuns,
   routines,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

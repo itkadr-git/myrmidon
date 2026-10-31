@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
@@ -115,6 +115,7 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -170,7 +171,17 @@ function registerRouteMocks() {
     dbAutonomyGate: () => mockAutonomyGate,
   }));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async () => ({ enabled: false })),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: vi.fn(() => ({
+      listReviewerAgents: vi.fn(async () => []),
+      loadByAgent: vi.fn(async () => new Map()),
+    })),
+  }));
+
+  vi.doMock("@myrmidon/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -261,6 +272,10 @@ function registerRouteMocks() {
           feedbackDataSharingPreference: "prompt",
         },
       })),
+      getExperimental: vi.fn(async () => ({
+        enableExternalObjects: false,
+        enableAgentChat: false,
+      })),
       listCompanyIds: vi.fn(async () => [companyId]),
     }),
     issueApprovalService: () => mockIssueApprovalService,
@@ -350,8 +365,7 @@ function createRunContextDb(
     if (settledRecoveryQuery) return [];
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
-    if (keys.includes("contextSnapshot")) return runRows;
-    if (keys.includes("agentCompanyId")) return runRows;
+    if (keys.includes("contextSnapshot") || keys.includes("agentCompanyId")) return runRows;
     if (keys.length === 0) {
       const issue = await mockIssueService.getById(issueId);
       return issue ? [issue] : [];
@@ -360,9 +374,14 @@ function createRunContextDb(
   };
   const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
     const whereResult = {
-      orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
         then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      })),
+      orderBy: vi.fn(() => ({
+        limit: vi.fn(() => ({
+          then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        })),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
       })),
       for: vi.fn(() => ({
         then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
@@ -386,6 +405,15 @@ function createRunContextDb(
         buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions")),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(async () => undefined),
+      })),
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    })),
+    execute: vi.fn(async () => undefined),
   };
   return dbStub;
 }
@@ -447,9 +475,14 @@ function boardActor() {
 }
 
 describe("agent issue mutation checkout ownership", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
+    vi.doUnmock("@myrmidon/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -463,8 +496,17 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
+    vi.doUnmock("../myrmidon/review-routing/settings.js");
+    vi.doUnmock("../myrmidon/review-routing/store.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
@@ -1815,14 +1857,22 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference, so the descriptor carries one;
-    // the ownership rule under test is still the owner field.
+    // Keep the transition valid so this assertion isolates owner authorization.
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata: {
+        blockReason: "dependency",
+        owner: { userId: "00000000-0000-4000-8000-000000000002" },
+        externalRef: "ownership-route-test",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "notify_owner",
+      },
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
     });
 
@@ -1833,7 +1883,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["board", "board"],
-    ["a company user", { userId: "board-user" }],
+    ["a company user", { userId: "00000000-0000-4000-8000-000000000002" }],
   ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
@@ -1853,20 +1903,30 @@ describe("agent issue mutation checkout ownership", () => {
       ...patch,
     }));
 
-    // myrmidon(STALE-BLOCK): entering blocked needs a reason reference.
+    const blockerMetadata = {
+      blockReason: "dependency",
+      owner: { userId: "00000000-0000-4000-8000-000000000002" },
+      externalRef: "ownership-route-test",
+      nextCheckAt: "2026-10-20T00:00:00.000Z",
+      timeoutAt: "2026-10-21T00:00:00.000Z",
+      escalationPolicy: "notify_owner",
+    };
+    const unblockDescriptor = {
+      owner: "board",
+      action: "Review the blocker",
+      reasonRef: { kind: "issue", issueId },
+    };
     const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
-      unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
+      blockedByIssueIds: ["22222222-2222-4222-8222-222222222222"],
+      blockerMetadata,
+      unblockDescriptor,
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
-      expect.objectContaining({
-        status: "blocked",
-        // myrmidon(STALE-BLOCK): the request now carries a reasonRef (see send above).
-        unblockDescriptor: { owner: "board", action: "Review the blocker", reasonRef: { kind: "issue", issueId } },
-      }),
+      expect.objectContaining({ status: "blocked", blockerMetadata, unblockDescriptor }),
     );
   });
 
@@ -2698,14 +2758,23 @@ describe("agent issue mutation checkout ownership", () => {
         if (keys.includes("parentId")) return ancestryRows;
         if (keys.includes("status")) return [];
         if (keys.includes("agentCompanyId")) return runRows;
+        if (keys.includes("id")) return [{ id: peerAgentId, companyId }];
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
       const buildQuery = (selection: Record<string, unknown>) => {
         const rows = rowsForSelection(selection);
         const whereResult = {
-          orderBy: vi.fn(async () => []),
           limit: vi.fn(() => ({
             then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+          })),
+          for: vi.fn(() => ({
+            then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
+          })),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => ({
+              then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+            })),
+            then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
           })),
           then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
@@ -2715,11 +2784,25 @@ describe("agent issue mutation checkout ownership", () => {
         };
         return query;
       };
-      return {
-        transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+      const txMock: Record<string, unknown> = {
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn(() => buildQuery(selection)),
         })),
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn(async () => undefined),
+          })),
+        })),
+        delete: vi.fn(() => ({
+          where: vi.fn(async () => undefined),
+        })),
+        execute: vi.fn(async () => undefined),
+      };
+      txMock.transaction = async (callback: (tx: unknown) => Promise<unknown>) => callback(txMock);
+      return {
+        ...txMock,
+        transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(txMock),
       };
     }
 
@@ -2768,7 +2851,22 @@ describe("agent issue mutation checkout ownership", () => {
 
       // myrmidon(STALE-BLOCK): entering blocked needs a reason reference; the
       // watchdog (peer) agent must name itself as the unblock owner.
-      const blockedReasonRef = { status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog blocked the issue", reasonRef: { kind: "issue", issueId } } };
+      const blockedReasonRef = {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: { agentId: peerAgentId },
+          action: "Watchdog blocked the issue",
+          reasonRef: { kind: "issue", issueId },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-scope-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      };
       const app = await createApp(watchdogActor(), createWatchdogDb());
       const res = await request(app).patch(`/api/issues/${issueId}`).send(
         status === "blocked" ? blockedReasonRef : { status },
@@ -2811,7 +2909,18 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
       const app = await createApp(watchdogActor(), createWatchdogDb());
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(409);
       expect(res.body.error).toContain("Task-watchdog review is stale");
@@ -2974,7 +3083,18 @@ describe("agent issue mutation checkout ownership", () => {
         watchdogActor(),
         createWatchdogDb({ watchedIssueId: outsideWatched, ancestryParentId: null }),
       );
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
@@ -3018,7 +3138,18 @@ describe("agent issue mutation checkout ownership", () => {
       );
       mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: peerAgentId }));
 
-      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } } }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Watchdog boundary probe", reasonRef: { kind: "issue", issueId } },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: peerAgentId },
+          externalRef: "watchdog-boundary-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      }) /* myrmidon(STALE-BLOCK): reason ref keeps blocked-transition validation out of the way */;
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");

@@ -16,7 +16,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -206,6 +206,106 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .limit(1)
       .then((rows) => rows[0] ?? null);
   }
+
+  it("freezes once, ignores repeated polls, and thaws on external comment or PR sync", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    expect(await poll()).toBeNull();
+    const [frozenIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+    const escalation = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(escalation).toHaveLength(1);
+    expect(escalation[0]?.body).toContain("Что нужно, чтобы продолжить?");
+    expect(escalation[0]?.body).toContain("/runs/");
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+    const [thawedIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
+  });
+
+  it("admits a PR sync event after a freeze", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    await db.insert(activityLog).values({
+      companyId, actorType: "system", actorId: "task_pr_sync", action: "myrmidon.task_pr_sync.returned",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+    const [thawedIssuePr] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssuePr?.blocker?.issueRewakeFreeze).toBeFalsy();
+  });
+
+  it("admits a CI completion wake for a frozen issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    const ciWake = await heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "ci_completed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "ci_completed" },
+      requestedByActorType: "system", requestedByActorId: "system:github-ci",
+    });
+    expect(ciWake).not.toBeNull();
+    const [thawedIssueCi] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssueCi?.blocker?.issueRewakeFreeze).toBeFalsy();
+  });
+
+  it("remains sticky-frozen even when runs age out of the lookback window until explicit thaw", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    expect(await poll()).toBeNull();
+    const [frozenIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozenIssue?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
+
+    // Delete all terminal runs to simulate lookback window aging / sample truncation
+    await db.delete(heartbeatRuns);
+
+    // Poll still returns null (sticky freeze remains active)
+    expect(await poll()).toBeNull();
+    const [stillFrozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(stillFrozen?.blocker?.issueRewakeFreeze).toBeTruthy();
+
+    // Only authorized thaw event thaws it
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: "board-user", action: "issue.comment_added",
+      entityType: "issue", entityId: issueId,
+    });
+    expect(await poll()).not.toBeNull();
+    const [thawedIssue] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
+  });
 
   it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();

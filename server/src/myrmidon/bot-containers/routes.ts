@@ -43,7 +43,7 @@ import {
 } from "./agent-config.js";
 import type { ApplyBotContainerOptions, ApplyBotContainerOutcome, BotContainerAgent, BotContainerRuntimeDeps } from "./index.js";
 import type { BotApplyJobStore } from "./apply-jobs.js";
-import type { BotApplyJobStatus } from "@paperclipai/db";
+import type { BotApplyJobStatus } from "@myrmidon/db";
 import {
   APPLIED_LIMIT_PENDING_NOTE,
   compareGatewayConcurrency,
@@ -54,7 +54,7 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
-import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@paperclipai/shared";
+import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@myrmidon/shared";
 import {
   parseCloneReport,
   type GitRefCheck,
@@ -62,16 +62,14 @@ import {
 } from "./clone-hygiene.js";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { BotContainerState } from "./driver.js";
+import { idleStopRuntimeFromStatus } from "../idle-stop-runtime.js";
 
 export interface BotContainerRouteAgent {
   id: string;
   companyId: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
-  /** The card's scheduling policy; read for heartbeat.maxConcurrentRuns. */
   runtimeConfig: Record<string, unknown>;
-  /** myrmidon(BOT-ROLLOUT): the agent's lifecycle status (idle, paused, running, …) —
-   *  the same value the rollout script reads off the agents list to decide a switch. */
   status?: string | null;
 }
 
@@ -107,6 +105,15 @@ export interface BotContainerRoutesDeps {
     agent: BotContainerRouteAgent,
     opts: { sinceIso: string },
   ): Promise<string | null>;
+  /**
+   * myrmidon(L6-PROFILE-UPDATE-STARVATION): the startedAt (ISO) of this agent's
+   * open agent-scoped maintenance window — the window a pending bot-container
+   * profile update waits in — or null. Called only when the card has a pending
+   * change, so a wiring without it reports no pending note. The real wiring
+   * reads maintenanceService.status (scope agent); the route runs under the
+   * board runtime.
+   */
+  profileUpdatePendingSince?(agentId: string): Promise<string | null>;
   /** Read per request; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
 }
@@ -125,7 +132,7 @@ export interface BotContainerStatusResponse {
   /** Whether the saved image matches the allowlist; null when there is no saved image. */
   imageAllowed: boolean | null;
   /** The live container, or null when it was not asked (flag off, no runtime, other adapter) or could not be. */
-  container: { state: BotContainerState; image: string | null } | null;
+  container: { state: BotContainerState; image: string | null; idleStopped?: boolean } | null;
   /** Set when the runtime was asked and did not answer. */
   containerError: string | null;
   /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
@@ -148,6 +155,18 @@ export interface BotContainerStatusResponse {
   /** The gateway is limiting runs below the board's limit (unmanaged gateway with
    *  recently rate-limited runs). Null when there is nothing to warn about. */
   gatewayConcurrencyWarning: string | null;
+  idleStopMode: "on_demand" | "always_on";
+  idleStopRuntime: {
+    idleStopped: boolean;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when the card has a profile change
+   *  that has not been applied yet, the ISO timestamp of the agent's open
+   *  maintenance window (when the update started waiting); null when nothing
+   *  is pending or no window is open. The card shows "profile update pending
+   *  since <date>" from this field. */
+  profileUpdatePendingSince: string | null;
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
@@ -272,6 +291,9 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,
       gatewayConcurrencyWarning: null,
+      idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
+      idleStopRuntime: null,
+      profileUpdatePendingSince: null,
     };
 
     const botKey = botKeyForAgent(agent.id);
@@ -279,7 +301,17 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
       try {
         const status = await runtime.driver.status(botKey);
-        body.container = { state: status.state, image: status.image ?? null };
+        body.container = {
+          state: status.state,
+          image: status.image ?? null,
+          ...(status.idleStopped ? { idleStopped: true } : {}),
+        };
+        const idleRuntime = idleStopRuntimeFromStatus(status);
+        body.idleStopRuntime = {
+          idleStopped: idleRuntime.idleStopped,
+          lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
+          lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
+        };
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.
         if (status.state !== "missing") {
@@ -315,6 +347,19 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
         // Eligible card, no container yet (first apply pending, or the instance has no
         // runtime / the flag is off): nothing has been applied, so nothing to compare.
         body.gatewayConcurrencyNote = NO_APPLIED_STATE_NOTE;
+      }
+    }
+
+    // myrmidon(L6-PROFILE-UPDATE-STARVATION): a pending profile update holds
+    // the agent under a maintenance window until it drains; the card shows
+    // how long that wait has been. The reconciler only opens an agent window
+    // for a change that needs one, so an open window IS the pending change.
+    if (enabled && parsed.ok && agent.adapterType === "hermes_gateway" && botKey && deps.profileUpdatePendingSince) {
+      try {
+        body.profileUpdatePendingSince = await deps.profileUpdatePendingSince(agent.id);
+      } catch (err) {
+        // Read-only visibility: a failed window lookup must not fail the status.
+        logger.warn({ err, agentId: agent.id }, "bot container profile pending window lookup failed");
       }
     }
 

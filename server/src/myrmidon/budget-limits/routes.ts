@@ -8,6 +8,7 @@
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/signal-only     (company access)
 //   PATCH  /api/myrmidon/companies/:companyId/budget-limits/signal-only     (board only)
 //   PUT    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
+//   GET    /api/myrmidon/companies/:companyId/budget-limits/effective/:issueId (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (company access)
 //   DELETE /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
 //
@@ -22,19 +23,28 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   BUDGET_LIMIT_LEVELS,
   budgetLimitUpsertSchema,
+  budgetLimitsExportQuerySchema,
+  budgetLimitsReportToCsv,
   budgetLimitsSignalOnlySchema,
   isBudgetLimitOver,
+  type BudgetLimitExportFormat,
   type BudgetLimitLevel,
-} from "@paperclipai/shared";
+  type BudgetLimitReportRow,
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { createBudgetLimitStore, validateBudgetLimitRef } from "./store.js";
+import {
+  createBudgetLimitStore,
+  validateBudgetLimitRef,
+  validateBudgetLimitScope,
+  type BudgetLimitStore,
+} from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
 import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly } from "./settings.js";
 
@@ -50,11 +60,14 @@ export interface BudgetLimitRoutesDeps {
   foragingBudgetState?: (companyId: string) => Promise<{ spentCents: number }>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  store?: BudgetLimitStore;
+  computeUsage?: typeof computeBudgetLimitUsage;
 }
 
 export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
   const router = Router();
-  const store = createBudgetLimitStore({ db, now: deps.now });
+  const store = deps.store ?? createBudgetLimitStore({ db, now: deps.now });
+  const computeUsage = deps.computeUsage ?? computeBudgetLimitUsage;
   const settings = instanceSettingsService(db);
   const base = "/myrmidon/companies/:companyId/budget-limits";
 
@@ -71,7 +84,7 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     const limits = await store.list(companyId);
     const rows = await Promise.all(
       limits.map(async (limit) => {
-        const usage = await computeBudgetLimitUsage(
+        const usage = await computeUsage(
           { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
           companyId,
           limit.level,
@@ -88,6 +101,73 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     );
     res.json({ usage: rows });
   });
+
+  const exportHandler = async (
+    req: Parameters<typeof router.get>[1] extends (req: infer R, ...args: any[]) => any ? R : any,
+    res: any,
+    formatOverride?: BudgetLimitExportFormat,
+  ) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const queryToParse = formatOverride ? { ...req.query, format: formatOverride } : req.query;
+    const parsedQuery = budgetLimitsExportQuerySchema.safeParse(queryToParse);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: "Invalid export query", issues: parsedQuery.error.issues });
+      return;
+    }
+
+    const { format, level: filterLevel } = parsedQuery.data;
+    const limits = await store.list(companyId, filterLevel);
+    const rows: BudgetLimitReportRow[] = await Promise.all(
+      limits.map(async (limit) => {
+        const usage = await computeUsage(
+          { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
+          companyId,
+          limit.level,
+          limit.ref,
+          limit.period,
+        );
+        return {
+          id: limit.id,
+          companyId: limit.companyId,
+          level: limit.level,
+          ref: limit.ref,
+          amountCents: limit.amountCents,
+          spentCents: usage.spentCents,
+          period: limit.period,
+          mode: limit.mode,
+          events: usage.events,
+          overLimit: isBudgetLimitOver(limit, usage.spentCents),
+          isActive: limit.isActive,
+          createdAt: limit.createdAt,
+          updatedAt: limit.updatedAt,
+        };
+      }),
+    );
+
+    if (format === "csv") {
+      const csv = budgetLimitsReportToCsv(rows);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="budget-limits-report-${companyId}.csv"`);
+      res.send(csv);
+      return;
+    }
+
+    res.setHeader("Content-Disposition", `attachment; filename="budget-limits-report-${companyId}.json"`);
+    res.json({
+      companyId,
+      generatedAt: (deps.now?.() ?? new Date()).toISOString(),
+      report: rows,
+      items: rows,
+    });
+  };
+
+  router.get(`${base}/export`, (req, res) => exportHandler(req, res));
+  router.get(`${base}/export.csv`, (req, res) => exportHandler(req, res, "csv"));
+  router.get(`${base}/export.json`, (req, res) => exportHandler(req, res, "json"));
+  router.get(`${base}/usage/export`, (req, res) => exportHandler(req, res));
+  router.get(`${base}/report/export`, (req, res) => exportHandler(req, res));
 
   router.get(`${base}/journal`, async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -132,6 +212,14 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     },
   );
 
+  router.get(`${base}/effective/:issueId`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const resolved = await store.effective(companyId, req.params.issueId as string);
+    if (!resolved) { res.status(404).json({ error: "Issue not found" }); return; }
+    res.json(resolved);
+  });
+
   router.get(`${base}/limits/:level/:ref`, async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -165,6 +253,11 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
       const refError = validateBudgetLimitRef(level, ref);
       if (refError) {
         res.status(400).json({ error: refError });
+        return;
+      }
+      const scopeError = await validateBudgetLimitScope(db, companyId, level, ref);
+      if (scopeError) {
+        res.status(400).json({ error: scopeError });
         return;
       }
       const body = req.body as z.infer<typeof budgetLimitUpsertSchema>;

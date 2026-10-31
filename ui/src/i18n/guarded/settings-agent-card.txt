@@ -1,0 +1,11 @@
+# OPE-8950 area settings-agent-card
+components/myrmidon/AgentBoardAdminSection.tsx
+components/myrmidon/AgentCardContainerFields.tsx
+components/myrmidon/AgentCardEgressFields.tsx
+components/myrmidon/AgentCardLspFields.tsx
+components/myrmidon/AgentCardModelsFields.tsx
+components/myrmidon/AgentCardParallelHelpersFields.tsx
+components/myrmidon/AgentCardTeamLivenessFields.tsx
+components/myrmidon/AgentMemorySettingsPanel.tsx
+components/myrmidon/AgentToolAccessSection.tsx
+components/myrmidon/agent-memory/AgentMemoryTab.tsx

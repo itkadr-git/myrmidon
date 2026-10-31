@@ -22,7 +22,7 @@
 //    registers the runtime for the card's "Apply now" (routes-wiring.ts).
 //  - the container image builder and docker-compose network (G1).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
@@ -34,7 +34,7 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { BotContainerAgentConfig } from "./agent-config.js";
-import type { SharedMountSettings } from "@paperclipai/shared";
+import type { SharedMountSettings } from "@myrmidon/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
@@ -83,17 +83,36 @@ export interface BotMaintenanceServiceSlice {
  * this call opened (`changed: true`) — or one the reconciler's own actor opened
  * on an earlier, interrupted pass — may be used and then exited.
  */
-export function botMaintenancePortFromService(service: BotMaintenanceServiceSlice): BotMaintenancePort {
+export function botMaintenancePortFromService(
+  service: BotMaintenanceServiceSlice,
+  options: { sleep?: (ms: number) => Promise<void> } = {},
+): BotMaintenancePort {
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   return {
     async enter(agentId, reason, drainTimeoutSec): Promise<MaintenanceEnterResult> {
-      const view = await service.enter(
-        { scope: { type: "agent", id: agentId }, reason, drainTimeoutSec, onTimeout: "interrupt_and_retry" },
-        BOT_CONTAINER_ACTOR,
-      );
-      const openedByReconciler =
-        view.startedBy?.actorType === BOT_CONTAINER_ACTOR.actorType &&
-        view.startedBy?.actorId === BOT_CONTAINER_ACTOR.actorId;
-      return { state: view.state, runningRuns: view.runningRuns, owned: view.changed || openedByReconciler };
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        try {
+          const view = await service.enter(
+            { scope: { type: "agent", id: agentId }, reason, drainTimeoutSec, onTimeout: "interrupt_and_retry" },
+            BOT_CONTAINER_ACTOR,
+          );
+          const openedByReconciler =
+            view.startedBy?.actorType === BOT_CONTAINER_ACTOR.actorType &&
+            view.startedBy?.actorId === BOT_CONTAINER_ACTOR.actorId;
+          return { state: view.state, runningRuns: view.runningRuns, owned: view.changed || openedByReconciler };
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            err.message.includes("Maintenance for this scope is still leaving; retry shortly") &&
+            Date.now() < deadline
+          ) {
+            await sleep(1000);
+            continue;
+          }
+          throw err;
+        }
+      }
     },
     async status(agentId): Promise<MaintenanceWindowView> {
       const result = await service.status({ type: "agent", id: agentId });
@@ -116,6 +135,8 @@ export function realBotMaintenancePort(db: Db): BotMaintenancePort {
 
 export interface BotContainerAgent {
   agentId: string;
+  /** Owning company; the fleet router scopes a named host to it (set by readAgent). */
+  companyId?: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }
@@ -143,7 +164,12 @@ export interface BotContainerRuntimeDeps {
    *  version of the profile this pass applied (the compiled profile's
    *  `apiServerKeyVersion`) — the card pins exactly it, so a secret rotation whose
    *  container switch failed (or has not happened yet) never reaches the card. */
-  syncCard?: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<{ changedKeys: string[] }>;
+  syncCard?: (
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ) => Promise<{ changedKeys: string[] }>;
   /** Optional. Called by every sweep with the ids of the agents the sweep reconciles: releases the board
    *  tool gateways made for any other agent (deleted, terminated, switched to another adapter or with the
    *  container turned off), which no reconcile pass reaches any more (board-gateway-ports.ts). */
@@ -330,7 +356,19 @@ export async function applyBotContainerNow(
     });
     const appliedVersion = applied.profile?.apiServerKeyVersion;
     if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
+      let syncOptions: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null } | undefined;
+      const fleetHost = current.config.host ?? null;
+      if (fleetHost) {
+        try {
+          const status = await deps.driver.status(botKey);
+          if (status.gatewayPort) {
+            syncOptions = { gatewayPort: status.gatewayPort };
+          }
+        } catch {
+          // ignore status read error
+        }
+      }
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity, syncOptions);
     }
     return outcome;
   });
@@ -428,10 +466,13 @@ async function syncCardAfterReconcile(
   syncCard: NonNullable<BotContainerRuntimeDeps["syncCard"]>,
   appliedApiServerKeyVersion: number,
   activity: BotContainerActivitySink | undefined,
+  options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion);
+    const { changedKeys } = options !== undefined
+      ? await syncCard(agentId, botKey, appliedApiServerKeyVersion, options)
+      : await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
@@ -739,3 +780,17 @@ export { BOT_GATEWAY_PORT, createBotCardSync, gatewayApiBaseUrl, planGatewayCard
 export type { BotCardSyncPorts, BotCardSyncResult, GatewayCardPlan } from "./card-sync.js";
 export { BOT_MCP_SERVERS_ENV, buildHermesProfileInput, readBotProfileSettings } from "./profile-input.js";
 export type { BotMcpSource, BotProfileSettings, BotProfileSource, BotStaticMcpServer } from "./profile-input.js";
+// myrmidon(1.6.6 T10-A): Site-agent test adapter and autonomous security regression harness
+export { createSiteAgentTestAdapter, type SiteAgentTestAdapter, type SiteAgentTestAdapterConfig } from "./site-agent-test-adapter.js";
+export {
+  runSecurityRegressionHarness,
+  validateContainerEnv,
+  validateImageReference,
+  validateNoSiteToCoreCredentials,
+  validateProfileFiles,
+  validateRuntimeTemplate,
+  type SecurityHarnessReport,
+  type SecurityScenarioResult,
+} from "./site-agent-security-harness.js";
+export { generateEphemeralTestPki, cleanupTestPki, resolveAllowedScratchDir, type TestPkiArtifacts } from "./site-agent-pki.js";
+

@@ -1,8 +1,10 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
+import type { TFunction } from "i18next";
+import { i18n, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@myrmidon/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
@@ -82,12 +84,12 @@ type OrderedExecutionWorkspaceTabItem = {
 };
 
 const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
-const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
-  { value: "issues", label: "Tasks", order: 10 },
-  { value: "services", label: "Services", order: 20 },
-  { value: "configuration", label: "Configuration", order: 30 },
-  { value: "runtime_logs", label: "Runtime logs", order: 40 },
-  { value: "routines", label: "Routines", order: 60 },
+const executionWorkspaceBaseTabItems = (t: TFunction): OrderedExecutionWorkspaceTabItem[] => [
+  { value: "issues", label: t("nav.tasks"), order: 10 },
+  { value: "services", label: t("area.projects-goals-workspaces-2.execution-workspace-detail.tabServices"), order: 20 },
+  { value: "configuration", label: t("projectDetail.tabConfiguration"), order: 30 },
+  { value: "runtime_logs", label: t("area.projects-goals-workspaces-2.execution-workspace-detail.tabRuntimeLogs"), order: 40 },
+  { value: "routines", label: t("area.projects-goals-workspaces-2.execution-workspace-detail.tabRoutines"), order: 60 },
 ];
 
 function isExecutionWorkspacePluginTab(value: string | null): value is ExecutionWorkspacePluginTab {
@@ -149,7 +151,7 @@ function formatJson(value: Record<string, unknown> | null | undefined) {
 }
 
 function formatOptionalDateTime(value: Date | string | null | undefined) {
-  return value ? formatDateTime(value) : "Never";
+  return value ? formatDateTime(value) : i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.never");
 }
 
 function normalizeText(value: string) {
@@ -166,14 +168,14 @@ function parseWorkspaceRuntimeJson(value: string) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
+        error: i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeJsonMustBeObject"),
       };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
   } catch (error) {
     return {
       ok: false as const,
-      error: error instanceof Error ? error.message : "Invalid JSON.",
+      error: error instanceof Error ? error.message : i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.invalidJson"),
     };
   }
 }
@@ -204,7 +206,7 @@ export function readConfiguredRuntimeServicePorts(runtimeConfig: Record<string, 
       entries.push({
         collection,
         index,
-        name: typeof config.name === "string" && config.name.trim() ? config.name : `Service ${index + 1}`,
+        name: typeof config.name === "string" && config.name.trim() ? config.name : i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.defaultServiceName", { index: index + 1 }),
         port: typeof portValue === "number" ? portValue : null,
         invalidPort: (typeof portConfig === "number" || hasObjectPortValue)
           && (typeof portValue !== "number" || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535),
@@ -261,7 +263,7 @@ export function getConfiguredRuntimeServicePortWarnings(services: ConfiguredRunt
   return Array.from(servicesByPort.entries())
     .filter(([, servicesForPort]) => servicesForPort.length > 1)
     .map(([port, servicesForPort]) =>
-      `Port ${port} is assigned to multiple services: ${servicesForPort.map((service) => service.name).join(", ")}.`,
+      i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.portConflict", { port, services: servicesForPort.map((service) => service.name).join(", ") }),
     );
 }
 
@@ -329,7 +331,7 @@ function validateForm(form: WorkspaceFormState) {
     try {
       new URL(repoUrl);
     } catch {
-      return "Repo URL must be a valid URL.";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.validationRepoUrlInvalid");
     }
   }
 
@@ -339,7 +341,7 @@ function validateForm(form: WorkspaceFormState) {
       return runtimeJson.error;
     }
     const invalidPort = readConfiguredRuntimeServicePorts(runtimeJson.value).find((service) => service.invalidPort);
-    if (invalidPort) return `${invalidPort.name} has an invalid fixed port.`;
+    if (invalidPort) return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.validationInvalidPort", { name: invalidPort.name });
   }
 
   return null;
@@ -368,21 +370,21 @@ function Field({
 function workspaceOperationPhaseLabel(phase: string) {
   switch (phase) {
     case "worktree_prepare":
-      return "Worktree setup";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseWorktreePrepare");
     case "workspace_config_freshness":
-      return "Config freshness";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseConfigFreshness");
     case "workspace_provision":
-      return "Provision";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseProvision");
     case "workspace_seed":
-      return "Database seed";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseSeed");
     case "workspace_runtime_provision":
-      return "Runtime provision";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseRuntimeProvision");
     case "workspace_teardown":
-      return "Teardown";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseTeardown");
     case "worktree_cleanup":
-      return "Worktree cleanup";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseWorktreeCleanup");
     case "workspace_finalize":
-      return "Finalize";
+      return i18n.t("area.projects-goals-workspaces-2.execution-workspace-detail.phaseFinalize");
     default:
       return phase;
   }
@@ -442,17 +444,18 @@ export function RuntimeProvisionStatusValue({
   status: RuntimeProvisionStatus;
   onViewLogs: () => void;
 }) {
+  const { t } = useTranslation();
   if (status.kind === "eager") {
     return (
-      <span className="text-sm text-muted-foreground">Eager · provisioned during workspace setup</span>
+      <span className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionEager")}</span>
     );
   }
   if (status.kind === "deferred") {
     return (
       <div className="flex flex-col gap-1">
-        <StatusPill className="border-amber-500/40 text-amber-600 dark:text-amber-400">Deferred</StatusPill>
+        <StatusPill className="border-amber-500/40 text-amber-600 dark:text-amber-400">{t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionDeferred")}</StatusPill>
         <span className="text-xs text-muted-foreground">
-          Runs once before the first runtime-service start.
+          {t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionDeferredHint")}
         </span>
       </div>
     );
@@ -461,35 +464,36 @@ export function RuntimeProvisionStatusValue({
     return (
       <StatusPill className="border-border text-muted-foreground">
         <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-        Provisioning…
+        {t("area.projects-goals-workspaces-2.execution-workspace-detail.provisioning")}
       </StatusPill>
     );
   }
   if (status.kind === "provisioned") {
     return (
       <StatusPill className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
-        Provisioned{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+        {status.at ? t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionedAt", { date: formatDateTime(status.at) }) : t("area.projects-goals-workspaces-2.execution-workspace-detail.provisioned")}
       </StatusPill>
     );
   }
   return (
     <div className="flex flex-col gap-1">
       <StatusPill className="border-destructive/50 text-destructive">
-        Provisioning failed{status.at ? ` · ${formatDateTime(status.at)}` : ""}
+        {status.at ? t("area.projects-goals-workspaces-2.execution-workspace-detail.provisioningFailedAt", { date: formatDateTime(status.at) }) : t("area.projects-goals-workspaces-2.execution-workspace-detail.provisioningFailed")}
       </StatusPill>
       <button type="button" onClick={onViewLogs} className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
-        View runtime logs
+        {t("area.projects-goals-workspaces-2.execution-workspace-detail.viewRuntimeLogs")}
       </button>
     </div>
   );
 }
 
 function MonoValue({ value, copy }: { value: string; copy?: boolean }) {
+  const { t } = useTranslation();
   return (
     <div className="inline-flex max-w-full items-start gap-2">
       <span className="break-all font-mono text-xs">{value}</span>
       {copy ? (
-        <CopyText text={value} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Copied">
+        <CopyText text={value} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel={t("area.projects-goals-workspaces-2.execution-workspace-detail.copied")}>
           <Copy className="h-3.5 w-3.5" />
         </CopyText>
       ) : null}
@@ -602,6 +606,7 @@ function WorkspaceRoutineRow({
   runningRoutineId: string | null;
   onRunNow: (routine: RoutineListItem) => void;
 }) {
+  const { t } = useTranslation();
   const isArchived = routine.status === "archived";
   const isRunning = runningRoutineId === routine.id;
 
@@ -617,8 +622,8 @@ function WorkspaceRoutineRow({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <span>{routine.assigneeAgentId ? "Default agent set" : "Choose agent when running"}</span>
-          <span>Last run {formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span>
+          <span>{routine.assigneeAgentId ? t("area.projects-goals-workspaces-2.execution-workspace-detail.defaultAgentSet") : t("area.projects-goals-workspaces-2.execution-workspace-detail.chooseAgentWhenRunning")}</span>
+          <span>{t("area.projects-goals-workspaces-2.execution-workspace-detail.lastRun", { date: formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt) })}</span>
           <span className="flex flex-wrap gap-1">
             {variableNames.map((name) => (
               <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
@@ -636,7 +641,7 @@ function WorkspaceRoutineRow({
         onClick={() => onRunNow(routine)}
       >
         {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-        {isRunning ? "Running..." : "Run now"}
+        {isRunning ? t("area.projects-goals-workspaces-2.execution-workspace-detail.running") : t("area.projects-goals-workspaces-2.execution-workspace-detail.runNow")}
       </Button>
     </div>
   );
@@ -649,6 +654,7 @@ function ExecutionWorkspaceRoutinesList({
   workspace: ExecutionWorkspace;
   project: Project | null;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
@@ -694,8 +700,8 @@ function ExecutionWorkspaceRoutinesList({
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(workspace.companyId) }),
       ]);
       pushToast({
-        title: "Routine started",
-        body: "Myrmidon created a run using this execution workspace.",
+        title: t("area.projects-goals-workspaces-2.execution-workspace-detail.routineStartedTitle"),
+        body: t("area.projects-goals-workspaces-2.execution-workspace-detail.routineStartedBody"),
         tone: "success",
       });
     },
@@ -704,8 +710,8 @@ function ExecutionWorkspaceRoutinesList({
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Myrmidon could not start the routine run.",
+        title: t("area.projects-goals-workspaces-2.execution-workspace-detail.routineFailedTitle"),
+        body: mutationError instanceof Error ? mutationError.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.routineFailedBody"),
         tone: "error",
       });
     },
@@ -715,23 +721,23 @@ function ExecutionWorkspaceRoutinesList({
     <>
       <Card className="rounded-none">
         <CardHeader>
-          <CardTitle>Workspace routines</CardTitle>
+          <CardTitle>{t("area.projects-goals-workspaces-2.execution-workspace-detail.routinesTitle")}</CardTitle>
           <CardDescription>
-            Routines that use workspace-specific variables can be run against this execution workspace.
+            {t("area.projects-goals-workspaces-2.execution-workspace-detail.routinesDescription")}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading routines...</p>
+            <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.routinesLoading")}</p>
           ) : error ? (
             <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : "Failed to load routines."}
+              {error instanceof Error ? error.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.routinesLoadFailed")}
             </p>
           ) : workspaceRoutines.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <Repeat className="h-5 w-5 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
-                No routines use workspace-specific variables yet.
+                {t("area.projects-goals-workspaces-2.execution-workspace-detail.routinesEmpty")}
               </p>
             </div>
           ) : (
@@ -774,6 +780,7 @@ function ExecutionWorkspaceRoutinesList({
 }
 
 export function ExecutionWorkspaceDetail() {
+  const { t } = useTranslation();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
@@ -857,8 +864,8 @@ export function ExecutionWorkspaceDetail() {
     [workspacePluginDetailSlots],
   );
   const workspaceTabItems = useMemo(
-    () => orderExecutionWorkspaceTabItems([...EXECUTION_WORKSPACE_BASE_TAB_ITEMS, ...workspacePluginTabItems]),
-    [workspacePluginTabItems],
+    () => orderExecutionWorkspaceTabItems([...executionWorkspaceBaseTabItems(t), ...workspacePluginTabItems]),
+    [workspacePluginTabItems, t],
   );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
   const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;
@@ -903,13 +910,13 @@ export function ExecutionWorkspaceDetail() {
   useEffect(() => {
     if (!workspace) return;
     const crumbs = [
-      { label: "Projects", href: "/projects" },
+      { label: t("nav.projects"), href: "/projects" },
       ...(project ? [{ label: project.name, href: `/projects/${projectRef}` }] : []),
-      ...(project ? [{ label: "Workspaces", href: `/projects/${projectRef}/workspaces` }] : []),
+      ...(project ? [{ label: t("nav.workspaces"), href: `/projects/${projectRef}/workspaces` }] : []),
       { label: workspace.name },
     ];
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, workspace, project, projectRef]);
+  }, [setBreadcrumbs, workspace, project, projectRef, t]);
 
   const updateWorkspace = useMutation({
     mutationFn: (patch: Record<string, unknown>) => executionWorkspacesApi.update(workspace!.id, patch),
@@ -927,7 +934,7 @@ export function ExecutionWorkspaceDetail() {
       setErrorMessage(null);
     },
     onError: (error) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to save execution workspace.");
+      setErrorMessage(error instanceof Error ? error.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.saveFailed"));
     },
   });
   const workspaceOperationsQuery = useQuery({
@@ -958,28 +965,28 @@ export function ExecutionWorkspaceDetail() {
       setRuntimeActionErrorMessage(null);
       setRuntimeActionMessage(
         request.action === "run"
-          ? "Workspace job completed."
+          ? t("area.projects-goals-workspaces-2.execution-workspace-detail.jobCompleted")
           : request.action === "stop"
-            ? "Workspace service stopped."
+            ? t("area.projects-goals-workspaces-2.execution-workspace-detail.serviceStopped")
             : request.action === "restart"
-              ? "Workspace service restarted."
-              : "Workspace service started.",
+              ? t("area.projects-goals-workspaces-2.execution-workspace-detail.serviceRestarted")
+              : t("area.projects-goals-workspaces-2.execution-workspace-detail.serviceStarted"),
       );
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.controlFailed"));
     },
     onSettled: (_result, _error, request) => {
       setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
     },
   });
 
-  if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+  if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.loading")}</p>;
   if (workspaceQuery.error) {
     return (
       <p className="text-sm text-destructive">
-        {workspaceQuery.error instanceof Error ? workspaceQuery.error.message : "Failed to load workspace"}
+        {workspaceQuery.error instanceof Error ? workspaceQuery.error.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.loadFailed")}
       </p>
     );
   }
@@ -1030,7 +1037,7 @@ export function ExecutionWorkspaceDetail() {
     try {
       patch = buildWorkspacePatch(initialState, form);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to build workspace update.");
+      setErrorMessage(error instanceof Error ? error.message : t("area.projects-goals-workspaces-2.execution-workspace-detail.buildPatchFailed"));
       return;
     }
 
@@ -1050,7 +1057,7 @@ export function ExecutionWorkspaceDetail() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              Execution workspace
+              {t("area.projects-goals-workspaces-2.execution-workspace-detail.eyebrow")}
             </div>
             <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           </div>
@@ -1093,14 +1100,14 @@ export function ExecutionWorkspaceDetail() {
             pendingRequest={pendingRuntimeAction}
             serviceEmptyMessage={
               effectiveRuntimeConfig
-                ? "No services have been started for this execution workspace yet."
-                : "No workspace command config is defined for this execution workspace yet."
+                ? t("area.projects-goals-workspaces-2.execution-workspace-detail.noServicesStarted")
+                : t("area.projects-goals-workspaces-2.execution-workspace-detail.noCommandConfig")
             }
-            jobEmptyMessage="No one-shot jobs are configured for this execution workspace yet."
+            jobEmptyMessage={t("area.projects-goals-workspaces-2.execution-workspace-detail.noJobsConfigured")}
             disabledHint={
               canStartRuntimeServices
                 ? null
-                : "Execution workspaces need a working directory before local commands can run, and services also need runtime config."
+                : t("area.projects-goals-workspaces-2.execution-workspace-detail.disabledHint")
             }
             onAction={(request) => runRuntimeControlRequests([request])}
           />
@@ -1108,9 +1115,9 @@ export function ExecutionWorkspaceDetail() {
           <div className="space-y-4 sm:space-y-6">
             <Card className="rounded-none">
               <CardHeader>
-                <CardTitle>Workspace settings</CardTitle>
+                <CardTitle>{t("area.projects-goals-workspaces-2.execution-workspace-detail.settingsTitle")}</CardTitle>
                 <CardDescription>
-                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Myrmidon may refresh or replace a reused workspace when config changes.
+                  {t("area.projects-goals-workspaces-2.execution-workspace-detail.settingsDescription")}
                 </CardDescription>
                 <CardAction>
                   <Button
@@ -1120,7 +1127,7 @@ export function ExecutionWorkspaceDetail() {
                     onClick={() => setCloseDialogOpen(true)}
                     disabled={workspace.status === "archived"}
                   >
-                    {workspace.status === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                    {workspace.status === "cleanup_failed" ? t("area.projects-goals-workspaces-2.execution-workspace-detail.retryClose") : t("area.projects-goals-workspaces-2.execution-workspace-detail.closeWorkspace")}
                   </Button>
                 </CardAction>
               </CardHeader>
@@ -1129,12 +1136,12 @@ export function ExecutionWorkspaceDetail() {
 
               <div className="space-y-6">
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">General</div>
-                  <Field label="Workspace name">
+                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.sectionGeneral")}</div>
+                  <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.nameLabel")}>
                     <Input
                       value={form.name}
                       onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
-                      placeholder="Execution workspace name"
+                      placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.namePlaceholder")}
                     />
                   </Field>
                 </div>
@@ -1142,32 +1149,32 @@ export function ExecutionWorkspaceDetail() {
                 <Separator />
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Source control</div>
+                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.sectionSourceControl")}</div>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="Branch name" hint="Useful for isolated worktrees">
+                    <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.branchNameLabel")} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.branchNameHint")}>
                       <Input
                         className="font-mono"
                         value={form.branchName}
                         onChange={(event) => setForm((current) => current ? { ...current, branchName: event.target.value } : current)}
-                        placeholder="PAP-946-workspace"
+                        placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.branchNamePlaceholder")}
                       />
                     </Field>
 
-                    <Field label="Base ref">
+                    <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.baseRefLabel")}>
                       <Input
                         className="font-mono"
                         value={form.baseRef}
                         onChange={(event) => setForm((current) => current ? { ...current, baseRef: event.target.value } : current)}
-                        placeholder="origin/main"
+                        placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.refPlaceholder")}
                       />
                     </Field>
                   </div>
 
-                  <Field label="Repo URL">
+                  <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.repoUrlLabel")}>
                     <Input
                       value={form.repoUrl}
                       onChange={(event) => setForm((current) => current ? { ...current, repoUrl: event.target.value } : current)}
-                      placeholder="https://github.com/org/repo"
+                      placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.repoUrlPlaceholder")}
                     />
                   </Field>
                 </div>
@@ -1184,22 +1191,22 @@ export function ExecutionWorkspaceDetail() {
                 {!hideHostPaths && (
                   <>
                     <div className="space-y-4">
-                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
-                      <Field label="Working directory">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.sectionPaths")}</div>
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.workingDirLabel")}>
                         <Input
                           className="font-mono"
                           value={form.cwd}
                           onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                          placeholder="/absolute/path/to/workspace"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.workingDirPlaceholder")}
                         />
                       </Field>
 
-                      <Field label="Provider path / ref">
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.providerRefLabel")}>
                         <Input
                           className="font-mono"
                           value={form.providerRef}
                           onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
-                          placeholder="/path/to/worktree or provider ref"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.providerRefPlaceholder")}
                         />
                       </Field>
                     </div>
@@ -1218,43 +1225,43 @@ export function ExecutionWorkspaceDetail() {
                 {!hideHostPaths && (
                   <>
                     <div className="space-y-4">
-                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
-                      <Field label="Provision command" hint="Runs when Myrmidon prepares this execution workspace">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.sectionLifecycle")}</div>
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionCommandLabel")} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionCommandHint")}>
                         <Textarea
                           className="min-h-20 font-mono"
                           value={form.provisionCommand}
                           onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
-                          placeholder="bash ./scripts/provision-worktree.sh"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.provisionCommandPlaceholder")}
                         />
                       </Field>
 
                       <Field
-                        label="Runtime provision command"
-                        hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
+                        label={t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeProvisionLabel")}
+                        hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeProvisionHint")}
                       >
                         <Textarea
                           className="min-h-20 font-mono"
                           value={form.runtimeProvisionCommand}
                           onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
-                          placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeProvisionPlaceholder")}
                         />
                       </Field>
 
-                      <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.teardownLabel")} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.teardownHint")}>
                         <Textarea
                           className="min-h-20 font-mono"
                           value={form.teardownCommand}
                           onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
-                          placeholder="bash ./scripts/teardown-worktree.sh"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.teardownPlaceholder")}
                         />
                       </Field>
 
-                      <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.cleanupLabel")} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.cleanupHint")}>
                         <Textarea
                           className="min-h-16 font-mono"
                           value={form.cleanupCommand}
                           onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
-                          placeholder="pkill -f vite || true"
+                          placeholder={t("area.projects-goals-workspaces-2.execution-workspace-detail.cleanupPlaceholder")}
                         />
                       </Field>
                     </div>
@@ -1264,19 +1271,19 @@ export function ExecutionWorkspaceDetail() {
                 )}
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Runtime config</div>
+                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.sectionRuntimeConfig")}</div>
                   <div className="rounded-md border border-dashed border-border/70 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                       <div className="space-y-1">
                         <div className="text-sm font-medium text-foreground">
-                          Runtime config source
+                          {t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeSourceTitle")}
                         </div>
                         <p className="text-sm text-muted-foreground">
                           {runtimeConfigSource === "execution_workspace"
-                            ? "This execution workspace currently overrides the project workspace runtime config."
+                            ? t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeSourceOverride")
                             : runtimeConfigSource === "project_workspace"
-                              ? "This execution workspace is inheriting the project workspace runtime config."
-                              : "No runtime config is currently defined on this execution workspace or its project workspace."}
+                              ? t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeSourceInherit")
+                              : t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeSourceNone")}
                         </p>
                       </div>
                       <Button
@@ -1292,18 +1299,18 @@ export function ExecutionWorkspaceDetail() {
                           } : current)
                         }
                       >
-                        Reset to inherit
+                        {t("area.projects-goals-workspaces-2.execution-workspace-detail.resetToInherit")}
                       </Button>
                     </div>
                   </div>
 
                   <details className="rounded-md border border-dashed border-border/70 bg-background px-4 py-3">
-                    <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
+                    <summary className="cursor-pointer text-sm font-medium">{t("area.projects-goals-workspaces-2.execution-workspace-detail.advancedJsonTitle")}</summary>
                     <p className="mt-2 text-sm text-muted-foreground">
-                      Override the inherited workspace command model only when this execution workspace truly needs different service or job behavior.
+                      {t("area.projects-goals-workspaces-2.execution-workspace-detail.advancedJsonIntro")}
                     </p>
                     <div className="mt-3">
-                      <Field label="Workspace commands JSON" hint="Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                      <Field label={t("area.projects-goals-workspaces-2.execution-workspace-detail.commandsJsonLabel")} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.commandsJsonHint")}>
                         <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
                           <input
                             id="inherit-runtime-config"
@@ -1321,7 +1328,7 @@ export function ExecutionWorkspaceDetail() {
                               });
                             }}
                           />
-                          <label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</label>
+                          <label htmlFor="inherit-runtime-config">{t("area.projects-goals-workspaces-2.execution-workspace-detail.inheritLabel")}</label>
                         </div>
                         <Textarea
                           className="min-h-64 font-mono sm:min-h-96"
@@ -1337,14 +1344,14 @@ export function ExecutionWorkspaceDetail() {
                   {configuredRuntimeServicePorts.length > 0 ? (
                     <div className="space-y-3 rounded-md border border-border bg-muted/20 p-4">
                       <div>
-                        <div className="text-sm font-medium">Service ports</div>
+                        <div className="text-sm font-medium">{t("area.projects-goals-workspaces-2.execution-workspace-detail.servicePortsTitle")}</div>
                         <p className="mt-1 text-sm text-muted-foreground">
-                          Set a fixed port for a service or leave it blank to use its configured automatic behavior. Editing an inherited service creates an execution-workspace runtime override.
+                          {t("area.projects-goals-workspaces-2.execution-workspace-detail.servicePortsIntro")}
                         </p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         {configuredRuntimeServicePorts.map((service) => (
-                          <Field key={`${service.collection}-${service.index}`} label={service.name} hint="Fixed port">
+                          <Field key={`${service.collection}-${service.index}`} label={service.name} hint={t("area.projects-goals-workspaces-2.execution-workspace-detail.fixedPort")}>
                             <Input
                               type="number"
                               min="1"
@@ -1379,7 +1386,7 @@ export function ExecutionWorkspaceDetail() {
                         </div>
                       ) : null}
                       <p className="text-sm text-muted-foreground">
-                        Myrmidon checks fixed ports again when a service starts and rejects cross-workspace conflicts.
+                        {t("area.projects-goals-workspaces-2.execution-workspace-detail.servicePortsNote")}
                       </p>
                     </div>
                   ) : null}
@@ -1389,7 +1396,7 @@ export function ExecutionWorkspaceDetail() {
               <div className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                 <Button className="w-full sm:w-auto" disabled={!isDirty || updateWorkspace.isPending} onClick={saveChanges}>
                   {updateWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Save changes
+                  {t("area.projects-goals-workspaces-2.execution-workspace-detail.saveChanges")}
                 </Button>
                 <Button
                   variant="outline"
@@ -1402,33 +1409,33 @@ export function ExecutionWorkspaceDetail() {
                     setRuntimeActionMessage(null);
                   }}
                 >
-                  Reset
+                  {t("area.projects-goals-workspaces-2.execution-workspace-detail.reset")}
                 </Button>
                 {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
-                {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
+                {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.noUnsaved")}</p> : null}
               </div>
               </CardContent>
             </Card>
 
             <Card className="rounded-none">
               <CardHeader>
-                <CardTitle>Workspace context</CardTitle>
-                <CardDescription>Linked objects and relationships</CardDescription>
+                <CardTitle>{t("area.projects-goals-workspaces-2.execution-workspace-detail.contextTitle")}</CardTitle>
+                <CardDescription>{t("area.projects-goals-workspaces-2.execution-workspace-detail.contextDescription")}</CardDescription>
               </CardHeader>
               <CardContent>
-              <DetailRow label="Project">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.projectLabel")}>
                 {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId} />}
               </DetailRow>
-              <DetailRow label="Project workspace">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.projectWorkspaceLabel")}>
                 {project && linkedProjectWorkspace ? (
                   <WorkspaceLink project={project} workspace={linkedProjectWorkspace} />
                 ) : workspace.projectWorkspaceId ? (
                   <MonoValue value={workspace.projectWorkspaceId} />
                 ) : (
-                  "None"
+                  t("common.none")
                 )}
               </DetailRow>
-              <DetailRow label="Source task">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.sourceTaskLabel")}>
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -1436,10 +1443,10 @@ export function ExecutionWorkspaceDetail() {
                 ) : workspace.sourceIssueId ? (
                   <MonoValue value={workspace.sourceIssueId} />
                 ) : (
-                  "None"
+                  t("common.none")
                 )}
               </DetailRow>
-              <DetailRow label="Derived from">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.derivedFromLabel")}>
                 {derivedWorkspace ? (
                   <Link to={executionWorkspaceTabPath(derivedWorkspace.id, "configuration")} className="hover:underline">
                     {derivedWorkspace.name}
@@ -1447,16 +1454,16 @@ export function ExecutionWorkspaceDetail() {
                 ) : workspace.derivedFromExecutionWorkspaceId ? (
                   <MonoValue value={workspace.derivedFromExecutionWorkspaceId} />
                 ) : (
-                  "None"
+                  t("common.none")
                 )}
               </DetailRow>
-              <DetailRow label="Runtime provisioning">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.runtimeProvisioningLabel")}>
                 <RuntimeProvisionStatusValue
                   status={runtimeProvisionStatus}
                   onViewLogs={() => handleTabChange("runtime_logs")}
                 />
               </DetailRow>
-              <DetailRow label="Workspace ID">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.workspaceIdLabel")}>
                 <MonoValue value={workspace.id} />
               </DetailRow>
               </CardContent>
@@ -1464,45 +1471,45 @@ export function ExecutionWorkspaceDetail() {
 
             <Card className="rounded-none">
               <CardHeader>
-                <CardTitle>Concrete location</CardTitle>
-                <CardDescription>Paths and refs</CardDescription>
+                <CardTitle>{t("area.projects-goals-workspaces-2.execution-workspace-detail.locationTitle")}</CardTitle>
+                <CardDescription>{t("area.projects-goals-workspaces-2.execution-workspace-detail.locationDescription")}</CardDescription>
               </CardHeader>
               <CardContent>
-              <DetailRow label="Working dir">
-                {workspace.cwd ? <MonoValue value={workspace.cwd} copy /> : "None"}
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.workingDirShortLabel")}>
+                {workspace.cwd ? <MonoValue value={workspace.cwd} copy /> : t("common.none")}
               </DetailRow>
-              <DetailRow label="Provider ref">
-                {workspace.providerRef ? <MonoValue value={workspace.providerRef} copy /> : "None"}
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.providerRefShortLabel")}>
+                {workspace.providerRef ? <MonoValue value={workspace.providerRef} copy /> : t("common.none")}
               </DetailRow>
-              <DetailRow label="Repo URL">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.repoUrlLabel")}>
                 {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
                   <div className="inline-flex max-w-full items-start gap-2">
                     <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 break-all hover:underline">
                       {workspace.repoUrl}
                       <ExternalLink className="h-3.5 w-3.5 shrink-0" />
                     </a>
-                    <CopyText text={workspace.repoUrl} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Copied">
+                    <CopyText text={workspace.repoUrl} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel={t("area.projects-goals-workspaces-2.execution-workspace-detail.copied")}>
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
                   </div>
                 ) : workspace.repoUrl ? (
                   <MonoValue value={workspace.repoUrl} copy />
                 ) : (
-                  "None"
+                  t("common.none")
                 )}
               </DetailRow>
-              <DetailRow label="Base ref">
-                {workspace.baseRef ? <MonoValue value={workspace.baseRef} copy /> : "None"}
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.baseRefLabel")}>
+                {workspace.baseRef ? <MonoValue value={workspace.baseRef} copy /> : t("common.none")}
               </DetailRow>
-              <DetailRow label="Branch">
-                {workspace.branchName ? <MonoValue value={workspace.branchName} copy /> : "None"}
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.branchLabel")}>
+                {workspace.branchName ? <MonoValue value={workspace.branchName} copy /> : t("common.none")}
               </DetailRow>
-              <DetailRow label="Opened">{formatDateTime(workspace.openedAt)}</DetailRow>
-              <DetailRow label="Last used">{formatDateTime(workspace.lastUsedAt)}</DetailRow>
-              <DetailRow label="Cleanup">
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.openedLabel")}>{formatDateTime(workspace.openedAt)}</DetailRow>
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.lastUsedLabel")}>{formatDateTime(workspace.lastUsedAt)}</DetailRow>
+              <DetailRow label={t("area.projects-goals-workspaces-2.execution-workspace-detail.cleanupRowLabel")}>
                 {workspace.cleanupEligibleAt
                   ? `${formatDateTime(workspace.cleanupEligibleAt)}${workspace.cleanupReason ? ` · ${workspace.cleanupReason}` : ""}`
-                  : "Not scheduled"}
+                  : t("area.projects-goals-workspaces-2.execution-workspace-detail.notScheduled")}
               </DetailRow>
               </CardContent>
             </Card>
@@ -1510,17 +1517,17 @@ export function ExecutionWorkspaceDetail() {
         ) : activeTab === "runtime_logs" ? (
           <Card className="rounded-none">
             <CardHeader>
-              <CardTitle>Runtime and cleanup logs</CardTitle>
-              <CardDescription>Recent operations</CardDescription>
+              <CardTitle>{t("area.projects-goals-workspaces-2.execution-workspace-detail.logsTitle")}</CardTitle>
+              <CardDescription>{t("area.projects-goals-workspaces-2.execution-workspace-detail.logsDescription")}</CardDescription>
             </CardHeader>
             <CardContent>
             {workspaceOperationsQuery.isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading workspace operations…</p>
+              <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.logsLoading")}</p>
             ) : workspaceOperationsQuery.error ? (
               <p className="text-sm text-destructive">
                 {workspaceOperationsQuery.error instanceof Error
                   ? workspaceOperationsQuery.error.message
-                  : "Failed to load workspace operations."}
+                  : t("area.projects-goals-workspaces-2.execution-workspace-detail.logsLoadFailed")}
               </p>
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
               <div className="space-y-3">
@@ -1545,7 +1552,7 @@ export function ExecutionWorkspaceDetail() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">No workspace operations have been recorded yet.</p>
+              <p className="text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.logsEmpty")}</p>
             )}
             </CardContent>
           </Card>
@@ -1555,8 +1562,8 @@ export function ExecutionWorkspaceDetail() {
               companyId={workspace.companyId}
               scopeKind="execution_workspace"
               scopeId={workspace.id}
-              title="Workspace summary"
-              description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
+              title={t("area.projects-goals-workspaces-2.execution-workspace-detail.summaryTitle")}
+              description={t("area.projects-goals-workspaces-2.execution-workspace-detail.summaryDescription")}
             />
             <ExecutionWorkspaceIssuesList
               companyId={workspace.companyId}
@@ -1575,7 +1582,7 @@ export function ExecutionWorkspaceDetail() {
           />
         ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsLoading ? (
           <Card>
-            <CardContent className="py-6 text-sm text-muted-foreground">Loading workspace plugin...</CardContent>
+            <CardContent className="py-6 text-sm text-muted-foreground">{t("area.projects-goals-workspaces-2.execution-workspace-detail.loadingPlugin")}</CardContent>
           </Card>
         ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsError ? (
           <Card>
@@ -1584,7 +1591,7 @@ export function ExecutionWorkspaceDetail() {
         ) : isExecutionWorkspacePluginTab(activeTab) ? (
           <MissingPluginTabPlaceholder
             defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
-            defaultTabLabel="Back to tasks"
+            defaultTabLabel={t("area.projects-goals-workspaces-2.execution-workspace-detail.backToTasks")}
           />
         ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList

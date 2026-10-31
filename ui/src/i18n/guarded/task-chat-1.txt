@@ -1,0 +1,12 @@
+# myrmidon(OPE-8950): area task-chat-1
+components/AgentBubbleActionRow.tsx
+components/ChatComposer.tsx
+components/OutputFeedbackButtons.tsx
+components/TaskChatThread.tsx
+components/interrupt-handoff/InterruptHandoffViews.tsx
+components/task-chat/QuestionForm.tsx
+components/task-chat/RunnerGoalWidget.tsx
+components/task-chat/TaskChatBlockerLinks.tsx
+components/task-chat/TaskChatBubble.tsx
+components/task-chat/TaskChatBubbleActions.tsx
+components/task-chat/TaskChatCompactInteractionCard.tsx

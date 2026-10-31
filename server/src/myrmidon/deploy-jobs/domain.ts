@@ -41,6 +41,8 @@ export type DeployJobStatus =
   | "auto_rolled_back"
   | "aborted";
 
+export type DeployUpdateMode = "manual" | "auto" | "canary";
+
 /**
  * Whether the job's failed health check triggered the automatic rollback to
  * the locally known previous image (R5-C). A job that never reached the image
@@ -92,6 +94,8 @@ export interface DeployJob {
   commit: string | null;
   status: DeployJobStatus;
   reason: string;
+  mode: DeployUpdateMode;
+  window: string | null;
   startedBy: { actorType: string; actorId: string };
   createdAt: string;
   updatedAt: string;
@@ -170,6 +174,8 @@ function parseJob(raw: unknown): DeployJob | null {
     commit: typeof raw.commit === "string" ? raw.commit : null,
     status: raw.status as DeployJobStatus,
     reason: typeof raw.reason === "string" ? raw.reason : "",
+    mode: raw.mode === "auto" || raw.mode === "canary" ? raw.mode : "manual",
+    window: typeof raw.window === "string" ? raw.window : null,
     startedBy: isRecord(raw.startedBy)
       ? { actorType: String(raw.startedBy.actorType ?? ""), actorId: String(raw.startedBy.actorId ?? "") }
       : { actorType: "", actorId: "" },
@@ -317,6 +323,8 @@ export function newDeployJob(input: {
   companyId: string;
   digest: string;
   reason: string;
+  mode?: DeployUpdateMode;
+  window?: string | null;
   startedBy: { actorType: string; actorId: string };
   now: Date;
 }): DeployJob {
@@ -329,6 +337,8 @@ export function newDeployJob(input: {
     commit: null,
     status: "pending",
     reason: input.reason,
+    mode: input.mode ?? "manual",
+    window: input.window ?? null,
     startedBy: input.startedBy,
     createdAt,
     updatedAt: createdAt,

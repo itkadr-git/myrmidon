@@ -79,12 +79,56 @@ A skill in your company library records where it originated. The Store shows thi
 | `github` | GitHub | Imported from a GitHub repo (pinned to a commit) |
 | `skills_sh` | skills.sh | Imported via the [skills.sh](https://skills.sh) registry (resolves to GitHub) |
 | `url` | URL | Imported from a raw markdown URL |
+| `well_known` | agentskills.io | Discovered from a site's `/.well-known/agent-skills/index.json` and imported from its digest-pinned archive |
 | `local_path` | Local | Created in-app or scanned from a project workspace on disk |
 
 External imports (`github`, `skills_sh`, `url`) are held to two rules: they must be
 `markdown_only` or `assets` (no scripts), and Git-backed sources **must resolve to a
 pinned 40-character commit SHA** before import, so a moving branch can never silently
 change what your agents run.
+
+### Discover from an agentskills.io site
+
+In Skills, choose the discovery/import flow and enter the provider's bare HTTPS site,
+for example `https://kie.ai` (not a GitHub or skills.sh URL). Myrmidon reads that
+site's `/.well-known/agent-skills/index.json` and lists archive skills with their
+names, descriptions, and SHA-256 digests. Select a skill to import it. The server
+checks the downloaded archive against the digest advertised by the index before it
+writes any files; a mismatch is rejected. Archive extraction also rejects unsafe
+paths and links. Re-importing the same digest is a no-op; a changed digest becomes a
+new skill version. Discovery is not a runtime acceptance test: it does not verify a
+provider account, API key, service balance, or successful agent delivery.
+
+The imported skill's detail may list `requiredEnv`, inferred from its instructions.
+Treat these names as hints, not proof that the skill works. In the agent's Secrets &
+variables settings, make each required value available through an existing company
+secret: select the secret and grant access to the agent's role. Do not paste secret
+values into the skill, its metadata, or task comments. Check the agent's effective
+environment/secret-access configuration and run a safe, provider-approved task to
+confirm delivery; a listed variable alone does not prove it reached the runtime.
+
+For MCP services, use Apps → Connect an app to configure the provider's MCP connector
+and grant its tools to the intended agents. This is a separate connector path from
+importing a skill: an imported skill does not itself register an MCP server or grant
+MCP tools. See [External MCP connectors](../../myrmidon/guides/external-mcp-connectors.md)
+for the connector setup and access checks.
+
+If discovery reports `skill_discovery_invalid_source`, use the provider's bare HTTPS
+site rather than a GitHub or skills.sh URL. `skill_discovery_skill_not_found` means
+the selected name is absent from the index; check the discovered names.
+`skill_discovery_ambiguous` means the index lists multiple skills; select one by name.
+An unreachable/timeout error means the index could not be fetched; check server-side
+network reachability and the provider URL. An invalid index has no supported archive
+entries. A digest mismatch means the downloaded bytes differ from the published
+SHA-256: do not bypass the check; retry later or contact the provider. If a skill's
+required environment value is missing, assign an existing secret to the agent role
+and verify access without exposing its value.
+
+The skill detail's **Check delivery** action runs a delivery check for a selected
+agent and reports the run status, error, or output snapshot. A failed-to-start check
+is distinct from a run that starts and later fails. Treat a successful check as
+evidence for that selected agent and check only; it does not prove provider-side
+account validity, available balance, or that every agent/adapter is configured.
 
 ### Thin wrappers for external live playbooks
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@myrmidon/shared";
 import {
   activityLog,
   agentRuntimeState,
@@ -19,8 +19,9 @@ import {
   issueRecoveryActions,
   issueDocuments,
   issues,
+  issueWorkProducts,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -106,6 +107,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(issueComments);
     await db.delete(documentRevisions);
     await db.delete(issueDocuments);
+    await db.delete(issueWorkProducts);
     await db.delete(documents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
@@ -140,7 +142,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
-    issueStatus?: "in_progress" | "in_review";
+    issueStatus?: "in_progress" | "in_review" | "blocked";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -238,6 +240,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     return { companyId, agentId, issueId, nextCheckAt };
   }
 
+  it("triggers a due monitor for a blocked issue", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "blocked" });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(nextCheckAt);
+
+    expect(result.enqueued).toBe(1);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(nextCheckAt.toISOString());
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
+    expect(wakeup?.payload).toMatchObject({ issueId, nextCheckAt: nextCheckAt.toISOString() });
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
@@ -271,6 +292,49 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("does not wake the agent when CI is in progress and defers next check with backoff", async () => {
+    const { companyId, issueId, agentId } = await seedFixture({
+      monitor: { notes: "Waiting for CI to finish" },
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #123",
+      status: "open",
+      metadata: {
+        repository: "paperclipai/paperclip",
+        number: 123,
+        activeCi: {
+          repository: "paperclipai/paperclip",
+          number: 123,
+          headSha: "0123456789abcdef0123456789abcdef01234567",
+          status: "in_progress",
+          runId: "456",
+        },
+      },
+    });
+
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const result = await heartbeatService(db).tickTimers(tickAt);
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated.monitorNextCheckAt).not.toBeNull();
+    expect(new Date(updated.monitorNextCheckAt!).getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(updated.monitorAttemptCount).toBe(1);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_deferred");
   });
 
   it.each(["unknown", "exhausted"] as const)("does not replay a quota monitor with %s execution evidence", async (kind) => {

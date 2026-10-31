@@ -10,7 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
-import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@paperclipai/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
+import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@myrmidon/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -253,7 +253,7 @@ export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
 /** A member's place: the instance directory name under the shared root. */
 export interface BotScopeMount {
   scopeRoot: string;
-  /** `<kind>-<id>`, see `scopeInstanceDirName` in @paperclipai/shared. */
+  /** `<kind>-<id>`, see `scopeInstanceDirName` in @myrmidon/shared. */
   dirName: string;
 }
 
@@ -745,6 +745,15 @@ export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, bo
   // botd reports under its own bot key (the agent id, not a secret); the hostname fallback is a container id the board refuses.
   if (botKey) env[BOT_KEY_ENV] = botKey;
   if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
+  if (mechanics.hermesPruneEnabled !== undefined) {
+    env[WS_PROFILE_ENV.hermesPruneEnabled] = mechanics.hermesPruneEnabled ? "1" : "0";
+  }
+  if (mechanics.hermesPruneDays !== undefined) {
+    env[WS_PROFILE_ENV.hermesPruneDays] = String(mechanics.hermesPruneDays);
+  }
+  if (mechanics.gitMigrationEnabled !== undefined) {
+    env[WS_PROFILE_ENV.gitMigrationEnabled] = mechanics.gitMigrationEnabled ? "1" : "0";
+  }
   return env;
 }
 
@@ -894,12 +903,17 @@ export function mountRootSegment(mount: BotVolumeMount): string {
  * Directories (as profile paths) that the profile compiler owns outright: on
  * every apply their whole content is replaced by exactly what the new profile
  * carries under them — including nothing at all — instead of being merged file
- * by file. "hermes/skills-board" is the compiler's copy of the card's skills
- * (Hermes reads the whole directory through `skills.external_dirs`), so a skill
- * removed from the card must disappear from it; a per-file merge never removes
- * anything. The bot's own skills live elsewhere under hermes/ and are untouched.
+ * by file. "hermes/skills/paperclip-managed" is the compiler's copy of the card's
+ * skills, delivered directly into Hermes's run-scoped skills directory so
+ * updates take effect on the next run without a container restart.
+ * "hermes/skills-board" is kept for backwards compatibility / cleanup of legacy
+ * profile mounts. The bot's own skills live elsewhere under hermes/skills/ and
+ * are untouched.
  */
-export const BOT_MANAGED_DIRS: readonly string[] = ["hermes/skills-board"];
+export const BOT_MANAGED_DIRS: readonly string[] = [
+  "hermes/skills/paperclip-managed",
+  "hermes/skills-board",
+];
 
 /** True when a profile path is a managed directory itself or lies under one. */
 export function isUnderManagedDir(profilePath: string): boolean {
@@ -918,6 +932,7 @@ export const BOT_LABEL_KEYS = {
   /** Set on the driver's helper containers instead of `bot`, so they never show
    *  up as a bot in `list()`. */
   helper: "myrmidon.bot-helper",
+  idleStopped: "myrmidon.idle-stopped",
 } as const;
 
 /**

@@ -417,4 +417,64 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     expect(list).not.toHaveBeenCalled();
   });
+
+  it("denies issues.uploadAttachment without issue.attachments.write", async () => {
+    const uploadAttachment = vi.fn(async () => ({ id: "att-1" } as any));
+    const services = { issues: { uploadAttachment } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.attachments.read"],
+      services,
+    });
+    await expect(
+      handlers["issues.uploadAttachment"]({
+        issueId: "issue-a",
+        companyId: "company-a",
+        filename: "file.txt",
+        contentType: "text/plain",
+        contentBase64: Buffer.from("hello").toString("base64"),
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  it("allows issues.uploadAttachment with issue.attachments.write", async () => {
+    const uploadAttachment = vi.fn(async () => ({ id: "att-1" } as any));
+    const services = { issues: { uploadAttachment } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.attachments.write"],
+      services,
+    });
+    await expect(
+      handlers["issues.uploadAttachment"]({
+        issueId: "issue-a",
+        companyId: "company-a",
+        filename: "file.txt",
+        contentType: "text/plain",
+        contentBase64: Buffer.from("hello").toString("base64"),
+      }, context),
+    ).resolves.toEqual({ id: "att-1" });
+    expect(uploadAttachment).toHaveBeenCalledOnce();
+  });
+
+  it("enforces invocation company scope on issues.uploadAttachment", async () => {
+    const uploadAttachment = vi.fn(async () => ({ id: "att-1" } as any));
+    const services = { issues: { uploadAttachment } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.attachments.write"],
+      services,
+    });
+    await expect(
+      handlers["issues.uploadAttachment"]({
+        issueId: "issue-a",
+        companyId: "company-b",
+        filename: "file.txt",
+        contentType: "text/plain",
+        contentBase64: Buffer.from("hello").toString("base64"),
+      }, context),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(uploadAttachment).not.toHaveBeenCalled();
+  });
 });

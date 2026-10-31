@@ -71,3 +71,11 @@
 - [Советы по бюджету промпта и глубокий анализ](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
 - [Лимиты допуска запусков](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
 - [Здоровье трассировки LLM](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+
+## Действующий лимит задачи
+
+API лимитов бюджета разрешает действующий лимит задачи с учётом уровней
+задачи, фуражировки, роли, проекта и компании. Ответ указывает уровень,
+который победил при разрешении, и источник лимита. Подробности о приоритете,
+доступе и режиме «только сигнал» — в
+[руководстве по лимитам бюджета](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.ru.md).

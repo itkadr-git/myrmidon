@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
+import { deriveOriginatingActor, type Issue } from "@myrmidon/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
@@ -85,7 +85,7 @@ export function issueActivityTimestamp(issue: Issue, t?: (key: string, options?:
 
 export function issueActivityText(issue: Issue, t?: (key: string, options?: Record<string, unknown>) => string): string {
   if (t) return t("time.updated", { time: issueActivityTimestamp(issue, t) });
-  return `Updated ${issueActivityTimestamp(issue)}`;
+  return translateDefault("time.updated", { time: issueActivityTimestamp(issue) });
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -219,6 +219,7 @@ export function InboxIssueMetaLeading({
   statusSlot?: ReactNode;
   checklistStepNumber?: number | string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <>
       {showStatus ? (
@@ -235,6 +236,11 @@ export function InboxIssueMetaLeading({
         <span className="shrink-0 font-mono text-xs text-muted-foreground">
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
+      ) : null}
+      {issue.blockerMetadata?.issueRewakeFreeze ? (
+        <Badge variant="outline" title={`Empty re-wakes frozen since ${issue.blockerMetadata.issueRewakeFreeze.frozenAt}`}>
+          Re-wakes frozen · {timeAgo(issue.blockerMetadata.issueRewakeFreeze.frozenAt)}
+        </Badge>
       ) : null}
       {isLive && (
         <Badge variant="ghost"
@@ -258,7 +264,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            Live
+            {t("area.issue-threads-runs-1.issue-columns.live")}
           </span>
         </Badge>
       )}
@@ -268,7 +274,7 @@ export function InboxIssueMetaLeading({
             "px-1.5 sm:gap-1.5 sm:px-2",
             "border-border bg-transparent",
           )}
-          title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
+          title={t("area.issue-threads-runs-1.issue-columns.subtasksRunningBelow", { count: subtreeLiveCount })}
         >
           <span
             className={cn(
@@ -374,7 +380,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
+              {t("area.issue-threads-runs-1.issue-columns.unassigned")}
             </span>
           );
         }
@@ -400,7 +406,7 @@ export function InboxIssueTrailingColumns({
           }
 
           if (originatingActor?.kind === "user") {
-            const tooltipText = viaAgentName ? `${creatorUserLabel} · via ${viaAgentName}` : creatorUserLabel;
+            const tooltipText = viaAgentName ? t("area.issue-threads-runs-1.issue-columns.creatorViaAgent", { creator: creatorUserLabel, agent: viaAgentName }) : creatorUserLabel;
             return (
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
@@ -420,7 +426,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unknown
+              {t("area.issue-threads-runs-1.issue-columns.unknown")}
             </span>
           );
         }
@@ -446,7 +452,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
+              {t("area.issue-threads-runs-1.issue-columns.noProject")}
             </span>
           );
         }
@@ -503,7 +509,7 @@ export function InboxIssueTrailingColumns({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
+                    {t("area.issue-threads-runs-1.issue-columns.filterByWorkspace")}
                   </TooltipContent>
                 </Tooltip>
               ) : (

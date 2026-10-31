@@ -18,7 +18,7 @@ import {
   getModelProviderConnector,
   isModelProviderTypeAvailable,
   listAvailableModelProviderTypes,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   bindModelProviderPluginLifecycle,
   isChatGptPoolKey,

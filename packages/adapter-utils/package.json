@@ -1,19 +1,21 @@
 {
-  "name": "@paperclipai/adapter-utils",
+  "name": "@myrmidon/adapter-utils",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapter-utils"
   },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./acpx-engine/execute.js": "./src/acpx-engine/execute.ts",
+    "./acpx-engine/execute": "./src/acpx-engine/execute.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -22,6 +24,14 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./acpx-engine/execute.js": {
+        "types": "./dist/acpx-engine/execute.d.ts",
+        "import": "./dist/acpx-engine/execute.js"
+      },
+      "./acpx-engine/execute": {
+        "types": "./dist/acpx-engine/execute.d.ts",
+        "import": "./dist/acpx-engine/execute.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",
@@ -43,7 +53,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/shared": "workspace:*",
+    "@myrmidon/shared": "workspace:*",
     "acpx": "0.12.0",
     "picocolors": "^1.1.1"
   },

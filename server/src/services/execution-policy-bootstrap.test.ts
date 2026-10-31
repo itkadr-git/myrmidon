@@ -44,20 +44,38 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
 
   it("returns null when execution mode is explicitly any", () => {
     expect(
-      parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "any" })),
+      parseExecutionPolicyBootstrapEnv(env({ MYRMIDON_EXECUTION_MODE: "any" })),
     ).toBeNull();
+  });
+
+  it("prefers the canonical execution policy env even when the legacy value conflicts", () => {
+    expect(parseExecutionPolicyBootstrapEnv(env({ MYRMIDON_EXECUTION_MODE: "any", PAPERCLIP_EXECUTION_MODE: "vm" }))).toBeNull();
+  });
+
+  it("parses canonical Kubernetes execution env", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({
+      MYRMIDON_EXECUTION_MODE: "kubernetes",
+      MYRMIDON_K8S_BACKEND: "job",
+      MYRMIDON_K8S_IN_CLUSTER: "true",
+      MYRMIDON_K8S_RPC_TIMEOUT_MS: "600000",
+    }));
+    expect(parsed?.kubernetesConfig).toMatchObject({ backend: "job", inCluster: true, timeoutMs: 600000 });
+  });
+
+  it("accepts the legacy execution env alias", () => {
+    expect(parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "any" }))).toBeNull();
   });
 
   it("parses the forced kubernetes policy with a job/gvisor/cilium config", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({
-        PAPERCLIP_EXECUTION_MODE: "kubernetes",
-        PAPERCLIP_K8S_BACKEND: "job",
-        PAPERCLIP_K8S_IN_CLUSTER: "true",
-        PAPERCLIP_K8S_RUNTIME_CLASS_NAME: "gvisor",
-        PAPERCLIP_K8S_EGRESS_MODE: "cilium",
-        PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS: "api.anthropic.com, api.openai.com",
-        PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS: "10.0.0.0/8",
+        MYRMIDON_EXECUTION_MODE: "kubernetes",
+        MYRMIDON_K8S_BACKEND: "job",
+        MYRMIDON_K8S_IN_CLUSTER: "true",
+        MYRMIDON_K8S_RUNTIME_CLASS_NAME: "gvisor",
+        MYRMIDON_K8S_EGRESS_MODE: "cilium",
+        MYRMIDON_K8S_EGRESS_ALLOW_FQDNS: "api.anthropic.com, api.openai.com",
+        MYRMIDON_K8S_EGRESS_ALLOW_CIDRS: "192.0.2.0/24",
       }),
     );
     expect(parsed).not.toBeNull();
@@ -68,13 +86,13 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       runtimeClassName: "gvisor",
       egressMode: "cilium",
       egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
-      egressAllowCidrs: ["10.0.0.0/8"],
+      egressAllowCidrs: ["192.0.2.0/24"],
     });
   });
 
   it("defaults inCluster false and omits unset optional fields", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
-      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),
+      env({ MYRMIDON_EXECUTION_MODE: "kubernetes" }),
     );
     expect(parsed?.kubernetesConfig.inCluster).toBe(false);
     expect(parsed?.kubernetesConfig.runtimeClassName).toBeUndefined();
@@ -83,15 +101,15 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
 
   it("throws on an unknown execution mode", () => {
     expect(() =>
-      parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "vm" })),
-    ).toThrow(/PAPERCLIP_EXECUTION_MODE/);
+      parseExecutionPolicyBootstrapEnv(env({ MYRMIDON_EXECUTION_MODE: "vm" })),
+    ).toThrow(/MYRMIDON_EXECUTION_MODE/);
   });
 
   it("attaches the declared adapter registry to the kubernetes config", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({
-        PAPERCLIP_EXECUTION_MODE: "kubernetes",
-        PAPERCLIP_ADAPTERS: JSON.stringify([
+        MYRMIDON_EXECUTION_MODE: "kubernetes",
+        MYRMIDON_ADAPTERS: JSON.stringify([
           { adapterType: "opencode_local", runtimeImage: "img", envKeys: ["ANTHROPIC_API_KEY"], allowFqdns: [], probeCommand: ["opencode", "--version"], defaultEnv: { ANTHROPIC_BASE_URL: "http://bifrost:8080" } },
         ]),
       }),
@@ -100,37 +118,37 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig.adapters?.[0].adapterType).toBe("opencode_local");
   });
 
-  it("leaves adapters undefined when PAPERCLIP_ADAPTERS is absent", () => {
-    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+  it("leaves adapters undefined when MYRMIDON_ADAPTERS is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ MYRMIDON_EXECUTION_MODE: "kubernetes" }));
     expect(parsed?.kubernetesConfig.adapters).toBeUndefined();
   });
 
-  it("reads PAPERCLIP_K8S_RPC_TIMEOUT_MS into kubernetesConfig.timeoutMs", () => {
+  it("reads MYRMIDON_K8S_RPC_TIMEOUT_MS into kubernetesConfig.timeoutMs", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({
-        PAPERCLIP_EXECUTION_MODE: "kubernetes",
-        PAPERCLIP_K8S_RPC_TIMEOUT_MS: "600000",
+        MYRMIDON_EXECUTION_MODE: "kubernetes",
+        MYRMIDON_K8S_RPC_TIMEOUT_MS: "600000",
       }),
     );
     expect(parsed?.kubernetesConfig.timeoutMs).toBe(600000);
   });
 
-  it("omits timeoutMs when PAPERCLIP_K8S_RPC_TIMEOUT_MS is absent", () => {
-    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+  it("omits timeoutMs when MYRMIDON_K8S_RPC_TIMEOUT_MS is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ MYRMIDON_EXECUTION_MODE: "kubernetes" }));
     expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
-  it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
+  it("throws when MYRMIDON_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
-        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_RPC_TIMEOUT_MS: "0" }),
+        env({ MYRMIDON_EXECUTION_MODE: "kubernetes", MYRMIDON_K8S_RPC_TIMEOUT_MS: "0" }),
       ),
-    ).toThrow(/PAPERCLIP_K8S_RPC_TIMEOUT_MS/);
+    ).toThrow(/MYRMIDON_K8S_RPC_TIMEOUT_MS/);
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
-        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_RPC_TIMEOUT_MS: "abc" }),
+        env({ MYRMIDON_EXECUTION_MODE: "kubernetes", MYRMIDON_K8S_RPC_TIMEOUT_MS: "abc" }),
       ),
-    ).toThrow(/PAPERCLIP_K8S_RPC_TIMEOUT_MS/);
+    ).toThrow(/MYRMIDON_K8S_RPC_TIMEOUT_MS/);
   });
 });
 

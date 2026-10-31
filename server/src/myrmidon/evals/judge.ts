@@ -81,20 +81,23 @@ export interface EvalsSettings {
   judgeModels: string[];
 }
 
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
+
 export function readEvalsSettings(env: NodeJS.ProcessEnv = process.env): EvalsSettings {
   const baseUrl = env[EVALS_BASE_URL_ENV]?.trim() || null;
   const keySecret = env[EVALS_KEY_SECRET_ENV]?.trim() || null;
-  const timeoutRaw = Number(env[EVALS_TIMEOUT_SEC_ENV]?.trim() ?? "");
-  const timeoutSec =
-    Number.isInteger(timeoutRaw) && timeoutRaw >= 5 && timeoutRaw <= 600 ? timeoutRaw : 120;
+  const timeoutRaw = Number(env[EVALS_TIMEOUT_SEC_ENV] ?? liveBehaviorSetting<number>("evalsTimeoutSec"));
+  const timeoutSec = Number.isInteger(timeoutRaw) && timeoutRaw >= 5 && timeoutRaw <= 600 ? timeoutRaw : 120;
   const judgeModels = parseJudgePriorityModels(env[EVALS_JUDGE_PRIORITY_MODELS_ENV]);
   return {
     enabled: Boolean(baseUrl && keySecret),
     baseUrl,
     keySecret,
-    model: env[EVALS_MODEL_ENV]?.trim() || DEFAULT_EVALS_MODEL,
+    model: env[EVALS_MODEL_ENV]?.trim() || liveBehaviorSetting<string>("evalsModel") || DEFAULT_EVALS_MODEL,
     timeoutMs: timeoutSec * 1000,
-    langfuseExport: (env[EVALS_LANGFUSE_FLAG_ENV]?.trim() || "").toLowerCase() === "true",
+    langfuseExport: env[EVALS_LANGFUSE_FLAG_ENV] === undefined
+      ? liveBehaviorSetting<boolean>("evalsLangfuseExport")
+      : (env[EVALS_LANGFUSE_FLAG_ENV]?.trim() || "").toLowerCase() === "true",
     judgeModels,
   };
 }

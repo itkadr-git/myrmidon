@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterEach, expect, it } from "vitest";
-import { instanceSettings, agents } from "@paperclipai/db";
+import { instanceSettings, agents } from "@myrmidon/db";
 import {
   __clearIssueListResponseCacheForTests,
   issueRoutes,
 } from "../routes/issues.js";
-import { issues } from "@paperclipai/db";
+import { issues } from "@myrmidon/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   describeEmbeddedPostgres,

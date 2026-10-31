@@ -26,8 +26,7 @@ import { join } from "node:path";
 
 export const BACKUP_CATCHUP_WINDOW_ENV = "MYRMIDON_DB_BACKUP_CATCHUP_WINDOW";
 
-/** Upper bound for shifting the first tick out of the window. */
-const MAX_WINDOW_SHIFT_MS = 60 * 60 * 1000;
+/** Computes the delay to move a planned tick out of the window. */
 const MINUTES_PER_DAY = 24 * 60;
 
 export type BackupWindow = {
@@ -137,11 +136,11 @@ export function msUntilWindowEnd(now: Date, window: BackupWindow | null): number
   return Math.max(0, remainingMinutes * 60 * 1000 - secondsIntoMinute);
 }
 
-/** Extra delay that moves a tick planned `rawDelayMs` from now out of the window. */
+/** Computes the delay to move a planned tick out of the window. */
 export function windowShiftForTick(now: Date, rawDelayMs: number, window: BackupWindow | null): number {
   const tickAt = new Date(now.getTime() + Math.max(0, rawDelayMs));
   if (!isWithinBackupWindow(tickAt, window)) return 0;
-  return Math.min(msUntilWindowEnd(tickAt, window), MAX_WINDOW_SHIFT_MS);
+  return msUntilWindowEnd(tickAt, window);
 }
 
 export type CatchUpDecision = {

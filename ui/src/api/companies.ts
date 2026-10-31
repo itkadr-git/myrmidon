@@ -8,8 +8,8 @@ import type {
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
   UpdateCompanyBranding,
-} from "@paperclipai/shared";
-import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
+} from "@myrmidon/shared";
+import type { ExportFidelityReport } from "@myrmidon/shared/portability-fidelity";
 import {
   companyImportTransferApplyPath,
   companyImportTransferPartPath,
@@ -20,7 +20,7 @@ import {
   type CompanyImportTransferDeclaration,
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidon/shared/company-import-transfer";
 import { api, detachInflightGet, type RequestOptions } from "./client";
 
 // The board navigates only into companies the user can enter. The unscoped
@@ -109,6 +109,7 @@ export const companiesApi = {
         | "requireBoardApprovalForNewAgents"
         | "interactionResolverGovernance"
         | "feedbackDataSharingEnabled"
+        | "defaultResponsibleUserId"
         | "logoAssetId"
       >
     >,

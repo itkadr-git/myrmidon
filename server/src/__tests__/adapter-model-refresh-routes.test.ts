@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { models as openCodeFallbackModels } from "@paperclipai/adapter-opencode-local";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { models as openCodeFallbackModels } from "@myrmidon/adapter-opencode-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -67,8 +67,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
-    const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
+  vi.doMock("@myrmidon/adapter-opencode-local/server", async () => {
+    const actual = await vi.importActual<typeof import("@myrmidon/adapter-opencode-local/server")>("@myrmidon/adapter-opencode-local/server");
     return {
       ...actual,
       listOpenCodeModels: mockListOpenCodeModels,
@@ -158,12 +158,24 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("adapter model refresh route", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);

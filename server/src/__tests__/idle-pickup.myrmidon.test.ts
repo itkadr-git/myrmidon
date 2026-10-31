@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -8,10 +9,12 @@ import {
   documentRevisions,
   documents,
   heartbeatRuns,
+  issueComments,
   issuePlanDecompositions,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+  issueWorkProducts,
+} from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({
@@ -31,13 +34,17 @@ vi.mock("../middleware/logger.js", () => ({
 
 import {
   createIdlePickupSweeper,
+  DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS,
   findTopReadyIssueForAgent,
   idlePickupForAgent,
   IDLE_PICKUP_ENABLED_ENV,
   IDLE_PICKUP_INTERVAL_SEC_ENV,
+  IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV,
   IDLE_WAKE_REASON,
   readIdlePickupEnabled,
   readIdlePickupIntervalSec,
+  readIdlePickupRecentSuccessWindowMs,
+  isReviewPendingWaitingForCi,
 } from "../myrmidon/idle-pickup.ts";
 
 // IDLE-PICKUP (1.3): the board wakes an agent with a free queue on its
@@ -70,6 +77,18 @@ describe("settings readers", () => {
     expect(readIdlePickupIntervalSec({ [IDLE_PICKUP_INTERVAL_SEC_ENV]: "300" })).toBe(300);
   });
 
+  it("the quiet window after a successful run is two hours by default", () => {
+    expect(DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS).toBe(2 * 60 * 60 * 1000);
+    expect(readIdlePickupRecentSuccessWindowMs({})).toBe(2 * 60 * 60 * 1000);
+    for (const raw of ["", "  ", "abc", "-5", "1.5"]) {
+      const env: Record<string, string | undefined> = {};
+      if (raw !== undefined) env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV] = raw;
+      expect(readIdlePickupRecentSuccessWindowMs(env), `raw=${JSON.stringify(raw)}`).toBe(2 * 60 * 60 * 1000);
+    }
+    expect(readIdlePickupRecentSuccessWindowMs({ [IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]: "3600000" })).toBe(3_600_000);
+    expect(readIdlePickupRecentSuccessWindowMs({ [IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]: "0" })).toBe(0);
+  });
+
   it("the feature is on unless an explicit off value is set (a typo must not disable the fix)", () => {
     expect(readIdlePickupEnabled({})).toBe(true);
     expect(readIdlePickupEnabled({ [IDLE_PICKUP_ENABLED_ENV]: "garbage" })).toBe(true);
@@ -95,6 +114,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -217,8 +237,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     issueId: string;
     finishedAt: Date;
   }) {
+    const id = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id,
       companyId: input.companyId,
       agentId: input.agentId,
       status: "succeeded",
@@ -227,6 +248,49 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       startedAt: input.finishedAt,
       finishedAt: input.finishedAt,
     });
+    return id;
+  }
+
+  /** A cancelled run that finished at the given time, with its persisted cause. */
+  async function seedCancelledRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    finishedAt: Date;
+    cancellationCode: string;
+  }) {
+    await db.insert(heartbeatRuns).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "cancelled",
+      invocationSource: "automation",
+      contextSnapshot: { issueId: input.issueId },
+      resultJson: { executionCancellation: { source: { code: input.cancellationCode } } },
+      startedAt: new Date(input.finishedAt.getTime() - 30_000),
+      finishedAt: input.finishedAt,
+    });
+  }
+
+  /** A comment on the issue, optionally attributed to the run that wrote it. */
+  async function seedComment(input: {
+    companyId: string;
+    issueId: string;
+    createdAt: Date;
+    createdByRunId?: string;
+    deletedAt?: Date;
+  }) {
+    const id = randomUUID();
+    await db.insert(issueComments).values({
+      id,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      body: "Any news?",
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
+      ...(input.createdByRunId ? { createdByRunId: input.createdByRunId } : {}),
+      ...(input.deletedAt ? { deletedAt: input.deletedAt } : {}),
+    });
+    return id;
   }
 
   function fakeDeps(
@@ -363,7 +427,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     void issueId;
   });
 
-  it("does not wake a cancelled-blocker dependent (an operator must resolve the relation)", async () => {
+  it("wakes a cancelled-blocker dependent (a cancelled blocker is resolved, OPE-8904)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
     const blockerId = randomUUID();
@@ -384,9 +448,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     const result = await idlePickupForAgent(deps, { id: agentId, companyId });
 
-    expect(result.considered).toBe(0);
-    expect(result.woken).toBe(0);
-    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("does not wake a container (an issue with an open child)", async () => {
@@ -402,6 +466,77 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(result.woken).toBe(1);
     const [call] = vi.mocked(deps.enqueueWakeup).mock.calls;
     expect((call[1] as { contextSnapshot: { issueId: string } }).contextSnapshot.issueId).not.toBe(parentId);
+  });
+
+  it("does not wake review participant when review stage is pending and waiting for CI (executionState ciState pending/unknown, OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "pending",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake review participant when review stage is pending and PR work product has ciState unknown (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR #2078",
+      status: "open",
+      metadata: {
+        ciState: "unknown",
+      },
+    });
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(1);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes review participant when review stage is pending and CI is green (OPE-10082)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        ciState: "green",
+      },
+    }).where(eq(issues.id, issueId));
+
+    const deps = fakeDeps();
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(1);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("a container whose children are all done is itself ready again", async () => {
@@ -567,6 +702,75 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
+  it("myrmidon(1.6.6 OPE-8988): an old queued wake no run carries is an orphan and does not cover the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-8988): a claimed wake whose run already ended does not cover the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+  });
+
+  it("myrmidon(1.6.6 OPE-8988): an old deferred wake whose issue holds no execution lock does not cover it", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.alreadyActive).toBe(0);
+    expect(result.woken).toBe(1);
+  });
+
   it("a deferred or claimed wake also counts as covering (not only queued)", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId });
@@ -603,6 +807,103 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it.each(["reassignment", "board_operator"])(
+    "wakes an issue with review changes requested after a board cancellation (%s)",
+    async (cancellationCode) => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+      await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, issueId));
+      await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
+      const cancelledAt = new Date(Date.now() - 30_000);
+      await seedCancelledRun({ companyId, agentId, issueId, finishedAt: cancelledAt, cancellationCode });
+      const deps = fakeDeps();
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.woken).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+    },
+  );
+
+  it("does not repeatedly wake review changes after a system cancellation", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const systemCancelled = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await db.update(issues).set({ executionState: { status: "changes_requested" } }).where(eq(issues.id, systemCancelled));
+    await seedSucceededRun({ companyId, agentId, issueId: systemCancelled, finishedAt: new Date(Date.now() - 90_000) });
+    await seedCancelledRun({
+      companyId,
+      agentId,
+      issueId: systemCancelled,
+      finishedAt: new Date(Date.now() - 30_000),
+      cancellationCode: "watchdog",
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("cools a genuinely stale todo issue with consecutive succeeded runs", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const staleTodo = await seedIssue({ companyId, agentId, status: "todo" });
+    await seedSucceededRun({ companyId, agentId, issueId: staleTodo, finishedAt: new Date(Date.now() - 15 * 60_000) });
+    const staleInProgress = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 15 * 60_000) });
+    await seedSucceededRun({ companyId, agentId, issueId: staleInProgress, finishedAt: new Date(Date.now() - 5 * 60_000) });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBeGreaterThanOrEqual(2);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["todo", "in_progress"])(
+    "does not treat board cancellation as review rework when execution state is %s",
+    async (status) => {
+      const { companyId, agentId } = await seedAgent();
+      const issueId = await seedIssue({ companyId, agentId, status });
+      await seedSucceededRun({ companyId, agentId, issueId, finishedAt: new Date(Date.now() - 90_000) });
+      await seedCancelledRun({
+        companyId,
+        agentId,
+        issueId,
+        finishedAt: new Date(Date.now() - 30_000),
+        cancellationCode: "reassignment",
+      });
+      const deps = fakeDeps();
+
+      const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+      expect(result.woken).toBe(0);
+      expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a silent success quiet long past the old 15-minute window (no wake storm)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      // 40 minutes: inside the 2-hour quiet window, outside the 15-minute one
+      // the board used before — there the sweep woke the same issue again 15
+      // minutes after its run ended, and the next run ended the same way.
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("wakes an issue whose only succeeded run is older than the recent-success window", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
@@ -610,8 +911,8 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       companyId,
       agentId,
       issueId,
-      // 20 minutes ago: past the 15-minute default window.
-      finishedAt: new Date(Date.now() - 20 * 60 * 1000),
+      // 3 hours ago: past the 2-hour default window.
+      finishedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
     });
     const deps = fakeDeps();
 
@@ -619,6 +920,106 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     expect(result.woken).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("a comment posted after a recent success reopens the issue (the wake still comes)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    // Somebody asked something after the run ended: the issue is not idle work
+    // any more, it is an unanswered question.
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("a comment the recent run wrote itself does not reopen the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const runId = await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    // The run's own closing report: written by that run, so it is not new input.
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 39 * 60 * 1000),
+      createdByRunId: runId,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("a deleted comment does not reopen the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    const deletedAt = new Date(Date.now() - 5 * 60 * 1000);
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+      deletedAt,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("the quiet window follows the latest success per issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    // One old success (3 h ago, past the window) and one recent no-op run whose
+    // comment-less silence is the one that must hold.
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+    });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 30 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("recent-success suppression does not block a different, never-run issue of the same agent", async () => {
@@ -809,6 +1210,7 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
   function sweeperDeps(
     overrides: {
       enqueueWakeup?: (...args: unknown[]) => Promise<unknown>;
+      pickupReviewForAgent?: Parameters<typeof createIdlePickupSweeper>[0]["pickupReviewForAgent"];
       invokable?: (agent: { id: string; status: string }) => boolean;
       underMaintenance?: (agentId: string) => boolean;
       env?: Record<string, string | undefined>;
@@ -826,10 +1228,28 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
         async (agentId: string) => (overrides.underMaintenance ? overrides.underMaintenance(agentId) : false),
       ),
       ...(overrides.env ? { env: overrides.env } : {}),
+      ...(overrides.pickupReviewForAgent ? { pickupReviewForAgent: overrides.pickupReviewForAgent } : {}),
     };
     const sweeper = createIdlePickupSweeper(deps);
     return { sweeper, enqueueWakeup: enqueueWakeup as unknown as ReturnType<typeof vi.fn>, deps };
   }
+
+  it("retries suppressed review work on later ticks before general development work", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Development task", status: "todo",
+      priority: "high", assigneeAgentId: agentId,
+    });
+    const pickupReviewForAgent = vi.fn()
+      .mockResolvedValueOnce({ handled: true, woken: 0 })
+      .mockResolvedValueOnce({ handled: true, woken: 1 });
+    const { sweeper, enqueueWakeup } = sweeperDeps({ pickupReviewForAgent });
+    expect((await sweeper.sweep(new Date("2026-09-30T12:00:00Z"))).woken).toBe(0);
+    expect((await sweeper.sweep(new Date("2026-09-30T12:10:00Z"))).woken).toBe(1);
+    expect(pickupReviewForAgent).toHaveBeenCalledTimes(2);
+    expect(pickupReviewForAgent).toHaveBeenCalledWith(expect.objectContaining({ id: agentId, companyId }));
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
 
   it("wakes a ready issue of an invokable idle agent on the tick", async () => {
     const { companyId, agentId } = await seedAgent();
@@ -941,5 +1361,103 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
     expect(result.agentsChecked).toBe(0);
     expect(result.woken).toBe(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+});
+
+describe("isReviewPendingWaitingForCi (OPE-10082)", () => {
+  const agentId = randomUUID();
+
+  it("returns true when executionState has review pending and ciState is pending or unknown", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "unknown",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when PR workProduct metadata has ciState pending/unknown or activeCi queued", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { ciState: "pending" },
+      }),
+    ).toBe(true);
+
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+        },
+        workProductMetadata: { activeCi: { status: "queued" } },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when CI is green", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "green",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when currentParticipant is a different agent", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: randomUUID() },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when review stage is not pending", () => {
+    expect(
+      isReviewPendingWaitingForCi({
+        agentId,
+        executionState: {
+          status: "approved",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          ciState: "pending",
+        },
+      }),
+    ).toBe(false);
   });
 });

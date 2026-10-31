@@ -57,6 +57,7 @@ const view: GitHubSharedIdentityView = {
   settings: {
     version: 1,
     enabled: true,
+    pats: [],
     apps: [
       {
         id: ENTRY_A,
@@ -163,14 +164,21 @@ vi.mock("@/api/secrets", () => ({ secretsApi: { list: vi.fn(async () => []) } })
 // t() return the key's EN text from the fork catalog.
 vi.mock("@/i18n", () => ({
   useTranslation: () => ({
-    t: (key: string) => {
+    t: (key: string, options?: Record<string, unknown>) => {
       let node: unknown = enCatalog;
       for (const part of key.split(".")) node = (node as Record<string, unknown>)?.[part];
-      return typeof node === "string" ? node : key;
+      if (typeof node !== "string") {
+        // myrmidon(OPE-8950): area catalog of this screen
+        node = (areaCatalog as Record<string, Record<string, unknown>>).area;
+        for (const part of key.split(".").slice(1)) node = (node as Record<string, unknown>)?.[part];
+      }
+      if (typeof node !== "string") return key;
+      return node.replace(/\{\{(\w+)\}\}/g, (_m, name: string) => String(options?.[name] ?? ""));
     },
   }),
 }));
 import enCatalog from "@/i18n/myrmidon-locales/en.json";
+import areaCatalog from "@/i18n/myrmidon-locales/areas/access-secrets-2.en.json";
 
 describe("GitHubSharedIdentityPanelView", () => {
   it("shows the stored App entry and the vendor connector state", () => {
@@ -194,6 +202,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -246,6 +255,7 @@ describe("GitHubSharedIdentityPanelView", () => {
       bodyFromDraft({
         enabled: false,
         commitEmailDomain: " example.com ",
+        pats: [{ id: "pat-1", name: " PAT ", tokenSecretId: " secret-1 ", allowedRepos: "BastionPrime/wellboard, BastionPrime/wellmagram", agentIds: [" agent-1 "] }],
         apps: [
           {
             id: ENTRY_A,
@@ -263,6 +273,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     ).toEqual({
       enabled: false,
       commitEmailDomain: "example.com",
+      pats: [{ id: "pat-1", name: "PAT", tokenSecretId: "secret-1", allowedRepos: ["BastionPrime/wellboard", "BastionPrime/wellmagram"], agentIds: ["agent-1"] }],
       apps: [
         {
           id: ENTRY_A,
@@ -390,6 +401,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -485,7 +497,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     apiMocks.get.mockReset();
     apiMocks.beginAppManifest.mockReset();
     apiMocks.getAppInstallUrl.mockReset();
-    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
+    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, pats: [], apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
     apiMocks.beginAppManifest.mockResolvedValue({
       manifestUrl: "https://github.com/settings/apps/new",
       manifest: { name: "my-app" },

@@ -9,7 +9,7 @@ import {
   WS_CARD_KEYS,
   wsDiskReportSchema,
   type WsDiskReport,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   BOT_DISK_ARCHIVE_TTL_MS,
   buildAgentSilentCards,
@@ -17,6 +17,7 @@ import {
   buildBotDiskCards,
   buildDriftCards,
   buildForeignCards,
+  buildForeignUidCards,
   buildImageStaleCards,
   readBotDiskReports,
   redactReportText,
@@ -142,6 +143,14 @@ describe("drift", () => {
 });
 
 describe("foreign", () => {
+  it("a card for a deferred foreign-owner cleanup is high severity and clears when the report is repaired", () => {
+    const card = buildForeignUidCards(input([bot({ foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } })]))[0]!;
+    expect(card).toMatchObject({ severity: "high", cardKey: WS_CARD_KEYS.foreign, payload: { path: "/workspace/ABC-010" } });
+    expect(buildForeignUidCards(input([bot({ report: { ...fixture(), foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } } })]))).toHaveLength(1);
+    expect(buildForeignUidCards(input([bot({ report: { ...fixture(), foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } }, foreignUid: { path: "/workspace/other", reason: "EACCES uid 1" } })]))[0]!.payload.path).toBe("/workspace/other");
+    expect(buildForeignUidCards(input([bot({ foreignUid: null })]))).toHaveLength(0);
+  });
+
   it("a card at once for every foreign entry and class-X copy, path and sign in the payload", () => {
     const report = fixture();
     report.foreign = [{ path: "/workspace/odd-clone", sign: "promisor" }];
@@ -174,12 +183,15 @@ describe("bot_disk_archive", () => {
     report.archives = [];
     expect(buildArchiveCards(input([bot({ report })]))).toHaveLength(0);
   });
-  it("expires at 30 days: shown at 30 d minus a minute, gone at 30 d", () => {
+  it("expires the reminder at 30 days: shown at 30 d minus a minute, gone at 30 d", () => {
     const report = fixture();
     const created = Date.parse(report.archives[0]!.createdAt);
     const near = { ...input([bot({ report })]), nowMs: created + BOT_DISK_ARCHIVE_TTL_MS - MIN };
     const past = { ...input([bot({ report })]), nowMs: created + BOT_DISK_ARCHIVE_TTL_MS };
-    expect(buildArchiveCards(near)).toHaveLength(1);
+    const cards = buildArchiveCards(near);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.exitRule).toBe("the archive is restored, or this reminder expires after 30 days");
+    expect(cards[0]!.payload.expiresAt).toBe(new Date(created + 30 * 24 * HOUR).toISOString());
     expect(buildArchiveCards(past)).toHaveLength(0);
   });
 });

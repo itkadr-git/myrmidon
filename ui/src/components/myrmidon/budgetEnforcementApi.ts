@@ -9,7 +9,7 @@ import type {
   BudgetEnforcementPatch,
   BudgetEnforcementSource,
   ResolvedBudgetEnforcement,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export type BudgetEnforcementView = ResolvedBudgetEnforcement;

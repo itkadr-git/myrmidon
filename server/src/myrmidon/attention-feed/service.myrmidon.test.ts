@@ -4,7 +4,7 @@ import {
   ATTENTION_FEED_UPDATED_ACTION,
   ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS,
   ATTENTION_FEED_CACHE_TTL_DEFAULT_SECONDS,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { attentionFeedService } from "./service.js";
 
 // SETTINGS-UI C-4: the service behind GET/PATCH /api/myrmidon/attention-feed.

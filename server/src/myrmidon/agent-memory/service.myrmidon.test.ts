@@ -1,7 +1,7 @@
 // myrmidon(MEMORY-UI): tests for the agent memory service — bank resolution,
 // the settings gate, list/export/invalidate/clear, and the activity log rows.
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agentMemoryService,
   resolveAgentMemoryBank,

@@ -77,7 +77,7 @@ function testProfile(
       plainFile("hermes/config.yaml", "model:\n  default: example-model\n"),
       { path: "hermes/.env", content: opts.dotenv ?? TEST_DOTENV, mode: 0o600, secret: true },
       plainFile("hermes/hindsight/config.json", "{}\n"),
-      ...skills.map((name) => plainFile(`hermes/skills-board/${name}/SKILL.md`, `# ${name}\n`)),
+      ...skills.map((name) => plainFile(`hermes/skills/paperclip-managed/${name}/SKILL.md`, `# ${name}\n`)),
       plainFile("workspace/AGENTS.md", "instructions\n"),
       ...(opts.extra ?? []),
     ],
@@ -537,6 +537,7 @@ describe("buildProfileArchives", () => {
 
   it("stages the compiler-owned skills directory even when the profile has no skills (that is what empties it)", () => {
     const hermes = archives[0].entries;
+    expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills/paperclip-managed`)).toBe(true);
     expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills-board`)).toBe(true);
   });
 
@@ -671,7 +672,7 @@ interface FakeContainer {
     Labels?: Record<string, string>;
     HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
   };
-  state: "created" | "running" | "exited";
+  state: "created" | "running" | "exited" | "dead";
   health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   logs: string;
@@ -1056,6 +1057,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
   let daemon: FakeDaemon;
   let driver: BotContainerDriver;
   let volumes: { hermes: string; workspace: string; scratch: string };
+  let stateDir: string;
   let nonceSeq = 0;
 
   beforeEach(async () => {
@@ -1067,8 +1069,11 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       "myrmidon-hermes:1.6.4": LEGACY_CONTRACT_LABELS, // the three-volume release image of the rollout defect
       "myrmidon-hermes:1.0.0": null, // built before the runtime contract: no label at all
       "myrmidon-hermes:3.0.0": { [BOT_RUNTIME_CONTRACT_LABEL]: "3" }, // a contract this driver does not know
+      "myrmidon-hermes-dev:latest": CONTRACT_LABELS,
+      "ghcr.io/itkadr-git/myrmidon-hermes-dev:main": CONTRACT_LABELS,
     });
     const volumeRoot = path.join(tmp, "bots");
+    stateDir = path.join(tmp, "bot-state");
     volumes = {
       hermes: path.join(volumeRoot, "agent-a", "hermes"),
       workspace: path.join(volumeRoot, "agent-a", "workspace"),
@@ -1082,12 +1087,14 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         allowlist: ["myrmidon-hermes:*"],
         mountSources: [],
         devbuild: { host: null, user: "", base: "" },
+        stateDir,
       },
       {
         sleep: async () => {},
         healthPollIntervalMs: 0,
         startHealthTimeoutMs: 200,
         nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+        stateDir,
       },
     );
   });
@@ -1146,7 +1153,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     // files in place, secrets 0600, nothing left in staging
     expect(read(path.join(volumes.hermes, "config.yaml"))).toContain("example-model");
     expect(fs.statSync(path.join(volumes.hermes, ".env")).mode & 0o777).toBe(0o600);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(read(path.join(volumes.workspace, "AGENTS.md"))).toBe("instructions\n");
     expect(leftovers()).toEqual([]);
 
@@ -1158,6 +1165,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     expect({ ...status, inspect: undefined }).toEqual({
       botKey: "agent-a",
       state: "running",
+      idleStopped: false,
+      maxConcurrentRuns: undefined,
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
@@ -1255,18 +1264,18 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     fs.mkdirSync(path.join(volumes.hermes, "sessions"));
     fs.writeFileSync(path.join(volumes.hermes, "sessions/s1.json"), "{}"); // written by the bot itself
     fs.writeFileSync(path.join(volumes.workspace, "notes.txt"), "mine");
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b/SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b/SKILL.md"))).toBe(true);
 
     await driver.writeProfile("agent-a", testProfile({ skills: ["skill-a"], restartHash: "restart-2" }));
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b"))).toBe(false);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b"))).toBe(false);
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(fs.existsSync(path.join(volumes.workspace, "OLD.md"))).toBe(false);
     expect(read(path.join(volumes.hermes, "sessions/s1.json"))).toBe("{}");
     expect(read(path.join(volumes.workspace, "notes.txt"))).toBe("mine");
     expect(leftovers()).toEqual([]);
 
     await driver.writeProfile("agent-a", testProfile({ skills: [], restartHash: "restart-3" }));
-    expect(fs.readdirSync(path.join(volumes.hermes, "skills-board"))).toEqual([]); // emptied, not left stale
+    expect(fs.readdirSync(path.join(volumes.hermes, "skills/paperclip-managed"))).toEqual([]); // emptied, not left stale
   });
 
   it("never moves the staging of an interrupted earlier apply into place", async () => {
@@ -1308,13 +1317,13 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
   it("treats profile paths as data: shell metacharacters in file names are written and removed literally", async () => {
     await driver.create(spec());
     const odd = '$(touch PWNED) `touch PWNED` "q" *.md';
-    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills-board/x/${odd}`, "odd\n")];
+    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills/paperclip-managed/x/${odd}`, "odd\n")];
     await driver.writeProfile("agent-a", testProfile({ extra }));
     expect(read(path.join(volumes.workspace, odd))).toBe("odd\n");
-    expect(read(path.join(volumes.hermes, "skills-board/x", odd))).toBe("odd\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/x", odd))).toBe("odd\n");
     await driver.writeProfile("agent-a", testProfile({ restartHash: "restart-2" })); // both dropped again
     expect(fs.existsSync(path.join(volumes.workspace, odd))).toBe(false);
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/x"))).toBe(false);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/x"))).toBe(false);
     expect(findNamed(tmp, "PWNED")).toEqual([]);
     expect(findNamed(process.cwd(), "PWNED", 1)).toEqual([]);
   });
@@ -1343,6 +1352,117 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     it("reads the marker from its real path inside the single mount", () => {
       expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/bot/hermes/.myrmidon/applied.json");
+    });
+
+    it("keeps a developer image during its initial unhealthy startup window", async () => {
+      const waits: number[] = [];
+      let clock = 0;
+      const devbuild = { host: "devbuild.internal", user: "worker", base: "/build" };
+      const devDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes-dev:*"],
+          mountSources: [],
+          devbuild,
+        },
+        {
+          healthPollIntervalMs: 5_000,
+          startHealthTimeoutMs: 180_000,
+          sleep: async (ms) => {
+            waits.push(ms);
+            clock += ms;
+            if (clock >= 60_000) bot()!.health = "healthy";
+          },
+          clock: () => clock,
+          monotonicClock: () => clock,
+        },
+      );
+      const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
+      await devDriver.create(devSpec);
+      await devDriver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+
+      await devDriver.start("agent-a");
+      expect(waits).toContain(5_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("fails an unhealthy non-developer container without startup grace", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+    });
+
+    it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const devbuild = { host: "devbuild.internal", user: "worker", base: "/build" };
+      const devDriver = dockerBotContainerDriver(
+        {
+          ...CONFIG,
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          allowlist: ["myrmidon-hermes-dev:*"],
+          devbuild,
+        },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
+      await devDriver.create(devSpec);
+      await devDriver.writeProfile("agent-a", testProfile());
+      await devDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("rejects when the container dies during startup", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "starting";
+      const deadDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 1_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            bot()!.state = "dead";
+          },
+        },
+      );
+      await deadDriver.create(spec());
+      await deadDriver.writeProfile("agent-a", testProfile());
+      await expect(deadDriver.start("agent-a")).rejects.toThrow(/dead \(exit code 0\) instead of becoming healthy/);
+    });
+
+    it("caps health polling at the monotonic startup deadline", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "starting";
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await boundedDriver.create(spec());
+      await boundedDriver.writeProfile("agent-a", testProfile());
+      await expect(boundedDriver.start("agent-a")).rejects.toThrow(/did not become healthy within 12000ms/);
+      expect(elapsed).toBe(12_000);
+      expect(bot()?.state).toBe("running");
     });
 
     it("reports Docker's health verdict", async () => {
@@ -1575,6 +1695,130 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
           maintenance: noMaintenance,
         });
         expect(pass2.kind).toBe("unchanged");
+      });
+
+      it("persists idle-stop outside Docker labels and clears it when work wakes the bot", async () => {
+        await driver.create(spec());
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        await driver.stopIdle!("agent-a");
+
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+        expect(bot()?.body.Labels?.[BOT_LABEL_KEYS.idleStopped]).toBeUndefined();
+        const stateFile = path.join(stateDir, "agent-a.json");
+        expect(fs.readFileSync(stateFile, "utf8")).toContain("idleStopped");
+
+        const noMaintenance: BotMaintenancePort = { enter: async () => ({ state: "on", runningRuns: 0, owned: true }), status: async () => ({ state: "on", runningRuns: 0 }), exit: async () => {} };
+        const startsBeforeReconcile = daemon.requests.filter((request) => request.path.endsWith("/start")).length;
+        expect(await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: spec(),
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        })).toMatchObject({ kind: "unchanged" });
+        expect(daemon.requests.filter((request) => request.path.endsWith("/start"))).toHaveLength(startsBeforeReconcile);
+
+        await driver.start("agent-a");
+        expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
+        expect(fs.existsSync(stateFile)).toBe(false);
+      });
+
+      it("persists idle-stop in stateDir even when volumeRoot is unreachable", async () => {
+        const unreachableVolumeRoot = path.join(tmp, "unreachable-nonexistent-root");
+        const customStateDir = path.join(tmp, "custom-state-dir");
+        const customDriver = dockerBotContainerDriver(
+          {
+            socketPath: daemon.socketPath,
+            volumeRoot: unreachableVolumeRoot,
+            network: "myrmidon-bots",
+            allowlist: ["myrmidon-hermes:*"],
+            mountSources: [],
+            devbuild: { host: null, user: "", base: "" },
+            stateDir: customStateDir,
+          },
+          {
+            sleep: async () => {},
+            healthPollIntervalMs: 0,
+            startHealthTimeoutMs: 200,
+            nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+            stateDir: customStateDir,
+          },
+        );
+
+        await customDriver.create(spec());
+        await customDriver.writeProfile("agent-a", testProfile());
+        await customDriver.start("agent-a");
+        await customDriver.stopIdle!("agent-a");
+
+        expect(await customDriver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+        const customFile = path.join(customStateDir, "agent-a.json");
+        expect(fs.existsSync(customFile)).toBe(true);
+      });
+
+      it("reverts container stop if recording idle-stopped state fails", async () => {
+        const badParent = path.join(tmp, "bad-file-parent");
+        fs.writeFileSync(badParent, "not-a-directory");
+        const badStateDir = path.join(badParent, "sub-dir");
+        const customDriver = dockerBotContainerDriver(
+          {
+            socketPath: daemon.socketPath,
+            volumeRoot: path.join(tmp, "bots"),
+            network: "myrmidon-bots",
+            allowlist: ["myrmidon-hermes:*"],
+            mountSources: [],
+            devbuild: { host: null, user: "", base: "" },
+            stateDir: badStateDir,
+          },
+          {
+            sleep: async () => {},
+            healthPollIntervalMs: 0,
+            startHealthTimeoutMs: 200,
+            nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+            stateDir: badStateDir,
+          },
+        );
+
+        await customDriver.create(spec());
+        await customDriver.writeProfile("agent-a", testProfile());
+        await customDriver.start("agent-a");
+
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
+        await expect(customDriver.stopIdle!("agent-a")).rejects.toThrow(/Failed to record idle-stopped state/);
+        // Container was started back up
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBeGreaterThan(botStartsBefore);
+        expect(await customDriver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
+      });
+
+      it("reconcileBot updates image of idle-stopped container without starting it", async () => {
+        await driver.create(spec({ image: "myrmidon-hermes:1.1.0" }));
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        await driver.stopIdle!("agent-a");
+
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+
+        const newSpec = spec({ image: "myrmidon-hermes:1.2.0" });
+        const noMaintenance: BotMaintenancePort = {
+          enter: async () => ({ state: "on", runningRuns: 0, owned: true }),
+          status: async () => ({ state: "on", runningRuns: 0 }),
+          exit: async () => {},
+        };
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
+        const res = await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: newSpec,
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        });
+
+        expect(res.kind).toBe("applied_restart");
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBe(botStartsBefore);
+        const newStatus = await driver.status("agent-a");
+        expect(newStatus).toMatchObject({ state: "stopped", idleStopped: true, image: "myrmidon-hermes:1.2.0" });
       });
     });
   });

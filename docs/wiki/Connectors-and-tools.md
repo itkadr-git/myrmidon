@@ -54,6 +54,18 @@ hands a run its credentials for exactly that run. A company can authorize
 GitHub once for the whole server with its own GitHub App instead of
 per-person OAuth identities.
 
+## Plugins and capabilities
+
+Plugins operate as isolated processes with declared capabilities. When background
+workers orchestrate issues, capabilities like `issue.attachments.write` permit
+uploading bounded files (evidence, reports, logs) without granting direct access
+to board admin keys or database storage.
+
+The UI2 shell also exposes installed plugin sidebar contributions and launchers
+in its desktop rail and mobile navigation. Plugin pages load their UI
+contribution on direct navigation. See the [UI2 shell guide](../myrmidon/guides/ui2-shell.md)
+and [1.6.6 change note](../myrmidon/changes/1-6-6-ui2-plugin-nav.md).
+
 ## In detail
 
 - [Browser bridge: gateway and pairing](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browser-bridge-gateway.md)
@@ -67,3 +79,4 @@ per-person OAuth identities.
 - [Shared media and office tools](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/media-tools.md)
 - [OCR path: PDF to text](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ocr.md)
 - [Shared GitHub identity](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/github-shared-identity.md)
+- [Plugin runtime capabilities](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/plugin-capabilities.md)

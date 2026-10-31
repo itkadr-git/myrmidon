@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { HeartbeatRun, RoutineRunSummary } from "@paperclipai/shared";
+import type { HeartbeatRun, RoutineRunSummary } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditRuns } from "./AuditRuns";
 
@@ -139,6 +139,13 @@ describe("AuditRuns", () => {
 
     expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 200, { summary: true });
     expect(container.textContent).toContain("Clear filters");
+  });
+
+  it("renders RunsWithResultPanel when view is set to results", async () => {
+    currentSearch = "view=results";
+    await render();
+
+    expect(container.querySelector('[data-testid="runs-with-result-panel"]')).toBeTruthy();
   });
 
   it("loads routine runs directly when the Audit scope is a routine", async () => {

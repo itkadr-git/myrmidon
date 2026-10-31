@@ -96,7 +96,7 @@ describe("myrmidon(PARALLEL-HELPERS) settings panel", () => {
     ).toContain("120");
     save();
     // A high value is the owner's decision: the warning never blocks the save.
-    expect(onSave).toHaveBeenCalledWith({ maxPerAgent: 120 });
+    expect(onSave).toHaveBeenCalledWith({ maxPerAgent: 120, buildSlots: null, hostMemoryMb: null });
   });
 
   it("stays quiet for ceilings at or below the warn threshold", () => {
@@ -133,7 +133,22 @@ describe("myrmidon(PARALLEL-HELPERS) settings panel", () => {
     const { onSave } = renderView({ view: { ...VIEW, settings: { maxPerAgent: 5 } } });
     setText("defaultMaxPerAgent", "3");
     save();
-    expect(onSave).toHaveBeenCalledWith({ defaultMaxPerAgent: 3, maxPerAgent: 5 });
+    expect(onSave).toHaveBeenCalledWith({
+      defaultMaxPerAgent: 3,
+      maxPerAgent: 5,
+      buildSlots: null,
+      hostMemoryMb: null,
+    });
+  });
+
+  it("sends null when host-capacity fields are cleared", () => {
+    const { onSave } = renderView({
+      view: { ...VIEW, settings: { buildSlots: 8, hostMemoryMb: 16384 } },
+    });
+    setText("buildSlots", "");
+    setText("hostMemoryMb", "");
+    save();
+    expect(onSave).toHaveBeenCalledWith({ buildSlots: null, hostMemoryMb: null });
   });
 
   it("rejects nonsense and does not save", () => {
@@ -157,12 +172,17 @@ describe("myrmidon(PARALLEL-HELPERS) settings panel", () => {
 
 describe("myrmidon(PARALLEL-HELPERS) parseParallelHelpersDraft", () => {
   const base = { maxPerAgent: "", defaultMaxPerAgent: "", buildSlots: "", hostMemoryMb: "" };
-  it("empty means unset everywhere", () => {
-    expect(parseParallelHelpersDraft(base)).toEqual({ patch: {}, errors: {} });
+  it("clears host-capacity fields with explicit nulls", () => {
+    expect(
+      parseParallelHelpersDraft({ ...base, buildSlots: "", hostMemoryMb: "" }).patch,
+    ).toEqual({ buildSlots: null, hostMemoryMb: null });
+  });
+  it("keeps empty helper fields out of the patch", () => {
+    expect(parseParallelHelpersDraft(base).patch).toEqual({ buildSlots: null, hostMemoryMb: null });
   });
   it("parses filled fields", () => {
     expect(parseParallelHelpersDraft({ ...base, maxPerAgent: "6", buildSlots: "8" })).toEqual({
-      patch: { maxPerAgent: 6, buildSlots: 8 },
+      patch: { maxPerAgent: 6, buildSlots: 8, hostMemoryMb: null },
       errors: {},
     });
   });

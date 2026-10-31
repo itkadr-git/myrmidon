@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { issues as issueTable, type Db } from "@myrmidon/db";
+import { agents } from "@myrmidon/db";
 import {
   getAgentWorkEligibility,
   type AgentEligibilityAgent,
   type AgentOrgChainHealth,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 type AgentAssignmentKind = "work" | "routine";
@@ -67,7 +67,7 @@ function conflictDetails(input: {
   };
 }
 
-async function getAgent(db: Db, agentId: string): Promise<AssignabilityAgent | null> {
+async function getAgent(db: Db, companyId: string, agentId: string): Promise<AssignabilityAgent | null> {
   return db
     .select({
       id: agents.id,
@@ -77,7 +77,7 @@ async function getAgent(db: Db, agentId: string): Promise<AssignabilityAgent | n
       reportsTo: agents.reportsTo,
     })
     .from(agents)
-    .where(eq(agents.id, agentId))
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
 }
 
@@ -101,6 +101,38 @@ function assignmentReasonFromHealth(health: AgentOrgChainHealth): AgentAssignmen
   return "ancestor_missing";
 }
 
+type ParentAssigneeForChild = {
+  assigneeAgentId: string | null;
+  casteKey: string | null;
+};
+
+export async function resolveParentAssigneeForChild(
+  db: Db,
+  companyId: string,
+  parentIssueId: string | null | undefined,
+  childCasteKey: string | null | undefined,
+  parent?: ParentAssigneeForChild | null,
+): Promise<string | null> {
+  if (!parentIssueId || childCasteKey) return null;
+  const parentRecord = parent === undefined
+    ? (await db
+        .select({ assigneeAgentId: issueTable.assigneeAgentId, casteKey: issueTable.casteKey })
+        .from(issueTable)
+        .where(and(eq(issueTable.companyId, companyId), eq(issueTable.id, parentIssueId)))
+        .limit(1))[0]
+    : parent;
+  if (!parentRecord?.assigneeAgentId || parentRecord.casteKey) return null;
+  const [parentAgent] = await db
+    .select({ role: agents.role, companyId: agents.companyId })
+    .from(agents)
+    .where(eq(agents.id, parentRecord.assigneeAgentId))
+    .limit(1);
+  if (!parentAgent || parentAgent.companyId !== companyId || parentAgent.role !== "engineer") {
+    return null;
+  }
+  return parentRecord.assigneeAgentId;
+}
+
 export async function assertAssignableAgent(
   db: Db,
   companyId: string,
@@ -109,7 +141,7 @@ export async function assertAssignableAgent(
 ) {
   if (!agentId) return;
   const kind = options.kind ?? "work";
-  const assignee = await getAgent(db, agentId);
+  const assignee = await getAgent(db, companyId, agentId);
   if (!assignee) throw notFound("Assignee agent not found");
   if (assignee.companyId !== companyId) {
     throw unprocessable("Assignee must belong to same company");

@@ -10,7 +10,7 @@ import {
   heartbeatRuns,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   logActivity,
   resolveResponsibleUserIdForActivity,

@@ -2,7 +2,7 @@
 //
 // myrmidon(1.6.1 MODEL-PROVIDERS B): LiteLLM admin API client.
 //
-// Calls LiteLLM's /model/new, /model/delete, /model/info endpoints using the
+// Calls LiteLLM's /model/new, /model/update, /model/delete, /model/info endpoints using the
 // admin key. Never sends credential values - only secret name references.
 
 import { unprocessable } from "../../errors.js";
@@ -29,9 +29,27 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
     });
 
     if (!response.ok) {
-      throw unprocessable(`LiteLLM ${path} answered ${response.status}`, {
+      let detail: string | undefined;
+      try {
+        const text = await response.text();
+        try {
+          const parsed = JSON.parse(text);
+          detail = parsed?.error?.message ?? parsed?.detail ?? parsed?.message ?? text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        // ignore read error
+      }
+
+      const message = detail
+        ? `LiteLLM ${path} answered ${response.status}: ${detail}`
+        : `LiteLLM ${path} answered ${response.status}`;
+
+      throw unprocessable(message, {
         code: "litellm_request_failed",
         status: response.status,
+        detail,
       });
     }
 
@@ -48,11 +66,46 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
           api_base: input.baseUrl || undefined,
           // Pass the secret name reference, not the value
           api_key: `secrets/${input.credentialSecretName}`,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
           ...input.additionalConfig,
+        },
+        model_info: {
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         },
       };
 
       await callLiteLLM("/model/new", payload);
+    },
+
+    async updateDeployment(input) {
+      await callLiteLLM("/model/update", {
+        model_name: input.litellmModelName,
+        litellm_params: {
+          model: input.litellmModelName,
+          provider: input.providerType,
+          api_base: input.baseUrl || undefined,
+          // Pass the secret name reference, not the value
+          api_key: `secrets/${input.credentialSecretName}`,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
+          ...input.additionalConfig,
+        },
+        model_info: {
+          id: input.modelId,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
+        },
+      });
+    },
+
+    async deleteDeployment(modelId) {
+      await callLiteLLM("/model/delete", { id: modelId });
     },
 
     async unregisterModel(litellmModelName) {
@@ -82,6 +135,7 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       const models = Array.isArray(data?.data) ? data.data : [];
       
       return models.map((model: any) => ({
+        ...(typeof model.model_info?.id === "string" ? { modelId: model.model_info.id } : {}),
         litellmModelName: model.model_name || model.id,
         providerType: model.litellm_params?.provider || "",
         baseUrl: model.litellm_params?.api_base || null,

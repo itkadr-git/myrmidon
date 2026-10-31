@@ -1,7 +1,7 @@
 // myrmidon(CORPUS-A): PostgreSQL WorkQueue over corpus_parse_jobs.
 // Store layer — dialect constructs (FOR UPDATE SKIP LOCKED) live only here.
 import { and, eq, sql } from "drizzle-orm";
-import { corpusParseJobs } from "@paperclipai/db";
+import { corpusParseJobs } from "@myrmidon/db";
 import {
   parseJobRetryDelayMs,
   type CorpusParseJob,
@@ -77,13 +77,13 @@ export class PostgresWorkQueue implements WorkQueue {
     return rows.map(toJob);
   }
 
-  async claimNext(companyId: string, now: Date = new Date()): Promise<ClaimedParseJob | null> {
-    // Atomic claim: pick the oldest due pending job and mark it running in one
-    // statement; FOR UPDATE SKIP LOCKED makes concurrent workers take
-    // different jobs.
-    // Allow up to 1 second of clock skew between the application runtime and
-    // the PostgreSQL server so a freshly enqueued job is immediately claimable.
-    const cutoff = new Date(now.getTime() + 1000);
+  async claimNext(companyId: string, now?: Date): Promise<ClaimedParseJob | null> {
+    // Due means due by the database clock: `next_attempt_at` is assigned by
+    // PostgreSQL (`now()` on enqueue, `now() + backoff` on retry), so comparing
+    // it with the application clock would either hide a just-enqueued job or,
+    // with a tolerance, claim a retry before its backoff. An explicit `now` is
+    // for tests only.
+    const cutoff = now ? sql`${now.toISOString()}::timestamptz` : sql`now()`;
     const result = await this.db.execute(sql`
       update corpus_parse_jobs
       set status = 'running',
@@ -93,7 +93,7 @@ export class PostgresWorkQueue implements WorkQueue {
         select id from corpus_parse_jobs
         where company_id = ${companyId}
           and status = 'pending'
-          and next_attempt_at <= ${cutoff.toISOString()}
+          and next_attempt_at <= ${cutoff}
         order by next_attempt_at asc, created_at asc
         limit 1
         for update skip locked

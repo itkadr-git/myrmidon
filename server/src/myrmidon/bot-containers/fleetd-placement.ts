@@ -31,6 +31,8 @@ export interface InstanceBotSettings {
   /** Name a bot container resolves the board by (docker `--add-host` target),
    *  i.e. the hostname the board's own allowlist accepts. */
   boardHost: string;
+  /** MCP endpoints reachable from the bot's host. */
+  mcpEndpoints?: readonly string[];
 }
 
 /** The settings a bot actually gets, after its host's overrides. */
@@ -55,6 +57,7 @@ export function effectiveBotSettings(
     network: host.network ?? instanceWide.network,
     imageAllowlist: host.imageAllowlist ?? instanceWide.imageAllowlist,
     boardHost: host.boardExtraHost ?? instanceWide.boardHost,
+    mcpEndpoints: host.mcpEndpoints ?? instanceWide.mcpEndpoints,
   };
 }
 
@@ -68,6 +71,7 @@ export function effectiveBotSettings(
  * card at the wrong port would silently break the bot's runs.
  */
 export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | undefined): string {
+  if (!fleetdUrl) throw new Error("fleet host URL is required for gateway routing");
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }

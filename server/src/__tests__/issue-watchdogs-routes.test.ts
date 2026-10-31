@@ -19,7 +19,7 @@ import {
   issueWatchdogs,
   issues,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -664,4 +664,139 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       expect(res.body.error).toBe("Cannot assign watchdog to an agent that is not invokable");
     },
   );
+
+  it("excludes task_watchdog child from follow-up serialization to avoid self-blocking and partial writes", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Serialization Watchdog" });
+    const childAssigneeAgentId = await seedAgent(companyId, { name: "Child Assignee" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog child issue",
+      parentId: watchedRootId,
+      status: "in_progress",
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    // 1. Create first follow-up child from the watchdog run.
+    const firstChildRes = await request(app)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "First follow-up child", assigneeAgentId: childAssigneeAgentId });
+
+    expect(firstChildRes.status, JSON.stringify(firstChildRes.body)).toBe(201);
+    expect(firstChildRes.body).toMatchObject({
+      title: "First follow-up child",
+      parentId: watchedRootId,
+      status: "todo",
+    });
+
+    // Verify first child is not blocked by the watchdog issue.
+    const [firstChild] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, firstChildRes.body.id)));
+    expect(firstChild?.status).toBe("todo");
+
+    const firstChildBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, firstChildRes.body.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(firstChildBlockers.map((r) => r.blockerId)).not.toContain(watchdogIssueId);
+
+    // Verify the watchdog issue is now blocked by the first child (not by itself).
+    const [updatedWatchdog] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, watchdogIssueId)));
+    expect(updatedWatchdog?.status).toBe("blocked");
+
+    const watchdogBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, watchdogIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(watchdogBlockers.map((r) => r.blockerId)).toEqual([firstChildRes.body.id]);
+  });
+
+  it("preserves child serialization behind existing non-watchdog child during watchdog follow-up", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Serialization Watchdog" });
+    const childAssigneeAgentId = await seedAgent(companyId, { name: "Child Assignee" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+    const existingChildId = await seedIssue(companyId, {
+      title: "Existing blocked child",
+      parentId: watchedRootId,
+      status: "blocked",
+      assigneeAgentId: childAssigneeAgentId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog child issue",
+      parentId: watchedRootId,
+      status: "in_progress",
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const newChildRes = await request(app)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "New serialized child", assigneeAgentId: childAssigneeAgentId });
+
+    expect(newChildRes.status, JSON.stringify(newChildRes.body)).toBe(201);
+    expect(newChildRes.body).toMatchObject({
+      title: "New serialized child",
+      parentId: watchedRootId,
+      status: "blocked",
+    });
+
+    const newChildBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, newChildRes.body.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(newChildBlockers.map((r) => r.blockerId)).toEqual([existingChildId]);
+  });
 });

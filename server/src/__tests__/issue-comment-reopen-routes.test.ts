@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -10,11 +10,17 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getCurrentRunForIssue: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  getLastRunForIssue: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getRelationSummaries: vi.fn(),
+}));
+
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => ({ id: "company-1", defaultResponsibleUserId: "local-board" })),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -25,6 +31,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -112,7 +119,7 @@ const mockRunnerGoalService = vi.hoisted(() => ({
   act: vi.fn(),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@myrmidon/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -165,9 +172,7 @@ vi.mock("../services/runner-goals.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1" })),
-  }),
+  companyService: () => mockCompanyService,
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   companySkillService: () => ({
@@ -273,6 +278,9 @@ function makeIssue(
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
+    responsibleUserId: "local-board",
+    executionPolicy: null,
+    projectId: null,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     createdByUserId: "local-board",
@@ -319,6 +327,15 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  // Load the route module graph once, outside any test's budget. It is huge
+  // (routes/*.ts and everything they import), and its cold load took 10-12 s
+  // on a GitHub runner and more on a slower one. It used to be paid inside the
+  // first test's 15 s budget, which timed it out on a slow runner. 60 s is about
+  // 2x the slowest cold load measured.
+  beforeAll(async () => {
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  }, 60_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -1519,9 +1536,33 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("leaves normal agent comments without derived presentation", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("in_progress"),
+      responsibleUserId: null,
+    });
+    mockIssueService.getCurrentRunForIssue.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getLastRunForIssue.mockResolvedValue(null);
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) =>
+        Promise.resolve([
+          {
+            id: "run-1",
+            companyId: "company-1",
+            agentId: "22222222-2222-4222-8222-222222222222",
+            permissions: {},
+            invocationSource: "assignment",
+            contextSnapshot: { source: "assignment" },
+          },
+        ]).then(onFulfilled, onRejected),
+    }));
 
-    const res = await request(await installActor(createApp(), agentActor()))
+    const res = await request(
+      await installActor(createApp(), agentActor()),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Normal work update." });
 
@@ -1535,7 +1576,7 @@ describe.sequential("issue comment reopen routes", () => {
         runId: "run-1",
         onBehalfOfUserId: null,
       },
-      expect.objectContaining({ attachmentIds: undefined, presentation: null }),
+      expect.objectContaining({ attachmentIds: undefined, presentation: null, sourceTrust: null }),
       mockDb,
     );
   });

@@ -14,7 +14,13 @@ export { PostgresWorkQueue } from "./postgres/queue.js";
 export { PostgresCorpusSettingsStore } from "./postgres/settings.js";
 export { LocalBlobStore } from "./local/blob-store.js";
 export { createPostgresSearchIndex, CorpusVectorSearchUnavailableError } from "./search/hybrid-search-index.js";
+export type { SqlExecutor } from "./search/hybrid-search-index.js";
 export { chunkDocumentText } from "./chunking/chunker.js";
 export { createDocumentIngestionPipeline } from "./ingest/embedding-pipeline.js";
 export { createDocumentParserClient } from "./parser/document-parser-client.js";
 export { createHttpDocumentParser } from "./parser/http-document-parser.js";
+export * from "./import/ragflow.js";
+export {
+  installPgvectorIntoEmbeddedCluster,
+  type PgvectorInstall,
+} from "./test-pgvector.js";

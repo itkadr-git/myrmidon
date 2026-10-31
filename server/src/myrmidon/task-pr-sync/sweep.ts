@@ -20,19 +20,21 @@
 // recorded on the work product (`metadata.lastMergedSha`) so a re-run that somehow
 // sees the same merge does not comment twice.
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   approvals,
+  heartbeatRuns,
   issueApprovals,
   issueComments,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
   type Db,
-} from "@paperclipai/db";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import type { IssueWorkProduct } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
+import { parseIssueExecutionState } from "../../services/issue-execution-policy.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
 import type {
   PullRequestMergeDetails,
@@ -54,7 +56,7 @@ import { readTaskPrSyncSettings, type TaskPrSyncSettings } from "./settings.js";
 /**
  * The service layer is loaded lazily. This module sits in the server entry
  * point's static import graph, and some vendor startup suites replace
- * `@paperclipai/db` and the service barrel with partial mocks; importing the
+ * `@myrmidon/db` and the service barrel with partial mocks; importing the
  * issue and work-product services eagerly would pull their table reads into
  * that graph and fail those suites at import time. The modules are cached by the
  * runtime after the first pass, so the cost is one dynamic import per process.
@@ -84,13 +86,14 @@ function loadTaskPrSyncServices() {
 }
 
 /** Statuses the sweep may rewrite; a task in any other status is not a candidate. */
-const CANDIDATE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
+const CANDIDATE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);
 const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
 export const TASK_PR_SYNC_ACTIVITY_ACTOR = "task_pr_sync";
 export const TASK_PR_SYNC_SETTLED_ACTION = "myrmidon.task_pr_sync.settled";
 export const TASK_PR_SYNC_RETURNED_ACTION = "myrmidon.task_pr_sync.returned";
+export const TASK_PR_SYNC_CONFLICT_ACTION = "myrmidon.task_pr_sync.conflict";
 
 /** A resolved PR fact plus the bookkeeping the sweep needs but the policy does not. */
 export interface TaskPrSyncResolvedPr extends TaskPrSyncPrFact {
@@ -118,6 +121,14 @@ export function buildReturnComment(input: {
 }): string {
   const refs = input.prRefs.length > 0 ? input.prRefs.join(", ") : "the delivering pull request";
   return `Delivery pending: PR ${refs} was closed without merging; task returned to the assignee at ${input.at.toISOString()}.`;
+}
+
+/** The comment written when returning a task due to merge conflict. */
+export function buildConflictComment(input: {
+  prRefs: string[];
+}): string {
+  const refs = input.prRefs.length > 0 ? input.prRefs.join(", ") : "the delivering pull request";
+  return `PR ${refs}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
 }
 
 export interface TaskPrSyncSweepDeps {
@@ -163,6 +174,93 @@ function readMonitorNextCheckAt(policy: unknown): string | null {
   if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return null;
   const nextCheckAt = (monitor as Record<string, unknown>).nextCheckAt;
   return typeof nextCheckAt === "string" ? nextCheckAt : null;
+}
+
+
+let lastClosedTaskReconcileAt = 0;
+
+/** Periodically reconcile every non-terminal issue that has linked PR work products. */
+export async function reconcileClosedIssuePullRequests(input: {
+  db: Db;
+  resolvePullRequestDetails: PullRequestMergeDetailsResolver;
+  limit?: number;
+  now?: Date;
+}): Promise<{ scanned: number; synced: number }> {
+  const candidates = await input.db.selectDistinct({
+    id: issues.id,
+    companyId: issues.companyId,
+    status: issues.status,
+    updatedAt: issues.updatedAt,
+  }).from(issues).innerJoin(
+    issueWorkProducts,
+    and(
+      eq(issueWorkProducts.issueId, issues.id),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "open"),
+    ),
+  ).where(inArray(issues.status, ["done", "cancelled"]))
+    .orderBy(asc(issues.updatedAt)).limit(input.limit ?? 500);
+  const { extractGitHubPullRequestReferences } = await loadTaskPrSyncServices();
+  lastClosedTaskReconcileAt = (input.now ?? new Date()).getTime();
+  let synced = 0;
+
+  for (const issue of candidates) {
+    try {
+      const products = await input.db.select().from(issueWorkProducts).where(and(
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.status, "open"),
+      ));
+      for (const product of products) {
+        const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+          ? product.metadata as Record<string, unknown>
+          : {};
+        const { repo, number } = readPullRequestMetadata({ metadata });
+        const reference = extractGitHubPullRequestReferences([
+          product.url,
+          repo && number ? `${repo}#${number}` : null,
+        ])[0];
+        if (!reference) continue;
+
+        let details: PullRequestMergeDetails;
+        try {
+          details = await input.resolvePullRequestDetails(issue.companyId, reference);
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not refresh a closed-task PR work product",
+          );
+          continue;
+        }
+
+        const state = resolvedPullRequestState(details);
+        if (state !== "merged" && state !== "closed") continue;
+        const mergedSha = details.headSha ?? readLastMergedSha({ metadata });
+        if (state === product.status && mergedSha === readLastMergedSha({ metadata })) continue;
+
+        try {
+          await input.db.update(issueWorkProducts).set({
+            status: state,
+            metadata: { ...metadata, state, draft: false, ...(state === "merged" && mergedSha ? { lastMergedSha: mergedSha } : {}) },
+            updatedAt: input.now ?? new Date(),
+          }).where(eq(issueWorkProducts.id, product.id));
+          synced++;
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed closed-task PR state",
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { errorKind: "closed_task_pr_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
+        "failed reconciling PR work products for a closed task",
+      );
+    }
+  }
+
+  return { scanned: candidates.length, synced };
 }
 
 /** Map the resolver's answer to the state the policy understands. */
@@ -219,6 +317,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
   const now = deps.now ?? (() => new Date());
   let lastRunAt = 0;
   let inFlight = false;
+  let cursor: { updatedAt: Date; id: string } | null = null;
   let workProductsPromise: Promise<ReturnType<
     typeof import("../../services/work-products.js").workProductService
   >> | null = null;
@@ -250,7 +349,11 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       if (reference) {
         try {
           details = await deps.resolvePullRequestDetails(issue.companyId, reference);
-        } catch {
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not resolve pull-request state during task PR sync",
+          );
           // A resolver failure is not a merge; the policy sees `unknown` and waits.
           details = null;
         }
@@ -263,6 +366,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         repo: repo ?? (reference ? `${reference.owner}/${reference.repo}` : null),
         number: number ?? reference?.number ?? null,
         mergedSha: details?.headSha ?? null,
+        mergeable: details?.mergeable ?? null,
         recordedSha: readLastMergedSha(product),
         recordedUpdatedAt: product.updatedAt,
       });
@@ -278,8 +382,11 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               draft: resolvedState === "draft",
             },
           });
-        } catch {
-          // Bookkeeping only; the policy still acts on the fresh facts.
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed pull-request state",
+          );
         }
       }
     }
@@ -320,7 +427,33 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         .then((rows) => rows[0] ?? null);
       if (!locked) return false;
       if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
-      const svc = services.issueService(txDb);
+      // Transaction callers cannot perform provider I/O. Persist freshly verified
+      // merge state before issueService enforces the completion guard.
+      for (const pr of prFacts) {
+        if (pr.state !== "merged") continue;
+        const [product] = await tx
+          .select({ id: issueWorkProducts.id, metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)))
+          .limit(1);
+        if (!product) continue;
+        await tx
+          .update(issueWorkProducts)
+          .set({
+            status: "merged",
+            metadata: {
+              ...((product.metadata && typeof product.metadata === "object") ? product.metadata as Record<string, unknown> : {}),
+              state: "merged",
+              draft: false,
+              ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+            },
+          })
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
+      }
+      // Keep the service's root DB distinct from the supplied transaction. This
+      // makes issueService.update use its stored-state guard instead of trying
+      // to perform provider I/O while the settle transaction is open.
+      const svc = services.issueService(deps.db);
       const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
       // The settle mirrors the board's manual PATCH: status `done` and the task's
       // execution workflow dissolved (pending stages and runtime state cleared)
@@ -416,6 +549,93 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     return true;
   }
 
+  async function returnIssueOnConflict(
+    issue: { id: string; companyId: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "return_conflict" }>,
+    prFacts: TaskPrSyncResolvedPr[],
+    at: Date,
+  ): Promise<boolean> {
+    const body = buildConflictComment({ prRefs: decision.conflictPrRefs });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const returned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (locked.status !== "in_review" || locked.workMode !== "standard") return false;
+
+      const state = parseIssueExecutionState(locked.executionState);
+      if (state && (state.status !== "pending" || state.currentStageType !== "review")) return false;
+      const executor = state?.returnAssignee;
+      if (executor && executor.type !== "agent") return false;
+
+      let executorId = executor?.agentId ?? null;
+      if (!executorId) {
+        const [productRow] = await tx
+          .select({ createdByRunId: issueWorkProducts.createdByRunId })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.issueId, locked.id), eq(issueWorkProducts.type, "pull_request")))
+          .limit(1);
+        if (productRow?.createdByRunId) {
+          const [run] = await tx
+            .select({ agentId: heartbeatRuns.agentId })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, productRow.createdByRunId))
+            .limit(1);
+          if (run?.agentId) executorId = run.agentId;
+        }
+      }
+      if (!executorId) executorId = locked.assigneeAgentId;
+      if (!executorId) return false;
+
+      const svc = services.issueService(txDb);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+      await tx.update(issues).set({
+        status: "in_progress",
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        assigneeAgentId: executorId,
+        assigneeUserId: null,
+        ...(state ? {
+          executionState: {
+            ...state,
+            status: "changes_requested",
+            reviewRequest: null,
+            lastDecisionOutcome: "changes_requested",
+          },
+        } : {}),
+        updatedAt: at,
+      }).where(and(eq(issues.id, locked.id), eq(issues.companyId, issue.companyId)));
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_CONFLICT_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          previousStatus: locked.status,
+          status: "in_progress",
+          prRefs: decision.conflictPrRefs,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!returned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
   return {
     /** Runs one pass. Options exist for tests; production reads settings and the clock. */
     sweep: async (opts?: {
@@ -424,6 +644,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       /** Bypass the interval gate (tests call the pass directly). */
       force?: boolean;
       batchMax?: number;
+      cursor?: { updatedAt: Date; id: string } | null;
     }): Promise<TaskPrSyncSweepResult> => {
       const settings = opts?.settings ?? readTaskPrSyncSettings(deps.env ?? process.env);
       if (!settings.enabled) return { ...EMPTY_RESULT, skippedPass: true };
@@ -438,24 +659,71 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       inFlight = true;
       const result: TaskPrSyncSweepResult = { ...EMPTY_RESULT };
       try {
+        if (opts?.cursor !== undefined) {
+          cursor = opts.cursor;
+        }
         const batchMax = Math.max(1, opts?.batchMax ?? settings.batchMax);
-        const candidates = await deps.db
-          .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
-          .from(issues)
-          .innerJoin(
-            issueWorkProducts,
-            and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
-          )
-          .where(inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]))
-          .orderBy(asc(issues.updatedAt))
-          .limit(batchMax);
-        const issueIds = candidates.map((row) => row.id);
+
+        async function fetchCandidates(
+          cursorAfter: { updatedAt: Date; id: string } | null,
+          limit: number,
+          excludeIds: string[] = [],
+        ) {
+          if (limit <= 0) return [];
+          const conditions = [
+            inArray(issues.status, [...CANDIDATE_ISSUE_STATUSES]),
+          ];
+          if (cursorAfter) {
+            conditions.push(
+              or(
+                gt(issues.updatedAt, cursorAfter.updatedAt),
+                and(eq(issues.updatedAt, cursorAfter.updatedAt), gt(issues.id, cursorAfter.id)),
+              )!,
+            );
+          }
+          if (excludeIds.length > 0) {
+            conditions.push(notInArray(issues.id, excludeIds));
+          }
+          return deps.db
+            .selectDistinct({ id: issues.id, updatedAt: issues.updatedAt })
+            .from(issues)
+            .innerJoin(
+              issueWorkProducts,
+              and(eq(issueWorkProducts.issueId, issues.id), eq(issueWorkProducts.type, "pull_request")),
+            )
+            .where(and(...conditions))
+            .orderBy(asc(issues.updatedAt), asc(issues.id))
+            .limit(limit);
+        }
+
+        let candidates = await fetchCandidates(cursor, batchMax);
+        if (candidates.length < batchMax && cursor !== null) {
+          const wrapCandidates = await fetchCandidates(
+            null,
+            batchMax - candidates.length,
+            candidates.map((c) => c.id),
+          );
+          candidates = [...candidates, ...wrapCandidates];
+        }
+
+        if (candidates.length > 0) {
+          const last = candidates[candidates.length - 1]!;
+          cursor = { updatedAt: last.updatedAt, id: last.id };
+        } else {
+          cursor = null;
+        }
+
+        const issueIds = [...new Set(candidates.map((row) => row.id))];
         if (issueIds.length === 0) {
           lastRunAt = at.getTime();
           return result;
         }
 
-        const issueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const rawIssueRows = await deps.db.select().from(issues).where(inArray(issues.id, issueIds));
+        const issueMap = new Map(rawIssueRows.map((row) => [row.id, row]));
+        const issueRows = issueIds
+          .map((id) => issueMap.get(id))
+          .filter((row): row is typeof issues.$inferSelect => row !== undefined);
         const productRows = await deps.db
           .select()
           .from(issueWorkProducts)
@@ -476,7 +744,14 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
           result.scanned += 1;
           try {
             const products = productsByIssue.get(issue.id) ?? [];
+            // Keep PR work-product state fresh for inactive issues, but do not let
+            // their statuses flow into the automatic settle/return policy.
+            const shouldSkipPolicy = issue.status === "backlog" || issue.status === "todo" || issue.status === "blocked";
             const prFacts = await resolvePrFacts(issue, products);
+            if (shouldSkipPolicy) {
+              result.skipped += 1;
+              continue;
+            }
             const openGate = await hasOpenPostDeployGate(
               deps.db,
               { id: issue.id, executionPolicy: issue.executionPolicy },
@@ -520,6 +795,17 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               continue;
             }
 
+            if (decision.kind === "return_conflict") {
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const returned = await returnIssueOnConflict(issue, decision, prFacts, at);
+              if (returned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
             // settle_done: dedup by the merge sha already recorded on the products.
             const merged = prFacts.filter((pr) => pr.state === "merged");
             const alreadyRecorded =
@@ -540,7 +826,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id },
+              { errorKind: "task_pr_sync_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
               "task PR sync failed for one task",
             );
           }
@@ -550,6 +836,10 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       } finally {
         inFlight = false;
       }
+    },
+    getCursor: () => (cursor ? { ...cursor } : null),
+    resetCursor: () => {
+      cursor = null;
     },
   };
 }

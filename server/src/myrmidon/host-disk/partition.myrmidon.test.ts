@@ -5,7 +5,7 @@ import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   wsBotDiskSettingsSchema,
   wsDiskApiResponseSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   normalizeWsBotDiskPartitionSettings,
   partitionAlertLevel,
@@ -13,7 +13,7 @@ import {
   patchWsBotDiskPartitionSettingsSchema,
   resolveWsBotDiskPartitionSettings,
   wsBotDiskPartitionSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { createHostDiskSweep } from "./sweep.js";
 import type { HostDiskSweepDeps } from "./sweep.js";
 import { createDockergateDiskClient, dockergateBaseUrl } from "./dockergate.js";

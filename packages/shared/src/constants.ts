@@ -58,6 +58,7 @@ export const AGENT_ROLES = [
   "devops",
   "researcher",
   "general",
+  "architect",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -74,6 +75,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   devops: "DevOps",
   researcher: "Researcher",
   general: "General",
+  architect: "Architect",
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
@@ -384,6 +386,17 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "configuration_validation",
   "active_run_watchdog",
   "issue_graph_liveness",
+  // myrmidon(1.6.6 RECOVERY-FACTORY P1.7, OPE-9133): the typed kinds of the
+  // recovery factory — infra and operator failures become recovery issues
+  // with a dedupe key instead of naked blocked cards. See recovery-factory.ts.
+  "ci_restart",
+  "github_access",
+  "branch_relay",
+  "review_participant_restore",
+  "workspace_myr_ws",
+  "devbuild",
+  "disk_space",
+  "operator_action",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
 
@@ -954,6 +967,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // myrmidon(1.6.6 PROCS-1.7, design OPE-5394 §5.4.4): a board lease changed
+  // holder — payload carries { lease, holderBootId, epoch }.
+  "board.leader_changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1015,6 +1031,9 @@ export const PERMISSION_KEYS = [
   "tools:view_audit",
   "audit:view_agent_actions",
   "tools:use",
+  // myrmidon(1.6.6 POOL-CHAT): explicit capability for module chat routing;
+  // no role default grants this permission, so chat access is deny-by-default.
+  "chat:invoke",
   "tools:manage_runtime",
   "inbox:manage",
   "users:invite",
@@ -1366,6 +1385,8 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  // Upload bounded issue attachments through the host's scoped storage path.
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",

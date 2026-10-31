@@ -17,6 +17,9 @@ import {
   assertRuleFields,
   assertSingleLine,
   assertValidSlug,
+  normalizeKnowledgeRevisionLang,
+  assertTranslationOf,
+  assertKnowledgeWriteProtection,
   canTransitionItem,
   draftPointerFields,
   extractLinkTargets,
@@ -36,6 +39,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   kind: "note",
   folder: "",
   tags: [],
+  roles: [],
   status: "draft",
   approvalRequired: false,
   approverKind: null,
@@ -44,6 +48,15 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
 });
 
 describe("knowledge domain — slugs and single-line metadata", () => {
+  it("normalizes requested language and refuses same-language translations", () => {
+    expect(normalizeKnowledgeRevisionLang("ru-RU")).toBe("ru");
+    expect(normalizeKnowledgeRevisionLang("EN_us")).toBe("en");
+    expect(normalizeKnowledgeRevisionLang("xx")).toBe("en");
+    assertTranslationOf({ lang: "ru", canonical: { id: "canonical", lang: "en" } });
+    expect(() => assertTranslationOf({ lang: "ru", revisionId: "canonical", canonical: { id: "canonical", lang: "en" } })).toThrow(/cannot translate itself/);
+    expect(() => assertTranslationOf({ lang: "en", canonical: { id: "canonical", lang: "en" } })).toThrow(/different language/);
+  });
+
   it("accepts slash slugs and refuses anything else", () => {
     assertValidSlug("ops/runbooks/db");
     assertValidSlug("x1");
@@ -260,5 +273,119 @@ describe("knowledge domain — canonical markdown tree (export/import)", () => {
     durations.sort((a, b) => a - b);
     const p95 = durations[Math.ceil(durations.length * 0.95) - 1]!;
     expect(p95).toBeLessThan(300);
+  });
+});
+
+describe("knowledge write protection against probe markers and truncations (OPE-9762)", () => {
+  const previousContent = "A".repeat(1000);
+
+  it("rejects probe marker __probe", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "checking page existence __probe marker",
+        previousContent,
+      }),
+    ).toThrow(/__probe/);
+  });
+
+  it("rejects probe marker __probe even during initial creation (previousContent: null)", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "initial page creation with __probe marker",
+        previousContent: null,
+      }),
+    ).toThrow(/__probe/);
+  });
+
+  it("permits legitimate initial short stubs during creation (previousContent: null)", () => {
+    // Initial creation has no prior revision to overwrite/truncate, so short stubs are allowed
+    // unless they contain explicit probe markers.
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "short initial stub",
+        previousContent: null,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects single line shorter than 20 characters on update of existing content", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+      }),
+    ).toThrow(/shorter than 20 characters/);
+  });
+
+  it("rejects new content shorter than 20% of previous revision", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "A".repeat(150),
+        previousContent,
+      }),
+    ).toThrow(/less than 20%/);
+  });
+
+  it("requires both force: true and non-empty reason to override a violation", () => {
+    // force without reason throws
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: true,
+      }),
+    ).toThrow(/shorter than 20 characters/);
+
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: true,
+        reason: "   ",
+      }),
+    ).toThrow(/shorter than 20 characters/);
+
+    // reason without force throws
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: false,
+        reason: "Valid reason without force",
+      }),
+    ).toThrow(/shorter than 20 characters/);
+  });
+
+  it("returns violation metadata when force: true and valid reason are provided", () => {
+    const v1 = assertKnowledgeWriteProtection({
+      newContent: "ping",
+      previousContent,
+      force: true,
+      reason: "Deliberate test probe",
+    });
+    expect(v1).toEqual(
+      expect.objectContaining({
+        kind: "short_single_line",
+      }),
+    );
+
+    const v2 = assertKnowledgeWriteProtection({
+      newContent: "A".repeat(150),
+      previousContent,
+      force: true,
+      reason: "Truncating for rewrite",
+    });
+    expect(v2).toEqual(
+      expect.objectContaining({
+        kind: "severe_truncation",
+      }),
+    );
+
+    // Normal valid write returns null (no violation)
+    const v3 = assertKnowledgeWriteProtection({
+      newContent: "A".repeat(1000),
+      previousContent,
+    });
+    expect(v3).toBeNull();
   });
 });

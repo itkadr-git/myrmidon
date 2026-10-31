@@ -211,6 +211,43 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(tileValues.some((value) => value === "1")).toBe(true);
   });
 
+  it("renders accessible spend breakdown rows for agents", async () => {
+    await renderScreen();
+
+    const chart = container.querySelector(".ui2-costs-chart");
+    expect(chart).not.toBeNull();
+    expect(chart?.hasAttribute("role")).toBe(false);
+    expect(chart?.textContent).toContain("agent-a");
+    expect(chart?.textContent).toContain("$623.10");
+    expect(chart?.textContent).toContain("agent-b");
+    expect(chart?.textContent).toContain("$120.00");
+  });
+
+  it("shows the no-spend empty state when there are no agent rows", async () => {
+    mockCostsApi.byAgent.mockResolvedValue([]);
+    await renderScreen();
+
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.textContent).toContain("No spend in this period");
+  });
+
+  it("keeps the zero budget amount without a redundant budget hint", async () => {
+    mockCostsApi.summary.mockResolvedValue({
+      companyId: COMPANY_ID,
+      spendCents: 0,
+      budgetCents: 0,
+      utilizationPercent: 0,
+    });
+    mockCostsApi.byAgent.mockResolvedValue([]);
+    await renderScreen();
+
+    const budgetTile = [...container.querySelectorAll(".ui2-tile")].find((tile) =>
+      tile.querySelector(".ui2-tile-label")?.textContent?.includes("Budget"),
+    );
+    expect(budgetTile?.querySelector(".ui2-tile-value")?.textContent).toContain("$0.00");
+    expect(budgetTile?.querySelector(".ui2-tile-hint")).toBeNull();
+  });
+
   it("renders the per-agent table from the mocked by-agent data", async () => {
     await renderScreen();
 

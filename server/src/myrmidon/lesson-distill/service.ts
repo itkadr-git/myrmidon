@@ -14,7 +14,7 @@
 // what the distiller saw.
 
 import { and, eq } from "drizzle-orm";
-import { knowledgeEvents, knowledgeSuggestions, type Db } from "@paperclipai/db";
+import { knowledgeEvents, knowledgeSuggestions, type Db } from "@myrmidon/db";
 import {
   createKnowledgeModule,
   type KnowledgeModule,

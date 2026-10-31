@@ -30,6 +30,7 @@ function profile(overrides: Partial<CompiledProfile> = {}): CompiledProfile {
 
 interface FakeDriver extends BotContainerDriver {
   calls: string[];
+  writtenProfiles: CompiledProfile[];
   current(): BotContainerStatus;
 }
 
@@ -45,10 +46,11 @@ function fakeDriver(
   opts: {
     drift?: boolean;
     driftFields?: TemplateDriftField[];
-    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart", string>>;
+    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart" | "updateResources", string>>;
   } = {},
 ): FakeDriver {
   const calls: string[] = [];
+  const writtenProfiles: CompiledProfile[] = [];
   let current = initial;
   const maybeFail = (step: keyof NonNullable<typeof opts.fail>) => {
     const message = opts.fail?.[step];
@@ -56,6 +58,7 @@ function fakeDriver(
   };
   return {
     calls,
+    writtenProfiles,
     current: () => current,
     async status() {
       calls.push("status");
@@ -84,10 +87,15 @@ function fakeDriver(
       maybeFail("recreate");
       current = { ...current, state: "stopped" };
     },
+    async updateResources() {
+      calls.push("updateResources");
+      maybeFail("updateResources");
+    },
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
+      writtenProfiles.push(compiled);
       maybeFail("writeProfile");
-      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash };
+      current = { ...current, restartHash: compiled.restartHash, filesHash: compiled.filesHash, maxConcurrentRuns: compiled.maxConcurrentRuns };
     },
     async start() {
       calls.push("start");
@@ -102,6 +110,10 @@ function fakeDriver(
     async stop() {
       calls.push("stop");
       current = { ...current, state: "stopped" };
+    },
+    async stopIdle() {
+      calls.push("stopIdle");
+      current = { ...current, state: "stopped", idleStopped: true };
     },
   };
 }
@@ -278,6 +290,104 @@ describe("reconcileBot", () => {
       expect(outcome).toEqual({ kind: "applied_files" });
       expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
       expect(maintenance.enterCalls).toBe(0);
+    });
+
+    it("assigning a skill does not create a maintenance window; hot files apply without restart", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-old",
+      });
+      const maintenance = fakeMaintenance([0]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-new-with-skill",
+        files: [
+          { path: "hermes/config.yaml", content: "model: default\n", mode: 0o644, secret: false },
+          {
+            path: "hermes/skills/paperclip-managed/test-skill/SKILL.md",
+            content: "# test-skill\n",
+            mode: 0o644,
+            secret: false,
+          },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(driver.writtenProfiles[0]?.files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "hermes/skills/paperclip-managed/test-skill/SKILL.md",
+            content: "# test-skill\n",
+          }),
+        ]),
+      );
+    });
+
+    it("instruction edit: editing AGENTS.md applies via applied_files without restart or maintenance", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-old",
+      });
+      const maintenance = fakeMaintenance([0]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-new-instructions",
+        files: [
+          { path: "workspace/AGENTS.md", content: "# Updated Instructions\n", mode: 0o644, secret: false },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(driver.writtenProfiles[0]?.files).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: "workspace/AGENTS.md",
+            content: "# Updated Instructions\n",
+          }),
+        ]),
+      );
+    });
+
+    it("OPE-10086: editing a skill while a run is in progress does not interrupt it (applies files hot without restart or maintenance)", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-v1",
+      });
+      // Active running run during reconcile:
+      const maintenance = fakeMaintenance([1, 1, 1]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-v2",
+        files: [
+          {
+            path: "hermes/skills/paperclip-managed/alpha/SKILL.md",
+            content: "new skill body v2",
+            mode: 0o644,
+            secret: false,
+          },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(maintenance.exitCalls).toEqual([]);
     });
 
     it("restart: different restartHash — pauses only this agent, drains, writes, restarts, resumes", async () => {
@@ -562,6 +672,39 @@ describe("reconcileBot", () => {
       });
     });
 
+    it("applies resource drift without recreating the running container", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources"]);
+      expect(driver.current().state).toBe("running");
+    });
+    it("resource drift plus a restart-class profile change: updates limits, then restarts in the window", async () => {
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const maintenance = fakeMaintenance([0]);
+      const outcome = await run(driver, maintenance, { compile: async () => profile({ restartHash: "restart-new" }) });
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "writeProfile", "restart"]);
+      expect(driver.current().restartHash).toBe("restart-new");
+      expect(maintenance.exitCalls).toHaveLength(1);
+    });
+    it("resource drift on an unhealthy container: updates limits, then restarts it", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "unhealthy", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.PidsLimit", expected: 512, actual: 256 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources", "restart"]);
+    });
     it("logs which field drifted, with both values, before it recreates anything", async () => {
       const applied = profile();
       const driver = fakeDriver(
@@ -741,13 +884,42 @@ describe("reconcileBot", () => {
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "stopped bot container brought up")).toMatchObject({
         drifted: true,
-        // See the drift-recreate case below: a limit-bearing profile against a
-        // marker that reports no limit classifies as the files class.
-        changeClass: "files",
-        trigger: "stopped:drift:files",
+        // The marker reports the same limit as the profile: nothing to write.
+        changeClass: "none",
+        trigger: "stopped:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
+    });
+
+    // OPE-9057: the pass used to hand classifyProfileChange only the two hashes,
+    // so a marker that DID report the limit still looked like "not reported" and
+    // every bot was rewritten ("profile files applied without restart") each pass.
+    it("running, hashes and limit all match the marker: nothing is written, however many passes run", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied), maxConcurrentRuns: 3 });
+      const activity = fakeActivity();
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          activity,
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
+      expect(activity.entries.map((entry) => entry.message)).not.toContain("bot container profile files applied without restart");
+    });
+
+    it("running, marker predates the limit: healed once as a files-class write, without restart", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", ...hashesOf(applied) });
+      const outcome = await run(driver, fakeMaintenance([0]), {
+        compile: async () => profile({ maxConcurrentRuns: 3 }),
+      });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toContain("writeProfile");
+      expect(driver.calls).not.toContain("restart");
     });
 
     it("files without restart: the write names the new files hash and running:nodrift:files", async () => {
@@ -813,10 +985,10 @@ describe("reconcileBot", () => {
       });
       expect(outcome).toEqual({ kind: "applied_restart" });
       expect(detailsOf(activity, "unhealthy bot container restarted")).toMatchObject({
-        changeClass: "files",
+        changeClass: "none",
         previousState: "unhealthy",
         maintenanceReason: "bot container health recovery (agent-a)",
-        trigger: "unhealthy:nodrift:files",
+        trigger: "unhealthy:nodrift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -838,13 +1010,11 @@ describe("reconcileBot", () => {
         detailsOf(activity, "bot container recreated for a template change (image, resource limits or network)"),
       ).toMatchObject({
         drifted: true,
-        // The pass hands classifyProfileChange only the two hashes it read, so a
-        // marker that reports no limit classifies as "files" — the heal
-        // described in types.ts. The trigger reports the class actually computed.
-        changeClass: "files",
+        // Hashes and limit all match the marker: the class is "none".
+        changeClass: "none",
         previousState: "running",
         maintenanceReason: "bot container template update (agent-a)",
-        trigger: "running:drift:files",
+        trigger: "running:drift:none",
         appliedFilesHash: "files-1",
         appliedMaxConcurrentRuns: 3,
       });
@@ -877,6 +1047,31 @@ describe("reconcileBot", () => {
       const details = detailsOf(activity, "bot container created and profile applied");
       expect(details).not.toHaveProperty("appliedMaxConcurrentRuns");
       expect(details).toMatchObject({ appliedFilesHash: "files-1", trigger: "missing:new" });
+    });
+
+    it("does not rewrite unchanged profile files across three passes when the marker reports the concurrency limit", async () => {
+      const applied = profile({ maxConcurrentRuns: 3 });
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        ...hashesOf(applied),
+        maxConcurrentRuns: 3,
+      });
+      for (let pass = 0; pass < 3; pass += 1) {
+        const outcome = await run(driver, fakeMaintenance([0]), {
+          compile: async () => profile({ maxConcurrentRuns: 3 }),
+        });
+        expect(outcome).toEqual({ kind: "unchanged" });
+      }
+      expect(driver.calls).not.toContain("writeProfile");
+    });
+
+    it("heals a marker without a concurrency limit once, then does not rewrite again", async () => {
+      const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-1", filesHash: "files-1" });
+      const compile = async () => profile({ maxConcurrentRuns: 3 });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "applied_files" });
+      expect(await run(driver, fakeMaintenance([0]), { compile })).toEqual({ kind: "unchanged" });
+      expect(driver.calls.filter((call) => call === "writeProfile")).toHaveLength(1);
     });
   });
 

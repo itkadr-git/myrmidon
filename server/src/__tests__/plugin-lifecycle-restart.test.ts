@@ -126,4 +126,169 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(started).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
   });
+
+  it.each(["upgrade", "watcher"] as const)("serializes %s first across route and watcher managers", async (first) => {
+    const db = {};
+    const plugin = { ...pluginRecord, manifestJson: { ...pluginRecord.manifestJson } };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    let stopped = 0;
+    const unloadSingle = vi.fn(async () => {
+      stopped += 1;
+      if (stopped === 1) {
+        entered();
+        await gate;
+      }
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      if (activeWorkers > 1) throw new Error("Worker already registered");
+      return { success: true, plugin };
+    });
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache: vi.fn(),
+      upgradePlugin: vi.fn().mockResolvedValue({
+        oldManifest: plugin.manifestJson,
+        newManifest: { ...plugin.manifestJson, version: "1.1.0" },
+        discovered: { version: "1.1.0" },
+      }),
+    } as unknown as PluginLoader;
+    const { workerManager } = makeWorkerManagerStub();
+    const route = pluginLifecycleManager(db as never, { loader, workerManager });
+    const watcher = pluginLifecycleManager(db as never, { loader, workerManager });
+    const upgrade = () => route.upgrade("plugin-1", "1.1.0");
+    const restart = () => watcher.restartWorker("plugin-1");
+    const pendingFirst = first === "upgrade" ? upgrade() : restart();
+    await started;
+    const pendingSecond = first === "upgrade" ? restart() : upgrade();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unloadSingle).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([pendingFirst, pendingSecond]);
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(loadSingle).toHaveBeenCalledTimes(2);
+    expect(plugin.status).toBe("ready");
+  });
+});
+
+describe("pluginLifecycleManager.upgrade recovery", () => {
+  it("recovers running plugin and preserves single worker when package upgrade rejects", async () => {
+    const db = {};
+    const plugin = { ...pluginRecord, manifestJson: { ...pluginRecord.manifestJson } };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    mockRegistry.update.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+
+    const { handle, workerManager } = makeWorkerManagerStub();
+
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    const unloadSingle = vi.fn(async () => {
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      return { success: true, plugin };
+    });
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache: vi.fn(),
+      upgradePlugin: vi.fn().mockRejectedValue(new Error("Package download failed")),
+    } as unknown as PluginLoader;
+
+    const lifecycle = pluginLifecycleManager(db as never, { loader, workerManager });
+
+    await expect(lifecycle.upgrade("plugin-1", "1.1.0")).rejects.toThrow("Package download failed");
+
+    // Plugin must not be left stopped or in status error
+    expect(plugin.status).toBe("ready");
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(unloadSingle).toHaveBeenCalledTimes(1);
+    expect(loadSingle).toHaveBeenCalledTimes(1);
+    expect(workerManager.getWorker("plugin-1")).toBe(handle);
+  });
+
+  it("recovers running plugin, rolls back metadata, and preserves single worker when activation of upgraded version rejects", async () => {
+    const db = {};
+    const originalManifest = { ...pluginRecord.manifestJson };
+    const plugin = { ...pluginRecord, manifestJson: originalManifest, version: "1.0.0" };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    mockRegistry.update.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+
+    const { handle, workerManager } = makeWorkerManagerStub();
+
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    let activationAttempts = 0;
+    const unloadSingle = vi.fn(async () => {
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activationAttempts += 1;
+      if (activationAttempts === 1) {
+        // First activation attempt is for upgraded version 1.1.0 — it rejects
+        return { success: false, error: "Activation failed: worker crash on startup", plugin };
+      }
+      // Second activation attempt is recovery for original version 1.0.0 — it succeeds
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      return { success: true, plugin };
+    });
+    const clearCache = vi.fn();
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache,
+      upgradePlugin: vi.fn().mockImplementation(async () => {
+        plugin.version = "1.1.0";
+        plugin.manifestJson = { ...originalManifest, version: "1.1.0" };
+        return {
+          oldManifest: originalManifest,
+          newManifest: plugin.manifestJson,
+          discovered: { version: "1.1.0" },
+        };
+      }),
+    } as unknown as PluginLoader;
+
+    const lifecycle = pluginLifecycleManager(db as never, { loader, workerManager });
+
+    await expect(lifecycle.upgrade("plugin-1", "1.1.0")).rejects.toThrow(
+      "Activation failed: worker crash on startup",
+    );
+
+    // Rollback to original version must occur
+    expect(mockRegistry.update).toHaveBeenCalledWith("plugin-1", {
+      packageName: "@example/plugin",
+      version: "1.0.0",
+      manifest: originalManifest,
+    });
+    expect(clearCache).toHaveBeenCalled();
+
+    // Plugin must not be left stopped or in status error
+    expect(plugin.status).toBe("ready");
+    expect(plugin.version).toBe("1.0.0");
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(activationAttempts).toBe(2);
+    expect(workerManager.getWorker("plugin-1")).toBe(handle);
+  });
 });

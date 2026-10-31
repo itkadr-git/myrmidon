@@ -25,7 +25,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 import {
   runChildProcess,
@@ -40,9 +40,16 @@ import {
   selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(S2): allow-listed run environment
-import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidon/adapter-utils/myrmidon-run-env";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessSandboxExtraPaths,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  type LocalProcessSandboxOptions,
+} from "@myrmidon/adapter-utils/local-process-sandbox";
 
 import {
   HERMES_CLI,
@@ -66,7 +73,7 @@ import {
 } from "./myrmidon-runtime-mcp.js";
 // myrmidon(M1): card models in the run-scoped config.yaml
 import { materializeHermesRunModels } from "./myrmidon-profile-config.js";
-import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -96,9 +103,9 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 const HERMES_DEFAULT_PROMPT_TEMPLATE = [
-  'You are "{{agent.name}}", an AI agent employee in a Paperclip-managed company.',
+  'You are "{{agent.name}}", an AI agent employee in a Myrmidon-managed company.',
   "",
-  "Paperclip runtime identity:",
+  "Myrmidon runtime identity:",
   "- Agent ID: {{agent.id}}",
   "- Company ID: {{agent.companyId}}",
   "- Run ID: {{run.id}}",
@@ -251,6 +258,28 @@ interface ParsedOutput {
   errorMessage?: string;
 }
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Response cleaning
 // ---------------------------------------------------------------------------
@@ -379,12 +408,12 @@ export async function execute(
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
-          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+          `[hermes] Reconciled ${selectedSkills.length} Myrmidon-managed skill(s) into the Hermes skills home.\n`,
         );
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
+      await ctx.onLog("stderr", `[hermes] Cannot start without the required Myrmidon-managed skills: ${reason}\n`);
       throw err;
     }
   }
@@ -573,6 +602,33 @@ export async function execute(
     // Non-fatal
   }
 
+  // myrmidon(OPE-8135): opt-in confinement for hermes_local. The default
+  // remains unrestricted for compatibility; enabled runs have no host root.
+  const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+  const localProcessSandbox: LocalProcessSandboxOptions | null =
+    (filesystemScope || networkScope)
+      ? {
+          workspaceDir: cwd,
+          filesystemScope,
+          managedPaths: env.HERMES_HOME ? [{ path: env.HERMES_HOME, access: "rw" }] : [],
+          extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+          homeDir: filesystemScope ? env.HERMES_HOME ?? null : null,
+          networkScope,
+          networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+          networkTrustedUrls: [env.PAPERCLIP_API_URL].filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          ),
+          command: cfgString(config.filesystemSandboxCommand) || "bwrap",
+        }
+      : null;
+  if (localProcessSandbox) {
+    const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+      .filter(Boolean)
+      .join(" and ");
+    await ctx.onLog("stdout", `[paperclip] Confining Hermes with ${scopes} scope.\n`);
+  }
+
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
@@ -624,6 +680,7 @@ export async function execute(
       stdin: prompt,
       inheritProcessEnv: readInheritProcessEnvFlag(config), // myrmidon(S2)
       runEnvAdapterType: "hermes_local", // myrmidon(S2)
+      localProcessSandbox,
     });
   } finally {
     await runtimeMcpCleanup?.();
@@ -632,6 +689,12 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const providerErrorAsContent = Boolean(parsed.response && isProviderErrorAsContent(parsed.response));
+  if (providerErrorAsContent) {
+    await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
+    parsed.errorMessage = "Provider returned an overload or quota error as successful response content";
+    parsed.response = undefined;
+  }
 
   await ctx.onLog(
     "stdout",
@@ -652,6 +715,10 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+    if (providerErrorAsContent) {
+      executionResult.errorCode = "hermes_transient_upstream";
+      executionResult.errorFamily = "transient_upstream";
+    }
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
@@ -677,6 +744,7 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
   };
 
   // Store session ID for next run

@@ -21,11 +21,11 @@ const readText = (file) => fs.readFileSync(file, "utf8");
 describe("plugin-llm-wiki release wiring", () => {
   it("declares the esbuild build script and the SDK dependency the release build needs", () => {
     const pkg = readJson(path.join(PLUGIN_DIR, "package.json"));
-    assert.equal(pkg.name, "@paperclipai/plugin-llm-wiki");
+    assert.equal(pkg.name, "@myrmidon/plugin-llm-wiki");
     assert.ok(pkg.version, "plugin must carry a version for release artifacts");
     assert.match(pkg.scripts.build, /esbuild\.config\.mjs/, "build must run the esbuild config");
     assert.equal(
-      pkg.devDependencies?.["@paperclipai/plugin-sdk"],
+      pkg.devDependencies?.["@myrmidon/plugin-sdk"],
       "workspace:*",
       "SDK must come from the repository workspace so releases build from fork sources",
     );

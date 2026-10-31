@@ -46,6 +46,81 @@ const manager = agent({
 const blocks = [{ companyId, blockerIssueId: blockerId, blockedIssueId: blockedId }];
 
 describe("issue graph liveness classifier", () => {
+  it("reports overdue blocked issues without owners after thirty minutes", () => {
+    const now = new Date("2026-10-26T12:00:00.000Z");
+    const overdue = issue({
+      id: "overdue",
+      status: "blocked",
+      assigneeAgentId: null,
+      createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(now.getTime() - 31 * 60 * 1000),
+    });
+    const findings = classifyIssueGraphLiveness({
+      issues: [overdue, issue({ id: blockerId, status: "todo" })],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: "overdue" }],
+      agents: [agent(), manager],
+      now,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: "overdue",
+      state: "unassigned_blocked_issue_overdue",
+      recoveryIssueId: "overdue",
+    });
+  });
+
+  it("reports overdue blocked issues without owners when blockedTransitionAt is null using updatedAt fallback", () => {
+    const now = new Date("2026-10-26T12:00:00.000Z");
+    const overdue = issue({
+      id: "overdue-null-transition",
+      status: "blocked",
+      assigneeAgentId: null,
+      blockedTransitionAt: null,
+      updatedAt: new Date(now.getTime() - 31 * 60 * 1000),
+      createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+    });
+    const findings = classifyIssueGraphLiveness({
+      issues: [overdue, issue({ id: blockerId, status: "todo" })],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: "overdue-null-transition" }],
+      agents: [agent(), manager],
+      now,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: "overdue-null-transition",
+      state: "unassigned_blocked_issue_overdue",
+      recoveryIssueId: "overdue-null-transition",
+    });
+  });
+
+  it("reports an overdue blocked issue without explicit blocker edges", () => {
+    const now = new Date("2026-10-26T12:00:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({
+        status: "blocked",
+        assigneeAgentId: null,
+        createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+        blockedTransitionAt: new Date(now.getTime() - 31 * 60 * 1000),
+      })],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    });
+    const recentlyBlocked = issue({
+      id: "recently-blocked",
+      status: "blocked",
+      assigneeAgentId: null,
+      createdAt: new Date(now.getTime() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+    expect(classifyIssueGraphLiveness({
+      issues: [recentlyBlocked],
+      relations: [],
+      agents: [agent(), manager],
+      now,
+    })).toEqual([]);
+  });
+
   it("detects a PAP-1703-style blocked chain with an unassigned blocker and stable incident key", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
@@ -273,7 +348,7 @@ describe("issue graph liveness classifier", () => {
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
-  it("detects a cancelled blocker on an assigned todo source", () => {
+  it("a cancelled blocker no longer holds an assigned todo source (resolved, OPE-8904)", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
         issue({ status: "todo" }),
@@ -289,15 +364,10 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
-      issueId: blockedId,
-      state: "blocked_by_cancelled_issue",
-      recoveryIssueId: blockerId,
-    });
+    expect(findings).toHaveLength(0);
   });
 
-  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+  it("does not report a cancelled blocker for an in-review source (resolved, OPE-8904)", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
         issue({ status: "in_review" }),
@@ -313,8 +383,7 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+    expect(findings.map((finding) => finding.state)).not.toContain("blocked_by_cancelled_issue");
   });
 
   it("detects blocker assignees under terminated org ancestors as uninvokable", () => {

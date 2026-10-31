@@ -132,6 +132,15 @@ export interface BudgetLimitView {
 }
 
 /** One journal entry as the API returns it: who, when, what. */
+export interface EffectiveBudgetLimitView {
+  amountCents: number | null;
+  period: BudgetLimitPeriod | null;
+  mode: BudgetLimitMode | null;
+  sourceLevel: BudgetLimitLevel | null;
+  sourceRef: string | null;
+  sourceLimitId: string | null;
+}
+
 export interface BudgetLimitChangeView {
   id: string;
   companyId: string;
@@ -177,4 +186,76 @@ export function isBudgetLimitOver(
   spentCents: number,
 ): boolean {
   return limit.isActive && limit.amountCents >= 0 && spentCents > limit.amountCents;
+}
+
+// --- report export -------------------------------------------------------------
+
+export const BUDGET_LIMIT_EXPORT_FORMATS = ["csv", "json"] as const;
+export type BudgetLimitExportFormat = (typeof BUDGET_LIMIT_EXPORT_FORMATS)[number];
+
+export const budgetLimitsExportQuerySchema = z
+  .object({
+    format: z.enum(BUDGET_LIMIT_EXPORT_FORMATS).default("json"),
+    level: z.enum(BUDGET_LIMIT_LEVELS).optional(),
+  })
+  .strict();
+export type BudgetLimitsExportQuery = z.infer<typeof budgetLimitsExportQuerySchema>;
+
+export interface BudgetLimitReportRow {
+  id?: string;
+  companyId?: string;
+  level: BudgetLimitLevel;
+  ref: string;
+  amountCents: number;
+  spentCents: number;
+  period: BudgetLimitPeriod;
+  mode: BudgetLimitMode;
+  events: number;
+  overLimit: boolean;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export function escapeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replaceAll('"', '""')}"`;
+  }
+  return s;
+}
+
+export function budgetLimitsReportToCsv(rows: BudgetLimitReportRow[]): string {
+  const headers = [
+    "level",
+    "ref",
+    "period",
+    "mode",
+    "amount_cents",
+    "spent_cents",
+    "events",
+    "over_limit",
+    "is_active",
+    "created_at",
+    "updated_at",
+  ];
+  const lines: string[] = [headers.join(",")];
+  for (const row of rows) {
+    const line = [
+      escapeCsvCell(row.level),
+      escapeCsvCell(row.ref),
+      escapeCsvCell(row.period),
+      escapeCsvCell(row.mode),
+      escapeCsvCell(row.amountCents),
+      escapeCsvCell(row.spentCents),
+      escapeCsvCell(row.events),
+      escapeCsvCell(row.overLimit),
+      escapeCsvCell(row.isActive),
+      escapeCsvCell(row.createdAt ?? ""),
+      escapeCsvCell(row.updatedAt ?? ""),
+    ].join(",");
+    lines.push(line);
+  }
+  return lines.join("\n");
 }

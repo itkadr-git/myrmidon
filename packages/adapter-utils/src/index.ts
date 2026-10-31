@@ -1,3 +1,5 @@
+export { RunGuard, resolveRunGuardOptions } from "./run-guard.js";
+export type { RunGuardConfig, RunGuardDecision, RunGuardOptions, RunGuardStopReason } from "./run-guard.js";
 export type {
   AdapterAgent,
   AdapterRuntime,
@@ -71,8 +73,14 @@ export {
 } from "./command-redaction.js";
 // myrmidon(B1c): re-export the shared product-name constant so adapter
 // packages that already depend on adapter-utils can use it without adding a
-// direct dependency on @paperclipai/shared.
-export { PRODUCT_NAME } from "@paperclipai/shared";
+// direct dependency on @myrmidon/shared.
+export { PRODUCT_NAME } from "@myrmidon/shared";
+export {
+  DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_MODEL_CALL_LIMIT,
+  DEFAULT_TOOL_RETRY_LIMIT,
+  toolFailureSignature,
+} from "./run-guard.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
   PROMPT_METER_CHARS_PER_TOKEN,

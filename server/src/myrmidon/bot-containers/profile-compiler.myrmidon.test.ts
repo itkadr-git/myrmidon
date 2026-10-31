@@ -94,8 +94,8 @@ describe("myrmidon(G2) compileHermesProfile — shape and determinism", () => {
       "hermes/config.yaml",
       "hermes/.env",
       "hermes/hindsight/config.json",
-      "hermes/skills-board/alpha/SKILL.md",
-      "hermes/skills-board/zeta/SKILL.md",
+      "hermes/skills/paperclip-managed/alpha/SKILL.md",
+      "hermes/skills/paperclip-managed/zeta/SKILL.md",
       "workspace/AGENTS.md",
     ]);
   });
@@ -161,6 +161,9 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
     expect(env).toContain('API_SERVER_KEY="fake-gateway-key-0002"');
     expect(env).toContain('PAPERCLIP_API_URL="https://example.com/board"');
     expect(env).toContain('PAPERCLIP_API_KEY="fake-board-key-0002"');
+    // myrmidon(REBRAND-C): canonical MYRMIDON_* names ship in the same .env.
+    expect(env).toContain('MYRMIDON_API_URL="https://example.com/board"');
+    expect(env).toContain('MYRMIDON_API_KEY="fake-board-key-0002"');
   });
 
   it("drops HOME, PATH and HERMES_HOME from the card's env, with a warning, even if the card sets them", () => {
@@ -254,14 +257,16 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", () => {
-  it("always sets approvals.mode off, platforms.api_server.enabled true, terminal.cwd /workspace, memory.provider hindsight and skills.external_dirs", () => {
+  it("sets the required profile fields and disables external skill directories", () => {
     const profile = compileHermesProfile(baseInput());
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
-    expect(yaml).toContain('skills:\n  external_dirs:\n  - "/data/hermes/skills-board"');
+    // Empty mappings/lists are omitted by the deterministic YAML writer, so
+    // absence of the skills block is the serialized form of no external dirs.
+    expect(yaml).not.toContain("skills:");
   });
 
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
@@ -865,7 +870,7 @@ describe("myrmidon(G2) compileHermesProfile — hindsight settings", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — skills", () => {
-  it("copies each skill file under hermes/skills-board/<skill>/<path>", () => {
+  it("copies each skill file under hermes/skills/paperclip-managed/<skill>/<path>", () => {
     const profile = compileHermesProfile(
       baseInput({
         skills: {
@@ -876,8 +881,8 @@ describe("myrmidon(G2) compileHermesProfile — skills", () => {
         },
       }),
     );
-    expect(fileByPath(profile.files, "hermes/skills-board/code-review/SKILL.md").content).toBe("# Code review\n");
-    expect(fileByPath(profile.files, "hermes/skills-board/code-review/scripts/run.py").content).toBe(
+    expect(fileByPath(profile.files, "hermes/skills/paperclip-managed/code-review/SKILL.md").content).toBe("# Code review\n");
+    expect(fileByPath(profile.files, "hermes/skills/paperclip-managed/code-review/scripts/run.py").content).toBe(
       "print('ok')\n",
     );
   });
@@ -900,7 +905,7 @@ describe("myrmidon(G2) compileHermesProfile — skills", () => {
 
   it("compiles with no skills at all", () => {
     const profile = compileHermesProfile(baseInput({ skills: {} }));
-    expect(profile.files.some((f) => f.path.startsWith("hermes/skills-board/"))).toBe(false);
+    expect(profile.files.some((f) => f.path.startsWith("hermes/skills/paperclip-managed/"))).toBe(false);
   });
 });
 
@@ -1828,45 +1833,43 @@ describe("myrmidon(G2) classifyProfileChange integration", () => {
     ).toBe("restart");
   });
 
-  // Skills are restart-class, not files-class: the vendor gateway's skills
-  // index is cached in-process (LRU + disk snapshot) and does not watch the
-  // skills directory, so a running gateway never picks up an added,
-  // removed or edited skill on its own — see the compiler's comment at the
-  // skillFiles call site. A files-class classification here (the old
-  // behavior) meant the reconciler would write the new files and then never
-  // restart the gateway to pick them up.
-  it("reports \"restart\" when an existing skill's content changes (skills are restart-class)", () => {
+  // OPE-9838, OPE-10086: skills are hot-delivered into hermes/skills/paperclip-managed
+  // and picked up run-scoped without container restart or maintenance.
+  it("reports \"files\" when an existing skill's content changes (skills are files-class)", () => {
     const before = compileHermesProfile(
       baseInput({ skills: { "code-review": [{ path: "SKILL.md", content: "v1" }] } }),
     );
     const after = compileHermesProfile(
       baseInput({ skills: { "code-review": [{ path: "SKILL.md", content: "v2" }] } }),
     );
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 
-  it("reports \"restart\" when a skill is added", () => {
+  it("reports \"files\" when a skill is added", () => {
     const before = compileHermesProfile(baseInput({ skills: {} }));
     const after = compileHermesProfile(
       baseInput({ skills: { "new-skill": [{ path: "SKILL.md", content: "# New\n" }] } }),
     );
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 
-  it("reports \"restart\" when a skill is removed", () => {
+  it("reports \"files\" when a skill is removed", () => {
     const before = compileHermesProfile(
       baseInput({ skills: { "old-skill": [{ path: "SKILL.md", content: "# Old\n" }] } }),
     );
     const after = compileHermesProfile(baseInput({ skills: {} }));
-    expect(before.restartHash).not.toBe(after.restartHash);
+    expect(before.restartHash).toBe(after.restartHash);
+    expect(before.filesHash).not.toBe(after.filesHash);
     expect(classifyProfileChange({ restartHash: before.restartHash, filesHash: before.filesHash }, after)).toBe(
-      "restart",
+      "files",
     );
   });
 

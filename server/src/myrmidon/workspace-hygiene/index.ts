@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { resolveWorkspaceHygieneLimits, type WorkspaceHygieneLimits } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { resolveWorkspaceHygieneLimits, type WorkspaceHygieneLimits } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { workspaceHygieneRoutes } from "./routes.js";

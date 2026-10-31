@@ -116,7 +116,20 @@ function isUrlishKey(key: string): boolean {
   return URLISH_KEYS.has(key.toLowerCase());
 }
 
+// myrmidon(OPE-8985): the one-time password-set link carries its token as a path
+// segment (/password-set/<token>), which the query/fragment policy does not see.
+// Applies to the board page and to any API path ending in /password-set/<token>.
+const PASSWORD_SET_PATH_TOKEN = /(\/password-set\/)[^/?#\s]+/gi;
+
+export function maskPasswordSetToken(value: string): string {
+  return value.replace(PASSWORD_SET_PATH_TOKEN, "$1[redacted]");
+}
+
 export function stripSecretBearingUrlParts(value: string): string {
+  return maskPasswordSetToken(stripQueryAndCredentials(value));
+}
+
+function stripQueryAndCredentials(value: string): string {
   const suffixStart = value.search(/[?#]/);
   const withoutQueryOrFragment =
     suffixStart === -1 ? value : value.slice(0, suffixStart);

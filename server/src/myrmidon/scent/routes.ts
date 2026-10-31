@@ -17,8 +17,8 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
-import { readScentSettings } from "@paperclipai/shared";
+import { agents, issues, type Db } from "@myrmidon/db";
+import { readScentSettings } from "@myrmidon/shared";
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -30,6 +30,7 @@ import { deriveScentAuto } from "./create-hook.js";
 import {
   SCENT_BASE_URL_ENV,
   SCENT_KEY_SECRET_ENV,
+  resolveScentSecret,
   type ScentQueuePorts,
 } from "./queue.js";
 
@@ -39,7 +40,9 @@ async function buildService(
   ports: ScentQueuePorts,
 ) {
   const settingsSvc = instanceSettingsService(db);
-  const general = await settingsSvc.getGeneral();
+  const general = ports.getGeneral
+    ? await ports.getGeneral(db)
+    : await settingsSvc.getGeneral();
   const settings = readScentSettings(
     (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
@@ -47,18 +50,17 @@ async function buildService(
   const env = process.env;
   const baseUrl = env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
   const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
-  const resolve =
-    ports.resolveSecret ??
-    (async (d: Db, cid: string, secret: string) => {
-      // Company secret first (operator-managed), env fallback for dev — the
-      // evals-judge pattern.
-      const secrets = secretService(d);
-      const row = await secrets.getByName(cid, secret);
-      if (row) return secrets.resolveSecretValue(cid, row.id, "latest");
-      return process.env[secret] ?? null;
-    });
-  const apiKey = (await resolve(db, companyId, secretName)) ?? "";
-  const castes = await createCasteStore({ db }).listCastes(companyId);
+  const resolve = ports.resolveSecret ?? resolveScentSecret;
+  let apiKey = "";
+  try {
+    apiKey = (await resolve(db, companyId, secretName)) ?? "";
+  } catch {
+    // A broken secret must not make the status endpoint fail; the contour is
+    // simply unavailable until the operator repairs the secret.
+  }
+  const castes = ports.listCastes
+    ? await ports.listCastes(db, companyId)
+    : await createCasteStore({ db }).listCastes(companyId);
   const casteKeys = castes.map((c: { key: string }) => c.key);
   const gatewayDeps: ScentGatewayDeps = {
     fetch: ports.fetch ?? globalThis.fetch.bind(globalThis),
@@ -89,7 +91,7 @@ async function buildService(
         details: entry.details ?? {},
       }).then(() => undefined),
   });
-  return { service, settings, casteKeys };
+  return { service, settings, casteKeys, keyConfigured: Boolean(apiKey) };
 }
 
 export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
@@ -191,11 +193,22 @@ export function myrmidonScentRoutes(db: Db, ports: ScentQueuePorts = {}) {
     async (req, res) => {
       const companyId = String(req.params.companyId);
       assertCompanyAccess(req, companyId);
-      const { service, settings } = await buildService(db, companyId, ports);
-      const slice = await service.listMarkupQueue(settings.classifierBatchSize);
+      const { service, settings, keyConfigured } = await buildService(db, companyId, ports);
+      const slice = ports.listMarkupQueue
+        ? await ports.listMarkupQueue(db, companyId, settings.classifierBatchSize)
+        : await service.listMarkupQueue(settings.classifierBatchSize);
+      // OPE-7190: the contour booleans the queue silently gates on. Without
+      // them "enabled:true + pending>0 + nothing happening" was undiagnosable
+      // from the board: the acceptance had to guess between off/broken/parked.
+      const env = process.env;
+      const baseUrl =
+        env[SCENT_BASE_URL_ENV]?.trim() || env.MYRMIDON_EVALS_BASE_URL?.trim() || "";
       res.json({
         enabled: settings.enabled,
         model: settings.model,
+        baseUrlConfigured: Boolean(baseUrl),
+        keyConfigured,
+        contourConfigured: Boolean(baseUrl) && keyConfigured,
         pendingIssues: slice.issueIds.length,
         pendingAgents: slice.agentIds.length,
         totalPending: slice.totalPending,

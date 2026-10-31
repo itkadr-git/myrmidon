@@ -8,7 +8,7 @@
 // before their module mocks register, and a static drizzle import would escape
 // those mocks. The default reader is wired lazily inside the call itself.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 export type CompanyBaseSkillKeysReader = (db: Db, companyId: string) => Promise<string[]>;
 

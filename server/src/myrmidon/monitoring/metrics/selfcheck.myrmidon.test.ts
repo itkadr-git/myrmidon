@@ -36,11 +36,33 @@ describe("metrics self-check probe", () => {
     // (1.6.5-PROCS-Q3 five process families, the event-loop utilization of
     // PROCS-0.1 as the sixth, the two PROCS-0.3A lane families as the seventh
     // and eighth) are likewise not DB reads — they survive a broken
-    // database too.
-    expect(result.families_ok).toBe(1 + 8);
+
+    // database too. The bridge fallback and chat-ingress counters are the
+    // ninth and tenth: in-process counters with no database behind them.
+    // (the single-route proxy counter of PROCS-1.5 is the ninth board family)
+    // The four run scratch families (1.6.6 TMP-HYGIENE) are in-process state
+    // too, so they survive a broken database as well.
+    // The four remote-site families (1.6.6 REMOTE-SITES-T4) are in-process state as well.
+    // The continuation and claim counters are process-local too.
+    // The five capacity-dashboard metrics remain available without database reads.
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
-        family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),
+        family !== "myrmidon_scrape_errors" &&
+        !family.startsWith("myrmidon_board_") &&
+        family !== "myrmidon_adapter_fallback_total" &&
+        family !== "myrmidon_chat_ingress_total" &&
+        !family.startsWith("myrmidon_run_scratch_") &&
+        !family.startsWith("myrmidon_fleet_") &&
+        family !== "myrmidon_continuation_created_total" &&
+        family !== "myrmidon_continuation_deduped_total" &&
+        family !== "swarm_claim_conflicts_total" &&
+        family !== "swarm_lease_recovered_total" &&
+        family !== "myrmidon_readiness_ratio" &&
+        family !== "myrmidon_queue_age_seconds" &&
+        family !== "myrmidon_project_share" &&
+        family !== "myrmidon_starvation_total" &&
+        family !== "myrmidon_claim_rejection_total",
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

@@ -16,6 +16,7 @@ const INSTANCE: InstanceBotSettings = {
   network: "myrmidon-bots",
   imageAllowlist: ["ghcr.io/example/bot@sha256:*"],
   boardHost: "paperclip-server-1",
+  mcpEndpoints: [],
 };
 
 const HOST: FleetHostConfig = {
@@ -51,6 +52,7 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
       network: "bots-net",
       imageAllowlist: ["ghcr.io/example/other@sha256:*"],
       boardHost: "board.internal",
+      mcpEndpoints: [],
     });
   });
 

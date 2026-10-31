@@ -1,11 +1,11 @@
-import type { IssueRecoveryAction } from "@paperclipai/shared";
+import type { IssueRecoveryAction } from "@myrmidon/shared";
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
   WorkspaceOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { api, type RequestOptions } from "./client";
 
@@ -99,10 +99,23 @@ export type RuntimeRequestResolution =
   | { action: "accept" | "accept_for_session" | "decline" | "cancel" }
   | { action: "submit"; answers: Record<string, { answers: string[] }> }
   | { action: "submit"; content: Record<string, unknown> }
-  | { action: "submit"; response: import("@paperclipai/adapter-utils").PaperclipQuestionResponse };
+  | { action: "submit"; response: import("@myrmidon/adapter-utils").PaperclipQuestionResponse };
 
 export interface HeartbeatRunListOptions {
   summary?: boolean;
+  wakeReason?: string;
+  hasResult?: boolean;
+}
+
+export interface ExternalSessionRun {
+  id: string;
+  agentId: string;
+  agentName: string;
+  issueId: string | null;
+  status: string;
+  createdAt: string;
+  finishedAt: string | null;
+  externalSession: { model?: string | null };
 }
 
 export interface ProviderTraceInspection {
@@ -111,6 +124,14 @@ export interface ProviderTraceInspection {
 }
 
 export const heartbeatsApi = {
+  externalSessions: (companyId: string, issueId: string) =>
+    api.get<ExternalSessionRun[]>(
+      `/companies/${encodeURIComponent(companyId)}/external-sessions?issueId=${encodeURIComponent(issueId)}`,
+    ),
+  logTail: (runId: string) =>
+    api.get<{ content: string; nextOffset?: number }>(
+      `/heartbeat-runs/${encodeURIComponent(runId)}/log?offset=0&limitBytes=64000`,
+    ),
   executionForIssue: (issueId: string) => api.get<{ runId: string; agentId: string; recoveryAction: IssueRecoveryAction | null; execution: HeartbeatRun["execution"] } | null>(`/issues/${issueId}/execution`),
   list: (
     companyId: string,
@@ -122,6 +143,8 @@ export const heartbeatsApi = {
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
+    if (options.wakeReason) searchParams.set("wakeReason", options.wakeReason);
+    if (options.hasResult) searchParams.set("hasResult", "true");
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(
       `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,

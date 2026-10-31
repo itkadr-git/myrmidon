@@ -1,143 +1,133 @@
-// myrmidon(LICENSING): the "Licensing" section of Instance → General.
-// Two halves for the installation owner (instance admin; the server answers
-// 403 to anyone else and the panel then renders nothing):
-//   1. what a client sends: the installation id and a one-click "copy license
-//      request" (MYRQ1 blob) built by the server;
-//   2. what the owner does: paste a client's request (or type an id), pick
-//      modules and a term, and get a signed license to copy or download. The
-//      issuer key stays on the server; this panel never sees it.
-import { useMemo, useState } from "react";
+// myrmidon(LICENSING): the "Licenses" screen of the instance settings, the
+// client side of closed-module licensing (instance admin; anyone else gets
+// 403 from the server and the panel renders nothing):
+//   1. the installation id and a one-click "copy license request" (MYRQ1,
+//      the closed modules of this installation);
+//   2. what each closed module decides about the current license — computed
+//      by the server from the same source the modules read;
+//   3. installing a license: paste the MYR1 line or load license.key; the
+//      server checks it and writes it where the modules read it.
+import { useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { useTranslation } from "@/i18n";
 import {
   LICENSE_MODULES,
+  formatLicenseDate,
   licensingApi,
-  licensingIssuedQueryKey,
   licensingStatusQueryKey,
-  type IssuedLicense,
+  type LicensingStatus,
+  type ModuleLicenseStatus,
 } from "./licensingApi";
 
-function formatExpiry(seconds: number | null, neverLabel: string): string {
-  if (seconds === null) return neverLabel;
-  return new Date(seconds * 1000).toISOString().slice(0, 10);
+// The license line starts with this prefix; a format token, not a sentence.
+const LICENSE_PLACEHOLDER = "MYR1.…";
+
+const STATE_TONE: Record<ModuleLicenseStatus["state"], string> = {
+  valid: "text-green-700 dark:text-green-400",
+  expiring: "text-amber-700 dark:text-amber-400",
+  expired: "text-destructive",
+  wrong_instance: "text-destructive",
+  missing: "text-destructive",
+  not_granted: "text-destructive",
+  bad_signature: "text-destructive",
+  invalid: "text-destructive",
+};
+
+const SAVE_ERROR_KEYS: Record<string, string> = {
+  license_bad_format: "licensing.saveError.badFormat",
+  license_bad_payload: "licensing.saveError.badPayload",
+  license_bad_signature: "licensing.saveError.badSignature",
+  license_unsupported_rev: "licensing.saveError.unsupportedRev",
+  license_instance_mismatch: "licensing.saveError.instanceMismatch",
+  license_expired: "licensing.saveError.expired",
+  license_feature_not_granted: "licensing.saveError.noCore",
+  license_env_override: "licensing.saveError.envOverride",
+  license_path_unwritable: "licensing.saveError.unwritable",
+};
+
+function errorCode(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const body = error.body as { code?: unknown } | null;
+  return body && typeof body.code === "string" ? body.code : null;
 }
 
-function ModuleChecks({
-  selected,
-  onChange,
-  idPrefix,
-}: {
-  selected: string[];
-  onChange: (next: string[]) => void;
-  idPrefix: string;
-}) {
-  return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1">
-      {LICENSE_MODULES.map((module) => (
-        <label key={module} className="flex items-center gap-1.5 text-sm" htmlFor={`${idPrefix}-${module}`}>
-          <input
-            id={`${idPrefix}-${module}`}
-            type="checkbox"
-            data-testid={`${idPrefix}-${module}`}
-            checked={selected.includes(module)}
-            onChange={(event) =>
-              onChange(event.target.checked ? [...selected, module] : selected.filter((m) => m !== module))
-            }
-          />
-          <span className="font-mono">{module}</span>
-        </label>
-      ))}
-    </div>
-  );
+function mismatchIds(error: unknown): { licenseId: string; boardId: string } | null {
+  if (!(error instanceof ApiError)) return null;
+  const details = (error.body as { details?: { licenseInstanceId?: unknown; boardInstanceId?: unknown } } | null)?.details;
+  if (typeof details?.licenseInstanceId === "string" && typeof details?.boardInstanceId === "string") {
+    return { licenseId: details.licenseInstanceId, boardId: details.boardInstanceId };
+  }
+  return null;
+}
+
+type Translate = ReturnType<typeof useTranslation>["t"];
+
+export function moduleStateLabel(t: Translate, status: ModuleLicenseStatus): string {
+  if (status.state === "valid") {
+    return status.expires === null
+      ? t("licensing.state.validForever")
+      : t("licensing.state.validUntil", { date: formatLicenseDate(status.expires) });
+  }
+  if (status.state === "expiring" && status.expires !== null) {
+    return t("licensing.state.expiring", { date: formatLicenseDate(status.expires) });
+  }
+  if (status.state === "wrong_instance" && status.licenseInstanceId && status.boardInstanceId) {
+    return t("licensing.state.wrongInstanceIds", {
+      licenseId: status.licenseInstanceId,
+      boardId: status.boardInstanceId,
+    });
+  }
+  return t(`licensing.state.${status.state}`);
 }
 
 export function LicensingSettingsPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const [requestModules, setRequestModules] = useState<string[]>([...LICENSE_MODULES]);
-  const [copied, setCopied] = useState<"request" | "license" | null>(null);
-
-  const [pasted, setPasted] = useState("");
-  const [manualId, setManualId] = useState("");
-  const [issueModules, setIssueModules] = useState<string[]>([]);
-  const [days, setDays] = useState("365");
-  const [noExpiry, setNoExpiry] = useState(false);
-  const [client, setClient] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
-  const [issued, setIssued] = useState<IssuedLicense | null>(null);
+  const [requestModules, setRequestModules] = useState<string[] | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [licenseText, setLicenseText] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   const statusQuery = useQuery({
-    queryKey: [...licensingStatusQueryKey, requestModules.join(",")],
-    queryFn: () => licensingApi.status(requestModules),
+    queryKey: [...licensingStatusQueryKey, requestModules?.join(",") ?? ""],
+    queryFn: () => licensingApi.status(requestModules ?? undefined),
     retry: false,
   });
-  const issuedQuery = useQuery({
-    queryKey: licensingIssuedQueryKey,
-    queryFn: () => licensingApi.issued(),
-    retry: false,
-    enabled: statusQuery.isSuccess,
-  });
 
-  const parseMutation = useMutation({
-    mutationFn: (text: string) => licensingApi.parseRequest(text),
-    onSuccess: (parsed) => {
-      setFormError(null);
-      setManualId(parsed.instanceId);
-      if (parsed.modules.length > 0) setIssueModules(parsed.modules);
-    },
-    onError: () => setFormError(t("licensing.notARequest")),
-  });
-
-  const issueMutation = useMutation({
-    mutationFn: () =>
-      licensingApi.issue({
-        ...(pasted.trim() ? { request: pasted.trim() } : { instanceId: manualId.trim() }),
-        modules: issueModules,
-        days: noExpiry ? null : Number(days),
-        watermark: client.trim() ? client.trim() : null,
-      }),
-    onSuccess: (result) => {
-      setFormError(null);
-      setIssued(result);
-      void queryClient.invalidateQueries({ queryKey: licensingIssuedQueryKey });
+  const saveMutation = useMutation({
+    mutationFn: (value: string) => licensingApi.saveLicense(value),
+    onSuccess: (next: LicensingStatus) => {
+      setSaveError(null);
+      setSaved(true);
+      setLicenseText("");
+      queryClient.setQueryData([...licensingStatusQueryKey, requestModules?.join(",") ?? ""], next);
+      void queryClient.invalidateQueries({ queryKey: licensingStatusQueryKey });
     },
     onError: (error: unknown) => {
-      setIssued(null);
-      if (error instanceof ApiError && error.status === 409) setFormError(t("licensing.issuerNotConfigured"));
-      else if (error instanceof ApiError && error.status === 422) setFormError(t("licensing.notARequest"));
-      else setFormError(t("licensing.issueFailed"));
+      setSaved(false);
+      const code = errorCode(error);
+      const key = code ? SAVE_ERROR_KEYS[code] : undefined;
+      if (code === "license_path_unwritable") {
+        setSaveError(t("licensing.saveError.unwritable", { path: statusQuery.data?.license.path ?? "" }));
+      } else if (code === "license_instance_mismatch" && mismatchIds(error)) {
+        setSaveError(t("licensing.saveError.instanceMismatchIds", mismatchIds(error) ?? {}));
+      } else {
+        setSaveError(key ? t(key) : t("licensing.saveError.generic"));
+      }
     },
   });
-
-  const status = statusQuery.data;
-  const daysValid = noExpiry || (/^\d+$/.test(days) && Number(days) >= 1 && Number(days) <= 3650);
-  const hasTarget = pasted.trim().length > 0 || manualId.trim().length > 0;
-  const canIssue = hasTarget && issueModules.length > 0 && daysValid && !!status?.issuerConfigured;
-
-  const downloadHref = useMemo(
-    () => (issued ? `data:text/plain;charset=utf-8,${encodeURIComponent(issued.license + "\n")}` : null),
-    [issued],
-  );
-
-  async function copy(text: string, kind: "request" | "license") {
-    try {
-      await copyTextToClipboard(text);
-      setCopied(kind);
-    } catch {
-      setCopied(null);
-    }
-  }
 
   // Not an instance admin (403) or the API is unavailable: show nothing.
   if (statusQuery.isError) return null;
+  const status = statusQuery.data;
   if (!status) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="licensing-loading">
@@ -146,8 +136,41 @@ export function LicensingSettingsPanel() {
     );
   }
 
+  const selectedModules =
+    requestModules ?? (status.installedModules.length > 0 ? status.installedModules : [...LICENSE_MODULES]);
+
+  async function copyRequest(text: string) {
+    try {
+      await copyTextToClipboard(text);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  function toggleModule(module: string, on: boolean) {
+    const next = on ? [...new Set([...selectedModules, module])] : selectedModules.filter((m) => m !== module);
+    if (next.length === 0) return; // a request names at least one module
+    setCopied(false);
+    setRequestModules(next);
+  }
+
+  function loadFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setSaved(false);
+    setSaveError(null);
+    void file.text().then(
+      (text) => setLicenseText(text.trim()),
+      () => setSaveError(t("licensing.saveError.fileUnreadable")),
+    );
+  }
+
+  const envOverride = status.license.envOverride;
+
   return (
-    <section className="space-y-4 rounded-lg border p-4" data-testid="licensing-panel">
+    <section className="space-y-5 rounded-lg border p-4" data-testid="licensing-panel">
       <div className="flex items-center gap-2">
         <KeyRound className="size-4 text-muted-foreground" />
         <h3 className="text-sm font-medium">{t("licensing.title")}</h3>
@@ -166,9 +189,53 @@ export function LicensingSettingsPanel() {
             {status.source === "env" ? t("licensing.sourceEnv") : t("licensing.sourceGenerated")}
           </p>
         )}
-        <div className="space-y-1">
-          <Label>{t("licensing.requestModules")}</Label>
-          <ModuleChecks selected={requestModules} onChange={setRequestModules} idPrefix="licensing-req" />
+      </div>
+
+      <div className="space-y-2 border-t pt-4">
+        <h4 className="text-sm font-medium">{t("licensing.statusTitle")}</h4>
+        <ul className="space-y-1" data-testid="licensing-modules">
+          {status.modules.map((m) => (
+            <li
+              key={m.module}
+              className="flex flex-wrap items-baseline gap-x-3 text-sm"
+              data-testid={`licensing-module-${m.module}`}
+              data-state={m.state}
+            >
+              <span className="font-mono">{m.module}</span>
+              <span className={STATE_TONE[m.state]} data-testid={`licensing-module-state-${m.module}`}>
+                {moduleStateLabel(t, m)}
+              </span>
+              {!m.installed && <span className="text-xs text-muted-foreground">{t("licensing.notInstalled")}</span>}
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-muted-foreground" data-testid="licensing-path">
+          {envOverride
+            ? t("licensing.sourceIsEnv")
+            : t("licensing.licensePath", { path: status.license.path })}
+        </p>
+        {status.license.share === "container-only" && !envOverride && (
+          <p className="text-xs text-destructive" data-testid="licensing-share-warning">
+            {t("licensing.notShared", { path: status.license.path })}
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2 border-t pt-4">
+        <h4 className="text-sm font-medium">{t("licensing.requestTitle")}</h4>
+        <p className="text-xs text-muted-foreground">{t("licensing.requestHint")}</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {LICENSE_MODULES.map((module) => (
+            <label key={module} className="flex items-center gap-1.5 text-sm">
+              <input
+                type="checkbox"
+                data-testid={`licensing-req-${module}`}
+                checked={selectedModules.includes(module)}
+                onChange={(event) => toggleModule(module, event.target.checked)}
+              />
+              <span className="font-mono">{module}</span>
+            </label>
+          ))}
         </div>
         <Textarea
           readOnly
@@ -182,145 +249,68 @@ export function LicensingSettingsPanel() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void copy(status.request, "request")}
+            onClick={() => void copyRequest(status.request)}
             data-testid="licensing-copy-request"
           >
             {t("licensing.copyRequest")}
           </Button>
-          {copied === "request" && <span className="text-xs text-muted-foreground">{t("licensing.copied")}</span>}
+          {copied && <span className="text-xs text-muted-foreground">{t("licensing.copied")}</span>}
         </div>
-      </div>
-
-      <div className="space-y-3 border-t pt-4">
-        <h4 className="text-sm font-medium">{t("licensing.issueTitle")}</h4>
-        {!status.issuerConfigured && (
-          <p className="text-sm text-destructive" data-testid="licensing-issuer-missing">
-            {t("licensing.issuerNotConfigured")}
-          </p>
-        )}
-        <div className="space-y-1">
-          <Label htmlFor="licensing-paste">{t("licensing.pasteLabel")}</Label>
-          <Textarea
-            id="licensing-paste"
-            rows={2}
-            className="font-mono text-xs"
-            placeholder="MYRQ1.…"
-            value={pasted}
-            data-testid="licensing-paste"
-            onChange={(event) => {
-              const value = event.target.value;
-              setPasted(value);
-              setFormError(null);
-              if (value.trim()) parseMutation.mutate(value.trim());
-            }}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="licensing-manual-id">{t("licensing.manualId")}</Label>
-          <Input
-            id="licensing-manual-id"
-            className="font-mono"
-            placeholder="myr-…"
-            value={manualId}
-            data-testid="licensing-manual-id"
-            onChange={(event) => {
-              setManualId(event.target.value);
-              setPasted("");
-            }}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label>{t("licensing.modules")}</Label>
-          <ModuleChecks selected={issueModules} onChange={setIssueModules} idPrefix="licensing-issue" />
-        </div>
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="licensing-days">{t("licensing.days")}</Label>
-            <Input
-              id="licensing-days"
-              className="w-28"
-              inputMode="numeric"
-              value={days}
-              disabled={noExpiry}
-              data-testid="licensing-days"
-              onChange={(event) => setDays(event.target.value)}
-            />
-          </div>
-          <label className="flex items-center gap-1.5 pb-2 text-sm">
-            <input
-              type="checkbox"
-              checked={noExpiry}
-              data-testid="licensing-no-expiry"
-              onChange={(event) => setNoExpiry(event.target.checked)}
-            />
-            {t("licensing.noExpiry")}
-          </label>
-          <div className="min-w-48 flex-1 space-y-1">
-            <Label htmlFor="licensing-client">{t("licensing.client")}</Label>
-            <Input
-              id="licensing-client"
-              maxLength={80}
-              value={client}
-              data-testid="licensing-client"
-              onChange={(event) => setClient(event.target.value)}
-            />
-          </div>
-        </div>
-        {formError && (
-          <p className="text-sm text-destructive" data-testid="licensing-error">
-            {formError}
-          </p>
-        )}
-        <Button
-          size="sm"
-          disabled={!canIssue || issueMutation.isPending}
-          onClick={() => issueMutation.mutate()}
-          data-testid="licensing-issue"
-        >
-          {issueMutation.isPending ? t("licensing.issuing") : t("licensing.issue")}
-        </Button>
-
-        {issued && (
-          <div className="space-y-2" data-testid="licensing-result">
-            <Label>{t("licensing.resultLabel")}</Label>
-            <Textarea readOnly rows={4} className="font-mono text-xs" value={issued.license} data-testid="licensing-license-text" />
-            <div className="flex items-center gap-3">
-              <Button size="sm" variant="outline" onClick={() => void copy(issued.license, "license")} data-testid="licensing-copy-license">
-                {t("licensing.copyLicense")}
-              </Button>
-              {downloadHref && (
-                <a
-                  href={downloadHref}
-                  download="license.key"
-                  className="text-sm underline underline-offset-2"
-                  data-testid="licensing-download"
-                >
-                  {t("licensing.download")}
-                </a>
-              )}
-              {copied === "license" && <span className="text-xs text-muted-foreground">{t("licensing.copied")}</span>}
-            </div>
-            <p className="text-xs text-muted-foreground">{t("licensing.installHint")}</p>
-          </div>
-        )}
       </div>
 
       <div className="space-y-2 border-t pt-4">
-        <h4 className="text-sm font-medium">{t("licensing.issuedTitle")}</h4>
-        {(issuedQuery.data ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="licensing-issued-empty">
-            {t("licensing.issuedEmpty")}
+        <h4 className="text-sm font-medium">{t("licensing.installTitle")}</h4>
+        {envOverride ? (
+          <p className="text-sm text-muted-foreground" data-testid="licensing-env-override">
+            {t("licensing.saveError.envOverride")}
           </p>
         ) : (
-          <ul className="space-y-1" data-testid="licensing-issued-list">
-            {(issuedQuery.data ?? []).map((row) => (
-              <li key={row.id} className="rounded-md border px-3 py-2 text-xs" data-testid="licensing-issued-row">
-                <span className="font-mono">{row.instanceId}</span> · {row.modules.join(", ")} ·{" "}
-                {t("licensing.until", { date: formatExpiry(row.expires, t("licensing.noExpiry")) })}
-                {row.watermark ? ` · ${row.watermark}` : ""} · {row.issuedAt.slice(0, 10)}
-              </li>
-            ))}
-          </ul>
+          <>
+            <Label htmlFor="licensing-license-input">{t("licensing.pasteLicense")}</Label>
+            <Textarea
+              id="licensing-license-input"
+              rows={3}
+              className="font-mono text-xs"
+              placeholder={LICENSE_PLACEHOLDER}
+              value={licenseText}
+              data-testid="licensing-license-input"
+              onChange={(event) => {
+                setLicenseText(event.target.value);
+                setSaveError(null);
+                setSaved(false);
+              }}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="cursor-pointer text-sm underline underline-offset-2">
+                {t("licensing.loadFile")}
+                <input
+                  type="file"
+                  accept=".key,.txt,text/plain"
+                  className="sr-only"
+                  data-testid="licensing-license-file"
+                  onChange={loadFile}
+                />
+              </label>
+              <Button
+                size="sm"
+                disabled={!licenseText.trim() || saveMutation.isPending}
+                onClick={() => saveMutation.mutate(licenseText.trim())}
+                data-testid="licensing-save"
+              >
+                {saveMutation.isPending ? t("licensing.saving") : t("licensing.save")}
+              </Button>
+            </div>
+            {saveError && (
+              <p className="text-sm text-destructive" data-testid="licensing-save-error">
+                {saveError}
+              </p>
+            )}
+            {saved && (
+              <p className="text-sm text-green-700 dark:text-green-400" data-testid="licensing-saved">
+                {t("licensing.saved")}
+              </p>
+            )}
+          </>
         )}
       </div>
     </section>

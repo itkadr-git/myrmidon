@@ -8,6 +8,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import {
   Outlet,
   useLocation,
@@ -33,6 +34,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { MaintenanceBanner } from "./myrmidon/MaintenanceBanner"; // myrmidon(R3)
+import { LicenseAttentionBanner } from "./myrmidon/LicenseAttentionBanner"; // myrmidon(LICENSING)
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell.production";
@@ -115,6 +117,7 @@ function isSkillsStoreRoute(
 }
 
 export function Layout() {
+  const { t } = useTranslation();
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -652,11 +655,12 @@ export function Layout() {
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          Skip to Main Content
+          {t("area.shell-sidebar-layout-1.layout.skipToMain")}
         </a>
         <WorktreeBanner />
         <DevRestartBanner devServer={health?.devServer} />
         <MaintenanceBanner companyId={selectedCompanyId ?? null} /> {/* myrmidon(R3) */}
+        <LicenseAttentionBanner /> {/* myrmidon(LICENSING): a closed module without a working license */}
         <div
           className={cn(
             "min-h-0 flex-1",
@@ -668,7 +672,7 @@ export function Layout() {
               type="button"
               className="fixed inset-0 z-40 bg-black/50"
               onClick={() => setSidebarOpen(false)}
-              aria-label="Close sidebar"
+              aria-label={t("area.shell-sidebar-layout-1.layout.closeSidebar")}
             />
           )}
 

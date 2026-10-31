@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir,
   resolveDefaultSecretsKeyFilePath,
@@ -32,5 +33,10 @@ describe("home path resolution", () => {
     expect(resolveDefaultLogsDir()).toBe(path.join(instanceRoot, "logs"));
     expect(resolveDefaultStorageDir()).toBe(path.join(instanceRoot, "data", "storage"));
     expect(resolveDefaultSecretsKeyFilePath()).toBe(path.join(instanceRoot, "secrets", "master.key"));
+  });
+
+  it("uses the same configured backup directory for producers and consumers", () => {
+    const configured = "/paperclip/.paperclip/instances/default/data/backups";
+    expect(resolveDatabaseBackupDir({ config: { database: { backup: { dir: configured } } } })).toBe(configured);
   });
 });

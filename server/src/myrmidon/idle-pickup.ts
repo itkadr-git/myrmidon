@@ -1,10 +1,11 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { blockerOpenSql } from "./blocker-resolved.js";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
@@ -48,12 +49,31 @@ export const IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BU
 export const IDLE_PICKUP_WAKE_BATCH_ENV = "MYRMIDON_IDLE_PICKUP_WAKE_BATCH";
 export const IDLE_WAKE_REASON = "idle_pickup";
 export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
+/**
+ * myrmidon(1.6.6 OPE-8988): how long a queued wake request without a run still
+ * counts as covering its issue — the window in which its run is being created.
+ * Past it, a request no run carries is an orphan, not work in flight.
+ */
+export const ORPHAN_WAKE_GRACE_SEC = 600;
 
 /** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
-/** Default: an issue whose own run succeeded this recently is left to the handoff/recovery paths. */
-export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 15 * 60 * 1000;
+/**
+ * Default: an issue whose own run succeeded this recently — and which got no new
+ * inbound activity since that run ended — is left to the handoff/recovery paths.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): two hours, not the earlier fifteen minutes. A run
+ * that ends without changing anything on its issue (no disposition, no comment,
+ * no new run) used to count as "recently succeeded" for a quarter of an hour
+ * only, so the next sweep woke the very same issue 15 minutes later, that run
+ * ended the same way, and the pair repeated every 15–20 minutes with no new
+ * input on the board: four idle wakes on one issue inside an hour. The vendor
+ * handoff/recovery paths act within minutes, so two hours is the window in which
+ * a silent success still means "this issue was just worked". A comment the run
+ * did not write itself ends the silence — see `issueHasInboundActivitySince`.
+ */
+export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Company-wide wake budget: at most this many idle-pickup wakes for one company
@@ -76,6 +96,7 @@ export const IDLE_PICKUP_WAKE_WINDOW_MS = 60_000;
 
 const WAKEABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reassignment"]);
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
@@ -101,6 +122,10 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * idle-pickup wake for that same issue (the successful-run-handoff and
  * stranded-recovery paths own the next step there). `0` disables the
  * suppression; invalid values fall back to the default.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): inside the window the suppression holds only
+ * while the issue stays silent — a comment written after that run ended, by
+ * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
@@ -229,7 +254,9 @@ export interface IdlePickupIssueCandidate {
   id: string;
   identifier: string | null;
   priority: string | null;
+  status: string;
   blockedTransitionAt: Date | null;
+  executionState: Record<string, unknown> | null;
 }
 
 export interface IdlePickupDeps {
@@ -337,19 +364,24 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
   return db
     .select({
       id: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      status: issues.status,
       blockedTransitionAt: issues.blockedTransitionAt,
+      executionState: issues.executionState,
     })
     .from(issues)
     .where(
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
+        // assigned to this agent (by hand or by a gated claim) stays theirs —
+        // the scope applies where a task is handed out (matcher, role queue).
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
@@ -370,7 +402,7 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan container,
         // and the children are the real work, not the parent.
@@ -415,10 +447,76 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
         // unblock clears a settled hold (settled-holds/human-unblock.ts), and
         // the issue comes back here on the next pass.
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): do not wake an agent on a task waiting for an
+        // interaction or external unblock (prevents idle pickup looping on pending questions).
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        isNull(issues.unblockDescriptor),
       ),
     )
     .orderBy(asc(issues.createdAt))
     .limit(200);
+}
+
+/**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
 }
 
 /**
@@ -462,8 +560,10 @@ export async function idlePickupForAgent(
     idlePickupCandidateRows(deps.db, agent.companyId, agent.id),
     deps.db
       .select({
+        id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
+        cancellationSource: sql<string | null>`(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code')`,
         finishedAt: heartbeatRuns.finishedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -479,6 +579,11 @@ export async function idlePickupForAgent(
                 and(
                   eq(heartbeatRuns.status, "succeeded"),
                   sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                ),
+                and(
+                  eq(heartbeatRuns.status, "cancelled"),
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${recentSuccessCutoff.toISOString()}::timestamptz`,
+                  sql`coalesce(${heartbeatRuns.resultJson} -> 'executionCancellation' -> 'source' ->> 'code', '') in ('board_operator', 'reassignment')`,
                 ),
               )
             : inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
@@ -496,29 +601,54 @@ export async function idlePickupForAgent(
       .filter((id): id is string => Boolean(id)),
   );
 
-  // A succeeded run that ended recently on an open issue is not idle work: the
-  // vendor's successful-run-handoff / stranded-recovery machinery owns the next
-  // step for exactly that shape (a disposition is missing, and those paths send
-  // the instructive wake). Waking it again here only races them — and in tests
-  // it turns one background run into a chain that leaks into the next suite.
-  const recentlySucceededIssueIds = new Set(
-    liveRuns
-      .filter((run) => run.status === "succeeded")
-      .map((run) => ({
-        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
-        endedAt: run.finishedAt ?? run.startedAt ?? run.createdAt,
-      }))
-      .filter(
-        (run): run is { issueId: string; endedAt: Date } =>
-          Boolean(run.issueId) &&
-          Date.now() - run.endedAt.getTime() < recentSuccessWindowMs,
-      )
-      .map((run) => run.issueId),
-  );
+  // Track the latest recent terminal run for each issue. A board/reassignment
+  // cancellation paired with review changes is ready work; other cancellations
+  // remain recent activity and must not cause a wake on every sweep.
+  const recentRunsByIssueId = new Map<
+    string,
+    { runId: string; endedAt: Date; status: string; cancellationSource: string | null }
+  >();
+  for (const run of liveRuns) {
+    if (run.status !== "succeeded" && run.status !== "cancelled") continue;
+    const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
+    if (!issueId) continue;
+    const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
+    if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
+    const known = recentRunsByIssueId.get(issueId);
+    if (!known || known.endedAt.getTime() < endedAt.getTime()) {
+      recentRunsByIssueId.set(issueId, {
+        runId: run.id,
+        endedAt,
+        status: run.status,
+        cancellationSource: run.cancellationSource,
+      });
+    }
+  }
 
   // Highest priority first, oldest blocked-transition breaks ties: the same
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
+
+  const candidateIds = ordered.map((c) => c.id);
+  const prProducts =
+    candidateIds.length > 0
+      ? await deps.db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, agent.companyId),
+              inArray(issueWorkProducts.issueId, candidateIds),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+      : [];
+  const prMetadataByIssueId = new Map(
+    prProducts.map((p) => [p.issueId, p.metadata as Record<string, unknown> | null]),
+  );
 
   // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
   // automatic run ended stale and that has not moved since is not woken again
@@ -544,11 +674,60 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    if (recentlySucceededIssueIds.has(candidate.id)) {
+    // OPE-10082: idle_pickup does not wake a review participant for an issue whose
+    // review stage is pending and waiting for CI (ciState pending/unknown).
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prMetadataByIssueId.get(candidate.id),
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      result.alreadyActive += 1;
+      logger.info(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+        },
+        "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
+      continue;
+    }
+    const recentRun = recentRunsByIssueId.get(candidate.id);
+    const executionState = candidate.executionState;
+    const reviewChangesRequested =
+      executionState !== null &&
+      typeof executionState === "object" &&
+      executionState.status === "changes_requested";
+    const boardCancelledLatestRun =
+      recentRun?.status === "cancelled" &&
+      IDLE_PICKUP_BOARD_CANCELLATION_SOURCES.has(recentRun.cancellationSource ?? "");
+    const readyFromReviewCancellation =
+      candidate.status === "in_progress" && boardCancelledLatestRun && reviewChangesRequested;
+    const shouldSuppressRecentRun =
+      recentRun?.status === "succeeded" ||
+      (recentRun?.status === "cancelled" && !readyFromReviewCancellation);
+
+    if (recentRun && shouldSuppressRecentRun) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
-      result.alreadyActive += 1;
-      continue;
+      //
+      // myrmidon(IDLE-PICKUP-QUIET): unless the issue got inbound activity after
+      // that run ended — a comment the run did not write itself. Then the wake is
+      // the point of this feature (and a comment wake already queued for the
+      // issue still filters it out further down, in hasCoveringWake).
+      const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
+        companyId: agent.companyId,
+        issueId: candidate.id,
+        since: recentRun.endedAt,
+        excludeRunId: recentRun.runId,
+      });
+      if (!spokenSinceRun) {
+        result.alreadyActive += 1;
+        continue;
+      }
     }
     // myrmidon(1.6.5 F-26 T5, design §4.3): skip a task that is cooling down.
     {
@@ -648,6 +827,41 @@ export async function idlePickupForAgent(
 }
 
 /**
+ * Did the issue get inbound activity after `since`?
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): the quiet window after a successful run is only
+ * quiet while nothing arrives on the issue. A comment someone else wrote is the
+ * signal that a person (or another agent) is waiting on an answer, and the
+ * agent's own run does not answer a question asked after it exited. A comment
+ * the recent run wrote itself (`created_by_run_id`) does not count — runs report
+ * on their issue as the last thing they do, and that report is not new input.
+ *
+ * An assignee change is not checked here: a reassignment produces its own wake
+ * through the assignment path, so this pass has nothing to add for it.
+ */
+async function issueHasInboundActivitySince(
+  db: Db,
+  input: { companyId: string; issueId: string; since: Date; excludeRunId: string | null },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        isNull(issueComments.deletedAt),
+        sql`${issueComments.createdAt} > ${input.since.toISOString()}::timestamptz`,
+        input.excludeRunId
+          ? sql`(${issueComments.createdByRunId} is null or ${issueComments.createdByRunId} <> ${input.excludeRunId}::uuid)`
+          : undefined,
+      ),
+    )
+    .limit(1);
+  return Boolean(rows[0]);
+}
+
+/**
  * A wake already covers this issue in any non-terminal status (queued/deferred/claimed).
  *
  * myrmidon(HOLD-READY): except a deferred wake parked on an execution hold
@@ -674,6 +888,40 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
+        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
+        // only while it is real work in flight — a live run carries it, or it
+        // is a just-queued request whose run is still being created. On prod
+        // 147 queued and 438 claimed requests had no live run at all (the
+        // oldest from August): each one covered its issue forever, so idle
+        // pickup counted the agent "already active" and never woke it.
+        sql`(
+          (
+            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
+            -- execution lock to clear; it covers the issue only while that lock
+            -- is still held, or briefly while the promotion after release is in
+            -- flight. A deferred wake whose lock is long gone was never promoted
+            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
+            -- oldest a day old). Parked holds (executionWait) are excluded above.
+            ${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and (
+              exists (
+                select 1 from ${issues} li
+                where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
+                  and (li.execution_run_id is not null or li.checkout_run_id is not null)
+              )
+              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+            )
+          )
+          or exists (
+            select 1 from ${heartbeatRuns} hr
+            where hr.wakeup_request_id = ${agentWakeupRequests.id}
+              and hr.status in ('queued', 'running', 'scheduled_retry')
+          )
+          or (
+            ${agentWakeupRequests.status} = 'queued'
+            and ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+          )
+        )`,
       ),
     )
     .limit(1)
@@ -723,6 +971,27 @@ export async function findTopReadyIssueForAgent(
   for (const candidate of orderIdlePickupCandidates(candidates)) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
+    const prProduct = await db
+      .select({ metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, agent.companyId),
+          eq(issueWorkProducts.issueId, candidate.id),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      continue;
+    }
     return candidate;
   }
   return null;
@@ -751,6 +1020,8 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
+  /** Retry pending participant reviews before the general assigned-task lane. */
+  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -846,6 +1117,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
+        const review = await deps.pickupReviewForAgent?.(agent);
+        if (review?.handled) {
+          wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
+          totals.woken += review.woken;
+          continue;
+        }
         const perAgent = await idlePickupForAgent(deps, agent, {
           // The pass already decided with the resolved settings; handing the
           // decision over keeps the environment from vetoing a stored "on".

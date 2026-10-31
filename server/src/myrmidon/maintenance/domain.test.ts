@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   blockingWindows,
   decideTick,
+  DEFAULT_STUCK_GRACE_MS,
   departmentMembers,
+  isStuckOpenWindow,
   newWindow,
   parseMaintenanceDocument,
   reportsToChain,
@@ -103,6 +105,68 @@ describe("maintenance tick decisions", () => {
   it("interrupts at the deadline with onTimeout=interrupt_and_retry", () => {
     const w = { ...entering, onTimeout: "interrupt_and_retry" as const };
     expect(decideTick(w, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-1", "run-2"] });
+  });
+
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): the drain completes once every run
+  // in scope was interrupted by this window and has left "running".
+  describe("interrupt_and_retry drain completion", () => {
+    const w = { ...entering, onTimeout: "interrupt_and_retry" as const };
+
+    it("still interrupts runs it did not interrupt yet, past the deadline", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      // run-2 started (or became visible) after the window's own interrupt pass.
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-2"] });
+    });
+
+    it("waits for every interrupted run to leave running before promoting retries", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
+    });
+
+    it("promotes retries only after every run has left running", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      expect(decideTick(interrupted, ["run-1"], now)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-1"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
+    });
+
+    it("marks on when no runs ever required interruption", () => {
+      expect(decideTick(w, [], later)).toEqual({ kind: "mark_on" });
+    });
+
+    it("before the deadline the window keeps draining without new decisions", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      expect(decideTick(interrupted, ["run-1"], now)).toEqual({ kind: "none" });
+    });
+  });
+
+  describe("stuck open window backstop", () => {
+    // The backstop is for agent-scoped profile maintenance only.
+    const entering = window({ type: "agent", id: "agent-a" });
+    it("an entering window past deadline + grace is stuck", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow(entering, past)).toBe(true);
+    });
+
+    it("an `on` window is never closed by the clock backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(false);
+    });
+
+    it("within the grace the window is not stuck; leaving is the tick's own path", () => {
+      expect(isStuckOpenWindow(entering, now)).toBe(false);
+      expect(isStuckOpenWindow(entering, new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS))).toBe(true);
+      // A leaving window is finished by the tick's finishLeaving, not retired here.
+      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
+    });
+
+    it("does not retire deployment-wide windows with the agent backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow(window({ type: "instance" }, null), past)).toBe(false);
+      expect(isStuckOpenWindow(window({ type: "company", id: "company-a" }), past)).toBe(false);
+    });
   });
 
   it("finishes leaving windows and leaves on windows alone", () => {

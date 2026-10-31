@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Shield, ShieldCheck } from "lucide-react";
 import { accessApi } from "@/api/access";
+import { useTranslation } from "@/i18n";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -12,6 +13,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
+  const { t, i18n } = useTranslation();
   const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -22,11 +24,11 @@ export function InstanceAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Access" },
+      { label: t("area.access-secrets-2.instance-access.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("area.access-secrets-2.instance-access.breadcrumbInstance"), href: "/company/settings/instance/general" },
+      { label: t("area.access-secrets-2.instance-access.breadcrumbAccess") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const usersQuery = useQuery({
     queryKey: queryKeys.access.adminUsers(search),
@@ -73,13 +75,13 @@ export function InstanceAccess() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      pushToast({ title: "Organization access updated", tone: "success" });
+      pushToast({ title: t("area.access-secrets-2.instance-access.orgAccessUpdated"), tone: "success" });
     },
   });
 
   const setAdminMutation = useMutation({
     mutationFn: async (makeAdmin: boolean) => {
-      if (!selectedUserId) throw new Error("No user selected");
+      if (!selectedUserId) throw new Error(t("area.access-secrets-2.instance-access.noUserSelected"));
       if (makeAdmin) return accessApi.promoteInstanceAdmin(selectedUserId);
       return accessApi.demoteInstanceAdmin(selectedUserId);
     },
@@ -88,29 +90,29 @@ export function InstanceAccess() {
       if (selectedUserId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId) });
       }
-      pushToast({ title: "Instance role updated", tone: "success" });
+      pushToast({ title: t("area.access-secrets-2.instance-access.roleUpdated"), tone: "success" });
     },
   });
 
   if (usersQuery.isLoading || !accountSettled || (usersQuery.isSuccess && companiesQuery.isPending)) {
-    return <div className="text-sm text-muted-foreground">Loading instance access…</div>;
+    return <div className="text-sm text-muted-foreground">{t("area.access-secrets-2.instance-access.loading")}</div>;
   }
 
   if (usersQuery.error) {
     const message =
       usersQuery.error instanceof ApiError && usersQuery.error.status === 403
-        ? "Instance admin access is required to manage users."
+        ? t("area.access-secrets-2.instance-access.adminRequired")
         : usersQuery.error instanceof Error
           ? usersQuery.error.message
-          : "Failed to load users.";
+          : t("area.access-secrets-2.instance-access.usersLoadFailed");
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
   if (companiesQuery.error) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-destructive">Failed to load organizations. Try again before changing access.</p>
-        <Button onClick={() => void companiesQuery.refetch()}>Try again</Button>
+        <p className="text-sm text-destructive">{t("area.access-secrets-2.instance-access.orgsLoadFailed")}</p>
+        <Button onClick={() => void companiesQuery.refetch()}>{t("area.access-secrets-2.instance-access.tryAgain")}</Button>
       </div>
     );
   }
@@ -120,22 +122,22 @@ export function InstanceAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Instance Access</h1>
+          <h1 className="text-lg font-semibold">{t("area.access-secrets-2.instance-access.title")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which organizations they can access.
+          {t("area.access-secrets-2.instance-access.intro")}
         </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-(--gtc-34)">
         <Card className="block space-y-4 p-4">
           <label className="block space-y-2 text-sm">
-            <span className="font-medium">Search users</span>
+            <span className="font-medium">{t("area.access-secrets-2.instance-access.searchLabel")}</span>
             <input
               className="w-full rounded-md border border-border bg-background px-3 py-2"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by name or email"
+              placeholder={t("area.access-secrets-2.instance-access.searchPlaceholder")}
             />
           </label>
           <div className="space-y-2">
@@ -160,7 +162,7 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active organization memberships
+                  {t("area.access-secrets-2.instance-access.membershipCount", { count: user.activeCompanyMembershipCount })}
                 </div>
               </button>
             ))}
@@ -169,12 +171,12 @@ export function InstanceAccess() {
 
         <Card className="block space-y-4 p-5">
           {!selectedUserId ? (
-            <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
+            <div className="text-sm text-muted-foreground">{t("area.access-secrets-2.instance-access.selectUser")}</div>
           ) : userAccessQuery.isLoading ? (
-            <div className="text-sm text-muted-foreground">Loading user access…</div>
+            <div className="text-sm text-muted-foreground">{t("area.access-secrets-2.instance-access.loadingUser")}</div>
           ) : userAccessQuery.error ? (
             <div className="text-sm text-destructive">
-              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : "Failed to load user access."}
+              {userAccessQuery.error instanceof Error ? userAccessQuery.error.message : t("area.access-secrets-2.instance-access.userLoadFailed")}
             </div>
           ) : (
             <>
@@ -192,15 +194,15 @@ export function InstanceAccess() {
                   onClick={() => setAdminMutation.mutate(!(selectedUser?.isInstanceAdmin ?? false))}
                   disabled={setAdminMutation.isPending}
                 >
-                  {selectedUser?.isInstanceAdmin ? "Remove instance admin" : "Promote to instance admin"}
+                  {selectedUser?.isInstanceAdmin ? t("area.access-secrets-2.instance-access.removeAdmin") : t("area.access-secrets-2.instance-access.promoteAdmin")}
                 </Button>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Organization access</h2>
+                  <h2 className="text-sm font-semibold">{t("area.access-secrets-2.instance-access.orgAccessHeading")}</h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle organization membership for this user. New access defaults to an active operator membership.
+                    {t("area.access-secrets-2.instance-access.orgAccessHint")}
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -232,13 +234,13 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save organization access"}
+                    {updateCompanyAccessMutation.isPending ? t("area.access-secrets-2.instance-access.saving") : t("area.access-secrets-2.instance-access.saveOrgAccess")}
                   </Button>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-sm font-semibold">Current memberships</h2>
+                <h2 className="text-sm font-semibold">{t("area.access-secrets-2.instance-access.membershipsHeading")}</h2>
                 <div className="space-y-2">
                   {(userAccessQuery.data?.companyAccess ?? []).map((membership) => (
                     <div
@@ -248,11 +250,11 @@ export function InstanceAccess() {
                       <div>
                         <div className="font-medium">{membership.companyName || membership.companyId}</div>
                         <div className="text-muted-foreground">
-                          {membership.membershipRole || "unset"} • {membership.status}
+                          {membership.membershipRole || t("area.access-secrets-2.instance-access.roleUnset")} • {membership.status}
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {new Date(membership.updatedAt).toLocaleDateString()}
+                        {new Date(membership.updatedAt).toLocaleDateString(i18n.language)}
                       </div>
                     </div>
                   ))}

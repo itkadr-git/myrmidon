@@ -8,9 +8,7 @@ ENV HOME=/home/paperclip \
     XDG_CACHE_HOME=/home/paperclip/.cache \
     OMP_SESSION_DIR=/home/paperclip/.local/share/omp/sessions
 
-RUN addgroup -g 1000 -S paperclip \
-    && adduser -u 1000 -S -D -G paperclip -h /home/paperclip paperclip \
-    && mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
+RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace \
     && chown -R 1000:1000 /home/paperclip /workspace \
     && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
     && ln -sf "$(bun pm bin -g)/omp" /usr/local/bin/omp

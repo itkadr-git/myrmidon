@@ -13,8 +13,8 @@ import {
   issueRelations,
   issues,
   projects,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -526,6 +526,47 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"payload\"");
     expect(serialized).not.toContain("\"details\"");
     expect(serialized).not.toContain("\"triggerDetail\"");
+    expect(serialized).not.toContain("\"error\"");
+  });
+
+  it("surfaces the engine-written execution reconciliation wake reason", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Held issue with reconciliation wake",
+      status: "todo",
+      assigneeAgentId: agent.id,
+    });
+    const rawMarker = `RECONCILE-${randomUUID()}`;
+    await db.insert(agentWakeupRequests).values({
+      companyId: company.id,
+      agentId: agent.id,
+      source: "automation",
+      reason: "execution_reconciliation_required",
+      status: "skipped",
+      payload: { issueId: issue.id },
+      error: `Automatic recovery stopped ${rawMarker}`,
+      requestedAt: new Date(Date.now() - 5_000),
+    });
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${issue.id}/diagnostics/wakes`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.wakeRequestCount).toBe(1);
+    expect(res.body.events).toHaveLength(1);
+    expect(res.body.events[0]).toMatchObject({
+      kind: "wake_request",
+      reason: "execution_reconciliation_required",
+      status: "skipped",
+      failureClass: "failed",
+    });
+    expect(res.body.diagnosis).toContain("for execution_reconciliation_required");
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toContain(rawMarker);
     expect(serialized).not.toContain("\"error\"");
   });
 

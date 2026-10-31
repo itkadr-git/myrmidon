@@ -1,11 +1,22 @@
 import type {
+  InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
   PatchInstanceSettings,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
+
+export type {
+  InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
+  InstanceGeneralSettings,
+  InstanceSettings,
+  PatchInstanceSettings,
+  PatchInstanceGeneralSettings,
+  PatchInstanceExperimentalSettings,
+};
 import { api } from "./client";
 
 export const instanceSettingsApi = {

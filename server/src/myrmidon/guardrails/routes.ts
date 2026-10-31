@@ -9,7 +9,7 @@
 // are recorded by the run-output hook, never mutated through the API.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { listGuardrailEvents } from "./events.js";
 

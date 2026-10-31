@@ -9,8 +9,8 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import { renderPaperclipWakePrompt } from "@myrmidon/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -334,7 +334,92 @@ const support = await getEmbeddedPostgresTestSupport();
         }),
       ).rejects.toThrow("continuation_source_context_missing");
     });
-    it("rejects another company and an invalidated task owner", async () => {
+    it("handles cross-task interactions where sourceRunId belongs to another task without failing", async () => {
+      const otherIssueId = randomUUID();
+      const otherRunId = randomUUID();
+      const crossTaskInteractionId = randomUUID();
+      await db.insert(issues).values({
+        id: otherIssueId,
+        companyId,
+        title: "Parent Coordinator Task",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: otherRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId },
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: crossTaskInteractionId,
+        companyId,
+        issueId,
+        kind: "connection_intent",
+        status: "accepted",
+        sourceRunId: otherRunId,
+        originCommentIds: [],
+        payload: {
+          version: 1,
+          serviceSlug: "gmail",
+          serviceName: "Gmail",
+          serviceLogoUrl: null,
+          requestingAgentId: agentId,
+          requestingAgentName: "Executor",
+          phase: "requested",
+        },
+        result: {
+          version: 1,
+          outcome: "connected",
+          connectionId: randomUUID(),
+        },
+      });
+      const envelope = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        context: { interactionId: crossTaskInteractionId, wakeReason: "interaction_resolved" },
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(envelope).toBeDefined();
+      expect(envelope.issueId).toBe(issueId);
+    });
+  it("does not queue a continuation for a task closed by Zabbix recovery (rejection prevents failed continuation run and inbox records)", async () => {
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "[Zabbix] Free disk space is less than 10%",
+      status: "done",
+      completedAt: new Date(),
+    });
+    try {
+      await expect(
+        buildExecutionContinuation({
+          db,
+          companyId,
+          issueId: recoveryIssueId,
+          agentId,
+          context: { interactionId, wakeReason: "connection_intent.resolved" },
+          summary: "Zabbix recovery test",
+          exposeLowTrustRaw: false,
+        }),
+      ).rejects.toThrow("continuation_task_ownership_changed");
+      // Assert that rejection ensures no continuation envelope is produced and no failed runs / inbox records exist for this closed task
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      const failedContinuationRuns = runs.filter(
+        (r) => r.status === "failed" && JSON.stringify(r.contextSnapshot ?? {}).includes(recoveryIssueId),
+      );
+      expect(failedContinuationRuns).toHaveLength(0);
+    } finally {
+      await db.delete(issues).where(eq(issues.id, recoveryIssueId));
+    }
+  });
+
+  it("rejects another company and an invalidated task owner", async () => {
       await expect(
         buildExecutionContinuation({
           db,

@@ -8,7 +8,7 @@ import {
   toolConnections,
   userSecretDefinitions,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
@@ -70,7 +70,7 @@ export type GitCredential = {
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
   // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App installation
-  identitySource?: "personal" | "dedicated" | "app";
+  identitySource?: "personal" | "dedicated" | "app" | "pat";
   connectionId?: string;
   grantId?: string;
   // myrmidon(GITHUB-SHARED-IDENTITY): the commit author/committer when it is not

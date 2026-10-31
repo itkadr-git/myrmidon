@@ -22,6 +22,15 @@ export const companySecretProposals = pgTable(
     valueFingerprintSha256: text("value_fingerprint_sha256"),
     valueLength: integer("value_length"),
     secretId: uuid("secret_id").references(() => companySecrets.id, { onDelete: "set null" }),
+    /**
+     * Rotation target for a secret-kind proposal: the existing active company
+     * secret whose next version the proposed value becomes when the proposal is
+     * approved. Without this link an agent could never rotate an existing
+     * secret — approval always ran a create, which 409'd on the name, so the
+     * pending proposal was a visible dead-end (OPE-2998). Binding rows never
+     * set it; secret rows leave it null unless the proposal targets a rotation.
+     */
+    rotationTargetSecretId: uuid("rotation_target_secret_id").references(() => companySecrets.id, { onDelete: "cascade" }),
     secretProposalId: uuid("secret_proposal_id").references((): AnyPgColumn => companySecretProposals.id, { onDelete: "cascade" }),
     targetType: text("target_type"),
     targetId: uuid("target_id").references(() => agents.id, { onDelete: "cascade" }),

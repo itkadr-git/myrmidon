@@ -19,14 +19,14 @@
 
 import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   corpusSearchBodySchema,
   createCorpusDatasetSchema,
   patchCorpusSettingsSchema,
   updateCorpusDatasetSchema,
   type CorpusSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import {
   assertBoardOrgAccess,
@@ -59,11 +59,19 @@ export interface CorpusRoutesDeps {
   serviceDeps?: Partial<CorpusServiceDeps>;
 }
 
-/** Multipart upload of one document; the field name is the vendor one, `file`. */
+/**
+ * Multipart upload of one document; the field name is the vendor one, `file`.
+ *
+ * `defParamCharset: "utf8"`: browsers and HTTP clients put the file name into
+ * `Content-Disposition` as raw UTF-8 bytes. Multer hands the header parameters to
+ * busboy, whose default charset is `latin1`, so a non-ASCII name (for example a
+ * Cyrillic one) would reach the service as mojibake and be stored as the title.
+ */
 function singleFileUpload(req: Request, res: Response, maxBytes: number): Promise<void> {
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: maxBytes, files: 1 },
+    defParamCharset: "utf8",
   }).single("file");
   return new Promise<void>((resolve, reject) => {
     upload(req, res, (err: unknown) => {

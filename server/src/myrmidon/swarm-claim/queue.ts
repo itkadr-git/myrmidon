@@ -15,18 +15,23 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
+import { blockerOpenSql } from "../blocker-resolved.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
+  swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { projectScopedClaimGate } from "../project-membership.js";
 import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -89,7 +94,73 @@ export function unassignedTaskRoutedToRole(role: string) {
     wantedKey === SWARM_DEFAULT_UNASSIGNED_ROLE
       ? sql`(${hasLabel} or not ${hasAnyRoleLabel})`
       : hasLabel;
-  return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
+  const engineerRequired = sql`(
+    lower(btrim(coalesce(${issues.casteKey}, ''))) = 'engineer'
+    or (
+      lower(btrim(coalesce(${issues.casteKey}, ''))) = ''
+      and lower(btrim(coalesce((select nullif(btrim(p.default_caste_key), '') from projects p where p.id = ${issues.projectId}), ''))) = 'engineer'
+    )
+    or ${issues.harnessKind} = 'skill_test'
+    or exists (
+      select 1 from issue_labels il join labels l on l.id = il.label_id
+      where il.issue_id = ${issues.id} and lower(btrim(l.name)) = 'needs-engineer'
+    )
+  )`;
+  // myrmidon(OPE-7707): system pool alerts route to operator, not engineer
+  const isPoolAlert = sql`(${issues.title} ~* '(Google AI Pro sign-in expired|Antigravity: account)')`;
+  return sql`(case
+    when ${isPoolAlert} then ${wantedKey} = 'operator'
+    when ${engineerRequired} then ${wantedKey} = 'engineer'
+    when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey}
+    else ${labelRoute}
+  end)`;
+}
+
+export function isPoolAuthAlertTitle(title: string | null | undefined): boolean {
+  if (!title) return false;
+  return /Google AI Pro sign-in expired|Antigravity: account/i.test(title);
+}
+
+/** JS twin of the SQL routing rule above, for issue mutation validation. */
+export function taskRequiresEngineer(input: {
+  title?: string | null;
+  casteKey?: string | null;
+  projectDefaultCasteKey?: string | null;
+  harnessKind?: string | null;
+  labels?: readonly string[];
+}): boolean {
+  if (isPoolAuthAlertTitle(input.title)) return false;
+  const caste = input.casteKey?.trim() || input.projectDefaultCasteKey?.trim();
+  return caste?.toLowerCase() === "engineer"
+    || input.harnessKind === "skill_test"
+    || (input.labels ?? []).some((label) => label.trim().toLowerCase() === "needs-engineer");
+}
+
+export function routedRoleForTask(input: {
+  title?: string | null;
+  casteKey?: string | null;
+  projectDefaultCasteKey?: string | null;
+  harnessKind?: string | null;
+  labels?: readonly string[];
+}): string {
+  if (isPoolAuthAlertTitle(input.title)) return "operator";
+  if (taskRequiresEngineer(input)) return "engineer";
+  const caste = input.casteKey?.trim() || input.projectDefaultCasteKey?.trim();
+  return caste?.toLowerCase() ?? swarmRoleFromLabels(input.labels ?? []) ?? "general";
+}
+
+export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
+  return routedRoleForTask({ labels }) === role.trim().toLowerCase();
+}
+
+export function engineerCasteRequired(
+  taskCasteKey: string | null | undefined,
+  projectDefaultCasteKey: string | null | undefined,
+  roleLabels: readonly string[],
+): boolean {
+  const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
+  if (casteKey) return casteKey.toLowerCase() === "engineer";
+  return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
 }
 
 /**
@@ -104,7 +175,13 @@ export function roleQueueRows(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ) {
+  const failedRunsJoin =
+    failedRunsMap !== undefined
+      ? failedRunsValuesSql(failedRunsMap)
+      : failedRunsDerivedSql(companyId, order?.now);
+
   return db
     .select({
       issueId: issues.id,
@@ -119,9 +196,8 @@ export function roleQueueRows(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map when provided (#OPE-10012)
+    .leftJoin(failedRunsJoin, failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -134,7 +210,19 @@ export function roleQueueRows(
         // to the role by its label (default: the engineer).
         or(
           agentId ? eq(issues.assigneeAgentId, agentId) : eq(agents.role, role),
-          and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+          and(
+            isNull(issues.assigneeAgentId),
+            unassignedTaskRoutedToRole(role),
+            // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the unassigned half is the
+            // self-serve read of ONE agent — a task that carries a project is
+            // in it only for a member of that project (lead or joined), the
+            // same rule scope-wiring.listAgents answers for bot containers. A
+            // task assigned to an agent is a manual action and is never gated.
+            // Without an agent there is no member to judge by: the agentless
+            // read is the role-wide view (monitoring, supervisor), not a claim,
+            // so it keeps the whole routed queue.
+            agentId ? projectScopedClaimGate(agentId) : sql`true`,
+          ),
         ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
         sql`not exists (
@@ -144,7 +232,7 @@ export function roleQueueRows(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         // Not a container: an issue with an open child is a plan, the children are the work.
         sql`not exists (
@@ -164,6 +252,14 @@ export function roleQueueRows(
         )`,
         // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): exclude issues waiting for thread interaction
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
       ),
     )
     .orderBy(...swarmQueueOrderBy(order))
@@ -177,8 +273,11 @@ export async function listRoleQueue(
   role: string,
   agentId?: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role, agentId, order);
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
+  const rows = await roleQueueRows(db, companyId, role, agentId, order, map);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
@@ -236,7 +335,10 @@ export async function listUnassignedQueue(
   db: Db,
   companyId: string,
   order?: SwarmQueueOrderOptions,
+  failedRunsMap?: ReadonlyMap<string, number>,
 ): Promise<SwarmQueueCandidate[]> {
+  const map =
+    failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -247,9 +349,8 @@ export async function listUnassignedQueue(
       queuedAt: issues.createdAt,
     })
     .from(issues)
-    // One bounded pass over the recent evaporating runs, joined once — not a
-    // correlated subquery per candidate (review #1047).
-    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(map), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -265,7 +366,7 @@ export async function listUnassignedQueue(
           where ir.company_id = ${issues.companyId}
             and ir.related_issue_id = ${issues.id}
             and ir.type = 'blocks'
-            and blocker.status <> 'done'
+            and ${blockerOpenSql('blocker.status')}
         )`,
         sql`not exists (
           select 1
@@ -276,6 +377,14 @@ export async function listUnassignedQueue(
         )`,
         // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): exclude issues waiting for thread interaction
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
       ),
     )
     .orderBy(...swarmQueueOrderBy(order))

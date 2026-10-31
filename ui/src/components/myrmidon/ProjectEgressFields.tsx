@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection, Field, ToggleField } from "../agent-config-primitives";
 import { useCompany } from "../../context/CompanyContext";
@@ -61,22 +62,22 @@ export function ProjectEgressFieldsView({
   onMode,
   onSave,
 }: ProjectEgressFieldsViewProps) {
+  const { t } = useTranslation();
   const parsed = parseAllowlistText(allowText);
   const gate = blockGateReason({ verified, entries: parsed.entries });
   const blocking = mode === "block";
   const stored = project;
 
   return (
-    <CollapsibleSection title="Egress" open onToggle={() => {}}>
+    <CollapsibleSection title={t("area.projects-goals-workspaces-2.project-egress-fields.title")} open onToggle={() => {}}>
       <div className="space-y-3" data-testid="myrmidon-project-egress">
         <p className="text-xs text-muted-foreground">
-          Where this project's bots may go. The proxy records everything a bot reaches; a blocking project refuses a
-          destination that is on neither this list nor the bot's own list.
+          {t("area.projects-goals-workspaces-2.project-egress-fields.intro")}
         </p>
 
         <ToggleField
-          label="Blocking"
-          hint="Off (journal only) records every destination and refuses none. On refuses what is on no list. The list must be marked verified first."
+          label={t("area.projects-goals-workspaces-2.project-egress-fields.blockingLabel")}
+          hint={t("area.projects-goals-workspaces-2.project-egress-fields.blockingHint")}
           checked={blocking}
           onChange={(on) => onMode(on ? "block" : "log")}
           toggleTestId="myrmidon-project-egress-blocking"
@@ -87,19 +88,19 @@ export function ProjectEgressFieldsView({
           </p>
         )}
 
-        <Field label="Verified against the observation journal" hint="Tick only after comparing this list with what the proxy actually recorded for the project.">
+        <Field label={t("area.projects-goals-workspaces-2.project-egress-fields.verifiedFieldLabel")} hint={t("area.projects-goals-workspaces-2.project-egress-fields.verifiedFieldHint")}>
           <ToggleField
-            label="Verified"
+            label={t("area.projects-goals-workspaces-2.project-egress-fields.verifiedLabel")}
             checked={verified}
             onChange={onVerified}
             toggleTestId="myrmidon-project-egress-verified"
           />
         </Field>
 
-        <Field label="Allowed destinations" hint="One per line: host or host:port. A bare host means every port on it.">
+        <Field label={t("area.projects-goals-workspaces-2.project-egress-fields.allowedLabel")} hint={t("area.projects-goals-workspaces-2.project-egress-fields.allowedHint")}>
           <textarea
             className={`${inputClass} min-h-24`}
-            aria-label="Allowed destinations"
+            aria-label={t("area.projects-goals-workspaces-2.project-egress-fields.allowedLabel")}
             data-testid="myrmidon-project-egress-allow"
             value={allowText}
             onChange={(event) => onAllowText(event.target.value)}
@@ -123,7 +124,7 @@ export function ProjectEgressFieldsView({
             disabled={saving || !unsaved || parsed.problems.length > 0 || (blocking && gate !== null)}
             data-testid="myrmidon-project-egress-save"
           >
-            {saving ? "Saving..." : "Save"}
+            {saving ? t("area.projects-goals-workspaces-2.project-egress-fields.saving") : t("common.save")}
           </Button>
           {stored && (
             <span className="text-xs text-muted-foreground" data-testid="myrmidon-project-egress-state">
@@ -139,14 +140,14 @@ export function ProjectEgressFieldsView({
 
         {blocking && (
           <div className="rounded-md border border-border px-2.5 py-2">
-            <div className="text-xs text-muted-foreground">Recent refusals</div>
+            <div className="text-xs text-muted-foreground">{t("area.projects-goals-workspaces-2.project-egress-fields.recentRefusals")}</div>
             {refusalsError ? (
               <p className="text-xs text-muted-foreground" data-testid="myrmidon-project-egress-refusals-error">
-                The refusal feed is unavailable: {refusalsError}
+                {t("area.projects-goals-workspaces-2.project-egress-fields.refusalFeedUnavailable", { error: refusalsError })}
               </p>
             ) : refusals.length === 0 ? (
               <p className="text-xs text-muted-foreground" data-testid="myrmidon-project-egress-refusals-empty">
-                Nothing has been refused yet.
+                {t("area.projects-goals-workspaces-2.project-egress-fields.nothingRefused")}
               </p>
             ) : (
               <ul className="space-y-0.5 text-sm font-mono" data-testid="myrmidon-project-egress-refusals">
@@ -164,6 +165,7 @@ export function ProjectEgressFieldsView({
 
 /** The connected section: reads the project's policy, saves it, shows refusals. */
 export function ProjectEgressFields({ projectId }: { projectId: string }) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [allowText, setAllowText] = useState("");
@@ -212,7 +214,7 @@ export function ProjectEgressFields({ projectId }: { projectId: string }) {
       void queryClient.invalidateQueries({ queryKey: projectEgressKey(selectedCompanyId ?? "none") });
       void queryClient.invalidateQueries({ queryKey: projectEgressRefusalsKey(selectedCompanyId ?? "none") });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "The save failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.projects-goals-workspaces-2.project-egress-fields.saveFailed")),
   });
 
   const unsaved =
@@ -234,7 +236,7 @@ export function ProjectEgressFields({ projectId }: { projectId: string }) {
         refusals.isError
           ? refusals.error instanceof Error
             ? refusals.error.message
-            : "the request failed"
+            : t("area.projects-goals-workspaces-2.project-egress-fields.requestFailed")
           : null
       }
       onAllowText={setAllowText}

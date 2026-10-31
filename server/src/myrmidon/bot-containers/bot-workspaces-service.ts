@@ -26,7 +26,7 @@ import {
   issues,
   projectWorkspaces,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_TASK_BRANCH_PREFIX,
@@ -35,9 +35,11 @@ import {
   resolveBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
+  type WsClosedKeyEntry,
+  type WsClosedKeyObject,
   type WsDesiredState,
   type WsDesiredWorkspace,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
 import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
@@ -89,7 +91,7 @@ export interface BotWorkspacesStore {
    * away from it at any time), with no lookback limit. Optional so older stores keep
    * working: without it `closedKeys` comes from the lookback rows only.
    */
-  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
+  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<Array<string | { key: string; closedAt?: string; issueId?: string }>>;
   /** Repo URL of the primary project workspace per project id. */
   listProjectRepoUrls(input: { projectIds: string[] }): Promise<Map<string, string>>;
   /** Stored `general.botDisk` (raw), for the grace settings. */
@@ -219,15 +221,38 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
 
       // Board-confirmed closed (done/cancelled) tasks of this bot: the lookback rows plus the
       // unbounded store query, so a directory of a task closed long ago is still confirmed.
-      const closedSet = new Set<string>(
-        keyed.filter((row) => row.status === "done" || row.status === "cancelled").map((row) => row.identifier as string),
-      );
-      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
-      for (const key of extraClosed) {
-        if (myrWsIssueKeySchema.safeParse(key).success) closedSet.add(key);
+      const closedMap = new Map<string, WsClosedKeyObject>();
+      for (const row of keyed) {
+        if (row.status === "done" || row.status === "cancelled") {
+          const key = row.identifier as string;
+          const closedAtDate = row.completedAt ?? row.cancelledAt;
+          closedMap.set(key, {
+            key,
+            ...(row.id ? { issueId: row.id } : {}),
+            ...(closedAtDate ? { closedAt: closedAtDate.toISOString() } : {}),
+          });
+        }
       }
-      for (const key of protectKeys) closedSet.delete(key);
-      const closedKeys = [...closedSet].sort();
+      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
+      for (const item of extraClosed) {
+        const key = typeof item === "string" ? item : item?.key;
+        if (key && myrWsIssueKeySchema.safeParse(key).success) {
+          if (!closedMap.has(key)) {
+            if (typeof item === "object" && item) {
+              closedMap.set(key, {
+                key,
+                ...(item.issueId ? { issueId: item.issueId } : {}),
+                ...(item.closedAt ? { closedAt: item.closedAt } : {}),
+              });
+            } else {
+              closedMap.set(key, { key });
+            }
+          }
+        }
+      }
+      for (const key of protectKeys) closedMap.delete(key);
+      const closedTasks = [...closedMap.values()].sort((a, b) => a.key.localeCompare(b.key));
+      const closedKeys = closedTasks.map((t) => t.key);
 
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
@@ -245,6 +270,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         workspaces,
         protectKeys,
         closedKeys,
+        closedTasks,
       };
     },
   };
@@ -305,10 +331,12 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.action, "issue.updated"),
-            gt(activityLog.createdAt, since),
+            // Not bounded by `since`: an old reassigned copy would otherwise become an
+            // unknown key and stay forever (fail-closed cleanup). Bounded by count instead.
             sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
           ),
-        );
+        )
+        .limit(5000);
       const reassignedIds = reassigned.map((r) => r.entityId);
       const selected = {
         id: issues.id,
@@ -348,7 +376,7 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
       return [...mine, ...lost];
     },
 
-    async listClosedKeys({ companyId, agentId }) {
+    async listClosedKeys({ companyId, agentId }): Promise<Array<string | { key: string; closedAt?: string; issueId?: string }>> {
       const reassigned = await db
         .selectDistinct({ entityId: activityLog.entityId })
         .from(activityLog)
@@ -366,11 +394,25 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
           ? or(eq(issues.assigneeAgentId, agentId), inArray(sql`${issues.id}::text`, reassignedIds))
           : eq(issues.assigneeAgentId, agentId);
       const rows = await db
-        .select({ identifier: issues.identifier })
+        .select({
+          identifier: issues.identifier,
+          id: issues.id,
+          completedAt: issues.completedAt,
+        })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
         .limit(5000);
-      return rows.map((r) => r.identifier).filter((id): id is string => !!id);
+      const entries: Array<{ key: string; closedAt?: string; issueId?: string }> = [];
+      for (const r of rows) {
+        if (r.identifier) {
+          entries.push({
+            key: r.identifier,
+            issueId: r.id,
+            ...(r.completedAt ? { closedAt: r.completedAt.toISOString() } : {}),
+          });
+        }
+      }
+      return entries;
     },
 
     async listPrProducts({ issueIds }) {

@@ -1,5 +1,5 @@
 import { currentContinuationOrigins } from "./execution-continuation.js";
-import { connectionIntentDeliveries } from "@paperclipai/db";
+import { connectionIntentDeliveries } from "@myrmidon/db";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -13,7 +13,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -29,9 +29,10 @@ import {
   issues,
   toolActionRequests,
   toolOauthStates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 // myrmidon(N2): a pending card's addressee wake receipt is a row keyed
 // `interaction-pending:<interactionId>` in the same table.
+import { resolveAgentHeadId } from "./responsible-head.js";
 import {
   PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX,
   selectUndeliveredAddresseeInteractionIds,
@@ -39,7 +40,7 @@ import {
 import {
   trackInteractionCreated,
   trackInteractionResolved,
-} from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -68,9 +69,10 @@ import type {
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
   WithdrawIssueThreadInteraction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   acceptIssueThreadInteractionSchema,
+  isAgentStatusInvokable,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
@@ -91,7 +93,7 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -587,11 +589,18 @@ function isEquivalentCreateRequest(
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
 ) {
+  const addresseeAgentMatches =
+    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) ||
+    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+  const addresseeUserMatches =
+    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) ||
+    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
-    (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) &&
-    (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) &&
+    addresseeAgentMatches &&
+    addresseeUserMatches &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -3359,10 +3368,100 @@ export function issueThreadInteractionService(
         resolverPolicy: policy.requestedResolverPolicy,
       };
 
+      if (normalizedData.idempotencyKey) {
+        const existing = await getIdempotentInteraction({
+          issueId: issue.id,
+          companyId: issue.companyId,
+          idempotencyKey: normalizedData.idempotencyKey,
+        });
+        if (existing) {
+          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+            throw conflict(
+              "Interaction idempotency key already exists for a different request",
+              {
+                idempotencyKey: normalizedData.idempotencyKey,
+              },
+            );
+          }
+          const interaction = hydrateInteraction(existing);
+          await enqueueIssueInteractionChatPublications(db, interaction);
+          return interaction;
+        }
+      }
+
       if (normalizedData.addresseeAgentId && normalizedData.addresseeUserId) {
         throw unprocessable(
           "An issue-thread interaction cannot address both an agent and a user",
         );
+      }
+
+      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+        const cannotTargetAgent =
+          normalizedData.kind === "request_confirmation" &&
+          (normalizedData.payload.toolAction !== undefined ||
+            normalizedData.payload.secretProposal !== undefined);
+
+        if (!cannotTargetAgent) {
+          const [issueRow] = await db
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, issue.id),
+                eq(issues.companyId, issue.companyId),
+              ),
+            );
+
+          let candidateHeadId: string | null = null;
+          if (issueRow?.responsibleAgentId) {
+            if (issueRow.responsibleAgentId !== actor.agentId) {
+              candidateHeadId = issueRow.responsibleAgentId;
+            }
+          } else {
+            const headId = await resolveAgentHeadId(db, issue.companyId, actor.agentId);
+            if (headId && headId !== actor.agentId) {
+              candidateHeadId = headId;
+            }
+          }
+          if (candidateHeadId) {
+            const candidateAgent = await db
+              .select({
+                id: agents.id,
+                companyId: agents.companyId,
+                name: agents.name,
+                reportsTo: agents.reportsTo,
+                status: agents.status,
+              })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, candidateHeadId),
+                  eq(agents.companyId, issue.companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+
+            if (
+              candidateAgent &&
+              isAgentStatusInvokable(candidateAgent.status)
+            ) {
+              const invokability = await evaluateAgentInvokabilityFromDb(
+                db,
+                candidateAgent,
+              );
+              if (invokability.invokable) {
+                normalizedData.addresseeAgentId = candidateHeadId;
+                normalizedData.addresseeUserId = null;
+                data.addresseeAgentId = candidateHeadId;
+                data.addresseeUserId = null;
+              }
+            }
+          }
+        }
       }
 
       if (normalizedData.addresseeAgentId) {
@@ -3415,27 +3514,6 @@ export function issueThreadInteractionService(
               ...invokability.details,
             },
           );
-        }
-      }
-
-      if (normalizedData.idempotencyKey) {
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-            throw conflict(
-              "Interaction idempotency key already exists for a different request",
-              {
-                idempotencyKey: normalizedData.idempotencyKey,
-              },
-            );
-          }
-          const interaction = hydrateInteraction(existing);
-          await enqueueIssueInteractionChatPublications(db, interaction);
-          return interaction;
         }
       }
 
@@ -3500,7 +3578,10 @@ export function issueThreadInteractionService(
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
           const [issueRow] = await tx
-            .select({ status: issues.status })
+            .select({
+              status: issues.status,
+              responsibleAgentId: issues.responsibleAgentId,
+            })
             .from(issues)
             .where(
               and(
@@ -3525,6 +3606,8 @@ export function issueThreadInteractionService(
               lockForUpdate: true,
             });
           }
+          const addresseeAgentId = normalizedData.addresseeAgentId ?? null;
+          const addresseeUserId = normalizedData.addresseeUserId ?? null;
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
@@ -3546,8 +3629,8 @@ export function issueThreadInteractionService(
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId: data.addresseeAgentId ?? null,
-              addresseeUserId: data.addresseeUserId ?? null,
+              addresseeAgentId,
+              addresseeUserId,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })
@@ -3891,8 +3974,13 @@ export function issueThreadInteractionService(
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
-            assigneeAgentId: task.assigneeAgentId ?? null,
-            assigneeUserId: task.assigneeUserId ?? null,
+            assigneeAgentId: null,
+            ...(task.assigneeAgentId !== undefined
+              ? { assigneeAgentId: task.assigneeAgentId }
+              : {}),
+            ...(task.assigneeUserId !== undefined
+              ? { assigneeUserId: task.assigneeUserId }
+              : {}),
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,

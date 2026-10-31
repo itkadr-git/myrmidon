@@ -7,7 +7,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { HttpError, forbidden } from "../../errors.js";
 
 const mocks = vi.hoisted(() => ({

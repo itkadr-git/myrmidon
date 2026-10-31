@@ -142,6 +142,9 @@ function fakeDb(): FakeDb {
     async getApproval() {
       return null;
     },
+    async consumeApproval() {
+      return null;
+    },
     async setSkillCurrentVersion(_companyId, skillId, versionId) {
       const skill = skills.get(skillId);
       if (skill) skill.currentVersionId = versionId;

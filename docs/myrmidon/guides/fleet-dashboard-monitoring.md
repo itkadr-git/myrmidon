@@ -37,6 +37,7 @@ The settings document:
 | `zabbixTokenRef` | unset | Read-token reference for the Zabbix API: `env:<NAME>` or `file:<PATH>` |
 | `vmJobSelector` | `node` | PromQL label value that selects the fleet node_exporter jobs (used as `job=~"<value>"`) |
 | `zabbixHostGroups` | `[]` | Zabbix host groups the dashboard reads; empty means all monitored hosts |
+| `zabbixHostMapping` | `{}` | Maps a VictoriaMetrics `instance` label to a Zabbix technical host name (`host`), or its visible name (`name`), so the readings share one card |
 | `timeoutMs` | `10000` | Per-source request timeout, 500–60000 ms |
 
 Token references, not token values. The settings store only `env:<NAME>`
@@ -70,8 +71,13 @@ document:
 How the two sources merge:
 
 - Host readings come from VictoriaMetrics first (node_exporter PromQL,
-  selected by `vmJobSelector`). Zabbix fills in the hosts VM does not see; a
-  host known to both keeps the VM numbers (`origin: "victoriametrics"`).
+  selected by `vmJobSelector`). Zabbix fills missing metrics for explicitly
+  mapped VM instances and adds unmapped hosts as separate cards; VM metrics
+  take precedence (`origin: "victoriametrics"`). Configure entries such as
+  `{"node-exporter:9100":"vm-core"}` in `zabbixHostMapping` when the names
+  differ. Memory and disk values accept both the legacy and Zabbix 7.4 Linux
+  template item keys (`vm.memory.utilization` / `vm.memory.util` and
+  `vfs.fs.size[/,pused]` / `vfs.fs.dependent.size[/,pused]`).
 - A source that fails degrades in place: the dashboard still answers with
   whatever the other source returned, and the failed source is visible in
   `sources` with its error class.

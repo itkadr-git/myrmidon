@@ -145,6 +145,7 @@ describe("worker performAction context", () => {
           agentId: null,
           runId: null,
           companyId: null,
+          isInstanceAdmin: false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
         },
         companyId: null,
       });

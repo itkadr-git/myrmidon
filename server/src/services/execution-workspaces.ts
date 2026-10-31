@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   executionWorkspaces,
   heartbeatRuns,
@@ -15,7 +15,7 @@ import {
   projects,
   projectWorkspaces,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceDeliveryState,
@@ -33,8 +33,8 @@ import type {
   WorkspaceOverviewQuery,
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
-} from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@myrmidon/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -44,6 +44,7 @@ import {
 } from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { withDefaultEscalationChain } from "./review-escalation-chain.js";
 import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -3726,6 +3727,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .select({
               id: issues.id,
               companyId: issues.companyId,
+              projectId: issues.projectId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               assigneeUserId: issues.assigneeUserId,
@@ -3746,7 +3748,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
-            issue: sourceBefore,
+            // myrmidon(OPE-9031): senior escalation chain for the round limit.
+            issue: await withDefaultEscalationChain(tx as unknown as Db, sourceBefore, policy),
             policy,
             previousPolicy: policy,
             requestedStatus,

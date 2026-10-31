@@ -72,7 +72,7 @@ export const SEED_DECISIONS: SeedDecision[] = [
   },
   {
     slug: "decisions/2026-09-27-no-upstream",
-    title: "В апстрим Paperclip не отправляем",
+    title: "В апстрим не отправляем",
     date: "2026-09-27",
     decidedBy: OWNER,
     quote: "мы же свой продукт развиваем, рано или поздно своей веткой можем пойти",

@@ -1,0 +1,9 @@
+# OPE-8950: area settings-bots-host-2
+components/myrmidon/FleetConsolePanel.tsx
+components/myrmidon/HostDiskSettingsPanel.tsx
+components/myrmidon/MaintenanceSettingsPanel.tsx
+components/myrmidon/ProcessesSettingsPanel.tsx
+components/myrmidon/ReplayBlocked.tsx
+components/myrmidon/SessionGenerationsSettingsPanel.tsx
+components/myrmidon/WorkspaceHygieneSettingsPanel.tsx
+components/myrmidon/tracing-health/TracingHealthCard.tsx

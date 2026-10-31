@@ -24,7 +24,7 @@
 // routes the refreshed head through review and merge on its own fresh
 // verdicts.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
 import { secretService } from "../../services/secrets.js";
@@ -208,6 +208,15 @@ export function createGitHubPrHeadResolver(input: {
 
       const open = (asString(pr.state) ?? "unknown") === "open";
       const headSha = asString(asRecord(pr.head)?.sha);
+      const rawLabels = Array.isArray(pr.labels) ? pr.labels : [];
+      const labels = rawLabels
+        .map((item: unknown) => {
+          if (typeof item === "string") return item;
+          const rec = asRecord(item);
+          return rec ? asString(rec.name) : null;
+        })
+        .filter((l): l is string => Boolean(l));
+
       const bodyFields: Omit<PullRequestHeadState, "ci" | "reviewDecision" | "fetchFailed"> = {
         repository,
         number,
@@ -218,6 +227,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
+        ...(labels.length > 0 ? { labels } : {}),
       };
 
       if (!open || !headSha) {

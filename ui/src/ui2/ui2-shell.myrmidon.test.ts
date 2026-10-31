@@ -10,7 +10,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema } from "@paperclipai/shared";
+import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema } from "@myrmidon/shared";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_SRC = join(HERE, "..");
@@ -72,16 +72,21 @@ describe("ui2 clean-room boundary", () => {
 });
 
 describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
-  it("the route table exposes the six UI-0c entries plus the real Commander chat screen (1.6)", async () => {
+  it("the route table exposes the current UI2 screens", async () => {
     // myrmidon(1.6-CTO-CHAT-A): importing routes.tsx now also pulls in the
     // real Commander chat screen (api client, react-query, auth) — give the
     // module graph more than the default 5s to load.
     const { UI2_ROUTE_TABLE } = await import("./routes");
     expect(UI2_ROUTE_TABLE.map((e) => e.key).sort()).toEqual([
       "agent-overview",
+      "agents-fleet",
       "commander-chat",
       "costs",
       "decisions",
+      "fleet",
+      "knowledge",
+      "knowledge-page",
+      "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
@@ -92,11 +97,34 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     }
   }, 30_000);
 
-  it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
+  it("keeps Agents and Servers as two separate destinations on desktop and phone", async () => {
+    const { UI2_NAV_GROUPS, UI2_PHONE_TABS } = await import("./navModel");
+    const rail = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    expect(rail.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(rail.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.agents")?.to).toBe("/agents");
+    expect(UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.servers")?.to).toBe("/fleet");
+    expect(rail.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
+    expect(UI2_PHONE_TABS.some((item) => item.labelKey === "ui2.nav.fleet")).toBe(false);
+  });
+
+  it("Ui2Root exists and mounts the shell", async () => {
     const mod = await import("./Ui2Root");
     expect(typeof mod.Ui2Root).toBe("function");
     const root = mod.Ui2Root({} as never);
     expect(root).toBeTruthy();
+    const { Ui2I18nProvider } = await import("./i18n/Ui2I18n");
+    const { Ui2Shell } = await import("./shell/Ui2Shell");
+    expect(root.type).toBe(Ui2I18nProvider);
+    expect((root.props as { children?: { type?: unknown } })?.children?.type).toBe(Ui2Shell);
+  });
+
+  it("does not wrap Ui2Shell in a second PluginLauncherProvider", () => {
+    const rootSource = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
+    const shellSource = readFileSync(join(UI_SRC, "ui2", "shell", "Ui2Shell.tsx"), "utf8");
+    expect(rootSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).not.toMatch(/<PluginLauncherProvider\b/);
+    expect(shellSource).toContain("PluginLauncherProvider is installed at the application root");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
@@ -165,6 +193,20 @@ describe("ui2 personal override (?ui=1|2)", () => {
 });
 
 describe("ui2 i18n", () => {
+  it("carries interface switch keys in en and ru", () => {
+    const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
+    const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));
+    for (const messages of [en, ru]) {
+      expect(messages.uiSwitch).toBeDefined();
+      expect(messages.uiSwitch.label).toBeTruthy();
+      expect(messages.uiSwitch.new).toBeTruthy();
+      expect(messages.uiSwitch.legacy).toBeTruthy();
+      expect(messages.uiSwitch.instanceDefault).toBeTruthy();
+    }
+    expect(ru.uiSwitch.new).toBe("Новая");
+    expect(ru.uiSwitch.legacy).toBe("Прежняя");
+    expect(ru.uiSwitch.instanceDefault).toBe("По настройке экземпляра");
+  });
   it("has the ui2 namespace in en and ru with the shell and screen keys", () => {
     const en = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "en.json"), "utf8"));
     const ru = JSON.parse(readFileSync(join(UI_SRC, "i18n", "locales", "ru.json"), "utf8"));
@@ -172,6 +214,8 @@ describe("ui2 i18n", () => {
       expect(messages.ui2).toBeDefined();
       expect(messages.ui2.nav.center).toBeTruthy();
       expect(messages.ui2.nav.commander).toBeTruthy();
+      expect(messages.ui2.nav.agents).toBeTruthy();
+      expect(messages.ui2.nav.servers).toBeTruthy();
       expect(messages.ui2.commander.placeholder).toBeTruthy();
       expect(messages.ui2.nests.all).toBeTruthy();
       expect(messages.ui2.screens.placeholderTitle).toBeTruthy();
@@ -184,5 +228,7 @@ describe("ui2 i18n", () => {
     expect(ru.ui2.nav.center).toBe("Командный центр");
     expect(ru.ui2.nav.commander).toBe("Полководец");
     expect(ru.ui2.nav.waiting).toBe("Ждёт меня");
+    expect(ru.ui2.nav.agents).toBe("Агенты");
+    expect(ru.ui2.nav.servers).toBe("Серверы");
   });
 });

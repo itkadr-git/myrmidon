@@ -116,7 +116,7 @@ fn build_metadata() -> serde_json::Value {
     json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
         "binaryName": "paperclip-runnerd",
-        "packageName": "@paperclipai/paperclip-runner",
+        "packageName": "@myrmidon/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
         "nativeExecutionVersion": 1,

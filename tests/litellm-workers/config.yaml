@@ -1,0 +1,12 @@
+model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_base: http://mock:8090/v1
+      api_key: mock-key
+
+litellm_settings:
+  drop_params: true
+
+general_settings:
+  master_key: local-test-key

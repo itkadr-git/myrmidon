@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
+import type { AttentionFeed, AttentionItem, AttentionSourceKind } from "@myrmidon/shared";
 import {
   ATTENTION_GROUP_BY_KEY,
   ATTENTION_GROUP_BY_OPTIONS,
@@ -188,6 +188,9 @@ describe("sourceMeta + severityStyle", () => {
   it("uses a generic task label for persisted legacy productivity decisions", () => {
     expect(sourceMeta("productivity_review").label).toBe("Task");
   });
+  it("labels overdue issue monitors", () => {
+    expect(sourceMeta("issue_monitor_overdue").label).toBe("Overdue issue monitor");
+  });
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
@@ -201,6 +204,7 @@ describe("sourceMeta + severityStyle", () => {
       "failed_run",
       "budget_alert",
       "agent_error_alert",
+      "issue_monitor_overdue",
     ];
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);

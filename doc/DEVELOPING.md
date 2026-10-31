@@ -23,6 +23,10 @@ GitHub Actions owns `pnpm-lock.yaml`.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
+## Plugin Upgrade Approvals
+
+Plugin upgrades that add capabilities are blocked until an instance administrator reviews them. Call `POST /api/plugins/:pluginId/upgrade` without approval first; the 400 response lists the exact capabilities. Retry with the same list in `approvedCapabilities`. The approval is recorded in the activity log with the actor, timestamp, and capabilities, and the existing plugin configuration is retained. The same flow is documented in [English](plugins/PLUGIN_UPGRADE_APPROVALS.md) and [Russian](../docs/myrmidon/guides/plugin-upgrade-approvals.ru.md).
+
 ## Trusted PR Workflow
 
 The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.

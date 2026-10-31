@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getStuckSignalCounts } from "./stuckSignal";
-import type { AgentListItem, AttentionItem, Issue } from "@paperclipai/shared";
+import type { AgentListItem, AttentionItem, Issue } from "@myrmidon/shared";
 
 describe("getStuckSignalCounts", () => {
   it("counts distinct attention-linked issues and active engineers with no open assignment", () => {
@@ -14,7 +14,9 @@ describe("getStuckSignalCounts", () => {
       { id: "busy", role: "engineer", title: null, status: "active" },
       { id: "idle", role: "engineer", title: null, status: "active" },
       { id: "off", role: "engineer", title: null, status: "paused" },
-      { id: "lead", role: "lead", title: null, status: "active" },
+      { id: "lead", role: "lead", title: "Engineer", status: "active" },
+      { id: "designer", role: "designer", title: "Engineering Designer", status: "active" },
+      { id: "custom", role: "engineering", title: "Engineer", status: "active" },
     ] as AgentListItem[];
     expect(getStuckSignalCounts(items, issues, agents)).toEqual({
       attentionIssuesWithoutMotion: 2,

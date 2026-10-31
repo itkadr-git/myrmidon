@@ -7,9 +7,11 @@
 // the outlet renders the routes. Settings routes get the internal 10-section
 // side panel (screen-map §3.1); the `lang` prop keys the RU display-font
 // switch (UI-0b contract).
+// PluginLauncherProvider is installed at the application root in ui/src/main.tsx.
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useIsMobileViewport } from "../useIsMobileViewport";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { Ui2Rail } from "./Ui2Rail";
 import { Ui2TopBar } from "./Ui2TopBar";
 import { Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
@@ -24,22 +26,28 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
-  const rootProps = lang ? { lang } : {};
+  const ui2I18n = useUi2I18nOptional();
+  const currentLang = lang ?? ui2I18n?.locale;
+  // The app pins `body { overflow: hidden }` (index.css), so the document
+  // never scrolls: the shell has to own the scroll container itself, or any
+  // screen taller than the window is cut off (OPE-5957).
+  const rootProps = currentLang ? { lang: currentLang } : {};
 
   if (isMobile) {
     return (
       <div
         className="myr-ui2"
-        style={{ display: "flex", flexDirection: "column", minHeight: "100dvh" }}
+        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "hidden" }}
         {...rootProps}
       >
         <Ui2PhoneHeader />
-        <main style={{ flex: 1, minWidth: 0, paddingBottom: "var(--myr-phone-tabbar-height)" }}>
+        <main
+          data-testid="ui2-main"
+          style={{ flex: 1, minWidth: 0, overflowY: "auto", paddingBottom: "calc(var(--myr-phone-tabbar-height) + var(--myr-phone-plugins-height, 0px))" }}
+        >
           {content}
         </main>
-        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0 }}>
-          <Ui2PhoneTabBar />
-        </div>
+        <Ui2PhoneTabBar />
       </div>
     );
   }
@@ -47,15 +55,18 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
   return (
     <div
       className="myr-ui2"
-      style={{ display: "flex", minHeight: "100dvh" }}
+      style={{ display: "flex", height: "100dvh", overflow: "hidden" }}
       {...rootProps}
     >
       <Ui2Rail />
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Ui2TopBar />
-        <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex" }}>
           {isSettingsPath(location.pathname) ? <Ui2SettingsSidebar /> : null}
-          <main style={{ flex: 1, minWidth: 0, padding: "var(--myr-space-2)" }}>{content}</main>
+          <main
+            data-testid="ui2-main"
+            style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", padding: "var(--myr-space-2)" }}
+          >{content}</main>
         </div>
       </div>
     </div>

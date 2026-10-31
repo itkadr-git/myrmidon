@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_EXCHANGE_FEED_LIMIT,
   type AgentExchangeFeedSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   mergeAgentExchangeFeedSettingsPatch,
   readAgentExchangeFeedSettings,

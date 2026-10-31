@@ -14,7 +14,7 @@ import {
   issueComments,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -359,5 +359,81 @@ describeEmbeddedPostgres("issue checkout run-context gate and lock-owner status 
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });
+  });
+
+  it("checkout of in_review issue by current review participant preserves in_review status and takes execution lock (OPE-10082)", async () => {
+    const { companyId, agentId, currentRunId } = await seed();
+    const issueId = randomUUID();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "In review task",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+      },
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_review"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const locked = await readLock(issueId);
+    expect(locked?.status).toBe("in_review");
+    expect(locked?.assigneeAgentId).toBe(agentId);
+    expect(locked?.checkoutRunId).toBe(currentRunId);
+    expect(locked?.executionRunId).toBe(currentRunId);
+  });
+
+  it("checkout of in_review issue by a non-review participant is rejected with 409 conflict (OPE-10082)", async () => {
+    const { companyId, agentId } = await seed();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Other Agent",
+      role: "engineer",
+      status: "active",
+    });
+    const issueId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "assignment",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "In review task for agent A",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+      },
+    });
+
+    const res = await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: otherAgentId, expectedStatuses: ["in_review"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toMatch(/Issue is in review and can only be checked out by the current review participant/);
+    const locked = await readLock(issueId);
+    expect(locked?.status).toBe("in_review");
+    expect(locked?.checkoutRunId).toBeNull();
   });
 });

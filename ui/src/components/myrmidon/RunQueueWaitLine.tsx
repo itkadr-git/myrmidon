@@ -4,12 +4,10 @@
 //
 //   1. metadata the server already carries on the comment/run
 //      (`queuePosition`, `queueLength`, `waitReason` — the same contextSnapshot
-//      token the admission sweep writes); the core may publish them.
-//   2. GET /api/heartbeat-runs/:runId — the queued run's own waiting state: its
-//      wait reason and its queue rank (`queuePosition` of `queueLength`), both
-//      written by the priority sweep.
+//      token the admission sweep writes); part A (OPE-5526) publishes them.
+//   2. GET /api/myrmidon/run-queue/position?runId=… (the part A endpoint).
 //
-// When neither answers — the run is not readable, or it left the queue — the
+// When neither answers — part A not deployed, or the run left the queue — the
 // component renders nothing. It never shows a position the UI made up.
 //
 // No react-query here on purpose: the chat thread renders this per-message
@@ -68,8 +66,8 @@ export function RunQueueWaitLine({
   const fromMetadata = runQueuePositionFromMetadata(runId, metadata ?? {});
   const [served, setServed] = useState<RunQueuePosition | null>(null);
   // Fetch while the position is unknown — an old server sends no queue fields
-  // on the comment, and the core may publish the rank either in the
-  // comment metadata; otherwise the run itself is read. A wait reason alone does
+  // on the comment, and part A (OPE-5526) publishes the rank either in the
+  // comment metadata or on the position endpoint. A wait reason alone does
   // not stop the fetch: the position may still arrive.
   const needsFetch = Boolean(runId) && (fromMetadata === null || fromMetadata.position === null);
   useEffect(() => {

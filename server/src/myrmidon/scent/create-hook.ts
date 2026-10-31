@@ -39,7 +39,7 @@ import {
   topScentCasteKey,
   type IssueScent,
   type ScentSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** The subset of issue-create input the hook reads and may amend. */
 export interface ScentCreateHookInput {

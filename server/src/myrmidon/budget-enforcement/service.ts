@@ -14,13 +14,13 @@
 // serialization RUNTIME-LIMITS uses) so two overlapping requests cannot
 // commit their rows in one order and audit them in the other.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   resolveBudgetEnforcement,
   type BudgetEnforcementMode,
   type BudgetEnforcementPatch,
   type ResolvedBudgetEnforcement,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 
 export type BudgetEnforcementView = ResolvedBudgetEnforcement;

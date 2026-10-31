@@ -1,7 +1,7 @@
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { activityLog, issues } from "@paperclipai/db";
+import { activityLog, issues } from "@myrmidon/db";
 import {
   resetCompanyIssueFixtures,
   routeApp,
@@ -50,7 +50,7 @@ describe("stale-block reason reference guard (route level)", () => {
     return blockerId;
   }
 
-  it("rejects a blocked transition without a reason reference with 400 (validation error)", async () => {
+  it("rejects a blocked transition without typed metadata with 422 and missingFields", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
     const issueId = await seedTodoIssue(companyId, "Guarded issue");
 
@@ -58,14 +58,52 @@ describe("stale-block reason reference guard (route level)", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "blocked" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(JSON.stringify(res.body)).toContain("reason reference");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Entering blocked requires complete blockerMetadata");
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
     const after = await ctx.db
       .select({ status: issues.status })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(after.status).toBe("todo");
+  });
+
+  it("accepts a blocked transition without metadata for a board actor", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Board blocked metadata");
+    const issueId = await seedTodoIssue(companyId, "Board blocked issue");
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Waiting for the external check",
+          reasonRef: { kind: "issue", issueId: "00000000-0000-4000-8000-000000000001" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
   });
 
   it("accepts a blocked transition with a non-empty blockedByIssueIds list", async () => {
@@ -75,7 +113,18 @@ describe("stale-block reason reference guard (route level)", () => {
 
     const res = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "blocked", blockedByIssueIds: [blockerId] });
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [blockerId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          blockedByIssueIds: [blockerId],
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const after = await ctx.db
@@ -96,8 +145,16 @@ describe("stale-block reason reference guard (route level)", () => {
         status: "blocked",
         unblockDescriptor: {
           owner: "board",
-          action: "Wait for the scheduled maintenance window",
+         action: "Wait for the scheduled maintenance window",
           reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+        blockerMetadata: {
+          blockReason: "human_decision",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-date",
+          nextCheckAt: "2026-10-10T00:00:00.000Z",
+          timeoutAt: "2026-10-11T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
         },
       });
 

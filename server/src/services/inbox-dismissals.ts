@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { inboxDismissals } from "@paperclipai/db";
-import type { InboxDismissalKind } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { inboxDismissals } from "@myrmidon/db";
+import type { InboxDismissalKind } from "@myrmidon/shared";
 import { invalidateAttentionFeedCache } from "./attention.js";
 
 export function inboxDismissalService(db: Db) {

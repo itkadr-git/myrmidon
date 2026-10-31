@@ -13,13 +13,13 @@
 // - the single-agent primitive reports applied/not-found without throwing.
 
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   updateAgentAllowlistsForCompany,
   updateAgentGatewayKeyWithAllowlist,
 } from "./agent-allowlist-handler.js";
 import type { AgentGatewayKeyDeps, GatewayKeyAdminPort } from "../litellm-keys/agent-keys.js";
-import { agentKeySecretName } from "@paperclipai/shared";
+import { agentKeySecretName } from "@myrmidon/shared";
 
 const ENABLED_ENV = {
   MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000",

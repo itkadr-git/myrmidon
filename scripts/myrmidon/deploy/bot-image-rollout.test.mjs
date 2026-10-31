@@ -148,7 +148,8 @@ case "$*" in
         img="$(jq -r '.image // empty' <<<"$fact")"
         [ -n "$img" ] || img="$(jq -r --arg id "$id" 'first(.[] | select(.id == $id) | .adapterConfig.container.image)' "$SANDBOX/agents.json")"
         st="$(jq -r '.state // "running"' <<<"$fact")"
-        jq -cn --arg img "$img" --arg st "$st" '{container: {state: $st, image: $img}}'; exit 0
+        idle="$(jq -r '.idleStopped // false' <<<"$fact")"
+        jq -cn --arg img "$img" --arg st "$st" --argjson idle "$idle" '{container: {state: $st, image: $img, idleStopped: $idle}}'; exit 0
       fi
     fi
     if [ -e "$SANDBOX/apply-stale-image" ]; then img="stale/img@sha256:0"; else
@@ -162,6 +163,14 @@ case "$*" in
     case "$(cat "$SANDBOX/apply-async")" in
       running) echo '{"status":"running","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":null}' ;;
       failed) echo '{"status":"failed","error":"docker pull exploded","startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
+      leaving-retry)
+        if [ ! -e "$SANDBOX/apply-async-left" ]; then
+          touch "$SANDBOX/apply-async-left"
+          echo '{"status":"failed","error":"Maintenance for this scope is still leaving; retry shortly","startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}'
+        else
+          echo '{"status":"succeeded","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}'
+        fi
+        ;;
       *) echo '{"status":"succeeded","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
     esac
     exit 0 ;;
@@ -442,12 +451,19 @@ function sandbox({
   return { dir, bin, config, dgConfig, stateDir, tokenFile };
 }
 
+function cleanEnv(sb, extra = {}) {
+  const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, ...extra };
+  delete env.BASH_ENV;
+  delete env.ENV;
+  return env;
+}
+
 function run(sb, script, args) {
   const result = spawnSync(
     process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
     [path.join(HERE, script), "--config", sb.config, ...args],
     {
-      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      env: cleanEnv(sb),
       encoding: "utf8",
     },
   );
@@ -587,6 +603,31 @@ describe("bot-image-rollout.sh", () => {
     assert.match(journal(sb), /apply job-1 failed: docker pull exploded/);
   });
 
+  it("async apply: retries when apply job reports maintenance still leaving and switches", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      applyAsync: "leaving-retry",
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /maintenance still leaving; retrying/);
+    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
+  });
+
+  it("rollout of an idle-stopped container verifies as switched", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      containerFacts: {
+        [id]: { state: "stopped", image: `${BOT}@${HERMES}`, idleStopped: true },
+      },
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
+  });
+
   it("async apply: a job that never finishes times out as deferred (the sweep completes it)", () => {
     const sb = sandbox({ applyAsync: "running" });
     const { out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
@@ -689,7 +730,7 @@ describe("check-release-support.sh: bot image repositories", () => {
     const result = spawnSync(
       process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
       [path.join(HERE, "..", "dockergate", "check-release-support.sh"), "--from-tag", VERSION, "--components", "hermes,hermes-dev,hermes-node"],
-      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+      { env: cleanEnv(sb), encoding: "utf8" },
     );
     assert.equal(result.status, 0, result.stderr);
     const out = result.stdout.trim().split("\n");
@@ -703,7 +744,7 @@ describe("check-release-support.sh: bot image repositories", () => {
     const result = spawnSync(
       process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
       [path.join(HERE, "..", "dockergate", "check-release-support.sh"), "--from-tag", VERSION, "--components", "hermes-typo"],
-      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+      { env: cleanEnv(sb), encoding: "utf8" },
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /unknown component: hermes-typo|MYR_COMPONENT_REPOSITORIES\[.*\]: unbound variable/);
@@ -875,7 +916,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     // the switch takes longer.
     const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
     const child = spawn(bash, [path.join(HERE, "bot-image-rollout.sh"), "--config", sb.config, ...ARGS], {
-      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      env: cleanEnv(sb),
     });
     let out = "";
     let flipped = false;

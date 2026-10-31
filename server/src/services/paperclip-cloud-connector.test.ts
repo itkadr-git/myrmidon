@@ -46,6 +46,21 @@ function config() {
 }
 
 describe("Paperclip Cloud connector", () => {
+  it("reads connector settings from canonical names with legacy fallback", () => {
+    const keys = config().config;
+    const canonical = {
+      MYRMIDON_CLOUD_CONNECTOR_INSTANCE_ID: keys.instanceId,
+      MYRMIDON_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: keys.signPrivateKey,
+      MYRMIDON_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: keys.sealPrivateKey,
+      MYRMIDON_CLOUD_CONNECTOR_ENVIRONMENT: keys.environment,
+      MYRMIDON_CLOUD_CONNECTOR_BASE_URL: keys.baseUrl,
+    };
+    expect(paperclipCloudConnectorConfigFromEnv(canonical)).toMatchObject(keys);
+    const legacy = Object.fromEntries(Object.entries(canonical).map(([name, value]) => [name.replace("MYRMIDON_", "PAPERCLIP_"), value]));
+    expect(paperclipCloudConnectorConfigFromEnv(legacy)).toMatchObject(keys);
+    expect(paperclipCloudConnectorConfigFromEnv({ ...legacy, ...canonical })).toMatchObject(keys);
+  });
+
   it("refreshes capabilities after enrollment and rejects stale cache writes", async () => {
     const keys = config().config;
     const env = {
