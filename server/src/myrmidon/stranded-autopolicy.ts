@@ -630,19 +630,24 @@ export function buildStrandedDispositionBlockedPatch(input: {
   now?: Date;
 }): { status: "blocked"; blockerMetadata: IssueBlockerMetadata; unblockDescriptor: IssueUnblockDescriptor } {
   const now = input.now ?? new Date();
+  const timeoutAt = new Date(now.getTime() + STRANDED_DISPOSITION_TIMEOUT_MS).toISOString();
   return {
     status: "blocked",
     blockerMetadata: {
       blockReason: "recovery",
       owner: { agentId: input.ownerAgentId },
       nextCheckAt: new Date(now.getTime() + STRANDED_DISPOSITION_NEXT_CHECK_MS).toISOString(),
-      timeoutAt: new Date(now.getTime() + STRANDED_DISPOSITION_TIMEOUT_MS).toISOString(),
+      timeoutAt,
       escalationPolicy: STRANDED_DISPOSITION_ESCALATION_POLICY,
     },
     unblockDescriptor: {
       owner: { agentId: input.ownerAgentId },
       action: STRANDED_DISPOSITION_ACTION,
-      reasonRef: { kind: "event", eventKey: `stranded.disposition:${input.issueId}` },
+      reasonRef: {
+        kind: "event",
+        eventKey: `stranded.disposition:${input.issueId}`,
+        dueAt: timeoutAt,
+      },
     },
   };
 }

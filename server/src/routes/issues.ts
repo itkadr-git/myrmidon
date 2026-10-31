@@ -384,6 +384,7 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
+import { isRegisteredEventKey } from "../myrmidon/stale-block/index.js";
 import {
   BLOCKED_LOOP_SIGNATURE_KEY,
   blockedLoopMessage,
@@ -14300,6 +14301,36 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (nextStatus === "blocked") {
+        const effectiveDescriptor =
+          descriptor ?? (enteringBlocked ? (existing.unblockDescriptor as typeof descriptor) : null);
+        if (
+          effectiveDescriptor &&
+          typeof effectiveDescriptor === "object" &&
+          effectiveDescriptor.reasonRef &&
+          typeof effectiveDescriptor.reasonRef === "object" &&
+          effectiveDescriptor.reasonRef.kind === "event"
+        ) {
+          const reasonRef = effectiveDescriptor.reasonRef;
+          if (reasonRef.dueAt) {
+            const dueAtMs = Date.parse(reasonRef.dueAt);
+            const maxDueAtMs = Date.now() + 24 * 60 * 60 * 1000;
+            if (!Number.isFinite(dueAtMs) || dueAtMs > maxDueAtMs) {
+              res.status(422).json({
+                error: "reasonRef.dueAt cannot exceed 24 hours (dueAt > 24 ч)",
+              });
+              return;
+            }
+          }
+          if (!isRegisteredEventKey(reasonRef.eventKey ?? "") && !reasonRef.dueAt) {
+            res.status(422).json({
+              error:
+                "Unregistered eventKey requires dueAt (blockedByIssueIds для другой задачи; для внешнего сервиса — dueAt ≤ 2 ч)",
+            });
+            return;
+          }
+        }
+      }
       if (enteringBlocked && blockerMetadataRaw == null) {
         const missingFields = [
           "blockReason",

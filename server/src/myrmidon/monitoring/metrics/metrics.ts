@@ -30,11 +30,9 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { getStaleBlockOldestUnsweptSeconds } from "../../stale-block/index.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
-import { readFeatureAttentionSignals } from "../../features/attention.js";
-import {
-  readSwarmClaimAttentionSignals,
-} from "./swarm-signals.js";
+import { readSwarmClaimAttentionSignals } from "./swarm-signals.js";
 import {
   resolveProcessMetricsSource,
   type ProcessMetricsSample,
@@ -63,7 +61,6 @@ import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-cla
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
-import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -102,20 +99,9 @@ const LATENCY_SAMPLE_CAP = 5000;
  * Metric families the endpoint serves. Every family renders HELP and TYPE
  * once, followed by its samples; unknown label values are escaped.
  */
-import {
-  INTERACTION_METRIC_FAMILIES,
-  collectInteractionMetrics,
-  interactionMetricsReadPort,
-  renderInteractionMetricBlocks,
-  renderInteractionMetrics,
-  type InteractionMetricsReadPort,
-  type InteractionMetricsSnapshot,
-} from "./interaction-metrics.js";
-
 export const METRIC_FAMILIES = [
   "blocked_age_seconds",
   "blocked_missing_fields_total",
-  ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
   "myrmidon_runs_queued_over_30m",
@@ -125,7 +111,6 @@ export const METRIC_FAMILIES = [
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
-  "myrmidon_code_tasks_on_noncoding_roles",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
@@ -239,7 +224,6 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
   }
 }
 export interface MetricsSnapshotFields {
-  interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
   runsActive: number;
@@ -258,7 +242,6 @@ export interface MetricsSnapshotFields {
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
   reviewTasksWithoutReviewer: number;
   blockedTasksWithoutAssignee: number;
-  codeTasksOnNoncodingRoles: number;
   /** Live (not released, not expired) SWARM claims. */
   swarmClaimsActive: number;
   /** All SWARM claim rows ever written. */
@@ -317,6 +300,12 @@ export interface MetricsSnapshotFields {
   capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
   /**
+   * Age in seconds of the blocked task that has gone the longest without being swept
+   * by the stale-block watchdog.
+   */
+  staleBlockOldestUnsweptSeconds?: number | null;
+
+  /**
    * myrmidon(1.6.6-CORPUS-SHADOW A): p50/p95 of the two shadow legs in
    * seconds, read from corpus_shadow_log inside the latency window. Absent
    * or null (flag off — the table stays empty) renders HELP/TYPE with no
@@ -330,7 +319,6 @@ export interface MetricsSnapshotFields {
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
 export interface MetricsSnapshot extends MetricsSnapshotFields {
-  interactions?: InteractionMetricsSnapshot | null;
   /**
    * myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the process role
    * (`api` | `worker` | `all`) of the process that answered this scrape. It is
@@ -351,7 +339,6 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // ---------------------------------------------------------------------------
 
 export interface MetricsCollectorDeps {
-  interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
   now(): Date;
@@ -400,6 +387,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: (() => number | null) | null;
 
   /** myrmidon(1.6.6 CAPACITY-POLICY): optional provider for dashboard metrics. */
   capacityDashboard?: CapacityDashboardMetricsProvider | null;
@@ -584,7 +573,6 @@ async function readAgentErrorSignals(db: Db): Promise<number> {
     signals += readStaleBlockSignals(row.id).length;
     signals += readSwarmClaimAttentionSignals(row.id).length;
   }
-  signals += readFeatureAttentionSignals().length;
   return signals;
 }
 
@@ -635,12 +623,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   const latencyWindowStart = new Date(now.getTime() - deps.latencyWindowSec * 1000);
 
   const errors: string[] = [];
-  let interactions: InteractionMetricsSnapshot | null = null;
-  try {
-    interactions = await collectInteractionMetrics(deps.interactions ?? interactionMetricsReadPort(deps.db), now);
-  } catch {
-    errors.push(INTERACTION_METRIC_FAMILIES.join("|"));
-  }
   async function guarded<T>(family: string, read: () => Promise<T>, fallback: T): Promise<T> {
     try {
       return await read();
@@ -702,11 +684,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   const blockedTasksWithoutAssignee = await guarded(
     "myrmidon_blocked_tasks_without_assignee",
     () => issueStore.countBlockedWithoutAssignee(),
-    0,
-  );
-  const codeTasksOnNoncodingRoles = await guarded(
-    "myrmidon_code_tasks_on_noncoding_roles",
-    () => countCodeTasksOnNoncodingRoles(deps.db),
     0,
   );
   const claimCounters = await guarded(
@@ -788,9 +765,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as FleetSiteMetricsSample | null,
   );
 
+  const staleBlockOldestUnsweptSeconds = await guarded(
+    "stale_block_oldest_unswept_seconds",
+    async () => (deps.staleBlockOldestUnsweptSeconds ? deps.staleBlockOldestUnsweptSeconds() : getStaleBlockOldestUnsweptSeconds()),
+    null as number | null,
+  );
+
   return {
     fields: {
       blocked,
+      staleBlockOldestUnsweptSeconds,
       runsActive: runCounters.active,
       runsQueued: runCounters.queued,
       runsQueuedOver30m: runCounters.queuedOver30m,
@@ -805,7 +789,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       roleQueueTasks: roleQueues,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
-      codeTasksOnNoncodingRoles,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
@@ -835,7 +818,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         },
         null as CapacityDashboardMetricsSnapshot | null,
       ),
-      interactions,
     },
     errors,
     now,
@@ -986,8 +968,6 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
-  blocks.push(...renderInteractionMetricBlocks(snapshot.interactions ?? null, role));
-
   blocks.push(
     familyBlock(
       "myrmidon_runs_active",
@@ -1100,14 +1080,6 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Blocked issues without an assignee.",
       "gauge",
       [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
-    ),
-  );
-  blocks.push(
-    familyBlock(
-      "myrmidon_code_tasks_on_noncoding_roles",
-      "Code tasks of dev projects held by non-coding roles (reviewer, lead, operator).",
-      "gauge",
-      [`myrmidon_code_tasks_on_noncoding_roles{${R}} ${formatSampleValue(snapshot.codeTasksOnNoncodingRoles)}`],
     ),
   );
   blocks.push(
@@ -1429,6 +1401,17 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       fleet ? fleet.movesTotal.map((row) => `myrmidon_fleet_moves_total{result="${escapeLabelValue(row.result)}"} ${formatSampleValue(row.count)}`) : [],
     ),
   );
+
+  if (snapshot.staleBlockOldestUnsweptSeconds !== null && snapshot.staleBlockOldestUnsweptSeconds !== undefined) {
+    blocks.push(
+      familyBlock(
+        "stale_block_oldest_unswept_seconds",
+        "Age in seconds of the blocked task that has gone the longest without being swept by the stale-block watchdog.",
+        "gauge",
+        [`stale_block_oldest_unswept_seconds{${R}} ${formatSampleValue(snapshot.staleBlockOldestUnsweptSeconds)}`],
+      ),
+    );
+  }
 
   blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
   return `${blocks.join("\n\n")}\n`;
