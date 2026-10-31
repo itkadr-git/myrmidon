@@ -24,6 +24,65 @@ const LS_REMOTE = [
 const registry = JSON.parse(fs.readFileSync(REGISTRY, "utf8"));
 const dockerfile = fs.readFileSync(DOCKERFILE, "utf8");
 
+it("registers the async writer-acquire delta with fail-closed markers", () => {
+  const delta = registry.deltas.find((item) => item.id === "19-async-state-db-writer-acquire");
+  assert.ok(delta, "delta 19 must remain registered without renumbering older deltas");
+  assert.equal(delta.patch, "docker/bot-runtime/patches/19-async-writer-acquire.patch");
+  assert.deepEqual(delta.files, [
+    "hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state.py", "hermes_state_registry.py",
+    "gateway/session_db_recovery.py", "gateway/session.py", "gateway/session_persistence.py",
+    "gateway/session_recovery.py", "gateway/session_lifecycle.py", "gateway/session_transcript.py",
+    "gateway/run.py", "gateway/run_startup.py", "gateway/run_shutdown.py",
+    "tests/hermes_state/test_deleted_wal_generation_guard.py",
+    "tests/gateway/test_async_writer_acquire_contract.py",
+  ]);
+  assert.match(delta.reason, /worker-owned async writer acquire/);
+  assert.match(delta.probe.upstreamMarker, /SidecarScanIncompleteError/);
+  assert.match(delta.dropCondition, /complete/);
+  const patch = fs.readFileSync(path.join(ROOT, delta.patch), "utf8");
+  assert.match(patch, /SidecarScanIncompleteError/);
+  assert.match(patch, /DeletedWalGenerationError/);
+  assert.match(patch, /os\.listdir\("\/proc"\)/);
+  assert.match(patch, /incomplete_proc_fd_scan/);
+  assert.match(patch, /partial_proc_fd_scan/);
+  assert.match(patch, /class SidecarScanIncompleteError/);
+  assert.match(patch, /raise SidecarScanIncompleteError/);
+  assert.match(patch, /pytest.raises\(SidecarScanIncompleteError\)/);
+  assert.match(patch, /async def acquire_async/);
+  assert.match(patch, /initialize_writer/);
+  assert.match(patch, /close_all_db_handles_async/);
+});
+
+
+it("maps the accepted writer lifecycle anchors to the pinned Hermes source", async () => {
+  const sha = "f97608f178d1ffeca59860195ab7da295f7c8e5f";
+  const paths = [
+    "gateway/run.py",
+    "gateway/run_startup.py",
+    "gateway/run_shutdown.py",
+    "gateway/run_bootstrap.py",
+    "gateway/run_runtime_init.py",
+  ];
+  const responses = new Map();
+  for (const file of paths) {
+    const response = await fetch(
+      `https://raw.githubusercontent.com/NousResearch/hermes-agent/${sha}/${file}`,
+    );
+    responses.set(file, response.status);
+    if (response.ok && file === "gateway/run.py") {
+      const source = await response.text();
+      for (const symbol of ["class GatewayRunner", "def _init_session_store", "def _init_session_db", "def start_gateway"]) {
+        assert.ok(source.includes(symbol), `pinned run.py must expose ${symbol}`);
+      }
+    }
+  }
+  assert.equal(responses.get("gateway/run.py"), 200);
+  assert.equal(responses.get("gateway/run_startup.py"), 200);
+  assert.equal(responses.get("gateway/run_shutdown.py"), 200);
+  assert.equal(responses.get("gateway/run_bootstrap.py"), 404);
+  assert.equal(responses.get("gateway/run_runtime_init.py"), 404);
+});
+
 const fakeRun = (texts) =>
   run({
     registryPath: REGISTRY,
