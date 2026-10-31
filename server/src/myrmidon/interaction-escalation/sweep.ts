@@ -19,7 +19,6 @@ export interface InteractionEscalationSweepDeps {
     getExperimental?: () => Promise<unknown>;
   };
   now?: () => Date;
-  env?: NodeJS.ProcessEnv;
   enabled?: boolean;
   intervalSec?: number;
   batchSize?: number;
@@ -42,10 +41,8 @@ export interface InteractionEscalationSweepResult {
 }
 
 export async function readInteractionEscalationSettings(
-  deps: Pick<InteractionEscalationSweepDeps, "instanceSettings" | "env" | "enabled" | "intervalSec">,
+  deps: Pick<InteractionEscalationSweepDeps, "instanceSettings" | "enabled" | "intervalSec">,
 ): Promise<InteractionEscalationSettings> {
-  const env = deps.env ?? process.env;
-
   let enabled: boolean | undefined = deps.enabled;
   let intervalSec: number | undefined = deps.intervalSec;
 
@@ -89,25 +86,6 @@ export async function readInteractionEscalationSettings(
         }
       } catch {
         // Fall back gracefully
-      }
-    }
-  }
-
-  if (enabled === undefined) {
-    const rawEnvEnabled = env.MYRMIDON_INTERACTION_ESCALATION_ENABLED?.trim().toLowerCase();
-    if (rawEnvEnabled === "false" || rawEnvEnabled === "0" || rawEnvEnabled === "off") {
-      enabled = false;
-    } else if (rawEnvEnabled === "true" || rawEnvEnabled === "1" || rawEnvEnabled === "on") {
-      enabled = true;
-    }
-  }
-
-  if (intervalSec === undefined) {
-    const rawEnvInterval = env.MYRMIDON_INTERACTION_ESCALATION_INTERVAL_SEC?.trim();
-    if (rawEnvInterval && /^\d+$/.test(rawEnvInterval)) {
-      const parsed = Number(rawEnvInterval);
-      if (parsed > 0) {
-        intervalSec = parsed;
       }
     }
   }

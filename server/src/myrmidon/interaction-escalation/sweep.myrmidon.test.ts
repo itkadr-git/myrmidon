@@ -23,31 +23,14 @@ import {
 
 describe("interaction escalation sweep settings", () => {
   it("defaults to 60s interval and enabled true", async () => {
-    const settings = await readInteractionEscalationSettings({ env: {} });
+    const settings = await readInteractionEscalationSettings({});
     expect(settings.enabled).toBe(true);
     expect(settings.intervalSec).toBe(DEFAULT_INTERACTION_ESCALATION_INTERVAL_SEC);
     expect(settings.intervalSec).toBe(60);
   });
 
-  it("reads settings from env variables", async () => {
-    const disabled = await readInteractionEscalationSettings({
-      env: { MYRMIDON_INTERACTION_ESCALATION_ENABLED: "false" },
-    });
-    expect(disabled.enabled).toBe(false);
-
-    const customInterval = await readInteractionEscalationSettings({
-      env: {
-        MYRMIDON_INTERACTION_ESCALATION_ENABLED: "true",
-        MYRMIDON_INTERACTION_ESCALATION_INTERVAL_SEC: "120",
-      },
-    });
-    expect(customInterval.enabled).toBe(true);
-    expect(customInterval.intervalSec).toBe(120);
-  });
-
   it("reads settings from instanceSettings general", async () => {
     const settings = await readInteractionEscalationSettings({
-      env: {},
       instanceSettings: {
         getGeneral: async () => ({
           interactionEscalation: {
@@ -63,7 +46,6 @@ describe("interaction escalation sweep settings", () => {
 
   it("reads settings from instanceSettings experimental", async () => {
     const settings = await readInteractionEscalationSettings({
-      env: {},
       instanceSettings: {
         getExperimental: async () => ({
           enableInteractionEscalation: false,
@@ -73,11 +55,10 @@ describe("interaction escalation sweep settings", () => {
     expect(settings.enabled).toBe(false);
   });
 
-  it("explicit override wins over instance settings and env", async () => {
+  it("explicit override wins over instance settings", async () => {
     const settings = await readInteractionEscalationSettings({
       enabled: true,
       intervalSec: 45,
-      env: { MYRMIDON_INTERACTION_ESCALATION_ENABLED: "false" },
       instanceSettings: {
         getGeneral: async () => ({
           interactionEscalation: { enabled: false, intervalSec: 90 },
@@ -321,7 +302,7 @@ describeEmbeddedPostgres("interaction escalation sweep integration", () => {
     const cardData = makeCard();
     await db.insert(issueThreadInteractions).values(cardData);
 
-    let currentTime = 1_000_000;
+    let currentTime = Date.now();
     const sweep = createInteractionEscalationSweep({
       db,
       enabled: true,

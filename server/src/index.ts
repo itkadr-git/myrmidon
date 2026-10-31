@@ -1893,7 +1893,7 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(P1.8): periodic escalation sweep for overdue pending interactions
   const interactionEscalationSweep = createInteractionEscalationSweep({
     db: db as any,
-    instanceSettings,
+    instanceSettings: instanceSettingsService(db),
   });
   const scheduleInteractionEscalationSweep = () => {
     if (heartbeatSchedulerStopped) return;
