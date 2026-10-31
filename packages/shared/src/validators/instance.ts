@@ -53,6 +53,8 @@ import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // 
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement modes stored in the same row.
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // myrmidon(F16): the issue-list agent defaults stored in the same general
@@ -275,6 +277,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): the guardrail enforcement modes; absent means default (flag).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
@@ -398,6 +402,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // means the default (10). Same contract comment as the field in
   // packages/shared/src/types/instance.ts.
   blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
+  issueRewakeFreezeThreshold: z.number().int().min(2).max(8).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the

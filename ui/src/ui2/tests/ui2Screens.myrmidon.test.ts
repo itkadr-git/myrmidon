@@ -39,6 +39,59 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(routedPaths.has("/company/settings/not-a-real-page")).toBe(false);
   });
 
+  it("routes every desktop rail navigation item to a unique, non-empty, and valid route", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
+    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+    expect(routeBlock).toBeDefined();
+
+    const appPaths = new Set(
+      [...routeBlock!.matchAll(/path="([^"]+)"/g)].map(([, path]) => `/${path}`),
+    );
+    const ui2Paths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    const routedPaths = new Set([...appPaths, ...ui2Paths]);
+
+    const railItems = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    const railPaths = railItems.map((item) => item.to);
+
+    // 1. None are empty
+    for (const item of railItems) {
+      expect(item.to).toBeTruthy();
+      expect(item.to.startsWith("/")).toBe(true);
+      expect(item.labelKey).toBeTruthy();
+      expect(item.icon).toBeDefined();
+    }
+
+    // 2. No duplicates across rail navigation
+    expect(new Set(railPaths).size).toBe(railPaths.length);
+
+    // 3. Every destination resolves in board routes or UI2 route table
+    for (const to of railPaths) {
+      expect(routedPaths.has(to), `rail route ${to} resolves`).toBe(true);
+    }
+  });
+
+  it("traverses the complete nav model verifying no empty or duplicate destinations across groups", () => {
+    expect(UI2_NAV_GROUPS.length).toBeGreaterThan(0);
+    const visitedTos = new Set<string>();
+
+    for (const group of UI2_NAV_GROUPS) {
+      expect(group.items.length).toBeGreaterThan(0);
+      for (const item of group.items) {
+        expect(item.to).toBeTruthy();
+        expect(visitedTos.has(item.to), `duplicate destination ${item.to}`).toBe(false);
+        visitedTos.add(item.to);
+      }
+    }
+
+    // Settings sections also have no duplicate or empty destinations
+    const settingsPaths = UI2_SETTINGS_SECTIONS.map((s) => s.path);
+    expect(new Set(settingsPaths).size).toBe(settingsPaths.length);
+    for (const path of settingsPaths) {
+      expect(path).toBeTruthy();
+      expect(path.startsWith("/company/settings")).toBe(true);
+    }
+  });
+
   it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
@@ -54,6 +107,17 @@ describe("myrmidon(UI2) route table integration", () => {
       "settings-runs-queue",
       "settings-system",
     ]);
+  });
+
+  it("preserves full Secrets screen under UI2 without shadowing by a placeholder route", () => {
+    // Under UI2, the secrets section must NOT be shadowed by UI2_ROUTE_TABLE placeholders,
+    // allowing boardRoutes to serve the full Secrets screen with both instance secret references
+    // and standard secret management tabs.
+    const secretsUi2Route = UI2_ROUTE_TABLE.find((entry) => entry.path === "company/settings/secrets");
+    expect(secretsUi2Route).toBeUndefined();
+
+    const secretsSection = UI2_SETTINGS_SECTIONS.find((section) => section.key === "secrets");
+    expect(secretsSection?.path).toBe("/company/settings/secrets");
   });
 
   it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {

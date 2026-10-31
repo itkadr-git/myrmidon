@@ -90,6 +90,7 @@ export const scentSettingsSchema = z.object({
     .max(1)
     .default(DEFAULT_SCENT_CONSEQUENCES_BONUS_THRESHOLD),
   model: z.string().min(1).default(DEFAULT_SCENT_CLASSIFIER_MODEL),
+  apiKeySecretName: z.string().nullable().optional().default(null),
   classifierTimeoutSec: z
     .number()
     .int()

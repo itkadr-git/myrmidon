@@ -40,6 +40,8 @@ export interface HindsightPluginConfig {
   recallOnRunStart?: string;
   bankByAgentId?: Record<string, string>;
   enabledAgentIds?: string[];
+  accessMode?: "all" | "roles" | "selected";
+  enabledRoles?: string[];
 }
 
 const CLOSED_AGENT_RETAIN_MESSAGE = "Retain skipped — agent not mapped to a bank";
@@ -145,7 +147,17 @@ async function getConfig(ctx: { config: { get(companyId?: string): Promise<Recor
   return (await ctx.config.get(companyId)) as HindsightPluginConfig & Record<string, unknown>;
 }
 
-function isAgentEnabled(config: HindsightPluginConfig, agentId: string | null | undefined): boolean {
+export function isAgentEnabled(
+  config: HindsightPluginConfig,
+  agentId: string | null | undefined,
+  agentRole?: string | null,
+): boolean {
+  if (config.accessMode === "all") return true;
+  if (config.accessMode === "roles" || (config.enabledRoles && config.enabledRoles.length > 0)) {
+    if (agentRole && config.enabledRoles?.includes(agentRole)) return true;
+    if (agentId && config.enabledAgentIds?.includes(agentId)) return true;
+    return false;
+  }
   const allowlist = config.enabledAgentIds;
   if (!allowlist || allowlist.length === 0) return true;
   return !!agentId && allowlist.includes(agentId);
@@ -185,7 +197,8 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
         const companyId = event.companyId;
         if (!agentId || !companyId) return;
         const config = await getConfig(ctx, companyId);
-        if (!isAgentEnabled(config, agentId)) return;
+        const resolution = await resolveForAgent(agentId, companyId);
+        if (!isAgentEnabled(config, agentId, resolution?.agentRole)) return;
         if (!issueId) return;
 
         const recallMode = normalizeRecallMode(config.recallOnRunStart);
@@ -210,7 +223,6 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
           }
         }
 
-        const resolution = await resolveForAgent(agentId, companyId);
         if (!resolution) {
           ctx.logger.warn(CLOSED_AGENT_RECALL_MESSAGE, { runId, agentId });
           return;
@@ -295,14 +307,14 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
           ctx.logger.info("Skipping retain — no agent attribution available", { commentId, issueId });
           return;
         }
-        if (!isAgentEnabled(config, bankAgentId)) {
-          ctx.logger.debug("Skipping retain — agent not in enabled list", { commentId, agentId: bankAgentId });
-          return;
-        }
 
         const resolution = await resolveForAgent(bankAgentId, companyId);
         if (!resolution) {
           ctx.logger.warn(CLOSED_AGENT_RETAIN_MESSAGE, { commentId, agentId: bankAgentId });
+          return;
+        }
+        if (!isAgentEnabled(config, bankAgentId, resolution.agentRole)) {
+          ctx.logger.debug("Skipping retain — agent not in enabled list/roles", { commentId, agentId: bankAgentId });
           return;
         }
 
@@ -378,12 +390,12 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
         // its author's memory lives.
         for (const [bankAgentId, group] of groupByBankAgent(entries)) {
           try {
-            if (!isAgentEnabled(config, bankAgentId)) continue;
             const resolution = await resolveForAgent(bankAgentId, companyId);
             if (!resolution) {
               ctx.logger.warn(CLOSED_AGENT_RETAIN_MESSAGE, { runId, agentId: bankAgentId });
               continue;
             }
+            if (!isAgentEnabled(config, bankAgentId, resolution.agentRole)) continue;
             const client = await makeClient(config);
             await client.retain(resolution.bankId, buildDigestDocument(runId, group), runDigestDocumentId(runId), {
               kind: "run-digest",
@@ -426,11 +438,8 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
         async (params, runCtx) => {
           const { query } = (params ?? {}) as { query?: string };
           const config = await getConfig(ctx, runCtx.companyId);
-          if (!isAgentEnabled(config, runCtx.agentId)) {
-            return { content: "No memories available for this agent." };
-          }
           const resolution = await resolveForAgent(runCtx.agentId, runCtx.companyId);
-          if (!resolution) {
+          if (!resolution || !isAgentEnabled(config, runCtx.agentId, resolution.agentRole)) {
             return { content: "No memories available for this agent." };
           }
           const cached = await ctx.state.get({
@@ -443,7 +452,15 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
           }
           try {
             const client = await makeClient(config);
+            const start = Date.now();
             const response = await client.recall(resolution.bankId, query ?? "", config.recallBudget ?? "mid");
+            const durationMs = Date.now() - start;
+            ctx.logger.info("Recalled memories for run", {
+              runId: runCtx.runId,
+              bankId: resolution.bankId,
+              durationMs,
+              resultCount: response.results?.length ?? 0,
+            });
             const memories = formatMemories(response.results ?? []);
             return { content: memories || "No relevant memories found." };
           } catch (err) {
@@ -468,11 +485,8 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
         async (params, runCtx) => {
           const { content } = (params ?? {}) as { content?: string };
           const config = await getConfig(ctx, runCtx.companyId);
-          if (!isAgentEnabled(config, runCtx.agentId)) {
-            return { content: CLOSED_AGENT_RETAIN_MESSAGE };
-          }
           const resolution = await resolveForAgent(runCtx.agentId, runCtx.companyId);
-          if (!resolution) {
+          if (!resolution || !isAgentEnabled(config, runCtx.agentId, resolution.agentRole)) {
             return { content: CLOSED_AGENT_RETAIN_MESSAGE };
           }
           try {

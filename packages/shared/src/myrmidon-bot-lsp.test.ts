@@ -1,13 +1,17 @@
 // myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role and card.
 import { describe, expect, it } from "vitest";
 import {
+  adaptiveTsServerMemoryMb,
   botLspHermesBlock,
   botLspSettingsSchema,
+  DEFAULT_BOT_LSP_TSSERVER_MEMORY_MB,
   effectiveBotLspSettings,
   isBotLspCodingRole,
+  maxTsServerMemoryMb,
   patchBotLspSettingsSchema,
   readBotLspCard,
   resolveBotLsp,
+  resolveBotLspHeap,
 } from "./myrmidon-bot-lsp.js";
 
 describe("myrmidon(BOT-LSP-DEFAULTS) resolveBotLsp", () => {
@@ -67,7 +71,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) effectiveBotLspSettings", () => {
       nonCodingMode: "off",
       idleTimeoutSeconds: 120,
       tsserverMemoryMb: 2048,
-      excludeRoots: [],
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
     });
   });
 });
@@ -80,17 +84,35 @@ describe("myrmidon(BOT-LSP-DEFAULTS) botLspHermesBlock", () => {
   it("limited: one tsserver per worktree, no typings acquisition, heap cap, short idle timeout", () => {
     expect(botLspHermesBlock("limited", undefined)).toEqual({
       enabled: true,
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
       idleTimeout: 120,
       servers: {
         typescript: {
           initialization_options: {
             disableAutomaticTypingAcquisition: true,
-            maxTsServerMemory: 1024,
+            maxTsServerMemory: 409,
             tsserver: { useSyntaxServer: "never" },
           },
         },
       },
     });
+  });
+
+  it("limited adapts default heap to container memory", () => {
+    const block768 = botLspHermesBlock("limited", undefined, 768);
+    expect(block768?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(307);
+
+    const block1024 = botLspHermesBlock("limited", undefined, 1024);
+    expect(block1024?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(409);
+
+    const block2048 = botLspHermesBlock("limited", undefined, 2048);
+    expect(block2048?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(819);
+  });
+
+  it("limited safely disables LSP when container memory is unknown or insufficient", () => {
+    expect(botLspHermesBlock("limited", undefined, null)).toEqual({ enabled: false });
+    expect(botLspHermesBlock("limited", undefined, undefined)).toBeDefined();
+    expect(botLspHermesBlock("limited", undefined, 512)).toEqual({ enabled: false });
   });
 
   it("limited takes the instance idle timeout, memory cap and exclusions", () => {
@@ -99,9 +121,88 @@ describe("myrmidon(BOT-LSP-DEFAULTS) botLspHermesBlock", () => {
     expect(block?.servers?.typescript?.initialization_options.maxTsServerMemory).toBe(2048);
   });
 
-  it("full writes nothing unless there are exclusions", () => {
-    expect(botLspHermesBlock("full", undefined)).toBeNull();
+  it("full keeps exclusions when set and applies default exclusions", () => {
+    expect(botLspHermesBlock("full", undefined)).toEqual({
+      enabled: true,
+      excludeRoots: ["**/node_modules/**", "**/dist/**"],
+    });
     expect(botLspHermesBlock("full", { excludeRoots: ["/srv/big"] })).toEqual({ enabled: true, excludeRoots: ["/srv/big"] });
+  });
+});
+
+describe("myrmidon(BOT-LSP-DEFAULTS) adaptiveTsServerMemoryMb and resolveBotLspHeap", () => {
+  it("computes adaptive heap at 40% cap and reserves 60% for Hermes/botd", () => {
+    expect(adaptiveTsServerMemoryMb(1024)).toBe(409);
+    expect(adaptiveTsServerMemoryMb(768)).toBe(307);
+    expect(adaptiveTsServerMemoryMb(1536)).toBe(614);
+    expect(adaptiveTsServerMemoryMb(2048)).toBe(819);
+  });
+
+  it("returns null for insufficient or unknown container memory", () => {
+    expect(adaptiveTsServerMemoryMb(512)).toBeNull();
+    expect(adaptiveTsServerMemoryMb(639)).toBeNull();
+    expect(adaptiveTsServerMemoryMb(640)).toBe(256);
+    expect(adaptiveTsServerMemoryMb(null)).toBeNull();
+    expect(adaptiveTsServerMemoryMb(undefined)).toBeNull();
+    expect(adaptiveTsServerMemoryMb(0)).toBeNull();
+    expect(adaptiveTsServerMemoryMb(-100)).toBeNull();
+  });
+
+  it("resolveBotLspHeap handles unknown memory with safe refusal", () => {
+    expect(resolveBotLspHeap(null)).toEqual({ ok: false, reason: "unknown_memory" });
+    expect(resolveBotLspHeap(undefined)).toEqual({ ok: false, reason: "unknown_memory" });
+    expect(resolveBotLspHeap(0)).toEqual({ ok: false, reason: "unknown_memory" });
+  });
+
+  it("resolveBotLspHeap handles insufficient memory with safe refusal", () => {
+    expect(resolveBotLspHeap(512)).toEqual({
+      ok: false,
+      reason: "insufficient_memory",
+      cap: 204,
+      containerMemoryMb: 512,
+    });
+  });
+
+  it("resolveBotLspHeap provides adaptive default when heap is unconfigured", () => {
+    expect(resolveBotLspHeap(1024)).toEqual({
+      ok: true,
+      memoryMb: 409,
+      clamped: false,
+      adaptive: true,
+      cap: 409,
+      containerMemoryMb: 1024,
+    });
+    expect(resolveBotLspHeap(768)).toEqual({
+      ok: true,
+      memoryMb: 307,
+      clamped: false,
+      adaptive: true,
+      cap: 307,
+      containerMemoryMb: 768,
+    });
+  });
+
+  it("resolveBotLspHeap respects configured heap within cap", () => {
+    expect(resolveBotLspHeap(1024, 300)).toEqual({
+      ok: true,
+      memoryMb: 300,
+      clamped: false,
+      adaptive: false,
+      cap: 409,
+      containerMemoryMb: 1024,
+    });
+  });
+
+  it("resolveBotLspHeap clamps configured heap exceeding cap with clamped flag", () => {
+    expect(resolveBotLspHeap(768, 409)).toEqual({
+      ok: true,
+      memoryMb: 307,
+      clamped: true,
+      adaptive: false,
+      configured: 409,
+      cap: 307,
+      containerMemoryMb: 768,
+    });
   });
 });
 
@@ -113,7 +214,7 @@ describe("myrmidon(BOT-LSP-DEFAULTS) schemas", () => {
         codingMode: "limited",
         nonCodingMode: "off",
         idleTimeoutSeconds: 120,
-        tsserverMemoryMb: 1024,
+        tsserverMemoryMb: 384,
         excludeRoots: ["/srv/big"],
       }).success,
     ).toBe(true);
