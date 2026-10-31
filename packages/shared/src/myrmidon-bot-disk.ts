@@ -729,10 +729,11 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
 /** The 1.6.6-SETTINGS-UI-B workspace-lifecycle keys that are set, in canonical form. */
 function optionalWorkspaceLifecycleKeys(
   values: Partial<BotDiskSettings>,
-): Pick<BotDiskSettings, "graceClosingMinutes" | "scratchTtlHours" | "partitionThresholdPercent" | "partitionRefuseOpenPercent" | "partitionCriticalPercent"> {
+): Pick<BotDiskSettings, "graceClosingMinutes" | "scratchTtlHours" | "sessionRetentionDays" | "partitionThresholdPercent" | "partitionRefuseOpenPercent" | "partitionCriticalPercent"> {
   return {
     ...(values.graceClosingMinutes !== undefined ? { graceClosingMinutes: values.graceClosingMinutes } : {}),
     ...(values.scratchTtlHours !== undefined ? { scratchTtlHours: values.scratchTtlHours } : {}),
+    ...(values.sessionRetentionDays !== undefined ? { sessionRetentionDays: values.sessionRetentionDays } : {}),
     ...(values.partitionThresholdPercent !== undefined ? { partitionThresholdPercent: values.partitionThresholdPercent } : {}),
     ...(values.partitionRefuseOpenPercent !== undefined ? { partitionRefuseOpenPercent: values.partitionRefuseOpenPercent } : {}),
     ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
@@ -765,6 +766,7 @@ export function mergeBotDiskSettings(
     ...optionalWorkspaceLifecycleKeys({
       graceClosingMinutes: pick(patch.graceClosingMinutes, base.graceClosingMinutes),
       scratchTtlHours: pick(patch.scratchTtlHours, base.scratchTtlHours),
+      sessionRetentionDays: pick(patch.sessionRetentionDays, base.sessionRetentionDays),
       partitionThresholdPercent: pick(patch.partitionThresholdPercent, base.partitionThresholdPercent),
       partitionRefuseOpenPercent: pick(patch.partitionRefuseOpenPercent, base.partitionRefuseOpenPercent),
       partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
