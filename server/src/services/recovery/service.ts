@@ -4440,6 +4440,74 @@ export function recoveryService(
     // escalation keeps the stage (participant, return assignee) as it is.
     if (await deferStalledExecutionReview(input)) return input.issue;
 
+    const openPrProduct = await db.query.issueWorkProducts.findFirst({
+      where: and(
+        eq(issueWorkProducts.issueId, input.issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.status, [
+          "open",
+          "active",
+          "ready_for_review",
+          "approved",
+        ]),
+      ),
+    });
+
+    // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
+    // transitions to in_review at the current assignee (review in parallel with CI),
+    // instead of blocking.
+    if (
+      openPrProduct &&
+      (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
+    ) {
+      const prCi = await resolvePrCiState(
+        input.issue.companyId,
+        openPrProduct,
+        deps.prHeadResolver ?? defaultPrHeadResolver,
+      );
+      const existingReviewer = getReviewerParticipantAgentId(input.issue);
+      let patchExecutionPolicy: unknown = undefined;
+      let reviewerAgentId = existingReviewer;
+      if (!reviewerAgentId) {
+        reviewerAgentId = await pickReviewerForIssue(db, input.issue, openPrProduct);
+        if (reviewerAgentId) {
+          patchExecutionPolicy = {
+            mode: "normal",
+            stages: [
+              {
+                type: "review",
+                approvalsNeeded: 1,
+                participants: [{ type: "agent", agentId: reviewerAgentId }],
+              },
+            ],
+          };
+        }
+      }
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "in_review" as const,
+        ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
+      } as any);
+      if (prCi.ci === "green" && reviewerAgentId) {
+        await deps.enqueueWakeup(reviewerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: {
+            issueId: input.issue.id,
+            headSha: prCi.headSha,
+            ci: "green",
+          },
+          idempotencyKey: `ci_green:${input.issue.id}:${prCi.headSha ?? "green"}`,
+          contextSnapshot: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: "execution_review_requested",
+          },
+        }).catch(() => null);
+      }
+      return updated;
+    }
+
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -4586,73 +4654,6 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
-      const openPrProduct = await db.query.issueWorkProducts.findFirst({
-        where: and(
-          eq(issueWorkProducts.issueId, input.issue.id),
-          eq(issueWorkProducts.type, "pull_request"),
-          inArray(issueWorkProducts.status, [
-            "open",
-            "active",
-            "ready_for_review",
-            "approved",
-          ]),
-        ),
-      });
-
-      // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
-      // transitions to in_review at the current assignee (review in parallel with CI),
-      // instead of blocking.
-      if (
-        openPrProduct &&
-        (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
-      ) {
-        const prCi = await resolvePrCiState(
-          input.issue.companyId,
-          openPrProduct,
-          deps.prHeadResolver ?? defaultPrHeadResolver,
-        );
-        const existingReviewer = getReviewerParticipantAgentId(input.issue);
-        let patchExecutionPolicy: unknown = undefined;
-        let reviewerAgentId = existingReviewer;
-        if (!reviewerAgentId) {
-          reviewerAgentId = await pickReviewerForIssue(db, input.issue, openPrProduct);
-          if (reviewerAgentId) {
-            patchExecutionPolicy = {
-              mode: "normal",
-              stages: [
-                {
-                  type: "review",
-                  approvalsNeeded: 1,
-                  participants: [{ type: "agent", agentId: reviewerAgentId }],
-                },
-              ],
-            };
-          }
-        }
-        const updated = await issuesSvc.update(input.issue.id, {
-          status: "in_review" as const,
-          ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
-        } as any);
-        if (prCi.ci === "green" && reviewerAgentId) {
-          await deps.enqueueWakeup(reviewerAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "execution_review_requested",
-            payload: {
-              issueId: input.issue.id,
-              headSha: prCi.headSha,
-              ci: "green",
-            },
-            idempotencyKey: `ci_green:${input.issue.id}:${prCi.headSha ?? "green"}`,
-            contextSnapshot: {
-              issueId: input.issue.id,
-              taskId: input.issue.id,
-              wakeReason: "execution_review_requested",
-            },
-          }).catch(() => null);
-        }
-        return updated;
-      }
 
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
