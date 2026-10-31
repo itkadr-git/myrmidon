@@ -29,6 +29,16 @@ vi.mock("../useUi2Status", () => ({
   useUi2AttentionCount: () => null,
 }));
 
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: () => ({ slots: [] }),
+  PluginSlotMount: () => null,
+}));
+
+vi.mock("@/plugins/launchers", () => ({
+  usePluginLaunchers: () => ({ launchers: [] }),
+  PluginLauncherOutlet: () => null,
+}));
+
 let container: HTMLDivElement;
 let root: Root | null = null;
 
