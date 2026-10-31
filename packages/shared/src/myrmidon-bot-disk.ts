@@ -622,7 +622,7 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.sharedBotRuntimePath === "string") {
     out.sharedBotRuntimePath = parsed.data.sharedBotRuntimePath;
   }
-  if (Array.isArray(parsed.data.gitMirrorRepos)) {
+  if (Array.isArray(parsed.data.gitMirrorRepos) && parsed.data.gitMirrorRepos.length > 0) {
     out.gitMirrorRepos = parsed.data.gitMirrorRepos;
   }
   if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
@@ -697,7 +697,7 @@ export function resolveBotDiskSettings(options: {
 /** The 1.6.2-BOT-DISK-C keys that are set, in canonical form (an empty list is absent). */
 function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSettings> {
   return {
-    ...(Array.isArray(values.gitMirrorRepos) ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
+    ...(values.gitMirrorRepos && values.gitMirrorRepos.length > 0 ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
     ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
     ...(values.pnpmStoreDir !== undefined ? { pnpmStoreDir: values.pnpmStoreDir } : {}),
     ...(values.pnpmImportMethod !== undefined ? { pnpmImportMethod: values.pnpmImportMethod } : {}),

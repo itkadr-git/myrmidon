@@ -232,7 +232,7 @@ export type WsDesiredPrState = z.infer<typeof wsDesiredPrStateSchema>;
 
 export const wsDesiredWorkspaceSchema = z.object({
   key: z.string().min(1),
-  id: z.string().uuid().optional(),
+  id: z.string().min(1).optional(),
   repo: myrWsRepoNameSchema.optional(),
   state: wsDesiredWorkspaceStateSchema,
   since: z.string().datetime({ offset: false }),
@@ -244,7 +244,7 @@ export type WsDesiredWorkspace = z.infer<typeof wsDesiredWorkspaceSchema>;
 export const wsClosedKeyObjectSchema = z.object({
   key: myrWsIssueKeySchema,
   closedAt: z.string().datetime({ offset: false }).optional(),
-  issueId: z.string().uuid().optional(),
+  issueId: z.string().min(1).optional(),
 });
 export type WsClosedKeyObject = z.infer<typeof wsClosedKeyObjectSchema>;
 

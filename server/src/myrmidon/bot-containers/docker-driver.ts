@@ -72,7 +72,7 @@ import { ISOLATED_LAYOUT, type ScopeLayout } from "@myrmidon/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
 import { prepareBotSharedMount, resolveSpecSharedMount } from "./shared-mount.js"; // myrmidon(1.6.1-BOT-DISK-D)
-import { botHasGitAlternates } from "./bot-disk-service.js"; // myrmidon(1.6.6-OPE-9673)
+import { botHasGitAlternates } from "./bot-disk-alternates.js"; // myrmidon(1.6.6-OPE-9673)
 import {
   assertBotRuntimeContract,
   botVolumeLayout,
