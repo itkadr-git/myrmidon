@@ -3974,6 +3974,8 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
 
     expect(result.resultJson?.cooldown).toBe(true);
     expect(result.errorFamily).toBe("provider_quota");
-    expect(result.retryNotBefore).toBeUndefined();
+    // mapFinalResultForTest preserves the adapter's null (no structured hint),
+    // distinct from undefined: null says "cooldown confirmed, no retry hint".
+    expect(result.retryNotBefore).toBeNull();
   });
 });

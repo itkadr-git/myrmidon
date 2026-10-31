@@ -2153,6 +2153,11 @@ export function errorResult(
     nestedError?.code === "rate_limit_error" ||
     nestedError?.type === "rate_limit_error" ||
     (errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage));
+  // A plain HTTP 429 is rate limiting, not necessarily a deployment pool
+  // cooldown. Only the explicit LiteLLM deployment signature maps to the
+  // provider-quota family; generic 429s remain transient_upstream.
+  const isDeploymentCooldown =
+    errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
   const rawRetryNotBefore =
     hermesError.retryNotBefore ??
@@ -2166,8 +2171,13 @@ export function errorResult(
   const parsedRetryNotBefore = parseRetryAfterToIso(rawRetryNotBefore);
 
   const retryNotBefore = parsedRetryNotBefore ?? undefined;
+  // Provider-quota (deployment cooldown) must outrank the generic 429
+  // classification, or every structured cooldown arriving on HTTP 429 would
+  // be misfiled as transient_upstream.
   const errorFamily =
-    classified?.family ??
+    (isDeploymentCooldown || (isCooldown && !hermesError.status)
+      ? "provider_quota"
+      : classified?.family) ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
 
   const modelResponseStarted =
