@@ -123,6 +123,7 @@ import {
 } from "@myrmidon/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listGatewayModels, refreshGatewayModels } from "./hermes-gateway-models.js";
 import {
   execute as piExecute,
   listPiSkills,

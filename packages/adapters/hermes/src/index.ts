@@ -35,11 +35,6 @@ export {
   label as hermesGatewayLabel,
   models as hermesGatewayModels,
   type as hermesGatewayType,
-  listGatewayModels,
-  refreshGatewayModels,
-  resetGatewayModelsCacheForTests,
-  resolveGatewayBaseUrl,
-  resolveGatewayApiKey,
 } from "./gateway/index.js";
 
 /**
