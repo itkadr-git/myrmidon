@@ -27,6 +27,13 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
+// resolveChunkedImportZip takes the threshold as its second argument. The tests
+// that need a package "past the threshold" pass this small one, so their fixtures
+// are about a megabyte instead of 40-64 MB: building, deflating, writing and
+// re-reading tens of megabytes took 2-4.5 s per test on a GitHub runner, against
+// the 5 s default timeout. The decision under test is the same comparison.
+const SMALL_THRESHOLD_BYTES = 1024 * 1024;
+
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -123,13 +130,14 @@ describe("resolveChunkedImportZip", () => {
   it("takes the chunked path for a small zip whose entries inflate past the threshold", async () => {
     const dir = await makeTempDir();
     const zipPath = path.join(dir, "dense-package.zip");
-    // ~64 MB of repetitive text DEFLATEs to a tiny file: far under the raw
-    // 48 MB threshold, but the inline body would carry the inflated entries,
-    // so the estimated request size sends the zip down the chunked path.
-    const zipBytes = buildDeflateZip("dense-package/NOTES.md", "paperclip agent docs\n".repeat(3_200_000));
+    // ~1.3 MB of repetitive text DEFLATEs to a tiny file: far under the raw
+    // threshold, but the inline body would carry the inflated entries, so the
+    // estimated request size sends the zip down the chunked path.
+    const zipBytes = buildDeflateZip("dense-package/NOTES.md", "paperclip agent docs\n".repeat(65_000));
+    expect(zipBytes.length).toBeLessThan(SMALL_THRESHOLD_BYTES);
     await writeFile(zipPath, zipBytes);
 
-    const resolved = await resolveChunkedImportZip(zipPath);
+    const resolved = await resolveChunkedImportZip(zipPath, SMALL_THRESHOLD_BYTES);
     expect(resolved).not.toBeNull();
     expect(resolved!.rootPath).toBe("dense-package");
     expect(sha256Hex(resolved!.zipBytes)).toBe(sha256Hex(zipBytes));
@@ -189,15 +197,14 @@ describe("resolveChunkedImportZip", () => {
     const packageDir = path.join(dir, "binary-package");
     await mkdir(path.join(packageDir, "blobs"), { recursive: true });
     await writeFile(path.join(packageDir, "COMPANY.md"), "# Company\n");
-    // 40 MB of raw blob bytes: under the 48 MB raw threshold, but the inline
-    // JSON body would carry them base64-inflated (~53 MB) — past the
-    // threshold on the estimated request size, so the zip travels chunked.
-    await writeFile(
-      path.join(packageDir, "blobs", "9a1b2c3d"),
-      Buffer.alloc(40 * 1024 * 1024, 3),
-    );
+    // ~0.85 MB of raw blob bytes: under the raw threshold, but the inline JSON
+    // body would carry them base64-inflated (~1.1 MB) — past the threshold on the
+    // estimated request size, so the zip travels chunked.
+    const blobBytes = Math.floor((SMALL_THRESHOLD_BYTES * 5) / 6);
+    expect(blobBytes).toBeLessThan(SMALL_THRESHOLD_BYTES);
+    await writeFile(path.join(packageDir, "blobs", "9a1b2c3d"), Buffer.alloc(blobBytes, 3));
 
-    const resolved = await resolveChunkedImportZip(packageDir);
+    const resolved = await resolveChunkedImportZip(packageDir, SMALL_THRESHOLD_BYTES);
     expect(resolved).not.toBeNull();
     expect(resolved!.rootPath).toBe("binary-package");
     const archive = await readZipArchive(resolved!.zipBytes);
@@ -227,10 +234,10 @@ describe("resolveChunkedImportZip", () => {
     await writeFile(path.join(packageDir, ".git", "HEAD"), "ref: refs/heads/main\n");
     await writeFile(
       path.join(packageDir, "blobs", "4f2d1c9a"),
-      Buffer.alloc(CHUNKED_IMPORT_THRESHOLD_BYTES + 1024, 9),
+      Buffer.alloc(SMALL_THRESHOLD_BYTES + 1024, 9),
     );
 
-    const resolved = await resolveChunkedImportZip(packageDir);
+    const resolved = await resolveChunkedImportZip(packageDir, SMALL_THRESHOLD_BYTES);
     expect(resolved).not.toBeNull();
     expect(resolved!.rootPath).toBe("big-package");
 
