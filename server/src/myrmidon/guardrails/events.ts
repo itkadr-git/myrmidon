@@ -20,6 +20,7 @@ import type { Db } from "@myrmidon/db";
 import { guardrailEvents } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { maskSecretsInText } from "../secret-masking.js";
+import { guardrailTriggerMetrics } from "./metrics.js";
 import {
   GUARDRAIL_CATEGORIES,
   detectGuardrailHits,
@@ -103,6 +104,11 @@ export function sanitizeGuardrailSnippet(snippet: string | null | undefined): st
 /** FROZEN for part B. Inserts one event row and one activity-log line. */
 export async function recordGuardrailEvent(db: Db, input: RecordGuardrailEventInput): Promise<{ id: string }> {
   const maskedSnippet = sanitizeGuardrailSnippet(input.snippet);
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): count the trigger for Prometheus —
+  // one line, best-effort: a metrics failure can never break journaling.
+  // The base layer is flag-only; mask/block stay zero until the modes epic
+  // (OPE-4167, PR #513) lands and passes its enforcement mode through here.
+  guardrailTriggerMetrics.record(input.kind, "flag");
   const [row] = await db
     .insert(guardrailEvents)
     .values({
