@@ -323,7 +323,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
         deps.store.loadByAgent(companyId),
       ]);
-      const candidates = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
+      const candidates = agentRows.map((agent) => ({
+        id: agent.id,
+        role: agent.role,
+        model: agent.model ?? null,
+        load: load.get(agent.id) ?? 0,
+      }));
       managerChains.set(engineerId, candidates);
       return candidates;
     };
@@ -337,6 +342,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         id: agent.id,
         role: agent.role,
         invokable: agent.invokable ?? true,
+        model: agent.model ?? null,
         load: load.get(agent.id) ?? 0,
       }));
       return reviewerPool;
@@ -371,10 +377,14 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           result.failed += 1;
           continue;
         }
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
           candidates,
           excluded: excludedReviewerIds(row),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);
@@ -411,6 +421,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         continue;
       }
       try {
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
           candidates: await pool(),
           excluded: excludedReviewerIds(row, [
@@ -419,6 +432,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
             ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
           ]),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);

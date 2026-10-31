@@ -192,6 +192,7 @@ import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js"
 import { licensingInstallIdRoutes } from "./myrmidon/licensing-install-id/routes.js";
 import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
+import { myrmidonLitellmChannelsRoutes } from "./myrmidon/litellm-channels/index.js"; // myrmidon(1.6.7 OPE-9854)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
@@ -1208,6 +1209,7 @@ export async function createApp(
   api.use(licensingInstallIdRoutes(installIdProviderFor(db))); // myrmidon(LIC-ID-1): instance install ID
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
+  api.use(myrmidonLitellmChannelsRoutes(db)); // myrmidon(1.6.7 OPE-9854): LiteLLM channels /model/new|update|delete
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T5)

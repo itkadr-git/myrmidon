@@ -5,6 +5,7 @@
 // utilities that carry values are avoided on purpose so check-token-gates
 // never depends on an allowlist for ui2).
 import { useTranslation } from "@/i18n";
+import { useUi2I18n } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
@@ -15,7 +16,10 @@ import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const { t: tUi2 } = useUi2I18n();
+  const t = (key: string, values?: Record<string, string | number>) =>
+    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
   const Icon = item.icon;
   return (
     <span
@@ -86,7 +90,10 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
 }
 
 export function Ui2Rail() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const { t: tUi2 } = useUi2I18n();
+  const t = (key: string, values?: Record<string, string | number>) =>
+    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
   const { selectedCompany } = useCompany();
   const attentionCount = useUi2AttentionCount();
   const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);

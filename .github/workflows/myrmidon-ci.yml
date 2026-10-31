@@ -777,11 +777,21 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
+    # 31.10: reporting must never turn a main run red. The light own-runner pool (vps-ci) has no gh,
+    # so this job failed with exit 127 on green runs and main CI read as failed.
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
       issues: write
     steps:
+      - name: Ensure gh CLI
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          v=2.62.0
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${v}_linux_amd64/bin" >> "$GITHUB_PATH"
       - name: Open, update or close the main-red issue
         env:
           GH_TOKEN: ${{ github.token }}
