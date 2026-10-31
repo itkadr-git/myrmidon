@@ -20,6 +20,7 @@ const BASE = {
   idleTtlMs: 3_600_000,
   graceClosingMinutes: 45,
   scratchTtlHours: 12,
+  sessionRetentionDays: 30,
   partitionThresholdPercent: 80,
   partitionRefuseOpenPercent: 88,
   partitionCriticalPercent: 97,
@@ -35,20 +36,22 @@ const BASE = {
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 16 distinct keys", () => {
+  it("the three key groups are 17 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(16);
+    expect(new Set(all).size).toBe(17);
   });
 
-  it("the canonical schema accepts all 16 keys", () => {
+  it("the canonical schema accepts all 17 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 
-  it("the patch schema accepts the five workspace-lifecycle keys", () => {
+  it("the patch schema accepts the workspace-lifecycle keys", () => {
     expect(patchBotDiskSettingsSchema.safeParse({ graceClosingMinutes: 30 }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ sessionRetentionDays: 14 }).success).toBe(true);
     expect(patchBotDiskSettingsSchema.safeParse({ partitionCriticalPercent: null }).success).toBe(true);
     // Out of range still fails: the same ranges wsBotDiskSettingsSchema uses.
     expect(patchBotDiskSettingsSchema.safeParse({ graceClosingMinutes: 1 }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ sessionRetentionDays: 0 }).success).toBe(false);
     expect(patchBotDiskSettingsSchema.safeParse({ partitionThresholdPercent: 40 }).success).toBe(false);
   });
 

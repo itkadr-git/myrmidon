@@ -947,8 +947,151 @@ PYEOF
     hermes sessions optimize 2>&1 | while IFS= read -r line; do log "hermes optimize: $line"; done || log "WARNING: hermes sessions optimize failed"
   else
     log "WARNING: hermes CLI not found, skipping session maintenance"
+
+run_session_maintenance() {
+  if ! command -v hermes >/dev/null 2>&1; then
+    return 0
   fi
-  log "phase hermes_session_maintenance finished"
+  local state_db="${HERMES_HOME}/state.db"
+  if [ ! -f "$state_db" ]; then
+    return 0
+  fi
+
+  local marker="${HERMES_HOME}/.session-maintenance-last"
+  local now
+  now="$(date +%s)"
+  if [ -f "$marker" ]; then
+    local last_run
+    last_run="$(cat "$marker" 2>/dev/null || echo 0)"
+    if [ "$(( now - last_run ))" -lt 86400 ]; then
+      log "phase session_maintenance skipped: last run $(( (now - last_run) / 3600 ))h ago (daily limit)"
+      return 0
+    fi
+  fi
+
+  # Check if database is held by gateway or other foreign process
+  if python3 -c "
+import pathlib, sys
+try:
+    from hermes_state_holders import foreign_state_db_holders
+    p = pathlib.Path(sys.argv[1])
+    sys.exit(1 if foreign_state_db_holders(p) else 0)
+except Exception:
+    sys.exit(0)
+" "$state_db" 2>/dev/null; then
+    : # Not held, proceed
+  else
+    log "phase session_maintenance skipped: state.db is held by a running process"
+    return 0
+  fi
+
+  log "phase session_maintenance starting"
+  local t_0 t_1
+  t_0="$(now_monotonic_ms)"
+
+  local retention_days="${MYRMIDON_BOTD_SESSION_RETENTION_DAYS:-30}"
+  if ! [[ "$retention_days" =~ ^[0-9]+$ ]] || [ "$retention_days" -le 0 ]; then
+    retention_days=30
+  fi
+
+  # 1. Size before
+  local size_before=0
+  for f in "${HERMES_HOME}"/state.db*; do
+    if [ -f "$f" ]; then
+      local s
+      s="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+      size_before=$(( size_before + s ))
+    fi
+  done
+
+  # 2. Export deletable sessions to botd archive
+  local archive_dir="${HERMES_HOME}/.myrmidon/archive"
+  mkdir -p "$archive_dir"
+  local ts
+  ts="$(date -u +"%Y%m%dT%H%M%SZ")"
+  local archive_file="${archive_dir}/sessions-${ts}.jsonl.gz"
+  local tmp_archive="${archive_dir}/sessions-${ts}.jsonl.gz.tmp-${$}"
+
+  if hermes sessions export --format jsonl --older-than "${retention_days}" - 2>/dev/null | gzip -c > "${tmp_archive}"; then
+    local uncompressed_bytes
+    uncompressed_bytes="$(gzip -dc "${tmp_archive}" 2>/dev/null | wc -c || echo 0)"
+    if [ "$uncompressed_bytes" -gt 0 ]; then
+      mv -f "${tmp_archive}" "${archive_file}"
+      local archive_size
+      archive_size="$(stat -c %s "${archive_file}" 2>/dev/null || echo 0)"
+      node -e '
+        const fs = require("fs");
+        const p = process.argv[1];
+        const entry = JSON.parse(process.argv[2]);
+        let manifest = { version: 1, archives: [] };
+        try { manifest = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+        if (!Array.isArray(manifest.archives)) manifest.archives = [];
+        manifest.archives.push(entry);
+        fs.writeFileSync(p, JSON.stringify(manifest, null, 2) + "\n");
+      ' "${archive_dir}/manifest.json" "{\"key\":\"sessions\",\"createdAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"sessionExport\":\"${archive_file}\",\"sizeBytes\":${archive_size}}" 2>/dev/null || true
+    else
+      rm -f "${tmp_archive}"
+    fi
+  else
+    rm -f "${tmp_archive}"
+    log "WARNING: hermes sessions export failed"
+  fi
+
+  # 3. Prune sessions older than N days
+  local prune_output deleted_sessions=0
+  if prune_output="$(hermes sessions prune --older-than "${retention_days}" --yes 2>&1)"; then
+    local parsed_count
+    parsed_count="$(echo "$prune_output" | grep -oP 'Pruned \K[0-9]+' || true)"
+    if [ -n "$parsed_count" ]; then
+      deleted_sessions="$parsed_count"
+    fi
+  else
+    log "WARNING: hermes sessions prune failed: ${prune_output}"
+  fi
+
+  # 4. Optimize
+  if ! hermes sessions optimize 2>&1; then
+    log "WARNING: hermes sessions optimize failed"
+  fi
+
+  # 5. Size after
+  local size_after=0
+  for f in "${HERMES_HOME}"/state.db*; do
+    if [ -f "$f" ]; then
+      local s
+      s="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+      size_after=$(( size_after + s ))
+    fi
+  done
+
+  # 6. Save report artifact and update daily marker
+  mkdir -p "${HERMES_HOME}/.myrmidon"
+  cat > "${HERMES_HOME}/.myrmidon/session-prune.json.tmp-${$}" <<EOF
+{
+  "stateDbBytesBefore": ${size_before},
+  "stateDbBytesAfter": ${size_after},
+  "deletedSessions": ${deleted_sessions},
+  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+  mv -f "${HERMES_HOME}/.myrmidon/session-prune.json.tmp-${$}" "${HERMES_HOME}/.myrmidon/session-prune.json"
+  echo "$now" > "$marker"
+
+  t_1="$(now_monotonic_ms)"
+  log "phase session_maintenance completed in $(( t_1 - t_0 ))ms: deleted ${deleted_sessions} sessions, size before=${size_before} after=${size_after}"
+}
+
+# Run session maintenance before starting the gateway (while state.db is not held)
+if [ "${MYRMIDON_BOT_SESSION_MAINTENANCE:-1}" != "0" ]; then
+  export -f run_session_maintenance now_monotonic_ms log
+  m_rc=0
+  timeout 120 bash -c 'run_session_maintenance' || m_rc=$?
+  if [ "$m_rc" -eq 124 ]; then
+    log "WARNING: session maintenance timed out after 120s; continuing gateway startup"
+  elif [ "$m_rc" -ne 0 ]; then
+    log "WARNING: session maintenance failed with exit code ${m_rc}; continuing gateway startup"
+  fi
+fi
 fi
 
 # --replace: a previous instance's lock (from a hard container restart) does
