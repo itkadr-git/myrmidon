@@ -61,6 +61,7 @@ import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
@@ -185,13 +186,16 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
-
   // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
   "myrmidon_readiness_ratio",
   "myrmidon_queue_age_seconds",
   "myrmidon_project_share",
   "myrmidon_starvation_total",
   "myrmidon_claim_rejection_total",
+
+  // myrmidon(1.6.6 OPE-9967): retention compaction timeouts without progress
+  "myrmidon_datastore_retention_consecutive_timeouts",
+  "myrmidon_datastore_retention_timeouts_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -1169,6 +1173,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
   const continuationCounters = continuationDedupeMetrics.read();
+  const retention = datastoreRetentionMetrics.read();
   blocks.push(
     familyBlock(
       "myrmidon_continuation_created_total",
@@ -1181,6 +1186,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Continuation keys suppressed because they were already claimed, cumulative since process start.",
       "counter",
       [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_consecutive_timeouts",
+      "Consecutive context retention passes that timed out without progress.",
+      "gauge",
+      [`myrmidon_datastore_retention_consecutive_timeouts{${R}} ${formatSampleValue(retention.consecutiveTimeouts)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_timeouts_total",
+      "Total context retention passes that timed out without progress, cumulative since process start.",
+      "counter",
+      [`myrmidon_datastore_retention_timeouts_total{${R}} ${formatSampleValue(retention.timeoutsTotal)}`],
     ),
   );
 

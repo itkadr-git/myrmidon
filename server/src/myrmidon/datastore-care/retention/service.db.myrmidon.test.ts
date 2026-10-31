@@ -19,6 +19,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../../../services/index.js";
+import { logger } from "../../../middleware/logger.js";
+import { datastoreRetentionMetrics } from "./metrics.js";
 import { createDatastoreCareRetentionRuntime } from "./service.js";
 
 // Review (F14B): the runtime must hand the RESOLVED batches ceiling to the
@@ -33,6 +35,7 @@ vi.mock("./compact.js", async (importOriginal) => {
       freedBytes: 0,
       timedOut: false,
       perCompany: [],
+      cursors: {},
     })),
   };
 });
@@ -192,6 +195,105 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       await instanceSettingsService(db).updateGeneral({
         datastoreCare: { retention: {} },
       } as never);
+    }
+  });
+
+  it("myrmidon(1.6.6 OPE-9967) consecutive timeouts without progress trigger alarm and update metrics", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-timeout",
+      issuePrefix: "TMO",
+    });
+
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-tmo-"));
+    const loggerWarnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+    try {
+      const fresh = path.join(backupDir, "paperclip-2026-10-09T06-00-00.sql.gz");
+      fs.writeFileSync(fresh, "backup-bytes");
+
+      const runtime = createDatastoreCareRetentionRuntime(db, {
+        env: {},
+        backupDir,
+        now: () => new Date(),
+      });
+
+      const passSpy = vi.mocked(compactContextPass);
+      datastoreRetentionMetrics.reset();
+
+      // Pass 1: times out with 0 progress
+      passSpy.mockResolvedValueOnce({
+        compacted: 0,
+        freedBytes: 0,
+        timedOut: true,
+        perCompany: [],
+        cursors: {},
+      });
+      await runtime.runOnce();
+      let lastRun = ((await instanceSettingsService(db).getGeneral()) as any).datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.consecutiveTimeoutCount).toBe(1);
+      expect(datastoreRetentionMetrics.read().consecutiveTimeouts).toBe(1);
+      expect(datastoreRetentionMetrics.read().timeoutsTotal).toBe(1);
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ consecutiveTimeoutCount: 1 }),
+        expect.stringContaining("timed out without progress"),
+      );
+
+      // Pass 2: times out with 0 progress
+      passSpy.mockResolvedValueOnce({
+        compacted: 0,
+        freedBytes: 0,
+        timedOut: true,
+        perCompany: [],
+        cursors: {},
+      });
+      await runtime.runOnce();
+      lastRun = ((await instanceSettingsService(db).getGeneral()) as any).datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.consecutiveTimeoutCount).toBe(2);
+      expect(datastoreRetentionMetrics.read().consecutiveTimeouts).toBe(2);
+      expect(datastoreRetentionMetrics.read().timeoutsTotal).toBe(2);
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ consecutiveTimeoutCount: 2 }),
+        expect.stringContaining("timed out without progress"),
+      );
+
+      // Pass 3: times out with 0 progress -> reaches alarm threshold (3)
+      passSpy.mockResolvedValueOnce({
+        compacted: 0,
+        freedBytes: 0,
+        timedOut: true,
+        perCompany: [],
+        cursors: {},
+      });
+      await runtime.runOnce();
+      lastRun = ((await instanceSettingsService(db).getGeneral()) as any).datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.consecutiveTimeoutCount).toBe(3);
+      expect(datastoreRetentionMetrics.read().consecutiveTimeouts).toBe(3);
+      expect(datastoreRetentionMetrics.read().timeoutsTotal).toBe(3);
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ consecutiveTimeoutCount: 3, threshold: 3 }),
+        expect.stringContaining("consecutive timeouts without progress alarm"),
+      );
+
+      // Pass 4: succeeds with progress -> resets consecutiveTimeoutCount and gauge
+      passSpy.mockResolvedValueOnce({
+        compacted: 50,
+        freedBytes: 1000,
+        timedOut: false,
+        perCompany: [{ companyId, compacted: 50, freedBytes: 1000 }],
+        cursors: { [companyId]: { createdAt: "2026-10-01T00:00:00.000Z", id: "uuid-1" } },
+      });
+      await runtime.runOnce();
+      lastRun = ((await instanceSettingsService(db).getGeneral()) as any).datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.consecutiveTimeoutCount).toBe(0);
+      expect(lastRun.cursors?.[companyId]).toEqual({ createdAt: "2026-10-01T00:00:00.000Z", id: "uuid-1" });
+      expect(datastoreRetentionMetrics.read().consecutiveTimeouts).toBe(0);
+      expect(datastoreRetentionMetrics.read().timeoutsTotal).toBe(3);
+    } finally {
+      loggerWarnSpy.mockRestore();
+      loggerErrorSpy.mockRestore();
+      fs.rmSync(backupDir, { recursive: true, force: true });
     }
   });
 });
