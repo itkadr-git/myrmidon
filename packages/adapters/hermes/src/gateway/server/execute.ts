@@ -641,6 +641,11 @@ function buildRunBody(
   const model = nonEmpty(ctx.config.model);
   const provider = nonEmpty(ctx.config.provider);
   const modelOptions = buildModelOptions(ctx.config);
+  const fallbackModels = provider ? readGatewayFallbackModels(ctx.config) : [];
+  const modelAttemptId = nonEmpty(ctx.config.modelAttemptId);
+  const fallbackModelEntries = fallbackModels
+    .map((fallbackModel) => ({ provider, model: fallbackModel }))
+    .filter((entry): entry is { provider: string; model: string } => Boolean(entry.provider));
   // myrmidon(CONTAINER-GITHUB-WRITE): the run-bound GitHub broker capability.
   // Assigned after the payloadTemplate spread so a card cannot forge a
   // capability: only the env the server itself wrote into runtimeConfig.env
@@ -666,6 +671,8 @@ function buildRunBody(
     ...(model ? { model } : {}),
     ...(provider ? { provider } : {}),
     ...(modelOptions ? { model_options: modelOptions } : {}),
+    ...(fallbackModelEntries.length ? { fallback_model: fallbackModelEntries } : {}),
+    ...(modelAttemptId ? { model_attempt_id: modelAttemptId } : {}),
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
@@ -2115,6 +2122,7 @@ function isUnambiguousCreateNonStart(err: unknown): boolean {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const fallbackModels = readGatewayFallbackModels(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return {
@@ -2858,6 +2866,66 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       };
     }
+
+    const isProviderError =
+      finalResult.errorCode === "hermes_gateway_run_failed" &&
+      finalResult.errorFamily === "transient_upstream" &&
+      (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+        finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+
+    const shouldTryFallback =
+      finalResult.errorCode === "hermes_gateway_run_failed" &&
+      finalResult.errorFamily === "transient_upstream" &&
+      fallbackModels.length > 0;
+
+    if (shouldTryFallback) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+      );
+      const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+      const fallbackResult = await execute({
+        ...ctx,
+        runId: fallbackAttemptId,
+        config: {
+          ...ctx.config,
+          model: fallbackModels[0],
+          models: { fallbacks: fallbackModels.slice(1) },
+          modelAttemptId: fallbackAttemptId,
+        },
+        onDispatch: undefined,
+        onExternalRunId: undefined,
+        onMeta: undefined,
+      });
+      if (fallbackResult.exitCode === 0) return fallbackResult;
+      if (isProviderError) {
+        return {
+          ...finalResult,
+          summary: undefined,
+          resultJson: {
+            ...finalResult.resultJson,
+            result: "",
+            output: "",
+            provider_error_as_content: true,
+          },
+        };
+      }
+      return fallbackResult;
+    }
+
+    if (isProviderError) {
+      return {
+        ...finalResult,
+        summary: undefined,
+        resultJson: {
+          ...finalResult.resultJson,
+          result: "",
+          output: "",
+          provider_error_as_content: true,
+        },
+      };
+    }
+
     return finalResult;
   } catch (err) {
     controller.abort();
