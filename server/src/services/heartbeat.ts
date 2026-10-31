@@ -805,7 +805,7 @@ import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
   invalidateFailedRunsCache,
-  invalidateLastRunRowsCache,
+  PHEROMONE_EVAPORATING_RUN_STATUSES,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
@@ -13248,13 +13248,7 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
-    invalidateLastRunRowsCache(updated.companyId);
-    if (
-      updated.status === "failed" ||
-      updated.status === "timed_out" ||
-      (updated.status as string) === "blocked" ||
-      (updated.status as string) === "needs_followup"
-    ) {
+    if ((PHEROMONE_EVAPORATING_RUN_STATUSES as readonly string[]).includes(updated.status)) {
       invalidateFailedRunsCache(updated.companyId);
     }
     void emitAgentTaskRun(db, updated);

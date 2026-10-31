@@ -14,6 +14,7 @@ import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
+import { invalidateFailedRunsCache } from "../../myrmidon/swarm-claim/effective-pheromone.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
 export type NativeControllerIdentity = {
@@ -967,7 +968,10 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     });
-    if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport);
+    if (terminalRunToReport) {
+      invalidateFailedRunsCache(terminalRunToReport.companyId);
+      void reportRunFailure(input.db, terminalRunToReport);
+    }
     dispositions.push(disposition);
   }
   return dispositions;
