@@ -79,9 +79,11 @@ import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
+  buildContinuationKey,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
 } from "@myrmidon/shared";
+import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-dedupe.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -439,6 +441,11 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import {
+  classifyEmptyRun,
+  evaluateCompletionGate,
+  checkAndHandleEmptyRunEscalation,
+} from "./empty-run.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -1192,6 +1199,9 @@ const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
+// Ten bounded attempts at the maximum five-minute delay fit in one hour.
+// The actual claim also covers a later dueAt supplied by retry policy.
+const CONTINUATION_RETRY_CLAIM_TTL_MS = 60 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
   "scheduled_retry",
   "queued",
@@ -13893,6 +13903,80 @@ export function heartbeatService(
       idempotentWakeExists: Boolean(existingWake),
     });
 
+    // 1.7 AGENT-RUNTIME: гейт завершения прогона и эскалация холостых прогонов (OPE-10066)
+    const initialStatus =
+      typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
+        ? String((context.issue as any).status)
+        : null;
+
+    const hasProgressEvidence =
+      Boolean(detectedProgressSummary) ||
+      run.livenessState === "progress" ||
+      run.livenessState === "completed" ||
+      run.livenessState === "advanced";
+
+    const blockerReason =
+      issue?.status === "blocked"
+        ? (typeof (issue as any)?.blockerMetadata === "object" && (issue as any)?.blockerMetadata !== null
+            ? ((issue as any).blockerMetadata.blockReason ?? (issue as any).blockerMetadata.reason ?? null)
+            : null)
+        : null;
+
+    const isRepeatedToolFailure = Boolean(run.error?.includes("Repeated tool failure"));
+
+    const emptyClassification = classifyEmptyRun({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    const gateResult = evaluateCompletionGate({
+      runId: run.id,
+      issueId: issue?.id,
+      agentId: run.agentId,
+      statusBefore: initialStatus,
+      statusAfter: issue?.status,
+      livenessState: run.livenessState,
+      hasFileOrArtifactChanges: hasProgressEvidence,
+      repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
+      repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
+      isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
+      blockerReason,
+    });
+
+    if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      const escalation = await checkAndHandleEmptyRunEscalation(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: run.agentId,
+        runId: run.id,
+        classification: emptyClassification,
+        gateResult,
+      });
+
+      if (escalation.escalated || !escalation.shouldRewake) {
+        if (isSuccessfulRunHandoffValidPathSkip(decision)) {
+          await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            agentId: run.agentId,
+            runId: run.id,
+            skipReason: decision.reason,
+          });
+        }
+        return;
+      }
+    }
+
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
       await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
         companyId: issue.companyId,
@@ -15966,14 +16050,13 @@ export function heartbeatService(
       run,
       retryContextSnapshot,
     );
-    const continuationRetryIdempotencyKey =
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-        ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-        : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
-          ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-          : null;
+    const isContinuationRetry =
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+    let continuationRetryIdempotencyKey: string | null = null;
 
     type ScheduledRetryTransactionResult =
+      | { outcome: "deduped" }
       | {
           outcome: "scheduled";
           run: typeof heartbeatRuns.$inferSelect;
@@ -16025,6 +16108,33 @@ export function heartbeatService(
               reusedExisting: true,
             };
         }
+        if (isContinuationRetry) {
+          if (issueId) {
+            await tx.execute(
+              sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+            );
+            const [humanComment] = await tx.select({ id: issueComments.id })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId),
+                isNotNull(issueComments.authorUserId),
+                isNull(issueComments.authorAgentId),
+                or(isNull(issueComments.authorType), eq(issueComments.authorType, "user")),
+                gt(issueComments.createdAt, run.startedAt ?? run.createdAt),
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+            continuationRetryIdempotencyKey = buildContinuationKey({
+              issueId, event: "issue_continuation_needed",
+              head: `${retryReason}:${humanComment?.id ?? run.id}`,
+            });
+          } else {
+            // Taskless retries have no issue registry row; keep their old path.
+            const prefix = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+              ? "max-turn-continuation" : "interaction-continuation";
+            continuationRetryIdempotencyKey = `${prefix}:${run.companyId}:no-issue:${run.id}:${schedule.attempt}`;
+          }
+        }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
             await tx.execute(
@@ -16045,6 +16155,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16112,6 +16225,9 @@ export function heartbeatService(
                 eq(heartbeatRuns.retryOfRunId, run.id),
                 eq(heartbeatRuns.scheduledRetryReason, retryReason),
                 eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                issueId ? sql`exists (select 1 from agent_wakeup_requests w
+                  where w.id = ${heartbeatRuns.wakeupRequestId}
+                  and w.idempotency_key = ${continuationRetryIdempotencyKey})` : undefined,
                 inArray(heartbeatRuns.status, [
                   ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
                 ]),
@@ -16265,6 +16381,18 @@ export function heartbeatService(
           }
         }
 
+        const claimInput = isContinuationRetry && issueId && continuationRetryIdempotencyKey
+          ? { companyId: run.companyId, issueId, key: continuationRetryIdempotencyKey,
+              ttl: Math.max(CONTINUATION_RETRY_CLAIM_TTL_MS,
+                Math.max(0, schedule.dueAt.getTime() - now.getTime()) * schedule.maxAttempts) }
+          : null;
+        if (claimInput && await tryClaimContinuationKey(tx as unknown as Db, claimInput) === "deduped") {
+          return { outcome: "deduped" };
+        }
+        // A savepoint rolls back partial wake/run writes before we release our
+        // claim. Never remove another producer's claim or scan its successors.
+        try {
+          return await tx.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -16312,6 +16440,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!wakeupRequest) throw new Error("continuation_retry_enqueue_null");
         const scheduledRun = await tx
           .insert(heartbeatRuns)
           .values({
@@ -16338,6 +16467,7 @@ export function heartbeatService(
           .returning()
           .then((rows) => rows[0]);
 
+        if (!scheduledRun) throw new Error("continuation_retry_enqueue_null");
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -16472,9 +16602,26 @@ export function heartbeatService(
           run: scheduledRun,
           reusedExisting: false,
         };
+          });
+        } catch (error) {
+          if (claimInput) await releaseContinuationKey(tx as unknown as Db, claimInput);
+          if (error instanceof Error && error.message === "continuation_retry_enqueue_null") {
+            return { outcome: "not_scheduled", reason: "Continuation retry enqueue returned no run",
+              errorCode: "issue_execution_lock_changed", issueId, details: {} };
+          }
+          throw error;
+        }
       },
     );
 
+    if (scheduleResult.outcome === "deduped") {
+      await appendRunEvent(run, {
+        eventType: "lifecycle", stream: "system", level: "info",
+        message: "Reused existing continuation retry claim",
+        payload: { retryReason, idempotencyKey: continuationRetryIdempotencyKey, outcome: "deduped" },
+      });
+      return { outcome: "not_scheduled" as const, reason: "Continuation retry already claimed", issueId };
+    }
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -32719,6 +32866,8 @@ export function heartbeatService(
       limit?: number,
       summary?: boolean,
       actorShape?: string,
+      wakeReason?: string,
+      hasResult = false,
     ): Promise<string> => {
       const [agg] = await db
         .select({
@@ -32727,12 +32876,14 @@ export function heartbeatService(
         })
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${wakeReason})`
+              : sql`true`,
+            hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         );
       return versionKeyEtag("heartbeat-runs-list", [
         companyId,
@@ -32740,6 +32891,8 @@ export function heartbeatService(
         limit ?? "default",
         summary ? "summary" : "full",
         actorShape ?? "all",
+        wakeReason ?? "all",
+        hasResult ? "with-result" : "all-results",
         agg?.rowCount ?? 0,
         agg?.maxUpdatedAt ?? null,
       ]);
@@ -32748,7 +32901,7 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; wakeReason?: string; hasResult?: boolean } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -32773,12 +32926,14 @@ export function heartbeatService(
         )
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(
-                eq(heartbeatRuns.companyId, companyId),
-                eq(heartbeatRuns.agentId, agentId),
-              )
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            options.wakeReason
+              ? sql`(${heartbeatRuns.contextWakeReason} = ${options.wakeReason} OR ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = ${options.wakeReason})`
+              : sql`true`,
+            options.hasResult ? isNotNull(heartbeatRuns.resultJson) : sql`true`,
+          ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 

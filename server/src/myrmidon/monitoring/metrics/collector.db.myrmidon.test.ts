@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -12,6 +13,7 @@ import {
   heartbeatRuns,
   agentWakeupRequests,
   issueClaims,
+  issueRecoveryActions,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -19,7 +21,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
+import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES, renderMetricsText } from "./metrics.js";
+import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
+import { createRecoveryFactoryMetrics } from "@myrmidon/shared";
+import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
@@ -46,6 +51,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
+    await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);

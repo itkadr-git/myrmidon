@@ -54,6 +54,8 @@ const enrollBodySchema = z
     boardExtraHost: z.string().trim().min(1).optional(),
     volumeRoot: z.string().trim().min(1).optional(),
     network: z.string().trim().min(1).optional(),
+    privateNetwork: z.boolean().optional(),
+    tunnel: z.boolean().optional(),
     labels: z.record(z.string(), z.string()).optional(),
   })
   .strict();
@@ -245,6 +247,8 @@ export function fleetSiteRoutes(deps: FleetSiteRoutesDeps): Router {
       ...(body.boardExtraHost ? { boardExtraHost: body.boardExtraHost } : {}),
       ...(body.volumeRoot ? { volumeRoot: body.volumeRoot } : {}),
       ...(body.network ? { network: body.network } : {}),
+      ...(typeof body.privateNetwork === "boolean" ? { privateNetwork: body.privateNetwork } : {}),
+      ...(typeof body.tunnel === "boolean" ? { tunnel: body.tunnel } : {}),
     };
 
     const created = await deps.createSite({
