@@ -1,6 +1,6 @@
 {
   "id": "5d2e7df2-c1dd-4902-92c7-7a057569acdf",
-  "prevId": "740d3b20-f5d1-46bf-b577-8d3eeb9cb80c",
+  "prevId": "43bb5236-bdfb-4339-bb0e-f27506a43be0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -275,6 +275,39 @@
           ],
           "isUnique": false,
           "where": "\"activity_log\".\"entity_type\" = 'issue' and \"activity_log\".\"action\" <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_action_continuation_idx": {
+          "name": "activity_log_company_action_continuation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "action",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "((\"details\" ->> 'continuation'))",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -58321,5 +58354,6 @@
     "columns": {},
     "schemas": {},
     "tables": {}
-  }
+  },
+  " _meta": {}
 }

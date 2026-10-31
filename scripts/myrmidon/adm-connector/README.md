@@ -47,7 +47,16 @@ never prompts, content or credentials. State and log retention are operator-owne
 Run `node --test scripts/myrmidon/adm-connector/*.test.mjs`. The existing
 myrmidon-ci Script tests gate discovers these tests recursively. golden.json holds
 50 real operational comment excerpts with source issue/comment IDs and frozen
-expected trigger lists (not synthetic user messages). The suite checks all 50
+50 expected trigger lists (not synthetic user messages). The suite checks all 50
 classifications, per-message caps, zero unmatched bytes, dedup, compaction,
-multibyte overflow, ranking and the REST revision boundary. No production settings
-are changed by this PR; installation/rollout is an operator action.
+multibyte overflow, ranking and the REST revision boundary.
+
+## Rollout, kill-switch, rollback & archiving (OPE-9265)
+
+See `docs/myrmidon/adm-connector-contract/rollout-and-rollback.md` for full specs.
+
+- **Staged rollout**: `shadow` (default initial state; evaluates triggers and logs metrics with zero prompt disruption) → `main` (active prompt injection within Contract A caps).
+- **Kill-switch**: `ADM_CONNECTOR_DISABLED=1`, `~/.adm-connector/disabled`, or `node scripts/myrmidon/adm-connector/rollout.mjs kill-switch on`. Exits immediately with 0 output and 0 network overhead.
+- **Rollback**: `node scripts/myrmidon/adm-connector/rollout.mjs rollback` restores the last known good cache snapshot and disables hooks. Knowledge on the board is never deleted.
+- **Legacy file archiving**: `node scripts/myrmidon/adm-connector/rollout.mjs archive-legacy --source <dir> --archive <dir>` archives `CLAUDE.md`, `MEMORY.md`, and `memory/` with SHA-256 manifest and sets read-only permissions (0444). No legacy files are deleted.
+- **Verification**: `node scripts/myrmidon/adm-connector/rollout.mjs verify-archive --archive <dir>` validates archive integrity.

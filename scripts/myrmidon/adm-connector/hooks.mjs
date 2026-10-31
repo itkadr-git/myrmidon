@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
 
 export const TRIGGERS = Object.freeze({
   ssh: /(?<![\p{L}\p{N}_])(?:ssh|sshd|scp)(?![\p{L}\p{N}_])/iu,
@@ -19,14 +19,42 @@ const key = item => JSON.stringify([item.slug, item.revision_id]);
 const summary = item => `${Array.from(`${item.title}: ${item.summary}`).slice(0, 300).join('')} [${item.slug}@${item.revision_id}]`;
 
 /** load is the validated cache/REST boundary; never accept an unchecked disk cache here. */
-export function createHooks({ stateDir, load, log = async () => {} }) {
-  return { async run(event) {
+export function createHooks({ stateDir, load, log = async () => {}, mode = 'main' }) {
+  return { stateDir, async run(event) {
+    const effectiveMode = event.mode ?? mode;
+    if (effectiveMode === 'disabled') {
+      return { context: '', bytes: 0, sessionBytes: 0, mode: 'disabled', shadow: false };
+    }
     if (!['SessionStart', 'UserPromptSubmit'].includes(event.hook_event_name) || typeof event.session_id !== 'string' || !event.session_id) throw new Error('Invalid hook event');
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     const path = `${stateDir}/${createHash('sha256').update(event.session_id).digest('hex')}.json`;
     // Exclusive lock: concurrent submissions must not deliver the same revision twice.
     const lock = `${path}.lock`;
-    await mkdir(lock, { mode: 0o700 });
+    const deadline = Date.now() + 2000;
+    while (true) {
+      try {
+        await mkdir(lock, { mode: 0o700 });
+        break;
+      } catch (err) {
+        if (err.code === 'EEXIST') {
+          try {
+            const lockInfo = await stat(lock);
+            if (Date.now() - lockInfo.mtimeMs > 30_000) {
+              await rm(lock, { recursive: true, force: true });
+              continue;
+            }
+          } catch (lockError) {
+            if (lockError.code !== 'ENOENT') throw lockError;
+            continue;
+          }
+          if (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 25));
+            continue;
+          }
+        }
+        throw err;
+      }
+    }
     try {
       let state = { delivered: [], sessionBytes: 0 };
       try {
@@ -77,8 +105,8 @@ export function createHooks({ stateDir, load, log = async () => {} }) {
       const temp = `${path}.${randomUUID()}`;
       await writeFile(temp, JSON.stringify(next), { mode: 0o600 });
       await rename(temp, path);
-      await log({ event: event.hook_event_name, session: createHash('sha256').update(event.session_id).digest('hex'), bytes: added, sessionBytes: next.sessionBytes });
-      return { context, bytes: added, sessionBytes: next.sessionBytes };
+      await log({ event: event.hook_event_name, session: createHash('sha256').update(event.session_id).digest('hex'), bytes: added, sessionBytes: next.sessionBytes, mode: effectiveMode });
+      return { context, bytes: added, sessionBytes: next.sessionBytes, mode: effectiveMode, shadow: effectiveMode === 'shadow' };
     } finally { await rm(lock, { recursive: true, force: true }); }
   } };
 }
