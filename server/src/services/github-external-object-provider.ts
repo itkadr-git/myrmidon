@@ -119,10 +119,10 @@ function displayKeyFor(identity: Pick<GitHubObjectIdentity, "objectType">) {
 }
 
 function retryAfterSeconds(response: Response) {
-  const retryAfter = response.headers.get("retry-after");
+  const retryAfter = response.headers?.get ? response.headers.get("retry-after") : null;
   if (retryAfter && /^[0-9]+$/.test(retryAfter)) return Number(retryAfter);
 
-  const reset = response.headers.get("x-ratelimit-reset");
+  const reset = response.headers?.get ? response.headers.get("x-ratelimit-reset") : null;
   if (reset && /^[0-9]+$/.test(reset)) {
     return Math.max(1, Number(reset) - Math.floor(Date.now() / 1000));
   }
@@ -142,7 +142,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   }
 
   if (response.status === 403) {
-    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+    const rateLimitRemaining = response.headers?.get ? response.headers.get("x-ratelimit-remaining") : null;
     if (rateLimitRemaining === "0") {
       return {
         ok: false,
@@ -509,7 +509,7 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        const etag = response.headers.get("etag");
+        const etag = response.headers?.get ? response.headers.get("etag") : null;
         if (response.status === 404) {
           return { ok: true, snapshot: notFoundSnapshot(identity, etag, Boolean(token)) };
         }

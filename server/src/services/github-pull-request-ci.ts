@@ -383,7 +383,13 @@ export function createPullRequestCiResolver(
     options.tokenProvider ??
     ((companyId: string, repository: string) =>
       resolveGitHubRepositoryToken(db, companyId, repository, secretNames, fetchImpl));
-  const prResolver = options.prResolver ?? createPullRequestMergeDetailsResolver(db);
+  const prResolver =
+    options.prResolver ??
+    createPullRequestMergeDetailsResolver(db, {
+      fetch: fetchImpl,
+      tokenProvider,
+      secretNames,
+    });
 
   return {
     async resolveForPullRequest(
