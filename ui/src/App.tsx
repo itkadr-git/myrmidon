@@ -91,6 +91,7 @@ import { CloudsSettingsPage } from "./components/myrmidon/clouds/CloudsSettingsP
 import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmidon(SUC)
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
+import { GuardrailsScreen } from "./components/myrmidon/guardrails/GuardrailsScreenContainer"; // myrmidon(1.7 GRD-MODES)
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms.
 import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
@@ -234,6 +235,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/browsers" element={<BrowsersSettingsPage />} /> {/* myrmidon(BROWSER-CONSOLE) */}
       <Route path="company/settings/autonomy" element={<AutonomyMatrixScreen />} /> {/* myrmidon(1.6 AUTONOMY-MATRIX B) */}
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+      <Route path="company/settings/guardrails" element={<GuardrailsScreen />} /> {/* myrmidon(1.7 GRD-MODES) */}
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
       <Route path="knowledge/review" element={<KnowledgeReview />} />

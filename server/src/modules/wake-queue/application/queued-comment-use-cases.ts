@@ -11,6 +11,10 @@ import {
   injectionScoreThreshold,
   wrapUntrusted,
 } from "../../../myrmidon/guardrails/injection.js";
+// myrmidon(1.7-GRD-MODES): the per-agent injection mode decides whether
+// the hit wraps untrusted data (flag), refuses dispatch (block) or masks (mask)
+import type { GuardrailEnforcementMode } from "@myrmidon/shared";
+import { guardrailBlockRefusal } from "../../../myrmidon/guardrails/modes.js";
 import type {
   QueuedCommentActivityPublication,
   QueuedCommentActor,
@@ -88,7 +92,14 @@ export type EditQueuedCommentResult = {
   activityPublication: QueuedCommentActivityPublication;
 };
 
-export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
+export function createEditQueuedComment(deps: {
+  issueLock: QueuedCommentIssueLockWriter;
+  // myrmidon(1.7-GRD-MODES): the per-agent injection mode query hook
+  resolveInjectionMode?: (input: {
+    companyId: string;
+    agentId?: string | null;
+  }) => Promise<GuardrailEnforcementMode>;
+}) {
   return async function editQueuedComment(input: EditQueuedCommentInput): Promise<EditQueuedCommentResult> {
     return deps.issueLock.withLockedQueue(
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
@@ -130,19 +141,35 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
         // existing payload fields — no queue-format migration.
         let guardrailsPayload = locked.wake.payload; // myrmidon(1.6-GRD)
         if (guardrailsInjectionEnabled()) { // myrmidon(1.6-GRD)
+          // myrmidon(1.7-GRD-MODES): the per-agent injection mode decides
+          // whether an injection hit wraps the text, masks, or refuses
+          const mode = deps.resolveInjectionMode
+            ? await deps.resolveInjectionMode({
+                companyId: input.issue.companyId,
+                agentId: locked.wake.agentId,
+              })
+            : "flag";
           const { text: wrappedText, scan } = wrapUntrusted( // myrmidon(1.6-GRD)
             maskedBody,
             injectionScoreThreshold(),
           );
+          // myrmidon(1.7-GRD-MODES): block mode replaces the queued comment
+          // body in the wake payload with the standard refusal notice, so the
+          // agent is never fed the attack prompt; flag/mask wrap untrusted.
+          const effectiveCommentBody =
+            mode === "block" && scan.flagged
+              ? guardrailBlockRefusal("injection")
+              : wrappedText;
           guardrailsPayload = { // myrmidon(1.6-GRD)
             ...locked.wake.payload,
-            commentBody: wrappedText,
+            commentBody: effectiveCommentBody,
             _paperclipGuardrails: {
               ...((locked.wake.payload["_paperclipGuardrails"] as Record<string, unknown>) ?? {}),
               injection: {
                 kind: "injection",
                 surface: "wake_queue",
                 commentId: input.commentId,
+                mode,
                 ...scan,
               },
             },
