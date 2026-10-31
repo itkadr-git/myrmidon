@@ -15,6 +15,7 @@ export const UI2_SETTINGS_SECTIONS = [
   { key: "budgets", path: "/company/settings/budgets" },
   { key: "autonomy", path: "/company/settings/autonomy" },
   { key: "castes", path: "/company/settings/castes" },
+  { key: "channels", path: "/company/settings/channels" },
   { key: "system", path: "/company/settings/system" },
 ] as const;
 
