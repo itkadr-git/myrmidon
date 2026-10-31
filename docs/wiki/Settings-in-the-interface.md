@@ -104,26 +104,6 @@ switch the swarm on and verify it in three steps —
 Lower-level queue details —
 [swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
 
-## Agent castes (the company role directory)
-
-**Company Settings → Agent castes** — the company's own directory of agent
-roles. It starts from the twelve built-in castes and the owner can create,
-edit, and delete castes; the role on the agent card is a key from this
-directory, and changes are visible to the swarm at once, without a restart
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
-
-## Parallel helpers
-
-Agents can split a task across parallel helper subagents
-(`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
-helpers** section turns this on and sets the per-agent limit, the helper
-model and an optional per-helper turn budget; **Instance → General →
-"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
-and the per-agent default (`2`), and shows a capacity hint summing the
-resolved limits against the host's build slots. Saving applies on every bot's
-next reconcile tick, without a restart. Details:
-[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
-
 ## Parallel helpers
 
 Agents can split a task across parallel helper subagents
@@ -146,6 +126,28 @@ roles. It starts from the twelve built-in castes and the owner can create,
 edit, and delete castes; the role on the agent card is a key from this
 directory, and changes are visible to the swarm at once, without a restart
 ([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+
+## Budgets (per-level spend limits)
+
+**Company Settings → Budgets** (`/company/settings/budgets`) is where the
+owner sets spend limits per level of the agent hierarchy: the whole company
+or one project (nest), a caste, the foraging pass, or a single task. Each
+limit says how much the scope may spend per period (a calendar UTC month or
+a lifetime) and what happens at the limit — hard refusal, or a soft pause
+with a card to the owner. The row shows the spend against the limit (for
+example `$600.00 / $500.00 (120% used)`, marked **Over the limit**) and is
+edited in place: Save, Create and Remove go straight to the running API,
+without a restart or a page reload. The switch at the top is the global
+"signal only" mode — while it is on, crossing a limit only signals and
+blocks nothing; the screen shows where the value comes from (the default,
+the owner's saved choice, or the `MYRMIDON_BUDGET_LIMITS_SIGNAL_ONLY`
+environment variable, which locks the switch). The bottom table is the
+append-only change journal — who, when and what changed, newest first; a
+removed limit keeps its rows. Reads need company access, every mutation
+needs a board actor. Details:
+[budget limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.md)
+(the API and storage) and
+[the owner's screen](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits-ui.md).
 
 ## Backups
 
