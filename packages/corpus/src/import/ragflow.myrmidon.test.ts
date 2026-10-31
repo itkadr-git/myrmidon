@@ -331,8 +331,19 @@ describe("RAGFlow corpus import", () => {
       return texts.map(() => [0.5, 0.5, 0.5, 0.5]);
     };
 
+    const dataset: RagflowDataset = { id: "kb-resume", name: "Resume KB" };
+    const documents: RagflowDocument[] = [{ id: "doc-resume", name: "resume.md", run: "DONE", chunk_count: 4 }];
+    const chunks: RagflowChunk[] = [1, 2, 3, 4].map((n) => ({ id: `resume-chunk-${n}`, content: `resume chunk ${n}` }));
+    const resumeSource: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [dataset]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* () { yield* chunks; },
+      async countChunks() { return chunks.length; },
+    };
+
     const importOptions = {
-      source: fixtureSource(),
+      source: resumeSource,
       target: memory.target,
       companyId: "aaaaaaaa-0000-0000-0000-000000000001",
       embeddingDimensions: 4,
