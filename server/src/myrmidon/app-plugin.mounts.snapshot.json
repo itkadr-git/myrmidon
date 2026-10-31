@@ -1,4 +1,5 @@
 [
+  "api.use(createPluginReadinessRouter(pluginReadiness))",
   "api.use(boardLoadRequestMiddleware())",
   "api.use(boardMutationGuard())",
   "api.use(\n    \"/health\",\n    healthRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      authReady: opts.authReady,\n      companyDeletionEnabled: opts.companyDeletionEnabled,\n      databaseBackupHealth: opts.databaseBackupHealth,\n    }),\n  )",
