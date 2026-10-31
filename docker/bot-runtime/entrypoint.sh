@@ -861,16 +861,41 @@ run_startup_diagnostics() {
   log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
 }
 
-# myrmidon(1.6.6 OPE-9673): native hermes sessions maintenance before gateway launch.
-# Prune stale closed-task sessions and run optimize-storage/optimize when configured.
+# myrmidon(1.6.6 OPE-10313): native hermes sessions maintenance before gateway launch.
+# The compact-index migration must run while no gateway writer exists. It is bounded
+# so a slow large database cannot prevent the gateway from becoming healthy; an
+# interrupted run leaves the marker absent and resumes on the next idle start.
 if [ "${MYRMIDON_HERMES_PRUNE_ENABLED:-0}" = "1" ] || [ "${MYRMIDON_HERMES_PRUNE_ENABLED:-0}" = "true" ]; then
   log "phase hermes_session_maintenance starting"
   prune_days="${MYRMIDON_HERMES_PRUNE_DAYS:-7}"
+  optimize_marker="${HERMES_HOME}/.myrmidon/optimize-storage.v23.done"
   if command -v hermes >/dev/null 2>&1; then
+    mkdir -p "${HERMES_HOME}/.myrmidon"
+    if [ ! -e "$optimize_marker" ]; then
+      optimize_before="$(stat -c '%s' "${HERMES_HOME}/state.db" 2>/dev/null || printf '0')"
+      optimize_timeout="${MYRMIDON_HERMES_OPTIMIZE_TIMEOUT_SEC:-300}"
+      log "running hermes sessions optimize-storage (before=${optimize_before} bytes, timeout=${optimize_timeout}s)"
+      optimize_rc=0
+      optimize_log="${HERMES_HOME}/.myrmidon/optimize-storage.log.$$"
+      if command -v timeout >/dev/null 2>&1; then
+        timeout --signal=TERM --kill-after=10s "${optimize_timeout}s" hermes sessions optimize-storage --yes >"$optimize_log" 2>&1 || optimize_rc=$?
+      else
+        hermes sessions optimize-storage --yes >"$optimize_log" 2>&1 || optimize_rc=$?
+      fi
+      while IFS= read -r line; do log "hermes optimize-storage: $line"; done <"$optimize_log"
+      rm -f "$optimize_log"
+      optimize_after="$(stat -c '%s' "${HERMES_HOME}/state.db" 2>/dev/null || printf '0')"
+      log "hermes optimize-storage finished (rc=${optimize_rc}, before=${optimize_before} bytes, after=${optimize_after} bytes)"
+      if [ "$optimize_rc" -eq 0 ]; then
+        : > "$optimize_marker"
+      else
+        log "WARNING: hermes sessions optimize-storage failed or timed out; will retry next idle start"
+      fi
+    else
+      log "hermes sessions optimize-storage already completed (marker=${optimize_marker})"
+    fi
     log "running hermes sessions prune (--older-than ${prune_days}d)"
     hermes sessions prune --yes --older-than "${prune_days}d" 2>&1 | while IFS= read -r line; do log "hermes prune: $line"; done || log "WARNING: hermes sessions prune failed"
-    log "running hermes sessions prune (:run:)"
-    hermes sessions prune --yes --run-sessions 2>&1 | while IFS= read -r line; do log "hermes prune: $line"; done || true
     log "running hermes sessions optimize"
     hermes sessions optimize 2>&1 | while IFS= read -r line; do log "hermes optimize: $line"; done || log "WARNING: hermes sessions optimize failed"
   else

@@ -1282,7 +1282,20 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
   });
 });
 
-// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
+describe("hermes session storage maintenance", () => {
+  it("runs compact-index optimization once, logs size bounds, and leaves retry on timeout", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    assert.match(source, /optimize-storage\.v23\.done/);
+    assert.match(source, /hermes sessions optimize-storage --yes/);
+    assert.match(source, /before=\$\{optimize_before\} bytes/);
+    assert.match(source, /after=\$\{optimize_after\} bytes/);
+    assert.match(source, /MYRMIDON_HERMES_OPTIMIZE_TIMEOUT_SEC/);
+    assert.match(source, /if \[ "\$optimize_rc" -eq 0 \]; then/);
+    assert.match(source, /will retry next idle start/);
+    assert.doesNotMatch(source, /--force/);
+  });
+});
+
 // uid 10001, so the mode bits are the only barrier between one run's scratch/cache
 // and another bot's processes. The entrypoint sets umask 077 before any file write
 // and every child (gateway -> session -> terminal/tool) inherits it.
