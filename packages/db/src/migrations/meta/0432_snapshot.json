@@ -58362,7 +58362,7 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      " isRLSEnabled": false
+      "isRLSEnabled": false
     }
   },
   "enums": {},
