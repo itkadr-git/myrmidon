@@ -13,31 +13,39 @@ export function myrmidonInstalledLocalesRoutes(db?: Db, customService?: Installe
   const service = customService ?? new InstalledLocalesService(db);
 
   // List all installed locales (built-in and custom) with coverage percentage
-  const listHandler = async (req: any, res: any) => {
-    assertBoardOrgAccess(req);
-    const parsedQuery = installedLocalesQuerySchema.safeParse(req.query);
-    if (!parsedQuery.success) {
-      throw badRequest("Invalid query parameters", parsedQuery.error.issues);
+  const listHandler = async (req: any, res: any, next: any) => {
+    try {
+      assertBoardOrgAccess(req);
+      const parsedQuery = installedLocalesQuerySchema.safeParse(req.query);
+      if (!parsedQuery.success) {
+        throw badRequest("Invalid query parameters", parsedQuery.error.issues);
+      }
+      const result = await service.listInstalledLocales(parsedQuery.data);
+      res.json(result);
+    } catch (err) {
+      next(err);
     }
-    const result = await service.listInstalledLocales(parsedQuery.data);
-    res.json(result);
   };
 
   router.get("/myrmidon/locales", listHandler);
   router.get("/myrmidon/locales/installed", listHandler);
 
   // Detailed coverage report for a specific locale
-  const detailHandler = async (req: any, res: any) => {
-    assertBoardOrgAccess(req);
-    const { locale } = req.params;
-    if (!LOCALE_SLUG_REGEX.test(locale)) {
-      throw badRequest(`Invalid locale identifier: "${locale}". Expected 2-35 alphanumeric characters, dashes or underscores.`);
+  const detailHandler = async (req: any, res: any, next: any) => {
+    try {
+      assertBoardOrgAccess(req);
+      const { locale } = req.params;
+      if (!LOCALE_SLUG_REGEX.test(locale)) {
+        throw badRequest(`Invalid locale identifier: "${locale}". Expected 2-35 alphanumeric characters, dashes or underscores.`);
+      }
+      const report = await service.getLocaleCoverage(locale);
+      if (!report) {
+        throw notFound(`Locale "${locale}" is not installed`);
+      }
+      res.json(report);
+    } catch (err) {
+      next(err);
     }
-    const report = await service.getLocaleCoverage(locale);
-    if (!report) {
-      throw notFound(`Locale "${locale}" is not installed`);
-    }
-    res.json(report);
   };
 
   router.get("/myrmidon/locales/:locale/coverage", detailHandler);

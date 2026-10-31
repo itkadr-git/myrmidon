@@ -8,7 +8,12 @@ export const installedLocalesQuerySchema = z.object({
   minCoverage: z.coerce.number().min(0).max(100).optional(),
   search: z.string().trim().max(100).optional(),
 });
-export type InstalledLocalesQuery = z.infer<typeof installedLocalesQuerySchema>;
+
+export interface InstalledLocalesQuery {
+  type?: InstalledLocaleType;
+  minCoverage?: number;
+  search?: string;
+}
 
 export const installedLocaleSummarySchema = z.object({
   locale: z.string().min(2).max(35),

@@ -182,7 +182,7 @@ export class InstalledLocalesService {
       const rows = await this.db
         .select()
         .from(instanceSettings)
-        .where(eq(instanceSettings.key, "default"))
+        .where(eq(instanceSettings.singletonKey, "default"))
         .limit(1);
       const general = rows[0]?.general as Record<string, unknown> | undefined;
       const customLocales = general?.customLocales;

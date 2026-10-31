@@ -228,7 +228,7 @@ describe("myrmidonInstalledLocalesRoutes (HTTP endpoints)", () => {
       .get("/api/myrmidon/locales?minCoverage=150")
       .expect(400);
 
-    expect(res.body).toHaveProperty("message");
+    expect(res.body).toHaveProperty("error");
   });
 
   it("GET /api/myrmidon/locales rejects anonymous actor with 403", async () => {
@@ -254,7 +254,7 @@ describe("myrmidonInstalledLocalesRoutes (HTTP endpoints)", () => {
       .get("/api/myrmidon/locales/unknown-locale-xyz/coverage")
       .expect(404);
 
-    expect(res.body).toHaveProperty("message");
+    expect(res.body).toHaveProperty("error");
   });
 
   it("GET /api/myrmidon/locales/:locale/coverage returns 400 for invalid locale slug", async () => {
@@ -263,6 +263,6 @@ describe("myrmidonInstalledLocalesRoutes (HTTP endpoints)", () => {
       .get("/api/myrmidon/locales/!invalid@slug/coverage")
       .expect(400);
 
-    expect(res.body).toHaveProperty("message");
+    expect(res.body).toHaveProperty("error");
   });
 });
