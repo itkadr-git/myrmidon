@@ -15223,7 +15223,33 @@ export function issueRoutes(
               );
             }
             Object.assign(updateFields, lockedTransition.patch);
-            const lockedDecisionId = lockedTransition.decision ? randomUUID() : null;
+            Object.assign(issueUpdateData, lockedTransition.patch);
+            if (lockedTransition.decision?.outcome === "changes_requested") {
+              const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
+              const openBlockers = await tx
+                .select({ id: issueRelations.issueId })
+                .from(issueRelations)
+                .innerJoin(issueRows, eq(issueRows.id, issueRelations.issueId))
+                .where(
+                  and(
+                    eq(issueRelations.companyId, lockedExisting.companyId),
+                    eq(issueRelations.relatedIssueId, lockedExisting.id),
+                    eq(issueRelations.type, "blocks"),
+                    notInArray(issueRows.status, ["done", "cancelled"]),
+                  ),
+                );
+              if (hasHumanDecisionBlocker || openBlockers.length > 0) {
+                updateFields.status = "blocked";
+                issueUpdateData.status = "blocked";
+              }
+            }
+            if (lockedExisting.status === "blocked" && updateFields.status && updateFields.status !== "blocked") {
+              updateFields.blockerMetadata = null;
+              updateFields.unblockDescriptor = null;
+              issueUpdateData.blockerMetadata = null;
+              issueUpdateData.unblockDescriptor = null;
+            }
+            const lockedDecisionId = lockedTransition.decision ? (decisionId ?? randomUUID()) : null;
             if (lockedDecisionId) {
               const nextExecutionState = updateFields.executionState as Record<string, unknown> | null | undefined;
               if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -15233,6 +15259,7 @@ export function issueRoutes(
                 ...nextExecutionState,
                 lastDecisionId: lockedDecisionId,
               };
+              issueUpdateData.executionState = updateFields.executionState;
             }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
             // row under SELECT ... FOR UPDATE, re-check CAS expectations and
@@ -15481,17 +15508,19 @@ export function issueRoutes(
               );
             }
 
-            if (decision && decisionId) {
+            const effectiveDecision = lockedTransition.decision ?? decision;
+            const effectiveDecisionId = lockedDecisionId ?? decisionId;
+            if (effectiveDecision && effectiveDecisionId) {
               await tx.insert(issueExecutionDecisions).values({
-                id: decisionId,
+                id: effectiveDecisionId,
                 companyId: updated.companyId,
                 issueId: updated.id,
-                stageId: decision.stageId,
-                stageType: decision.stageType,
+                stageId: effectiveDecision.stageId,
+                stageType: effectiveDecision.stageType,
                 actorAgentId: actor.agentId ?? null,
                 actorUserId: actor.actorType === "user" ? actor.actorId : null,
-                outcome: decision.outcome,
-                body: decision.body,
+                outcome: effectiveDecision.outcome,
+                body: effectiveDecision.body,
                 createdByRunId: actor.runId ?? null,
               });
             }
