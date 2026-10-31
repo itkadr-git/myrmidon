@@ -771,6 +771,7 @@ import { buildReviewRoutingWakeContext } from "../myrmidon/review-routing/policy
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
 // myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
 // release path below hands the freed agent to it (design §3.5).
+import { tryDevReviewContinuationOnRelease, devProcessProjectIds } from "../myrmidon/review-continuation.js";
 import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
@@ -28482,7 +28483,23 @@ export function heartbeatService(
           // itself — its own assigned ready task first, otherwise the top ready
           // task of its caste and nest. The idle-pickup wake below (the "go and
           // look for work" path OPE-6640 retires) is then not used at all.
-          const swarmFreed = await matchFreedAgent(
+          const devHandled = await tryDevReviewContinuationOnRelease({
+            db,
+            releasedRun,
+            currentRunId: run.id,
+            match: (agentId, scope) => matchFreedAgent({
+              db, settings: instanceSettings,
+              enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
+              castes: createCasteDirectoryReader(db),
+            }, agentId, { ...scope, pickupAllowed, wakeBudget: idleWakeBudget }),
+            enqueueWakeup,
+            logActivity,
+            enabledProjects: devProcessProjectIds(),
+          }).catch((err) => {
+            logger.warn({ err, runId: run.id }, "dev review continuation on release failed");
+            return false;
+          });
+          const swarmFreed = devHandled ? { enabled: true, pair: null } : await matchFreedAgent(
             {
               db,
               settings: instanceSettings,
