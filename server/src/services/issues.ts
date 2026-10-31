@@ -214,6 +214,7 @@ import {
 } from "../myrmidon/channel-connectors/bridge/links.js";
 import { stageChannelTaskCompletionPublication } from "../myrmidon/channel-task-control-completion.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { resolveResponsibleHeadAgentId } from "./responsible-head.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -4455,6 +4456,9 @@ function reviewPathLabel(
         : "Queued review wake";
     case "recovery":
       return "Open review recovery";
+    // myrmidon(OPE-10045)
+    case "approved_pending_merge":
+      return "Approved, waiting for the PR merge";
   }
 }
 
@@ -10115,8 +10119,56 @@ export function issueService(db: Db) {
               trustExplicitResponsibleUserId === true,
           },
         );
+
+        let responsibleAgentId: string | null = null;
+        if (issueData.responsibleAgentId !== undefined) {
+          responsibleAgentId = issueData.responsibleAgentId ?? null;
+          if (responsibleAgentId) {
+            const [agent] = await tx
+              .select({ id: agents.id })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.id, responsibleAgentId),
+                  eq(agents.companyId, companyId),
+                ),
+              );
+            if (!agent) {
+              throw unprocessable(
+                "responsibleAgentId must belong to the same company",
+              );
+            }
+          }
+        } else if (issueData.createdByAgentId || actorRunId) {
+          responsibleAgentId = await resolveResponsibleHeadAgentId(
+            tx,
+            companyId,
+            {
+              assigneeAgentId: issueData.assigneeAgentId ?? null,
+              projectId: issueData.projectId ?? null,
+              createdByAgentId: issueData.createdByAgentId ?? null,
+            },
+          );
+        }
+
+        let effectiveResponsibleUserId: string | null = responsibleUserId;
+        if (responsibleAgentId) {
+          if (issueData.sourceTrust?.disposition === "quarantined") {
+            effectiveResponsibleUserId = responsibleUserId;
+          } else if (
+            issueData.responsibleUserId !== undefined &&
+            trustExplicitResponsibleUserId === true
+          ) {
+            effectiveResponsibleUserId = issueData.responsibleUserId;
+          } else if (issueData.parentId && responsibleUserId) {
+            effectiveResponsibleUserId = responsibleUserId;
+          } else {
+            effectiveResponsibleUserId = null;
+          }
+        }
+
         if (issueData.sourceTrust?.disposition === "quarantined") {
-          if (!responsibleUserId) {
+          if (!effectiveResponsibleUserId) {
             throw unprocessable(
               "Low-trust output cannot be quarantined without a promotion owner",
             );
@@ -10124,11 +10176,12 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {
                 sourceTrust: {
                   ...issueData.sourceTrust,
-                  promotionOwnerUserId: responsibleUserId,
+                  promotionOwnerUserId: effectiveResponsibleUserId,
                 },
               }
             : {}),
@@ -10185,7 +10238,7 @@ export function issueService(db: Db) {
               : {}),
           }))),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
-          responsibleUserId,
+          responsibleUserId: effectiveResponsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
@@ -10822,6 +10875,43 @@ export function issueService(db: Db) {
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
+      }
+      if (issueData.responsibleAgentId !== undefined) {
+        if (issueData.responsibleAgentId) {
+          const [agent] = await dbOrTx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.id, issueData.responsibleAgentId),
+                eq(agents.companyId, existing.companyId),
+              ),
+            );
+          if (!agent) {
+            throw unprocessable(
+              "responsibleAgentId must belong to the same company",
+            );
+          }
+        }
+        patch.responsibleAgentId = issueData.responsibleAgentId;
+        if (patch.responsibleAgentId && issueData.responsibleUserId === undefined) {
+          patch.responsibleUserId = null;
+        }
+      } else if (
+        issueData.assigneeAgentId !== undefined &&
+        issueData.assigneeAgentId !== null &&
+        (existing.responsibleAgentId !== null || !existing.createdByUserId)
+      ) {
+        const newHead = await resolveResponsibleHeadAgentId(dbOrTx, existing.companyId, {
+          assigneeAgentId: issueData.assigneeAgentId,
+          projectId: (issueData.projectId as string | undefined) ?? existing.projectId,
+        });
+        if (newHead) {
+          patch.responsibleAgentId = newHead;
+          if (issueData.responsibleUserId === undefined) {
+            patch.responsibleUserId = null;
+          }
+        }
       }
       if (
         patch.status === "in_progress" &&

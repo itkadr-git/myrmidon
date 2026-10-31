@@ -1618,6 +1618,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           createdByAgentId: null,
           createdByUserId: null,
           responsibleUserId: null,
+          responsibleAgentId: null,
           issueNumber: null,
           identifier: null,
           originKind,

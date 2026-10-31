@@ -578,6 +578,7 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
+    responsibleAgentId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
