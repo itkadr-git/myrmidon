@@ -1,5 +1,10 @@
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
+export {
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
+} from "./types/instance.js";
 
 /**
  * Operator-configurable setting defaults.
@@ -33,6 +38,9 @@ export const LEGACY_SETTING_DEFAULTS_ENV_KEY = "PAPERCLIP_SETTING_DEFAULTS";
 /** Instance → General fields whose schema default an operator may replace. */
 export const DEFAULTABLE_GENERAL_SETTINGS = [
   "feedbackDataSharingPreference",
+  "timeZone",
+  "numberFormat",
+  "dateFormat",
 ] as const;
 
 export type DefaultableGeneralSetting = (typeof DEFAULTABLE_GENERAL_SETTINGS)[number];
