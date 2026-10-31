@@ -3,6 +3,7 @@ export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
   engineerIdleMs: 60 * 60_000,
   reviewQueueAgeMs: 24 * 60 * 60_000,
   redCiMs: 60 * 60_000,
+  codeTasksOnNoncodingRolesMs: 30 * 60_000,
   staleMarkerMs: 60 * 60_000,
   stalledMergeMs: 60 * 60_000,
   stalledRouterMs: 60 * 60_000,
@@ -17,6 +18,7 @@ export interface DevflowHealthSettings {
   engineerIdleMs?: number;
   reviewQueueAgeMs?: number;
   redCiMs?: number;
+  codeTasksOnNoncodingRolesMs?: number;
   staleMarkerMs?: number;
   approvalMarkerMs?: number;
   stalledMergeMs?: number;
@@ -31,6 +33,7 @@ export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
     engineerIdleMs: validThreshold(value.engineerIdleMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.engineerIdleMs),
     reviewQueueAgeMs: validThreshold(value.reviewQueueAgeMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.reviewQueueAgeMs),
     redCiMs: validThreshold(value.redCiMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.redCiMs),
+    codeTasksOnNoncodingRolesMs: validThreshold(value.codeTasksOnNoncodingRolesMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.codeTasksOnNoncodingRolesMs),
     staleMarkerMs: validThreshold(value.staleMarkerMs ?? value.approvalMarkerMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.staleMarkerMs),
     stalledMergeMs: validThreshold(value.stalledMergeMs ?? value.autoMergeMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.stalledMergeMs),
     stalledRouterMs: validThreshold(value.stalledRouterMs ?? value.reviewRouterMs, DEFAULT_DEVFLOW_THRESHOLDS_MS.stalledRouterMs),

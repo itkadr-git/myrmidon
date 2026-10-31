@@ -50,6 +50,14 @@ describe("task PR sync policy", () => {
     });
   });
 
+  it.each(["todo", "backlog", "blocked"] as const)("does not auto-close a merged PR while task is %s", (issueStatus) => {
+    expect(decideTaskPrSync(facts({ issueStatus }))).toEqual({ kind: "noop", reason: "inactive_issue" });
+  });
+
+  it.each(["todo", "backlog", "blocked"] as const)("keeps the open-gate reason for a %s task", (issueStatus) => {
+    expect(decideTaskPrSync(facts({ issueStatus, openPostDeployGate: true }))).toEqual({ kind: "noop", reason: "post_deploy_gate_open" });
+  });
+
   it("does nothing while a PR is still open", () => {
     const decision = decideTaskPrSync(facts({ prs: [pr({ state: "open" })] }));
     expect(decision).toEqual({ kind: "noop", reason: "pr_still_open" });

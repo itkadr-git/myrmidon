@@ -281,6 +281,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  pricing?: "free" | "paid";
+  accounts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";

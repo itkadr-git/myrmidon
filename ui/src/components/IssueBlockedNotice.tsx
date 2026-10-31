@@ -169,7 +169,7 @@ function WaitingChipLink({
       <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-blue-800 dark:text-blue-200">
         {blocker.title}
       </span>
-      {blocker.blockerMetadata ? (
+      {blocker.blockerMetadata?.blockReason && blocker.blockerMetadata?.owner ? (
         <span
           data-testid="issue-blocker-metadata"
           className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-muted-foreground"

@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, errorResult, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -516,6 +516,105 @@ describe("execute", () => {
   }
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
+
+  it("keeps the provider's terminal error when every configured fallback also fails", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "The server is overloaded. Please retry!" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a", "backup-b"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.model).toBe("primary");
+    expect(result.summary).toBeUndefined();
+  });
+
+  it("serializes configured fallback models in declared order", async () => {
+    const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } };
+    const body = await runAndReadBody(makeCtx(config));
+    expect(body.fallback_model).toEqual([
+      { provider: "openai", model: "backup-a" },
+      { provider: "openai", model: "backup-b" },
+    ]);
+    const bareConfig = { ...wsBaseConfig, model: "primary", provider: "openai", fallbacks: ["backup-c"] };
+    expect((await runAndReadBody(makeCtx(bareConfig))).fallback_model).toEqual([
+      { provider: "openai", model: "backup-c" },
+    ]);
+  });
+
+  it("dispatches the configured fallback model after an HTTP-200 overload body", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        const run = url.includes("run-primary") ? "The server is (sometimes) overloaded due to high user traffic. Please retry!" : "fallback answer";
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: run })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(bodies[1].model_attempt_id).toContain("fallback:backup-a");
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("backup-a");
+    expect(result.summary).toBe("fallback answer");
+    expect(result.resultJson?.result).toBe("fallback answer");
+  });
+
+  it("suppresses provider error text from the final response when no fallback models are configured", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai" });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream([
+            "event: run.completed",
+            `data: ${JSON.stringify({
+              status: "completed",
+              output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+            })}`,
+            "",
+          ].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson?.result).toBe("");
+    expect(result.resultJson?.output).toBe("");
+    expect(result.resultJson?.provider_error_as_content).toBe(true);
+  });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
   // override; heartbeat merges it over the agent card into `ctx.config` before
@@ -1539,6 +1638,80 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
     expect(result.errorFamily).toBe("permanent_config_error");
+  });
+
+  it("rejects a completed overloaded response as a retryable failure, never as comment content", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overloaded",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          model: "gpt-main",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+      configuredModel: "gpt-main",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ result: "", output: "" });
+    expect(warn).toHaveBeenCalledWith("provider_error_as_content", { model: "gpt-main" });
+    warn.mockRestore();
+  });
+
+  it("keeps at least five ordinary short responses out of provider error detection", () => {
+    for (const response of [
+      "Hello.",
+      "Try again tomorrow.",
+      "The server is helpful.",
+      "Quota means a limit.",
+      "Please retry this command later.",
+      "Status: OK | Total items processed: 42",
+      "Task completed successfully | Next step: review",
+    ]) {
+      expect(isProviderErrorAsContent(response)).toBe(false);
+    }
+  });
+
+  it("detects the overloaded HTTP-200 response with a newline", () => {
+    expect(isProviderErrorAsContent("The server is (sometimes) overloaded\ndue to high user traffic. Please retry!")).toBe(true);
+  });
+
+  it("detects the full production composite overloaded response", () => {
+    expect(
+      isProviderErrorAsContent(
+        "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat an overload-like tool result as a provider error", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-tool-output",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          tool_calls: [{ name: "lookup", result: "The server is (sometimes) overloaded due to high user traffic. Please retry!" }],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorFamily).toBeUndefined();
   });
 
   it("keeps a failure without the key-permission signature a plain provider failure", () => {

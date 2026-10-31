@@ -29,6 +29,20 @@ describe("DEVFLOW runtime signals", () => {
       },
     ]);
   });
+  it("delivers codeTasksOnNoncodingRoles alert when exceeding threshold", () => {
+    const sample = {
+      companyId: "company-a",
+      subjectId: "issue-code-1",
+      subjectKind: "issue" as const,
+      title: "Code Task on Noncoding Role",
+      metric: "codeTasksOnNoncodingRolesMs" as const,
+      since: "2026-10-27T19:30:00Z",
+    };
+    expect(buildDevflowSignals([sample], { codeTasksOnNoncodingRolesMs: 30 * 60_000 + 1 }, now)).toEqual([]);
+    expect(buildDevflowSignals([sample], { codeTasksOnNoncodingRolesMs: 30 * 60_000 }, now)).toMatchObject([
+      { companyId: "company-a", subjectId: "issue-code-1", durationMs: 30 * 60_000, dedupKey: "devflow:company-a:codeTasksOnNoncodingRolesMs:issue-code-1" },
+    ]);
+  });
 
   it("builds alerts for stale marker, stalled merge, and stalled router with dedup keys", () => {
     const samples = [

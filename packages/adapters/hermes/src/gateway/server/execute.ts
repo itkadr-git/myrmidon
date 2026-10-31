@@ -1520,6 +1520,41 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 // the recovery classifier blocks the issue instead of scheduling a retry.
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
+export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
+  /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
+  /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
+  /^(?:provider|service) (?:is )?(?:temporarily )?(?:unavailable|overloaded).*(?:retry|try again)[.!]?$/i,
+  /^(?:insufficient quota|billing limit reached).*(?:retry|contact)[.!]?$/i,
+];
+
+export function isProviderErrorAsContent(response: string): boolean {
+  const normalized = response.trim().replace(/\s+/g, " ");
+  if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  if (normalized.includes(" | ")) {
+    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
+    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Parse explicit fallback models in the card's models.fallbacks field. */
+export function readGatewayFallbackModels(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const config = value as Record<string, unknown>;
+  const models = config.models;
+  const nested = typeof models === "object" && models !== null && !Array.isArray(models)
+    ? (models as Record<string, unknown>).fallbacks
+    : undefined;
+  const fallbacks = Array.isArray(config.fallbacks) ? config.fallbacks : nested;
+  if (!Array.isArray(fallbacks)) return [];
+  return fallbacks.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
 const LITELLM_DEPLOYMENT_COOLDOWN_RE =
   /\b(?:no deployments available|deployments are in cooldown)\b/i;
 
@@ -1602,6 +1637,7 @@ function parseRetryAfterToIso(value: string | null | undefined): string | null {
   }
   return null;
 }
+}
 
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
@@ -1621,6 +1657,8 @@ export function mapFinalResultForTest(input: {
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
   modelResponseStarted?: boolean;
+  /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
+  modelAttemptId?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1629,7 +1667,13 @@ export function mapFinalResultForTest(input: {
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
-  const mapped = terminalResultCode(input.terminal.status);
+  const hasToolCalls = Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0;
+  const providerErrorAsContent = Boolean(
+    input.terminal.status === "completed" && !hasToolCalls && isProviderErrorAsContent(output),
+  );
+  const mapped = providerErrorAsContent
+    ? { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" }
+    : terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const payloadCallIds = parseGatewayCallIds(payload);
@@ -1638,7 +1682,9 @@ export function mapFinalResultForTest(input: {
   const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
   const modelCallCount = explicitCallCount ?? metadataCallCount;
   const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
-  const rawErrorMessage = extractErrorMessage(payload) ?? (mapped.errorCode ? `Hermes run ${input.terminal.status}` : null);
+  const rawErrorMessage = providerErrorAsContent
+    ? "Provider returned an overload or quota error as successful response content"
+    : extractErrorMessage(payload) ?? (mapped.errorCode ? `Hermes run ${input.terminal.status}` : null);
   const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
 
   const explicitModelStarted =
@@ -1672,9 +1718,12 @@ export function mapFinalResultForTest(input: {
   // instead of retrying the same 403.
   const errorFamily =
     mapped.errorCode === "hermes_gateway_run_failed" &&
-    errorMessage !== null &&
-    errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+    providerErrorAsContent
       ? "transient_upstream"
+      : mapped.errorCode === "hermes_gateway_run_failed" &&
+          errorMessage !== null &&
+          errorMessage.includes(HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE)
+        ? "transient_upstream"
       : mapped.errorCode === "hermes_gateway_run_failed" &&
           errorMessage !== null &&
           errorMessage
@@ -1692,6 +1741,9 @@ export function mapFinalResultForTest(input: {
     ? extractCooldownRetryNotBefore(payload)
     : null;
 
+  if (providerErrorAsContent) {
+    console.warn("provider_error_as_content", { model: extractModel(payload) ?? input.configuredModel ?? "unknown" });
+  }
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
@@ -1712,7 +1764,7 @@ export function mapFinalResultForTest(input: {
     // the owner when the run has no separate final message, so it must carry the
     // complete answer. A 2,000-character cut here reached Telegram as a
     // silently truncated reply; length is handled downstream by splitting.
-    ...(output ? { summary: output } : {}),
+    ...(output && !providerErrorAsContent ? { summary: output } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -1729,8 +1781,8 @@ export function mapFinalResultForTest(input: {
       // under the standard `result` key the comment builder reads, while the
       // top-level `summary` stays a bounded copy for run lists/journals. The
       // `output` key is kept for existing gateway-specific consumers.
-      result: output ?? "",
-      output: output ?? "",
+      result: providerErrorAsContent ? "" : output ?? "",
+      output: providerErrorAsContent ? "" : output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
       modelCallCount: modelCallCount,
@@ -1745,6 +1797,7 @@ export function mapFinalResultForTest(input: {
       ...(isCooldown ? { cooldown: true } : {}),
       ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
+      ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
   };
 }
@@ -2213,7 +2266,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually reaches this adapter). ctx.runId is unique per attempt, so a
   // `replayed:true` response from Hermes is now only ever a genuine
   // duplicate create for this very attempt; that handling is kept below.
-  const idempotencyKey = ctx.runId;
+  const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
@@ -2820,8 +2873,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
-    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
-    // used when the gateway's terminal payload names none.
+    modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
     modelResponseStarted: state.modelResponseStarted,
   });
