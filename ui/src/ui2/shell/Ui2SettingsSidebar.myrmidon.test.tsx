@@ -2,13 +2,20 @@
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "@/lib/router";
 import { Ui2I18nProvider } from "../i18n/Ui2I18n";
 import { UI2_SETTINGS_SECTIONS, Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: { id: "c1", issuePrefix: "OPE" },
+    selectedCompanyId: "c1",
+  }),
+}));
 
 let container: HTMLDivElement;
 let root: Root | null = null;
@@ -37,7 +44,7 @@ function render(node: ReactNode) {
 }
 
 describe("Ui2SettingsSidebar", () => {
-  it("renders all 11 settings sections without raw keys in English", () => {
+  it("renders all 10 settings sections without raw keys in English", () => {
     const { container } = render(
       <MemoryRouter initialEntries={["/OPE/company/settings"]}>
         <Ui2I18nProvider initialLocale="en">
@@ -49,8 +56,8 @@ describe("Ui2SettingsSidebar", () => {
     const nav = container.querySelector("nav");
     expect(nav).not.toBeNull();
 
-    // Check all 11 sections are present
-    expect(UI2_SETTINGS_SECTIONS).toHaveLength(11);
+    // Check all 10 sections are present
+    expect(UI2_SETTINGS_SECTIONS).toHaveLength(10);
     for (const section of UI2_SETTINGS_SECTIONS) {
       const link = nav?.querySelector(`a[href$="${section.path}"]`);
       expect(link).not.toBeNull();
@@ -66,7 +73,7 @@ describe("Ui2SettingsSidebar", () => {
     expect(links.some((a) => a.textContent?.includes("Language"))).toBe(true);
   });
 
-  it("renders all 11 settings sections without raw keys in Russian", () => {
+  it("renders all 10 settings sections without raw keys in Russian", () => {
     const { container } = render(
       <MemoryRouter initialEntries={["/OPE/company/settings/language"]}>
         <Ui2I18nProvider initialLocale="ru">

@@ -2,13 +2,32 @@
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "@/lib/router";
 import { Ui2I18nProvider } from "../i18n/Ui2I18n";
 import { Ui2PhoneHeader, Ui2PhoneTabBar } from "./Ui2PhoneNav";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+if (typeof (globalThis as any).ResizeObserver === "undefined") {
+  (globalThis as any).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: { id: "c1", issuePrefix: "OPE" },
+    selectedCompanyId: "c1",
+  }),
+}));
+
+vi.mock("../useUi2Status", () => ({
+  useUi2AttentionCount: () => null,
+}));
 
 let container: HTMLDivElement;
 let root: Root | null = null;
