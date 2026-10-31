@@ -26,14 +26,16 @@ import {
   rotateAgentGatewayKey,
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
-import { readGatewayFallbackTopology } from "./fallback-cycles.js";
+import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
+import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
+import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
   env?: NodeJS.ProcessEnv;
 }
 
-export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
+export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const router = Router();
   const env = input.env ?? process.env;
   const settings = () => readGatewayKeySettings(env);
@@ -103,7 +105,63 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    res.json(await readGatewayFallbackTopology(input.deps, { companyId, settings: current }));
+    const report = await readGatewayFallbackTopology({ ...input.deps, db }, { companyId, settings: current });
+    try {
+      const known = await listLitellmModels(db);
+      report.models = known.map((m) => ({
+        modelName: m.modelName,
+        provider: m.provider,
+        inputCostPerToken: m.inputCostPerToken,
+        outputCostPerToken: m.outputCostPerToken,
+        isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+      }));
+    } catch {
+      // models are optional if litellmModels table is unpopulated
+    }
+    res.json(report);
+  });
+
+  /**
+   * Updates the gateway's fallback topology via LiteLLM /config/update.
+   * Enforces that fallbacks are acyclic and do not rely on a single provider.
+   */
+  router.put("/myrmidon/companies/:companyId/litellm/fallbacks", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const current = settings();
+    if (!current.canManageKeys || !current.baseUrl) {
+      disabled(res);
+      return;
+    }
+
+    const chains = (req.body?.chains ?? []) as FallbackChain[];
+    let catalog: Map<string, KnownModelInfo> | undefined;
+    try {
+      const known = await listLitellmModels(db);
+      catalog = new Map(
+        known.map((m) => [
+          m.modelName,
+          {
+            modelName: m.modelName,
+            provider: m.provider,
+            inputCostPerToken: m.inputCostPerToken,
+            outputCostPerToken: m.outputCostPerToken,
+            isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+          },
+        ]),
+      );
+    } catch {
+      catalog = new Map();
+    }
+
+    const updated = await updateGatewayFallbackTopology({ ...input.deps, db }, {
+      companyId,
+      settings: current,
+      chains,
+      catalog,
+    });
+    res.json(updated);
   });
 
   return router;
