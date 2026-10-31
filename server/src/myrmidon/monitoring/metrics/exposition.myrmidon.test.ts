@@ -256,8 +256,10 @@ describe("prometheus exposition format", () => {
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
-    // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31, plus the five recovery families = 36.
-    expect(sampleLines).toHaveLength(36);
+    // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
+    // plus failed_before_model = 32, plus the five recovery families = 37.
+    expect(sampleLines).toHaveLength(37);
+    expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -265,6 +267,21 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
     expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
+  });
+
+  it("renders myrmidon_runs_queued with reason labels when queued runs have wait reasons", () => {
+    const text = renderMetricsText(
+      snapshot({
+        runsQueued: 143,
+        runsQueuedByReason: [
+          { reason: "global_cap", count: 98 },
+          { reason: "agent_concurrency", count: 45 },
+        ],
+      }),
+    );
+    expect(text).toContain('myrmidon_runs_queued{role="all"} 143');
+    expect(text).toContain('myrmidon_runs_queued{role="all",reason="global_cap"} 98');
+    expect(text).toContain('myrmidon_runs_queued{role="all",reason="agent_concurrency"} 45');
   });
 
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —

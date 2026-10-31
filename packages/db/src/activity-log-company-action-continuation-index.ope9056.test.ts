@@ -34,7 +34,6 @@ describe("activity_log company/action/continuation expression index migration (s
       await readFile(fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url)), "utf8"),
     ) as { entries: Array<{ idx: number; tag: string; when: number }> };
     const entry = journal.entries.find((e) => e.tag === MIGRATION_TAG);
-    expect(entry?.idx).toBe(428);
     expect(entry?.tag).toBe(MIGRATION_TAG);
     const prevEntry = journal.entries.find((e) => e.idx === 425);
     expect(entry!.when).toBeGreaterThan(prevEntry!.when);

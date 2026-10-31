@@ -94,6 +94,7 @@ import { decisionRoutes } from "./routes/decisions.js";
 import { decisionQueueRoutes } from "./routes/decision-queues.js";
 import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
+import { usersRoutes } from "./routes/users.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
@@ -726,6 +727,39 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   };
 }
 
+export interface PluginReadinessRecord {
+  pluginId: string;
+  pluginKey: string;
+  readyAt: number;
+}
+
+export interface PluginReadinessState {
+  boardReadyAt: number | null;
+  plugins: Map<string, PluginReadinessRecord>;
+}
+
+export function createPluginReadinessRouter(pluginReadiness: PluginReadinessState): Router {
+  const router = Router();
+  router.get("/plugins/readiness", (req, res) => {
+    if (!req.actor?.userId && req.actor?.type !== "agent") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const boardReadyAt = pluginReadiness.boardReadyAt;
+    res.json({
+      boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
+      plugins: Array.from(pluginReadiness.plugins.values(), (plugin) => ({
+        pluginId: plugin.pluginId,
+        pluginKey: plugin.pluginKey,
+        readyAt: new Date(plugin.readyAt).toISOString(),
+        readyAfterBoardReadyMs:
+          boardReadyAt === null ? null : plugin.readyAt - boardReadyAt,
+      })),
+    });
+  });
+  return router;
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -799,6 +833,13 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  const pluginReadiness = {
+    boardReadyAt: Date.now() as number | null,
+    plugins: new Map<string, { pluginId: string; pluginKey: string; readyAt: number }>(),
+  };
+  app.locals.pluginReadiness = pluginReadiness;
+  const readinessOrigin = Date.now();
+  pluginReadiness.boardReadyAt = readinessOrigin;
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
@@ -964,6 +1005,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
   // guard below is load the board really served, so it is measured too.
@@ -1124,6 +1166,7 @@ export async function createApp(
   api.use(decisionRoutes(db, opts.decisionServiceOptions));
   api.use(decisionQueueRoutes(db));
   api.use(userProfileRoutes(db));
+  api.use(usersRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
@@ -1260,11 +1303,9 @@ export async function createApp(
     if (!endpoint || !apiKey) return null;
     return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
   };
-  // Keep provider-backed pool-chat disabled until an operator explicitly
-  // enables the deployment after recovery/settlement checks.
-  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
-    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
-  }
+  // Mount pool-chat routes (authenticated API and telegram pool bridge webhook).
+  // Individual bridges stay dormant until explicitly enabled by an operator in channel settings.
+  api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary & telegram pool bridge
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -1365,6 +1406,21 @@ export async function createApp(
       jobStore,
       toolDispatcher,
       lifecycleManager: lifecycle,
+      onPluginReady: ({ id, pluginKey }) => {
+        const readyAt = Date.now();
+        pluginReadiness.plugins.set(id, { pluginId: id, pluginKey, readyAt });
+        logger.info(
+          {
+            pluginId: id,
+            pluginKey,
+            boardReadyAt: pluginReadiness.boardReadyAt,
+            readyAt,
+            readyAfterBoardReadyMs: readyAt - (pluginReadiness.boardReadyAt ?? readyAt),
+          },
+          "plugin readiness: ready",
+        );
+      },
+
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
         hostVersion: opts.hostVersion ?? "0.0.0",

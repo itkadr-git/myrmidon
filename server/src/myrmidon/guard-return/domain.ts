@@ -169,69 +169,25 @@ export function findEngineerPr(
  */
 export function hasChangesRequestedVerdict(
   executionState: Record<string, unknown> | null | undefined,
-  comments: CommentSummary[],
 ): boolean {
-  // 1. Scan comments in reverse chronological order (newest first)
-  // to find the strictly last review verdict.
-  for (const c of comments) {
-    // Ignore system comments (e.g. posted by sweep or automation)
-    if (c.authorType === "system") continue;
-    if (!c.body) continue;
+  if (!executionState) return false;
 
-    const text = c.body.trim().toLowerCase();
-
-    const isApproved =
-      text.startsWith("approved") ||
-      text.includes("decision: approved") ||
-      text.includes("verdict: approved") ||
-      text.includes("вердикт: approved") ||
-      text.includes("вердикт: одобрено") ||
-      text.includes("одобрено ревью") ||
-      text.includes("lgtm");
-
-    const isChangesRequested =
-      text.startsWith("request changes") ||
-      text.includes("changes_requested") ||
-      text.includes("changes requested") ||
-      text.includes("decision: changes_requested") ||
-      text.includes("verdict: changes_requested") ||
-      text.includes("вердикт: changes_requested") ||
-      text.includes("замечания ревью") ||
-      text.includes("требуются доработки");
-
-    if (isApproved && !isChangesRequested) {
-      return false;
-    }
-    if (isChangesRequested) {
-      return true;
-    }
+  if (
+    executionState.status === "changes_requested" ||
+    executionState.lastDecisionOutcome === "changes_requested"
+  ) {
+    return true;
   }
 
-  // 2. If no verdict comment was found, consult executionState
-  if (executionState) {
-    if (executionState.lastDecisionOutcome === "approved") return false;
-    if (
-      executionState.status === "changes_requested" ||
-      executionState.lastDecisionOutcome === "changes_requested"
-    ) {
-      return true;
-    }
-    const stages = Array.isArray(executionState.stages)
-      ? (executionState.stages as Array<Record<string, unknown>>)
-      : [];
-    if (stages.length > 0) {
-      const latestStage = stages[stages.length - 1];
-      if (latestStage.lastDecisionOutcome === "approved") return false;
-      if (
-        latestStage.status === "changes_requested" ||
-        latestStage.lastDecisionOutcome === "changes_requested"
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  const stages = Array.isArray(executionState.stages)
+    ? (executionState.stages as Array<Record<string, unknown>>)
+    : [];
+  const latestStage = stages[stages.length - 1];
+  return Boolean(
+    latestStage &&
+      (latestStage.status === "changes_requested" ||
+        latestStage.lastDecisionOutcome === "changes_requested"),
+  );
 }
 
 /**
@@ -317,6 +273,16 @@ export function decideGuardReturn(
     return { action: "skip", reason: `Status ${candidate.status} is not in_progress or in_review` };
   }
 
+  const isPendingReviewStage =
+    candidate.status === "in_review" &&
+    candidate.executionState?.currentStageType === "review" &&
+    (candidate.executionState.status === "pending" ||
+      (candidate.executionState.currentParticipant as Record<string, unknown> | undefined)?.type === "agent" &&
+        (candidate.executionState.currentParticipant as Record<string, unknown>).agentId === candidate.assigneeAgentId);
+  if (isPendingReviewStage) {
+    return { action: "skip", reason: "Review stage is pending for its current participant" };
+  }
+
   // Check if current assignee is a non-coding role
   if (!isNoncodingRole(candidate.assigneeRole)) {
     return { action: "skip", reason: `Assignee role ${candidate.assigneeRole} is not a non-coding role` };
@@ -324,7 +290,7 @@ export function decideGuardReturn(
 
   // Check qualification: has PR from engineer OR last verdict is changes_requested
   const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
-  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
+  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState);
 
   // Check if issue is a dev-project code issue
   const isCode = isDevProjectCodeIssue({
