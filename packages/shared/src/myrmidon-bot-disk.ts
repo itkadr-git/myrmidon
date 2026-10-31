@@ -587,7 +587,7 @@ export type BotDiskSettingsPatch = z.infer<typeof patchBotDiskSettingsSchema>;
 
 export interface ResolvedBotDiskSettings {
   settings: BotDiskSettings;
-  sources: Partial<Record<BotDiskSettingKey | (typeof BOT_DISK_WORKSPACE_LIFECYCLE_KEYS)[number], BotDiskSettingSource>>;
+  sources: Record<BotDiskSettingKey, BotDiskSettingSource>;
 }
 
 function parseEnabledEnv(raw: string | undefined): boolean | null {
@@ -692,21 +692,11 @@ export function resolveBotDiskSettings(options: {
       enabled: enabled[0],
       idleTtlMs: idleTtlMs[0],
       ...optionalWorkspaceLifecycleKeys(stored),
-      ...(stored.sessionRetentionDays !== undefined ? { sessionRetentionDays: stored.sessionRetentionDays } : {}),
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
     },
-    sources: {
-      enabled: enabled[1],
-      idleTtlMs: idleTtlMs[1],
-      graceClosingMinutes: stored.graceClosingMinutes !== undefined ? "stored" : "default",
-      scratchTtlHours: stored.scratchTtlHours !== undefined ? "stored" : "default",
-      sessionRetentionDays: stored.sessionRetentionDays !== undefined ? "stored" : "default",
-      partitionThresholdPercent: stored.partitionThresholdPercent !== undefined ? "stored" : "default",
-      partitionRefuseOpenPercent: stored.partitionRefuseOpenPercent !== undefined ? "stored" : "default",
-      partitionCriticalPercent: stored.partitionCriticalPercent !== undefined ? "stored" : "default",
-    },
+    sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
 }
 

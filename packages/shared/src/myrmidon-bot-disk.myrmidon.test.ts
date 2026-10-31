@@ -85,8 +85,6 @@ describe("1.6.6-SETTINGS-UI-B resolve of the workspace-lifecycle keys", () => {
     for (const key of BOT_DISK_WORKSPACE_LIFECYCLE_KEYS) {
       expect(resolved.settings[key]).toBe(stored[key as keyof typeof stored]);
     }
-    expect(resolved.settings.sessionRetentionDays).toBe(30);
-    expect(resolved.sources.sessionRetentionDays).toBe("stored");
   });
 
   it("absent keys stay absent (no materialized defaults in the row)", () => {
