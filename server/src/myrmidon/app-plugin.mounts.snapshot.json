@@ -43,6 +43,7 @@
   "api.use(decisionRoutes(db, opts.decisionServiceOptions))",
   "api.use(decisionQueueRoutes(db))",
   "api.use(userProfileRoutes(db))",
+  "api.use(usersRoutes(db))",
   "api.use(sidebarBadgeRoutes(db))",
   "api.use(sidebarPreferenceRoutes(db))",
   "api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }))",
