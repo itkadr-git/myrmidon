@@ -206,50 +206,48 @@ pgDescribe("legacy blocked metrics PostgreSQL journal fixture", () => {
   });
 
   it("enforces migrated schema constraints and cascade behavior on foreign keys", async () => {
-    await db.transaction(async (tx) => {
-      const company = randomUUID();
-      const issueId = randomUUID();
-      const resultId = randomUUID();
-      await tx.insert(companies).values({ id: company, name: "Schema FK Test", issuePrefix: "SFK" });
-      await tx.insert(issues).values([
-        { id: issueId, companyId: company, title: "Blocked issue", status: "blocked" },
-        { id: resultId, companyId: company, title: "Resolution issue" },
-      ]);
+    const company = randomUUID();
+    const issueId = randomUUID();
+    const resultId = randomUUID();
+    await db.insert(companies).values({ id: company, name: "Schema FK Test", issuePrefix: "SFK" });
+    await db.insert(issues).values([
+      { id: issueId, companyId: company, title: "Blocked issue", status: "blocked" },
+      { id: resultId, companyId: company, title: "Resolution issue" },
+    ]);
 
-      await tx.insert(legacyBlockedImports).values({
+    await db.insert(legacyBlockedImports).values({
+      companyId: company,
+      importKey: "unique-key-1",
+      issueId,
+      class: "dependency",
+      resultIssueId: resultId,
+    });
+
+    // 1. UNIQUE(company_id, import_key) enforcement
+    await expect(
+      db.insert(legacyBlockedImports).values({
         companyId: company,
         importKey: "unique-key-1",
         issueId,
-        class: "dependency",
-        resultIssueId: resultId,
-      });
+        class: "recovery",
+        resultIssueId: null,
+      }),
+    ).rejects.toThrow();
 
-      // 1. UNIQUE(company_id, import_key) enforcement
-      await expect(
-        tx.insert(legacyBlockedImports).values({
-          companyId: company,
-          importKey: "unique-key-1",
-          issueId,
-          class: "recovery",
-          resultIssueId: null,
-        }),
-      ).rejects.toThrow();
+    // 2. FK to issues(company_id, id) ON DELETE CASCADE
+    const [rowBefore] = await db.execute(sql`select count(*)::int as count from legacy_blocked_import where issue_id = ${issueId}`);
+    expect(Number(rowBefore?.count)).toBe(1);
 
-      // 2. FK to issues(company_id, id) ON DELETE CASCADE
-      const [rowBefore] = await tx.execute(sql`select count(*)::int as count from legacy_blocked_import where issue_id = ${issueId}`);
-      expect(Number(rowBefore?.count)).toBe(1);
+    // Deleting the referenced result_issue_id triggers ON DELETE SET NULL
+    await db.execute(sql`delete from issues where id = ${resultId}`);
+    const [rowAfterResultDelete] = await db.execute<{ result_issue_id: string | null }>(
+      sql`select result_issue_id from legacy_blocked_import where issue_id = ${issueId}`,
+    );
+    expect(rowAfterResultDelete?.result_issue_id).toBeNull();
 
-      // Deleting the referenced result_issue_id triggers ON DELETE SET NULL
-      await tx.execute(sql`delete from issues where id = ${resultId}`);
-      const [rowAfterResultDelete] = await tx.execute<{ result_issue_id: string | null }>(
-        sql`select result_issue_id from legacy_blocked_import where issue_id = ${issueId}`,
-      );
-      expect(rowAfterResultDelete?.result_issue_id).toBeNull();
-
-      // Deleting the source issue triggers ON DELETE CASCADE
-      await tx.execute(sql`delete from issues where id = ${issueId}`);
-      const [rowAfterIssueDelete] = await tx.execute(sql`select count(*)::int as count from legacy_blocked_import where issue_id = ${issueId}`);
-      expect(Number(rowAfterIssueDelete?.count)).toBe(0);
-    });
+    // Deleting the source issue triggers ON DELETE CASCADE
+    await db.execute(sql`delete from issues where id = ${issueId}`);
+    const [rowAfterIssueDelete] = await db.execute(sql`select count(*)::int as count from legacy_blocked_import where issue_id = ${issueId}`);
+    expect(Number(rowAfterIssueDelete?.count)).toBe(0);
   });
 });
