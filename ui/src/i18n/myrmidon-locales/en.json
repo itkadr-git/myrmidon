@@ -285,6 +285,7 @@
       "owner_paused": "Owner paused"
     },
     "blockedReasons": {
+      "unassigned_blocked_issue_overdue": "Unassigned blocked issue overdue",
       "pending_board_decision": "Pending board decision",
       "pending_user_decision": "Pending user decision",
       "missing_successful_run_disposition": "Pick disposition",

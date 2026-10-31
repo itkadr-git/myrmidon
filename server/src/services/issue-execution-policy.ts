@@ -400,9 +400,26 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
   };
 }
 
+export function safeNormalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  if (input == null) return null;
+  try {
+    return normalizeIssueExecutionPolicy(input);
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Older persisted rows or legacy callers may contain `sequential`; normalize it to `normal`
+  // so existing policies with stages and monitor are preserved without failing validation.
+  const legacyCoerced =
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { mode?: unknown }).mode === "sequential"
+      ? { ...input, mode: "normal" }
+      : input;
+  const parsed = issueExecutionPolicySchema.safeParse(legacyCoerced);
   if (!parsed.success) {
     throw unprocessable("Invalid execution policy", parsed.error.flatten());
   }
@@ -1369,7 +1386,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? safeNormalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,
@@ -1505,7 +1522,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       };
     } else {
       patch.executionPolicy = {
-        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        ...(input.policy ?? previousPolicy ?? { mode: "normal", commentRequired: false, stages: [] }),
         monitor: restoredMonitor,
       };
       patch.monitorNextCheckAt = new Date(nextCheckAt);

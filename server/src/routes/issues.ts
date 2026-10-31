@@ -355,6 +355,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  safeNormalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
@@ -1173,7 +1174,7 @@ function hasScheduledMonitor(input: {
     input.existingMonitorNextCheckAt
   )
     return true;
-  const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
+  const policy = safeNormalizeIssueExecutionPolicy(input.executionPolicy ?? null);
   return Boolean(policy?.monitor?.nextCheckAt);
 }
 
@@ -1517,7 +1518,9 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "approval_approved",
   "budget.blocked",
   "company.inactive",
+  "dev_project_queue_empty",
   "email_received",
+  "execution_changes_requested",
   "execution_reconciliation_required",
   "execution_review_participant_recovery",
   "execution_review_requested",
@@ -3803,21 +3806,117 @@ export function issueRoutes(
         "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
       );
     }
-    if (
-      requiresEngineer({
-        labels: issueLabelNames,
-        casteKey,
-        projectDefaultCasteKey,
-        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
-        executionWorkspacePreference:
-          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
-      })
-    ) {
-      throw unprocessable("This issue requires an engineer", {
-        code: "issue_requires_engineer",
-        issueId: input.issue?.id ?? null,
-        assigneeAgentId: input.assigneeAgentId,
-      });
+    let isCode = requiresEngineer({
+      labels: issueLabelNames,
+      casteKey,
+      projectDefaultCasteKey,
+      harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+      executionWorkspacePreference:
+        input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+    });
+
+    if (!isCode && input.issue?.id) {
+      try {
+        const [pr] = await db
+          .select({ id: issueWorkProducts.id })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, input.companyId),
+              eq(issueWorkProducts.issueId, input.issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+          .limit(1);
+        if (pr) isCode = true;
+      } catch {
+        // fail-open
+      }
+    }
+
+    if (!isCode && (input.issue as any)?.executionState?.stages) {
+      isCode = true;
+    }
+
+    if (isCode) {
+      let suggested: { id: string; name: string } | null = null;
+      try {
+        const issueExecutionState = (input.issue as any)?.executionState;
+        const returnAgentId = issueExecutionState?.returnAssignee?.agentId;
+        if (returnAgentId && returnAgentId !== input.assigneeAgentId) {
+          const returnAgent = await agentsSvc.getById(returnAgentId);
+          if (returnAgent && returnAgent.role === "engineer") {
+            suggested = { id: returnAgent.id, name: returnAgent.name };
+          }
+        }
+
+        if (!suggested && input.issue?.id) {
+          const prs = await db
+            .select({
+              id: issueWorkProducts.id,
+              createdByRunId: issueWorkProducts.createdByRunId,
+            })
+            .from(issueWorkProducts)
+            .where(
+              and(
+                eq(issueWorkProducts.companyId, input.companyId),
+                eq(issueWorkProducts.issueId, input.issue.id),
+                eq(issueWorkProducts.type, "pull_request"),
+              ),
+            )
+            .limit(1);
+          if (prs.length > 0 && prs[0].createdByRunId) {
+            const [run] = await db
+              .select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, prs[0].createdByRunId))
+              .limit(1);
+            if (run?.agentId && run.agentId !== input.assigneeAgentId) {
+              const runAgent = await agentsSvc.getById(run.agentId);
+              if (runAgent && runAgent.role === "engineer") {
+                suggested = { id: runAgent.id, name: runAgent.name };
+              }
+            }
+          }
+        }
+
+        if (!suggested) {
+          const [activeEng] = await db
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, input.companyId),
+                eq(agents.role, "engineer"),
+                ne(agents.status, "retired"),
+              ),
+            )
+            .limit(1);
+          if (activeEng) {
+            suggested = activeEng;
+          }
+        }
+      } catch {
+        // fail-open for suggestion lookup
+      }
+
+      const roleStr = agent?.role ?? "non-engineer";
+      const hint = suggested
+        ? `Assign this code task to engineer ${suggested.name} (${suggested.id}) or return to PR author.`
+        : "Assign this code task to an agent with the engineer role or return to PR author.";
+
+      throw unprocessable(
+        `This issue requires an engineer. Cannot assign or keep in progress on non-coding role "${roleStr}". Suggested assignee: ${suggested ? `${suggested.name} (${suggested.id})` : "an agent with role engineer"}.`,
+        {
+          code: "issue_requires_engineer",
+          issueId: input.issue?.id ?? null,
+          assigneeAgentId: input.assigneeAgentId,
+          assigneeRole: roleStr,
+          suggestedAssigneeAgentId: suggested?.id ?? null,
+          suggestedAssigneeName: suggested?.name ?? null,
+          hint,
+        },
+      );
     }
   }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
@@ -4650,7 +4749,7 @@ export function issueRoutes(
 
     const monitor = summarizeIssueMonitor(
       issue,
-      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
     );
     if (monitor.nextCheckAt && Date.parse(monitor.nextCheckAt) > Date.now()) {
       return "Recovery action became stale because the source issue now has a scheduled monitor.";
@@ -5052,7 +5151,7 @@ export function issueRoutes(
         ? input.existing.assigneeAgentId
         : input.updateFields.assigneeAgentId;
     const executionReviewParticipants = summarizeExecutionParticipants(
-      normalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
       "review",
     );
     if (
@@ -9917,7 +10016,7 @@ export function issueRoutes(
               actorAgentId: actor.agentId,
               actorRunId: actor.runId,
             });
-            const executionPolicy = normalizeIssueExecutionPolicy(
+            const executionPolicy = safeNormalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
             const transition = applyIssueExecutionPolicyTransition({
@@ -13602,18 +13701,24 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
-      // Only a change of assignee is gated. A non-engineer who already holds the
-      // issue must still be able to move it (blocked, in_progress, todo, labels):
-      // refusing that would be a new silent stall (fail-open, Q1).
-      if (
+      // 1.6.6 GUARD-RETURN (OPE-9962): A code task of a dev project cannot be put into
+      // or kept in in_progress on a non-coding role. Changes of assignee to non-engineer
+      // on non-exempt statuses are also gated. Non-engineers who already hold the issue
+      // may only move it to blocked, todo, or cancelled.
+      const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
+      const targetAssigneeAgentId = requestedAssigneeAgentId;
+      const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
-        normalizedAssigneeAgentId !== existing.assigneeAgentId
-      ) {
+        normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      const movingToOrKeptInCodeInProgress =
+        targetStatus === "in_progress" && targetAssigneeAgentId != null;
+
+      if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,
           issue: existing,
-          status: typeof req.body.status === "string" ? req.body.status : existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
+          status: targetStatus,
+          assigneeAgentId: targetAssigneeAgentId,
           projectId: existing.projectId,
           labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
           casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
@@ -13953,7 +14058,7 @@ export function issueRoutes(
           actor.actorType,
         );
       }
-      const previousExecutionPolicy = normalizeIssueExecutionPolicy(
+      const previousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
       const nextExecutionPolicy =
@@ -15831,7 +15936,7 @@ export function issueRoutes(
         });
       }
 
-      const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(
+      const nextStoredExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         issue.executionPolicy ?? null,
       );
       const previousMonitor = summarizeIssueMonitor(
@@ -19521,7 +19626,7 @@ export function issueRoutes(
       const currentExecutionState = parseIssueExecutionState(
         currentIssue.executionState,
       );
-      const currentExecutionPolicy = normalizeIssueExecutionPolicy(
+      const currentExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =

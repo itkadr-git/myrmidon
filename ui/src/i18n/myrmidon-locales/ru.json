@@ -285,6 +285,7 @@
       "owner_paused": "Владелец на паузе"
     },
     "blockedReasons": {
+      "unassigned_blocked_issue_overdue": "Заблокирована без исполнителя более 30 минут",
       "pending_board_decision": "Ждёт решения доски",
       "pending_user_decision": "Ждёт решения пользователя",
       "missing_successful_run_disposition": "Выберите диспозицию",

@@ -830,14 +830,16 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         connectionId: remote.connection.id,
         toolName: "kv_get",
       });
-      const call = (attempt: number) =>
+      // 10 ms forces the timeouts; calls to the recovered server get a real budget,
+      // or a loaded CI runner times them out too (main ec7139a, 31.10).
+      const call = (attempt: number, timeoutMs = 10) =>
         gateway.executeTool({
           sessionToken: session.token,
           tool: slowTool,
           // Unique parameters per attempt: identical arguments of a side-effecting
           // tool are replayed from the recorded invocation instead of executed.
           parameters: { key: "a", value: `attempt-${attempt}` },
-          timeoutMs: 10,
+          timeoutMs,
         });
       const connectionHealth = async () =>
         db
@@ -923,9 +925,9 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       // recorded, so the same arguments really run (no idempotent replay).
       clock += 61_000;
       slowToolRecovered = true;
-      await expect(call(4)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(4, 5_000)).resolves.toMatchObject({ status: "completed" });
       expect(slowCallsReceived).toBe(4);
-      await expect(call(5)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(5, 5_000)).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();
     }

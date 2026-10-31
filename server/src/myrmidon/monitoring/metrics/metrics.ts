@@ -63,6 +63,7 @@ import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-cla
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
 // the in-process counter the ingress seam keeps (design section 4 and 7).
@@ -113,6 +114,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
+  "myrmidon_code_tasks_on_noncoding_roles",
   "myrmidon_swarm_claims_active",
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
@@ -244,6 +246,7 @@ export interface MetricsSnapshotFields {
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
   reviewTasksWithoutReviewer: number;
   blockedTasksWithoutAssignee: number;
+  codeTasksOnNoncodingRoles: number;
   /** Live (not released, not expired) SWARM claims. */
   swarmClaimsActive: number;
   /** All SWARM claim rows ever written. */
@@ -681,6 +684,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => issueStore.countBlockedWithoutAssignee(),
     0,
   );
+  const codeTasksOnNoncodingRoles = await guarded(
+    "myrmidon_code_tasks_on_noncoding_roles",
+    () => countCodeTasksOnNoncodingRoles(deps.db),
+    0,
+  );
   const claimCounters = await guarded(
     "myrmidon_swarm_claims_active|myrmidon_swarm_claims_total",
     () => readClaimCounters(deps.db, now),
@@ -777,6 +785,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       roleQueueTasks: roleQueues,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
+      codeTasksOnNoncodingRoles,
       swarmClaimsActive: claimCounters.active,
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
@@ -1068,6 +1077,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Blocked issues without an assignee.",
       "gauge",
       [`myrmidon_blocked_tasks_without_assignee{${R}} ${formatSampleValue(snapshot.blockedTasksWithoutAssignee)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_code_tasks_on_noncoding_roles",
+      "Code tasks of dev projects held by non-coding roles (reviewer, lead, operator).",
+      "gauge",
+      [`myrmidon_code_tasks_on_noncoding_roles{${R}} ${formatSampleValue(snapshot.codeTasksOnNoncodingRoles)}`],
     ),
   );
   blocks.push(
