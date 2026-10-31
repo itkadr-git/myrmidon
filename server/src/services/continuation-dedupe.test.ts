@@ -23,6 +23,7 @@ const support = await getEmbeddedPostgresTestSupport();
       id: companyId,
       name: "Continuation Dedupe Co",
       issuePrefix: "CDD",
+      defaultResponsibleUserId: "responsible-user",
     });
     await db.insert(issues).values({
       id: issueId,
@@ -184,6 +185,7 @@ const support = await getEmbeddedPostgresTestSupport();
         title: "HB Continuation Task",
         status: "in_progress",
         assigneeAgentId: hbAgentId,
+        responsibleUserId: "responsible-user",
       });
     });
 
@@ -354,6 +356,7 @@ const support = await getEmbeddedPostgresTestSupport();
         title: "Stranded Producer Task",
         status: "in_progress",
         assigneeAgentId: producerAgentId,
+        responsibleUserId: "responsible-user",
       });
       await db.insert(heartbeatRuns).values({
         id: priorRunId,
