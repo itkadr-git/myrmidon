@@ -13,10 +13,10 @@ function edgePage(request: { request_id: string; url: string }, markdown: string
 describe("myrmidon foraging edge reader", () => {
   it("reads through vm-exec", async () => {
     resetForagingHostState();
-    const edgeFetch = vi.fn(async (request: { request_id: string; url: string }) => edgePage(request, "hello\\nworld"));
+    const edgeFetch = vi.fn(async (request: { request_id: string; url: string }) => edgePage(request, "hello\nworld"));
     const reader = createForagingReader({ minHostIntervalMs: 0, edgeFetch, now: () => 1_000_000 });
     const result = await reader.read(source("https://example.com/a"), new AbortController().signal);
-    expect(result.text).toBe("hello\\nworld");
+    expect(result.text).toBe("hello\nworld");
     expect(result.bytes).toBe(11);
     expect(edgeFetch.mock.calls[0]?.[0]).toMatchObject({ mode: "scrape", max_depth: 0 });
   });
@@ -47,7 +47,10 @@ describe("myrmidon foraging edge reader", () => {
 
   it("uses only the vm-exec gateway", async () => {
     resetForagingHostState();
-    const fetchImpl = vi.fn(async () => Response.json(edgePage({ request_id: "server-request", url: "https://example.com/a" }, "x")));
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body)) as { request_id: string; url: string };
+      return Response.json(edgePage(payload, "x"));
+    });
     const reader = createForagingReader({ minHostIntervalMs: 0, env: { MYRMIDON_VMEXEC_URL: "https://edge.example.test", MYRMIDON_VMEXEC_TOKEN: "test-token" } as NodeJS.ProcessEnv, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 12_000_000 });
     await reader.read(source("https://example.com/a"), new AbortController().signal);
     const [endpoint, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
