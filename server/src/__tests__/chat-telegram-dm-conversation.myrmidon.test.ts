@@ -1398,6 +1398,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         agentId: fixture.assignedAgentId,
         companyId: fixture.companyId,
         source: "agent_key",
+        runId: randomUUID(),
       };
       next();
     });
