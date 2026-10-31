@@ -7,17 +7,14 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { agents } from "./agents.js";
 
 /**
  * myrmidon(1.6-GRD): one guardrail flagging event, company-scoped.
  *
- * The 1.6.1 guardrail layer is flag-only: a row says a detector fired on a
- * run's output surface. The stored `snippet` is cut from text that already
- * went through value masking (S5) and shape redaction (typed
- * [REDACTED:<subtype>] placeholders), so no raw secret or personal datum is
- * persisted here. Deleting a company drops its events; deleting a run keeps
- * the event with a null run_id. Legal-entity requisites are a separate backlog item
- * and never appear.
+ * 1.7 GUARDRAILS J.1 (OPE-9649): includes rule, mode, level, agent_id, decision.
+ * The stored `snippet` is cut from text that already went through value masking
+ * and shape redaction, so no raw secret or personal datum is persisted here.
  */
 export const guardrailEvents = pgTable(
   "guardrail_events",
@@ -25,6 +22,11 @@ export const guardrailEvents = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
+    rule: text("rule"),
+    mode: text("mode"),
+    level: text("level"),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    decision: text("decision"),
     surface: text("surface").notNull(),
     severity: text("severity").notNull(),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -39,5 +41,7 @@ export const guardrailEvents = pgTable(
       table.occurredAt,
     ),
     runIdx: index("guardrail_events_run_id_idx").on(table.runId),
+    agentIdx: index("guardrail_events_agent_id_idx").on(table.agentId),
+    ruleIdx: index("guardrail_events_rule_idx").on(table.rule),
   }),
 );
