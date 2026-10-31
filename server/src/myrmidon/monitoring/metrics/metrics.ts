@@ -63,6 +63,10 @@ import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-cla
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
+import {
+  collectLegacyBlockedMetrics, legacyBlockedReadPort, renderLegacyBlockedMetrics,
+  type LegacyBlockedMetrics, type LegacyBlockedReadPort,
+} from "./legacy-blocked.js";
 import { countCodeTasksOnNoncodingRoles } from "../../guard-return/index.js"; // myrmidon(1.6.6 GUARD-RETURN)
 
 // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
@@ -115,6 +119,11 @@ import {
 export const METRIC_FAMILIES = [
   "blocked_age_seconds",
   "blocked_missing_fields_total",
+  "legacy_blocked_migrated_total",
+  "legacy_blocked_classified_total",
+  "legacy_blocked_unknown_total",
+  "legacy_blocked_duplicate_total",
+  "legacy_blocked_remaining_age_seconds",
   ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
@@ -241,6 +250,7 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
 export interface MetricsSnapshotFields {
   interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
+  legacyBlocked?: LegacyBlockedMetrics | null;
   /** Live (running) runs right now. */
   runsActive: number;
   /** Queued runs waiting for admission right now. */
@@ -351,6 +361,7 @@ export interface MetricsSnapshot extends MetricsSnapshotFields {
 // ---------------------------------------------------------------------------
 
 export interface MetricsCollectorDeps {
+  legacyBlocked?: LegacyBlockedReadPort;
   interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
@@ -782,6 +793,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
 
   // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
+  const legacyBlocked = await guarded<LegacyBlockedMetrics | null>(
+    "legacy_blocked_migrated_total|legacy_blocked_classified_total|legacy_blocked_unknown_total|legacy_blocked_duplicate_total|legacy_blocked_remaining_age_seconds",
+    () => collectLegacyBlockedMetrics(deps.legacyBlocked ?? legacyBlockedReadPort(deps.db), now),
+    null,
+  );
   const fleetSites = await guarded(
     "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
     () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
@@ -820,6 +836,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       runScratch,
 
+      legacyBlocked,
       fleetSites,
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
@@ -946,7 +963,7 @@ function familyBlock(
 export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const role = snapshot.role ?? "all";
   const R = `role="${escapeLabelValue(role)}"`;
-  const blocks: string[] = [];
+  const blocks: string[] = [renderLegacyBlockedMetrics(snapshot.legacyBlocked ?? null, role)];
 
   const blockedAgeSamples: string[] = [];
   const blockedMissingFieldsSamples: string[] = [];
