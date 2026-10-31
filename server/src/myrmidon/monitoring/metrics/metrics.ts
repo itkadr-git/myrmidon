@@ -929,7 +929,8 @@ export function escapeLabelValue(value: string): string {
 
 /** Renders a floating-point sample value the way the format prints them. */
 export function formatSampleValue(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+  const num = Number(value ?? 0);
+  return Number.isInteger(num) ? String(num) : String(Number(num.toFixed(6)));
 }
 
 function familyBlock(

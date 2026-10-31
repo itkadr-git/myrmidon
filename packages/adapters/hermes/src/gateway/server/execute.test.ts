@@ -3613,7 +3613,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3657,7 +3657,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3695,7 +3695,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);
@@ -3738,7 +3738,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     });
 
     vi.stubGlobal("fetch", fetchMock);
-    const ctx = makeCtx({ apiBaseUrl: "http://hermes:8642" });
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://hermes:8642" });
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(1);

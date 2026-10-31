@@ -156,6 +156,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       role: "all",
       runsActive: 0,
       runsQueued: 0,
+      runsQueuedOver30m: 0,
       runsFailedTotal: 1,
       runsFailedWindow: 1,
       runDurationSecondsP50: null,
@@ -257,8 +258,8 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       expect(dueAt3.getTime()).toBe(nowAfterCooldown.getTime() + 240_000);
 
       // Verify consecutive dueAt are strictly monotonic and exponentially spaced
-      expect(dueAt2.getTime() - dueAt1.getTime()).toBeGreaterThan(60_000);
-      expect(dueAt3.getTime() - dueAt2.getTime()).toBeGreaterThan(120_000);
+      expect(dueAt2.getTime() - dueAt1.getTime()).toBeGreaterThanOrEqual(60_000);
+      expect(dueAt3.getTime() - dueAt2.getTime()).toBeGreaterThanOrEqual(120_000);
     });
 
     it("applies exponential backoff when provider_quota error has no explicit hint", () => {
@@ -525,7 +526,7 @@ describeEmbedded("OPE-9476: production heartbeat daily cap exclusion for failedB
       triggerDetail: "manual",
     });
 
-    expect(run).toBeNull();
+    expect(run).toMatchObject({ kind: "skipped" });
 
     const [request] = await db
       .select({

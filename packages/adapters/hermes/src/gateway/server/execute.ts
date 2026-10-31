@@ -1698,7 +1698,7 @@ export function mapFinalResultForTest(input: {
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
     failedBeforeModel,
-    ...(retryNotBefore ? { retryNotBefore } : {}),
+    retryNotBefore: isCooldown ? (retryNotBefore ?? null) : undefined,
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
@@ -1990,7 +1990,7 @@ export function errorResult(
     nonEmpty(nestedError?.message) ??
     nonEmpty(errorBody?.message) ??
     nonEmpty(errorBody?.detail);
-  const baseMessage = bodyErrorMessage ?? redactErrorMessage(err, redactText);
+  const baseMessage = bodyErrorMessage ? redactText(bodyErrorMessage) : redactErrorMessage(err, redactText);
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${baseMessage}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : baseMessage;
@@ -2123,6 +2123,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_missing",
       errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 
@@ -2134,6 +2139,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
   // myrmidon(H3): pass the URL so the check can trust the fleet's own
@@ -2145,6 +2155,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 
@@ -2156,6 +2171,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_key_missing",
       errorMessage: "Hermes gateway adapter requires apiKey.",
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 

@@ -2290,10 +2290,42 @@ export function computeTransientRetryDelayMs(params: {
     runStartedAt,
   } = params;
 
-  if (transientRetryNotBeforeHint) {
+  const hintDate =
+    typeof transientRetryNotBeforeHint === "string" || typeof transientRetryNotBeforeHint === "number"
+      ? new Date(transientRetryNotBeforeHint)
+      : transientRetryNotBeforeHint instanceof Date
+        ? transientRetryNotBeforeHint
+        : null;
+  const validHint = hintDate && !isNaN(hintDate.getTime()) ? hintDate : null;
+
+  const finishedDate =
+    typeof runFinishedAt === "string" || typeof runFinishedAt === "number"
+      ? new Date(runFinishedAt)
+      : runFinishedAt instanceof Date
+        ? runFinishedAt
+        : null;
+  const validFinished = finishedDate && !isNaN(finishedDate.getTime()) ? finishedDate : null;
+
+  const startedDate =
+    typeof runStartedAt === "string" || typeof runStartedAt === "number"
+      ? new Date(runStartedAt)
+      : runStartedAt instanceof Date
+        ? runStartedAt
+        : null;
+  const validStarted = startedDate && !isNaN(startedDate.getTime()) ? startedDate : null;
+
+  const nowDate =
+    typeof now === "string" || typeof now === "number"
+      ? new Date(now)
+      : now instanceof Date
+        ? now
+        : new Date();
+  const validNow = !isNaN(nowDate.getTime()) ? nowDate : new Date();
+
+  if (validHint) {
     const remainingHintMs = Math.max(
       0,
-      transientRetryNotBeforeHint.getTime() - now.getTime(),
+      validHint.getTime() - validNow.getTime(),
     );
     if (isCooldownOrQuota) {
       // Cooldown / provider quota: repeat no earlier than retry_after / cooldown,
@@ -2302,10 +2334,10 @@ export function computeTransientRetryDelayMs(params: {
       // backing off exponentially based on the cooldown window duration.
       const hintDurationMs = Math.max(
         60_000,
-        transientRetryNotBeforeHint.getTime() -
-          (runFinishedAt?.getTime() ??
-            runStartedAt?.getTime() ??
-            now.getTime() - 60_000),
+        validHint.getTime() -
+          (validFinished?.getTime() ??
+            validStarted?.getTime() ??
+            validNow.getTime() - 60_000),
       );
       const expFactor = Math.pow(2, Math.max(0, nextAttempt - 1));
       const expDelayMs = Math.min(
