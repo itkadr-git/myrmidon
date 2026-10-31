@@ -380,3 +380,144 @@ describe("POST /api/licensing/deny-list endpoint", () => {
     expect(missingFieldRes.status).toBe(400);
   });
 });
+
+describe("periodic deny-list pull (OPE-9084 L4)", () => {
+  it("pullDenyListOnce installs a newer list and rejects a lower serial without touching the file", async () => {
+    const { pullDenyListOnce } = await import("./denylist.js");
+    const k = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+      MYR_LICENSE_DENY_URL: "https://issuer.example/license.deny.json",
+    };
+    const serial2 = denyFile(k.privateKey, { instance_ids: [INSTALL_ID], serial: 2 });
+    const serial1 = denyFile(k.privateKey, { instance_ids: [], serial: 1 });
+    const responses = [serial2, serial1, serial2];
+    let call = 0;
+    const fetcher = (async () => new Response(responses[call++ % responses.length])) as typeof fetch;
+
+    // No URL -> disabled, no fetch, no file
+    const disabledEnv = { ...env, MYR_LICENSE_DENY_URL: "" };
+    const disabled = await pullDenyListOnce(disabledEnv, [k.publicKey], fetcher);
+    expect(disabled).toEqual({ status: "disabled" });
+
+    // First pull installs serial 2
+    const first = await pullDenyListOnce(env, [k.publicKey], fetcher);
+    expect(first).toEqual({ status: "updated", serial: 2 });
+    expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(serial2.trim() + "\n");
+
+    // Second pull with serial 1 is rejected; the file stays at serial 2
+    const second = await pullDenyListOnce(env, [k.publicKey], fetcher);
+    expect(second).toEqual({ status: "rejected", serial: 1 });
+    expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(serial2.trim() + "\n");
+
+    // Third pull with the same serial 2 is idempotent
+    const third = await pullDenyListOnce(env, [k.publicKey], fetcher);
+    expect(third).toEqual({ status: "unchanged", serial: 2 });
+    expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(serial2.trim() + "\n");
+  });
+
+  it("pullDenyListOnce refuses untrusted signatures and non-2xx answers", async () => {
+    const { pullDenyListOnce } = await import("./denylist.js");
+    const k = keys();
+    const foreign = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+      MYR_LICENSE_DENY_URL: "https://issuer.example/license.deny.json",
+    };
+    const signedByForeign = denyFile(foreign.privateKey, { instance_ids: [INSTALL_ID], serial: 5 });
+    const fetchForeign = (async () => new Response(signedByForeign)) as typeof fetch;
+    await expect(pullDenyListOnce(env, [k.publicKey], fetchForeign)).rejects.toThrow(/signature/);
+    expect(existsSync(env.MYR_LICENSE_DENY_PATH!)).toBe(false);
+
+    const fetch500 = (async () => new Response("boom", { status: 500 })) as typeof fetch;
+    await expect(pullDenyListOnce(env, [k.publicKey], fetch500)).rejects.toThrow(/HTTP 500/);
+    expect(existsSync(env.MYR_LICENSE_DENY_PATH!)).toBe(false);
+  });
+
+  it("startDenyListPuller runs a periodic pull, honours the interval env and stops cleanly", async () => {
+    const { startDenyListPuller } = await import("./denylist-pull.js");
+    const k = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+      MYR_LICENSE_DENY_URL: "https://issuer.example/license.deny.json",
+      MYR_LICENSE_DENY_PULL_INTERVAL_MS: "3600000",
+    };
+    const list2 = denyFile(k.privateKey, { instance_ids: [INSTALL_ID], serial: 2 });
+    let served = 0;
+    const fetcher = (async () => {
+      served += 1;
+      return new Response(list2);
+    }) as typeof fetch;
+
+    const warnings: string[] = [];
+    const ticks: Array<() => void> = [];
+    let scheduledMs: number | null = null;
+    const puller = startDenyListPuller({
+      env,
+      trustedKeys: [k.publicKey],
+      fetcher,
+      warn: (m) => warnings.push(m),
+      setIntervalFn: (fn, ms) => {
+        scheduledMs = ms;
+        ticks.push(fn);
+        return { unref: () => undefined } as unknown as ReturnType<typeof setInterval>;
+      },
+      clearIntervalFn: () => undefined,
+    });
+
+    // The startup tick already installed serial 2 next to license.key
+    await puller.pullNow();
+    expect(served).toBeGreaterThanOrEqual(1);
+    expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(list2.trim() + "\n");
+    expect(scheduledMs).toBe(3_600_000);
+    expect(warnings.some((w) => w.includes("serial 2"))).toBe(true);
+
+    // A scheduled tick does not downgrade and re-installs nothing (unchanged)
+    const before = served;
+    ticks[0]!();
+    await puller.pullNow();
+    expect(served).toBe(before + 1);
+
+    // stop() prevents any further tick from fetching
+    puller.stop();
+    const afterStop = served;
+    ticks[0]!();
+    await puller.pullNow();
+    expect(served).toBe(afterStop);
+
+    // A reader built on the same env sees the pulled list: the module is revoked
+    const reader = createDenyListReader({ env: () => env, trustedKeys: [k.publicKey], warn: () => undefined });
+    expect(reader.revoked({ instanceId: INSTALL_ID })).toBe(true);
+  });
+
+  it("startDenyListPuller stays idle without MYR_LICENSE_DENY_URL and schedules nothing", async () => {
+    const { startDenyListPuller } = await import("./denylist-pull.js");
+    const k = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+    };
+    let fetched = 0;
+    const fetcher = (async () => {
+      fetched += 1;
+      return new Response("unused");
+    }) as typeof fetch;
+    let scheduled = 0;
+    const puller = startDenyListPuller({
+      env,
+      trustedKeys: [k.publicKey],
+      fetcher,
+      setIntervalFn: (fn, ms) => {
+        scheduled += 1;
+        return setInterval(fn, ms);
+      },
+    });
+    await puller.pullNow();
+    expect(fetched).toBe(0);
+    expect(scheduled).toBe(0);
+    puller.stop();
+  });
+});

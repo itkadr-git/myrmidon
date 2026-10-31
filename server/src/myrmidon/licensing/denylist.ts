@@ -20,6 +20,9 @@ import type { TrustedIssuerKey } from "./license.js";
 
 export const DENY_PATH_ENV = "MYR_LICENSE_DENY_PATH";
 export const DENY_STATE_PATH_ENV = "MYR_LICENSE_DENY_STATE_PATH";
+export const DENY_URL_ENV = "MYR_LICENSE_DENY_URL";
+export const DENY_PULL_INTERVAL_ENV = "MYR_LICENSE_DENY_PULL_INTERVAL_MS";
+export const DEFAULT_DENY_PULL_INTERVAL_MS = 60_000;
 const DENY_FILE_NAME = "license.deny.json";
 const DENY_STATE_NAME = "license.deny.state";
 const MAX_DENY_BYTES = 1_000_000;
@@ -42,6 +45,45 @@ export function denyListPath(env: NodeJS.ProcessEnv): string {
 
 export function denyStatePath(env: NodeJS.ProcessEnv): string {
   return (env[DENY_STATE_PATH_ENV] ?? "").trim() || path.join(licenseDir(env), DENY_STATE_NAME);
+}
+
+export function denyListUrl(env: NodeJS.ProcessEnv): string | null {
+  return (env[DENY_URL_ENV] ?? "").trim() || null;
+}
+
+export function denyPullIntervalMs(env: NodeJS.ProcessEnv): number {
+  const raw = (env[DENY_PULL_INTERVAL_ENV] ?? "").trim();
+  if (/^[0-9]{1,10}$/.test(raw)) {
+    const val = Number(raw);
+    if (val >= 1_000) return val;
+  }
+  return DEFAULT_DENY_PULL_INTERVAL_MS;
+}
+
+export interface DenyListPullResult {
+  status: "disabled" | "updated" | "unchanged" | "rejected";
+  serial?: number;
+}
+
+/** Fetch, verify, and atomically install the issuer's signed deny-list. */
+export async function pullDenyListOnce(
+  env: NodeJS.ProcessEnv,
+  trustedKeys: readonly TrustedIssuerKey[],
+  fetcher: typeof fetch = fetch,
+): Promise<DenyListPullResult> {
+  const url = denyListUrl(env);
+  if (!url) return { status: "disabled" };
+  const response = await fetcher(url, { signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`deny-list pull returned HTTP ${response.status}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_DENY_BYTES) throw new Error("deny-list pull response is too large");
+  const text = Buffer.from(bytes).toString("utf8").trim();
+  const parsed = parseDenyList(text, trustedKeys);
+  const highest = highestAcceptedDenySerial(env, trustedKeys);
+  if (highest !== null && parsed.serial < highest) return { status: "rejected", serial: parsed.serial };
+  if (highest === parsed.serial) return { status: "unchanged", serial: parsed.serial };
+  writeDenyListFile(denyListPath(env), text);
+  return { status: "updated", serial: parsed.serial };
 }
 
 /**
