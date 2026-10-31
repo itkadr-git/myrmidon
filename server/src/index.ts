@@ -228,6 +228,7 @@ import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
 } from "./myrmidon/pending-interaction-wake-sweep.js"; // myrmidon(P12)
+import { createInteractionEscalationSweep } from "./myrmidon/interaction-escalation/index.js"; // myrmidon(P1.8)
 // myrmidon(P11): database backup catch-up
 import { BACKUP_CATCHUP_WINDOW_ENV, readBackupCatchUpSettings, startBackupCatchUp } from "./myrmidon/backup-catch-up.js";
 import {
@@ -1898,6 +1899,21 @@ async function startServerWithDatabaseTeardown(
       logger.error({ err }, "pending interaction wake sweep failed");
     }));
   };
+  // myrmidon(P1.8): periodic escalation sweep for overdue pending interactions
+  const interactionEscalationSweep = createInteractionEscalationSweep({
+    db: db as any,
+    instanceSettings: instanceSettingsService(db),
+  });
+  const scheduleInteractionEscalationSweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(interactionEscalationSweep().then((result) => {
+      if (result.escalated > 0) {
+        logger.info(result, "interaction escalation sweep escalated overdue interactions");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "interaction escalation sweep failed");
+    }));
+  };
   // myrmidon(TASK-PR-SYNC): links each task to the pull requests that deliver it
   // through the work-products surface, refreshes their state from GitHub through
   // the existing resolver, and settles the task (status done, one comment with the
@@ -2686,6 +2702,7 @@ async function startServerWithDatabaseTeardown(
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
+        scheduleInteractionEscalationSweep(); // myrmidon(P1.8)
         // myrmidon(TASK-PR-SYNC): swept by its own poll timer, not heartbeat ticks.
         scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
@@ -2901,6 +2918,7 @@ async function startServerWithDatabaseTeardown(
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
+      scheduleInteractionEscalationSweep(); // myrmidon(P1.8)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
       scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)

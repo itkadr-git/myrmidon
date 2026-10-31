@@ -610,6 +610,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
       const executionState = parseIssueExecutionState(issue.executionState);
+      const executionStage = executionState
+        ? {
+            wakeRole: "reviewer" as const,
+            stageId: executionState.currentStageId ?? null,
+            stageType: executionState.currentStageType ?? null,
+            currentParticipant: executionState.currentParticipant ?? null,
+            returnAssignee: executionState.returnAssignee ?? null,
+            reviewRequest: executionState.reviewRequest ?? null,
+            lastDecisionOutcome: executionState.lastDecisionOutcome ?? null,
+            allowedActions: ["approve", "request_changes"],
+          }
+        : null;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -625,6 +637,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               currentStageId: executionState?.currentStageId ?? null,
               currentStageType: executionState?.currentStageType ?? null,
+              ...(executionStage ? { executionStage } : {}),
             },
             "normal_model",
           ),
@@ -655,6 +668,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               retryOfRunId: finishingRun.id,
               currentStageId: executionState?.currentStageId ?? null,
               currentStageType: executionState?.currentStageType ?? null,
+              ...(executionStage ? { executionStage } : {}),
               // myrmidon(OPE-10045): name both decisions explicitly (same text as
               // REVIEW_DECISION_RECOVERY_INSTRUCTION in myrmidon/review-stage-recovery).
               reviewRecoveryInstruction:

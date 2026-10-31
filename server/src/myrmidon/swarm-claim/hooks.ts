@@ -21,6 +21,8 @@ import {
 import { planClaim } from "./domain.js";
 import { findLiveClaimForIssue, heartbeatClaim, insertClaim, releaseClaim } from "./store.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
+import { invalidateFailedRunsCache } from "./effective-pheromone.js";
+import { invalidateLastRunRowsCache } from "./matcher.js";
 
 /** Shared ports shape both hooks need. */
 interface HookDeps {
@@ -110,17 +112,30 @@ export async function releaseSwarmClaimsForRunImpl(
   run: { id: string; companyId: string },
   now = new Date(),
 ): Promise<string[]> {
+  invalidateLastRunRowsCache(run.companyId);
   const { settings } = await resolved(deps)();
   if (!settings.enabled) return [];
 
   // The claims of this run's agent on this company's issues — restricted to
   // the issue the run actually held, which the heartbeat run row knows.
   const runRow = await deps.db
-    .select({ nativeIssueId: heartbeatRuns.nativeIssueId, agentId: heartbeatRuns.agentId })
+    .select({
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+    })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
     .limit(1);
   const held = runRow[0];
+  if (
+    held?.status === "failed" ||
+    held?.status === "blocked" ||
+    held?.status === "needs_followup" ||
+    held?.status === "timed_out"
+  ) {
+    invalidateFailedRunsCache(run.companyId);
+  }
   if (!held?.nativeIssueId) return [];
 
   const live = await findLiveClaimForIssue(deps.db, held.nativeIssueId);
