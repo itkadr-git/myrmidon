@@ -6,6 +6,7 @@ import {
   summarizeCheckRuns,
   createPullRequestCiResolver,
   withCiResolveDeadline,
+  clearCiCacheForTests,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
 import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
@@ -357,6 +358,9 @@ describe("fetchCommitCheckRuns", () => {
 });
 
 describe("createPullRequestCiResolver", () => {
+  beforeEach(() => {
+    clearCiCacheForTests();
+  });
   it("resolves CI result for pull request with caching", async () => {
     const mockDb = {
       select: vi.fn(),
@@ -637,7 +641,7 @@ describe("createPullRequestCiResolver", () => {
     const resolver = createPullRequestCiResolver(mockDb as never, {
       fetch: mockFetch as never,
       prResolver: async () => ({
-        headSha: "head-sha-123",
+        headSha: "head-sha-fetch-fail",
         headRef: "bot/test",
       }),
       tokenProvider: async () => "token-123",
@@ -659,7 +663,7 @@ describe("createPullRequestCiResolver", () => {
     const mockDb = { select: vi.fn() };
     const resolver = createPullRequestCiResolver(mockDb as never, {
       prResolver: async () => ({
-        headSha: "head-sha-123",
+        headSha: "head-sha-token-fail",
         headRef: "bot/test",
       }),
       tokenProvider: async () => {

@@ -373,6 +373,10 @@ interface CacheEntry {
 
 const ciCache = new Map<string, CacheEntry>();
 
+export function clearCiCacheForTests(): void {
+  ciCache.clear();
+}
+
 export const GITHUB_REQUEST_TIMEOUT_MS = 8_000;
 
 export async function withCiResolveDeadline<T>(
