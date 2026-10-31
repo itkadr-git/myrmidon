@@ -44,6 +44,7 @@ import type {
 import { reportPoolAccountStatus } from "./signals.js";
 import type { LitellmSyncService } from "../litellm-sync/service.js";
 import { withCompanySyncGuard } from "../litellm-sync/lock.js";
+import { sanitizeErrorMessage } from "../litellm-sync/client.js";
 
 const reportAccountStatusSchema = z.object({
   accountNumber: z.number().int().positive(),
@@ -263,6 +264,30 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
 
     res.json({ models });
   });
+
+  const handleLitellmChannels = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    try {
+      const syncService = await deps.getLitellmSync(companyId);
+      if (!syncService) {
+        res.json({ channels: [], enabled: false, message: "LiteLLM gateway sync is not configured" });
+        return;
+      }
+      const channels = await syncService.listChannels();
+      res.json({ channels, enabled: true });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      res.status(502).json({
+        channels: [],
+        enabled: true,
+        error: sanitizeErrorMessage(raw),
+      });
+    }
+  };
+
+  router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
+  router.get("/myrmidon/companies/:companyId/litellm/channels", handleLitellmChannels);
 
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;

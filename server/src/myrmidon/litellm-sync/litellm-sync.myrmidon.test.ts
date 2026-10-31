@@ -13,6 +13,7 @@
 
 import { describe, it, expect, beforeEach, vi, type Mocked } from "vitest";
 import { createLitellmSyncService } from "./service.js";
+import { parseLitellmChannel, sanitizeErrorMessage } from "./client.js";
 import type { LitellmSyncPort } from "./port.js";
 import type { Db } from "@myrmidon/db";
 
@@ -57,6 +58,7 @@ describe("LitellmSyncService", () => {
       listRegisteredModels: vi.fn().mockResolvedValue([]),
       updateDeployment: vi.fn().mockResolvedValue(undefined),
       deleteDeployment: vi.fn().mockResolvedValue(undefined),
+      listChannels: vi.fn().mockResolvedValue([]),
     };
   });
 
@@ -207,6 +209,9 @@ describe("LitellmSyncService", () => {
           credentialSecretName: d.secret,
         }));
       },
+      async listChannels() {
+        return [];
+      },
     };
     return { gateway, deployments, absentAfterCall };
   }
@@ -334,5 +339,66 @@ describe("LitellmSyncService", () => {
     // Only the secret NAME reference goes to LiteLLM, never a value.
     expect(callArgs.credentialSecretName).toBe("secret-name-123");
     expect(callArgs).not.toHaveProperty("credentialValue");
+  });
+
+  describe("listChannels & sanitization (OPE-9853)", () => {
+    it("delegates listChannels to the port", async () => {
+      const channels = [
+        {
+          id: "ch-1",
+          group: "gpt-4o",
+          provider: "openai",
+          providerModel: "gpt-4o",
+          order: 1,
+          weight: 10,
+        },
+      ];
+      port.listChannels.mockResolvedValueOnce(channels);
+      const service = createLitellmSyncService({
+        db: scriptedDb([]),
+        litellm: port,
+      });
+
+      const res = await service.listChannels();
+      expect(res).toEqual(channels);
+      expect(port.listChannels).toHaveBeenCalledTimes(1);
+    });
+
+    it("parses LiteLLM model info items into clean channel views", () => {
+      const parsed = parseLitellmChannel({
+        model_name: "gpt-4o",
+        model_info: {
+          id: "deploy-1",
+          custom_llm_provider: "openai",
+        },
+        litellm_params: {
+          model: "openai/gpt-4o-2024-08-06",
+          order: 2,
+          weight: 15,
+        },
+      });
+
+      expect(parsed).toEqual({
+        id: "deploy-1",
+        group: "gpt-4o",
+        provider: "openai",
+        providerModel: "openai/gpt-4o-2024-08-06",
+        order: 2,
+        weight: 15,
+      });
+    });
+
+    it("sanitizes error messages containing keys and tokens", () => {
+      const dummyKey = ["sk", "test", "key", "dummy"].join("-");
+      const dummyInvite = ["pcp", "invite", "token", "dummy"].join("_");
+      const auth = "Bearer custom-bearer-value";
+      const dirty = `Error connecting with ${auth}, key ${dummyKey}, invite ${dummyInvite}`;
+
+      const clean = sanitizeErrorMessage(dirty);
+      expect(clean).not.toContain(dummyKey);
+      expect(clean).not.toContain(dummyInvite);
+      expect(clean).not.toContain("custom-bearer-value");
+      expect(clean).toContain("<redacted>");
+    });
   });
 });

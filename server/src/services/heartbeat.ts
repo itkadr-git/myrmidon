@@ -71,6 +71,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
+import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -734,7 +735,7 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 // myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
-import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -8160,7 +8161,24 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  let ciResult: PullRequestCiResult | null = null;
+  let pullRequestsCi: PullRequestCiResult[] = [];
+  if (issueId) {
+    try {
+      const ciResolver = createPullRequestCiResolver(input.db);
+      pullRequestsCi = await withCiResolveDeadline(
+        ciResolver.resolveForIssue(input.companyId, issueId),
+        [],
+      );
+      ciResult = pullRequestsCi[0] ?? null;
+    } catch {
+      // Non-blocking fallback
+    }
+  }
+
   const payload = {
+    ciResult,
+    pullRequestsCi,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
     // The canonical envelope is `contextSnapshot.executionContinuation`;
@@ -8298,6 +8316,17 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage:
       Object.keys(executionStage).length > 0 ? executionStage : null,
+    reviewRecoveryInstruction: readNonEmptyString(
+      input.contextSnapshot.reviewRecoveryInstruction,
+    ),
+    reviewDecisionRetryAttempt:
+      typeof input.contextSnapshot.reviewDecisionRetryAttempt === "number"
+        ? input.contextSnapshot.reviewDecisionRetryAttempt
+        : null,
+    reviewDecisionMaxRetries:
+      typeof input.contextSnapshot.reviewDecisionMaxRetries === "number"
+        ? input.contextSnapshot.reviewDecisionMaxRetries
+        : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
@@ -8633,6 +8662,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier: string | null;
     title: string;
+    status?: string | null;
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
@@ -8685,6 +8715,11 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   externalChatProvider?: string | null;
   nativeRunner?: boolean;
+  wakePayload?: {
+    ciResult?: PullRequestCiResult | null;
+    pullRequestsCi?: PullRequestCiResult[] | null;
+    [key: string]: unknown;
+  } | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -8878,6 +8913,54 @@ export function buildPaperclipTaskMarkdown(input: {
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
         fenceTaskText(input.taskPlan.body.trim()),
       );
+    }
+    const wakePayload = input.wakePayload;
+    const prsCi = (
+      Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
+        ? wakePayload.pullRequestsCi
+        : wakePayload?.ciResult
+          ? [wakePayload.ciResult]
+          : []
+    ) as PullRequestCiResult[];
+
+    if (prsCi.length > 0) {
+      lines.push("", "Pull Request CI Status (board-verified on exact head SHA):");
+      for (const ci of prsCi) {
+        lines.push(
+          `- Repository: ${ci.repository} (PR #${ci.pullNumber})`,
+          `  - Head SHA: ${ci.headSha ?? "unknown"}`,
+          `  - CI Result: ${ci.conclusion.toUpperCase()} (${ci.summary})`,
+          `  - Authoritative: ${ci.authoritative ? "true" : "false"}`,
+          `  - Status: ${ci.status}`,
+          `  - Checked at: ${ci.checkedAt}`,
+        );
+        if (ci.completedAt) {
+          lines.push(`  - Completed at: ${ci.completedAt}`);
+        }
+        if (ci.failedJobs && ci.failedJobs.length > 0) {
+          lines.push("  - Failed jobs:");
+          for (const job of ci.failedJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
+        }
+      }
+
+      const allAuthoritative = prsCi.every((ci) => ci.authoritative);
+      if (issue.status === "in_review") {
+        lines.push(
+          "",
+          "Reviewer directive:",
+          allAuthoritative
+            ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
+            : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
+        );
+      } else {
+        lines.push(
+          "",
+          "CI directive:",
+          "The board automatically tracks CI on the exact head SHA of the PR. Do not call `gh pr checks`.",
+        );
+      }
     }
   }
   if (ancestors.length > 0) {
@@ -11836,6 +11919,20 @@ export function heartbeatService(
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           currentStageId: executionState?.currentStageId ?? null,
           currentStageType: executionState?.currentStageType ?? null,
+          ...(executionState
+            ? {
+                executionStage: {
+                  wakeRole: "reviewer" as const,
+                  stageId: executionState.currentStageId ?? null,
+                  stageType: executionState.currentStageType ?? null,
+                  currentParticipant: executionState.currentParticipant ?? null,
+                  returnAssignee: executionState.returnAssignee ?? null,
+                  reviewRequest: executionState.reviewRequest ?? null,
+                  lastDecisionOutcome: executionState.lastDecisionOutcome ?? null,
+                  allowedActions: ["approve", "request_changes"],
+                },
+              }
+            : {}),
           reviewRecoveryInstruction: isReviewCiWaitMonitor
             ? REVIEW_CI_WAIT_RECOVERY_INSTRUCTION
             : "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
@@ -22980,6 +23077,7 @@ export function heartbeatService(
               id: issueRef.id,
               identifier: issueRef.identifier,
               title: issueRef.title,
+              status: issueRef.status,
               workMode: issueRef.workMode,
               conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
@@ -22991,6 +23089,7 @@ export function heartbeatService(
         attachmentOmissions: paperclipWakePayload?.attachmentOmissions,
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
+        wakePayload: paperclipWakePayload,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
