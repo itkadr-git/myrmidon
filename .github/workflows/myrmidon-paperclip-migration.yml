@@ -26,6 +26,7 @@ on:
     paths:
       - "tests/fixtures/paperclip-migration/**"
       - "scripts/myrmidon/paperclip-migration-*"
+      - "scripts/myrmidon/migrate/**"
       - "cli/src/commands/myrmidon-migrate*"
       - ".github/workflows/myrmidon-paperclip-migration.yml"
   workflow_dispatch:
@@ -228,3 +229,127 @@ jobs:
           path: |
             ${{ runner.temp }}/work/reports/
           if-no-files-found: warn
+
+  vendor-live-seed-1012:
+    name: Vendor Live Seed & Verification (v2026.1012.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Run seed unit tests
+        shell: bash
+        run: |
+          node --test scripts/myrmidon/migrate/seed-paperclip.test.mjs
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Prepare database and start official Paperclip 2026.1012.0 container
+        shell: bash
+        env:
+          PGPASSWORD: postgrespassword
+        run: |
+          set -euo pipefail
+          psql -h localhost -U postgres -c "CREATE DATABASE paperclip_vendor_seed;"
+
+          docker pull ghcr.io/paperclipai/paperclip:2026.1012.0
+          docker run -d --name paperclip-1012 --network host \
+            -e HOST=127.0.0.1 -e PORT=3100 \
+            -e DATABASE_URL="postgres://postgres:postgrespassword@localhost:5432/paperclip_vendor_seed" \
+            -e PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
+            -e PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+            -e PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=false \
+            ghcr.io/paperclipai/paperclip:2026.1012.0
+
+          echo "Waiting for Paperclip 2026.1012.0 to be ready..."
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3100/api/health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "Paperclip 1012.0 is healthy!"
+              break
+            fi
+            if [ "$i" -eq 120 ]; then
+              echo "Timeout waiting for Paperclip container"
+              docker logs paperclip-1012
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run seed script against Paperclip 1012.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seed"
+          cat << 'EOF' > "$RUNNER_TEMP/seed/passwords.txt"
+          Secr3tP@ssw0rd!1
+          Secr3tP@ssw0rd!2
+          EOF
+
+          node scripts/myrmidon/migrate/seed-paperclip.mjs \
+            --base-url http://127.0.0.1:3100 \
+            --passwords-file "$RUNNER_TEMP/seed/passwords.txt" \
+            --out "$RUNNER_TEMP/seed/seed-report.json"
+
+          cp "$RUNNER_TEMP/seed/seed-report.json" seed-report.json
+          cat seed-report.json
+
+      - name: Validate seed report counts
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const report = JSON.parse(fs.readFileSync("seed-report.json", "utf8"));
+            const c = report.counts;
+            console.log("Validating report counts:", c);
+            if (!c) throw new Error("Missing counts in report");
+            if (c.companies < 2) throw new Error("Expected at least 2 companies, got " + c.companies);
+            if (c.projects < 3) throw new Error("Expected at least 3 projects, got " + c.projects);
+            if (c.issues < 200) throw new Error("Expected at least 200 issues, got " + c.issues);
+            if (c.comments < 1000) throw new Error("Expected at least 1000 comments, got " + c.comments);
+            if (c.documents < 1) throw new Error("Expected documents with revisions");
+            if (c.documentRevisions < 2) throw new Error("Expected document revisions");
+            if (c.attachments < 1) throw new Error("Expected attachments");
+            if (c.largeAttachments < 1) throw new Error("Expected attachment > 2MB");
+            if (c.agents < 6) throw new Error("Expected at least 6 agents, got " + c.agents);
+            if (c.agentsWithAppearance < 6) throw new Error("Expected at least 6 agents with appearance, got " + c.agentsWithAppearance);
+            if (c.issuesWithTitleNeedsGeneration < 3) throw new Error("Expected at least 3 issues with title_needs_generation, got " + c.issuesWithTitleNeedsGeneration);
+            if (c.secrets < 5) throw new Error("Expected at least 5 secrets, got " + c.secrets);
+            if (c.users < 2) throw new Error("Expected at least 2 users, got " + c.users);
+            console.log("All seed-report assertions passed successfully!");
+          '
+
+      - name: Upload seed report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: seed-report-v2026.1012.0
+          path: seed-report.json
+          if-no-files-found: error
