@@ -43,7 +43,9 @@ concurrency:
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+  # 31.10: only PR runs cancel each other. A push to main never cancels the main CI in flight: with a 4+ h hosted
+  # queue every auto-merge restarted main CI from the back of the queue and main never got a verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -96,6 +98,12 @@ jobs:
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
+          # (full-ci label keeps full). rel/* PRs use the same lowering but escalate back to full above
+          # MAX_FAST_FILES_PER_PACKAGE; other PRs add --pr-light: a package over the limit runs its direct
+          # tests (changed, next to the source, direct importers, shared guards; capped, drops are logged)
+          # instead of going full. main, merge_group and tags never get either flag.
+          PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -110,7 +118,10 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            case "$BASE_REF" in
+              rel/*) args+=(--release-fast) ;;
+              *) if [ "$EVENT" = "pull_request" ] && [ "$PR_FAST" = "true" ]; then args+=(--release-fast --pr-light); fi ;;
+            esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -127,7 +138,7 @@ jobs:
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -268,7 +279,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -339,7 +350,7 @@ jobs:
     name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 50
     steps:
       - name: Checkout repository
@@ -411,7 +422,7 @@ jobs:
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -489,6 +500,12 @@ jobs:
           mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
+
+      - name: Brand release audit (DEBRAND gate)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/myrmidon/docs-branding-guard.mjs
+          node scripts/myrmidon/brand-release-audit.mjs --gate
 
       - name: SQL template lint (myrmidon)
         if: ${{ !cancelled() }}
@@ -570,7 +587,7 @@ jobs:
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
     if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
