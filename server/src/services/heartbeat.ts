@@ -29409,33 +29409,35 @@ export function heartbeatService(
     // myrmidon(WAKE-10.2 / OPE-9657): low-priority events (P3-P4) accumulate
     // in the agent's event digest without triggering a wake run.
     if (!opts.manualUserWake) {
-      const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason ?? "heartbeat";
-      const normalizedReason = effectiveReason.trim().toLowerCase();
-      const isExplicitlyClassified =
-        Object.prototype.hasOwnProperty.call(EVENT_PRIORITY_BY_TYPE, normalizedReason) ||
-        normalizedReason.startsWith("progress.") ||
-        normalizedReason.startsWith("metric.") ||
-        normalizedReason.startsWith("heartbeat.") ||
-        normalizedReason.startsWith("log.");
-      const priority = classifyEventPriority(effectiveReason);
-      if (
-        isExplicitlyClassified &&
-        isDigestAccumulatedPriority(priority) &&
-        normalizedReason !== "heartbeat_timer"
-      ) {
-        getSharedEventDigestService().recordEvent({
-          agentId,
-          issueId,
-          type: effectiveReason,
-          priority,
-          payload: (payload as Record<string, unknown> | null) ?? undefined,
-          timestamp: new Date(),
-        });
-        logger.info(
-          { agentId, issueId, reason: effectiveReason, priority },
-          "myrmidon.wake.accumulated_in_digest: low-priority wake event buffered without waking agent",
-        );
-        return null;
+      const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+      if (effectiveReason) {
+        const normalizedReason = effectiveReason.trim().toLowerCase();
+        const isExplicitlyClassified =
+          Object.prototype.hasOwnProperty.call(EVENT_PRIORITY_BY_TYPE, normalizedReason) ||
+          normalizedReason.startsWith("progress.") ||
+          normalizedReason.startsWith("metric.") ||
+          normalizedReason.startsWith("heartbeat.") ||
+          normalizedReason.startsWith("log.");
+        const priority = classifyEventPriority(effectiveReason);
+        if (
+          isExplicitlyClassified &&
+          isDigestAccumulatedPriority(priority) &&
+          normalizedReason !== "heartbeat_timer"
+        ) {
+          getSharedEventDigestService().recordEvent({
+            agentId,
+            issueId,
+            type: effectiveReason,
+            priority,
+            payload: (payload as Record<string, unknown> | null) ?? undefined,
+            timestamp: new Date(),
+          });
+          logger.info(
+            { agentId, issueId, reason: effectiveReason, priority },
+            "myrmidon.wake.accumulated_in_digest: low-priority wake event buffered without waking agent",
+          );
+          return null;
+        }
       }
     }
 
