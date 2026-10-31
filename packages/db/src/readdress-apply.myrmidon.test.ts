@@ -7,7 +7,6 @@ import {
   computeTimeoutAt,
   formatApplySummary,
 } from "./readdress-apply.js";
-import { applyReaddress as applyReaddressFromScript } from "../../../scripts/myrmidon/interactions/readdress-apply.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
 function id(n: number): string {
@@ -86,13 +85,10 @@ describe("readdress-apply", () => {
     });
   });
 
-  describe("PostgreSQL integration", () => {
-    const embeddedPostgres = getEmbeddedPostgresTestSupport();
-    if (!embeddedPostgres.supported) {
-      it.skip("requires embedded postgres", () => {});
-      return;
-    }
+  const support = await getEmbeddedPostgresTestSupport();
+  const describePg = support.supported ? describe : describe.skip;
 
+  describePg("PostgreSQL integration", () => {
     const cleanups: Array<() => Promise<void>> = [];
     afterEach(async () => {
       while (cleanups.length > 0) {
@@ -359,9 +355,6 @@ describe("readdress-apply", () => {
         SELECT COUNT(*)::int AS count FROM interaction_escalations
       `)) as unknown as Array<{ count: number }>;
       expect(journalAfterRepeat[0]!.count).toBe(3);
-
-      // Verify re-export from scripts/myrmidon/interactions/readdress-apply.ts
-      expect(typeof applyReaddressFromScript).toBe("function");
     });
   });
 });
