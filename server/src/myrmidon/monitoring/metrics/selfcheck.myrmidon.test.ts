@@ -61,7 +61,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_continuation_deduped_total" &&
         family !== "swarm_claim_conflicts_total" &&
         family !== "swarm_lease_recovered_total" &&
-        family !== "myrmidon_agent_failed_before_model_total" &&
+        family !== "myrmidon_guardrail_triggers_total" &&
         family !== "myrmidon_readiness_ratio" &&
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&
