@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createAuthSessionRecoveryCoordinator,
+  authSessionRecovery,
+} from "@/lib/auth-session-recovery";
+import {
   createTenantSessionRecoveryCoordinator,
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
 import { authApi } from "./auth";
-import { authSessionRecovery } from "@/lib/auth-session-recovery";
 
 afterEach(() => {
   authSessionRecovery.reset();
