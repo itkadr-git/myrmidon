@@ -188,7 +188,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   const handleLitellmChannels = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     if (typeof (deps.service as any).listLitellmChannels === "function") {
       try {
         const channels = await (deps.service as any).listLitellmChannels(companyId);

@@ -266,7 +266,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
 
   const handleLitellmChannels = async (req: Request, res: any) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     try {
       const syncService = await deps.getLitellmSync(companyId);
       if (!syncService) {
