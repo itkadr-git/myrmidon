@@ -611,17 +611,39 @@ async function readCorpusShadowLatencies(
 }
 
 /** Knowledge-on-change coverage and revision delay for recently completed work. */
-async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<{ share: number; delayP50: number | null; delayP95: number | null }> {
-  const closed = await db.select({ id: issues.id, identifier: issues.identifier }).from(issues).where(and(inArray(issues.status, ["done", "cancelled"]), gte(issues.completedAt, windowStart)));
-  if (closed.length === 0) return { share: 0, delayP50: null, delayP95: null };
-  const identifiers = closed.map((row) => row.identifier).filter((value): value is string => Boolean(value));
-  const covered = identifiers.length === 0 ? [] : await db.selectDistinct({ ref: knowledgeSources.ref }).from(knowledgeSources).where(and(eq(knowledgeSources.kind, "task"), inArray(knowledgeSources.ref, identifiers)));
-  const revisions = await db.select({ createdAt: knowledgeRevisions.createdAt, ref: knowledgeSources.ref }).from(knowledgeSources).innerJoin(knowledgeRevisions, eq(knowledgeRevisions.id, knowledgeSources.revisionId)).where(eq(knowledgeSources.kind, "pr"));
-  const prs = await db.select({ mergedAt: issueWorkProducts.updatedAt, externalId: issueWorkProducts.externalId, url: issueWorkProducts.url }).from(issueWorkProducts).where(and(eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.status, "merged")));
+async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<{ share: number | null; delayP50: number | null; delayP95: number | null }> {
+  const changed = await db
+    .selectDistinct({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+    .where(and(
+      inArray(issues.status, ["done", "cancelled"]),
+      gte(issues.completedAt, windowStart),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "merged"),
+    ));
+  if (changed.length === 0) return { share: null, delayP50: null, delayP95: null };
+  const identifiers = changed.map((row) => row.identifier).filter((value): value is string => Boolean(value));
+  const covered = identifiers.length === 0 ? [] : await db
+    .selectDistinct({ ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .where(and(eq(knowledgeSources.kind, "task"), inArray(knowledgeSources.ref, identifiers)));
+  const revisions = await db
+    .select({ createdAt: knowledgeRevisions.createdAt, ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .innerJoin(knowledgeRevisions, eq(knowledgeRevisions.id, knowledgeSources.revisionId))
+    .where(eq(knowledgeSources.kind, "pr"));
+  const prs = await db
+    .select({ mergedAt: issueWorkProducts.updatedAt, externalId: issueWorkProducts.externalId, url: issueWorkProducts.url })
+    .from(issueWorkProducts)
+    .where(and(eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.status, "merged")));
   const mergeByRef = new Map<string, Date>();
   for (const pr of prs) for (const key of [pr.externalId, pr.url]) if (key) mergeByRef.set(key, pr.mergedAt);
-  const delays = revisions.map((row) => { const merged = mergeByRef.get(row.ref); return merged ? (row.createdAt.getTime() - merged.getTime()) / 1000 : null; }).filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0).sort((a,b) => a-b);
-  return { share: covered.length / closed.length, delayP50: delays.length ? percentile(delays, 0.5) : null, delayP95: delays.length ? percentile(delays, 0.95) : null };
+  const delays = revisions
+    .map((row) => { const merged = mergeByRef.get(row.ref); return merged ? (row.createdAt.getTime() - merged.getTime()) / 1000 : null; })
+    .filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  return { share: covered.length / changed.length, delayP50: delays.length ? percentile(delays, 0.5) : null, delayP95: delays.length ? percentile(delays, 0.95) : null };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -805,7 +827,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   const knowledgeMetrics = await guarded(
     "myrmidon_knowledge_on_change_share|myrmidon_knowledge_revision_delay_seconds",
     () => readKnowledgeOnChangeMetrics(deps.db, new Date(now.getTime() - 7 * 24 * 3600 * 1000)),
-    { share: 0, delayP50: null, delayP95: null },
+    { share: null, delayP50: null, delayP95: null },
   );
   const roleQueues = await guarded(
     "myrmidon_role_queue_tasks",
