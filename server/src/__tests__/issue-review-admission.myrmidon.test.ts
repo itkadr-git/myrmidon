@@ -138,6 +138,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       runtimeConfig: {},
       permissions: {},
     });
+    const issueId = randomUUID();
     const stageId = randomUUID();
     const policy = {
       mode: "normal",
