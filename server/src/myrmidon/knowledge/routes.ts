@@ -475,6 +475,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           {
             content: req.body.content,
             changeSummary: req.body.changeSummary ?? null,
+            title: req.body.title,
+            summary: req.body.summary,
             sources: req.body.sources,
             force: req.body.force,
             reason: req.body.reason,
