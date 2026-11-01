@@ -32332,6 +32332,7 @@ export function heartbeatService(
               reason === "issue_continuation_needed" &&
               isRecovery &&
               !recoveryParentRunId &&
+              typeof continuationRevision === "string" &&
               continuationRevision.startsWith("recovery:")
             ) {
               enrichedContextSnapshot.recoveryParentRunId = recoveryToken;
