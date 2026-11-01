@@ -4,7 +4,7 @@ import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 describe("pool quota payload helpers", () => {
   it("parses Google Resets in duration into unix seconds", () => {
     expect(parseResetAfterText("429: Resets in 26 hours", 1_000_000)).toBe(94_600);
-    expect(parseResetAfterText("Resets in 30 minutes", 1_000_000)).toBe(1_001_800);
+    expect(parseResetAfterText("Resets in 30 minutes", 1_000_000)).toBe(2_800);
     expect(parseResetAfterText("other error", 1_000_000)).toBeNull();
   });
 
