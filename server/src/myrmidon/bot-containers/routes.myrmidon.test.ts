@@ -9,7 +9,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 import type { BotApplyJobStatus } from "@myrmidon/db";
 import { forbidden } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
-import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON } from "./agent-config.js";
+import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON, botKeyForAgent } from "./agent-config.js";
 import { APPLIED_LIMIT_PENDING_NOTE, EXTERNAL_GATEWAY_NOTE, GATEWAY_RATE_LIMIT_LOOKBACK_MS } from "./concurrency-sync.js";
 import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
