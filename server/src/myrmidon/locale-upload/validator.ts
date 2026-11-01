@@ -40,7 +40,7 @@ export function findDisallowedPayloads(value: unknown): string[] {
   const findings: string[] = [];
   if (/<script\b/i.test(value)) findings.push("<script");
   if (/\son[a-zA-Z]+\s*=/i.test(value)) findings.push("event-handler attribute");
-  if (/\b(?:javascript|data|vbscript)\s*:/i.test(value)) findings.push("javascript:/data: URL");
+  if (/\b(?:javascript|data|vbscript)\s*:/i.test(value)) findings.push("javascript:");
   return findings;
 }
 

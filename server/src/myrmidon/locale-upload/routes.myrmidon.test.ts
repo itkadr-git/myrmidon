@@ -12,14 +12,26 @@ function createTestApp(actorType = "board") {
     next();
   });
   const service = {
-    validateOnly: async (input: any) => ({
-      valid: true,
-      targetLocale: input.locale,
-      baseLocale: "en",
-      report: { totalCandidateKeys: Object.values(input.catalog).length },
-      errors: [],
-      warnings: [],
-    }),
+    validateOnly: async (input: any) => {
+      const values = Object.values(input.catalog).flatMap((value: any) =>
+        value && typeof value === "object" && !Array.isArray(value) ? Object.values(value) : [value],
+      );
+      const errors = values.flatMap((value: unknown) =>
+        typeof value !== "string"
+          ? [{ path: "app.invalidLeaf", code: "INVALID_TYPE", message: "Value must be a string" }]
+          : /<script\b/i.test(value)
+            ? [{ path: "app.title", code: "DISALLOWED_PAYLOAD", message: "Disallowed payload" }]
+            : [],
+      );
+      return {
+        valid: errors.length === 0,
+        targetLocale: input.locale,
+        baseLocale: "en",
+        report: { totalCandidateKeys: values.length },
+        errors,
+        warnings: [],
+      };
+    },
     uploadLocale: async (input: any) => ({ ...input, stored: true }),
     listCustomLocales: async () => [],
     getCustomLocale: async () => null,
