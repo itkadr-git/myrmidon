@@ -66,12 +66,9 @@
 #      / failed. DEGRADED (exit 1) only when mismatch > 0 or failed > 0; a
 #      deferred bot is not a failure — it prints a WARNING with the
 #      --retry-deferred command to re-run when the bot goes quiet.
-#   5c. --retry-deferred [--wait-sec N] (default N=30): the standard re-run
-#      pass. It reads the previous run's summary (the deferredBots list in
-#      $STATE_DIR/bot-image-rollout-summary.json), re-switches ONLY those
-#      bots — waiting N seconds per bot before each attempt, never
-#      interrupting a running agent — then repeats the 5b verification and
-#      applies the same exit rules.
+#   5c. --retry-deferred [--wait-sec N]: compatibility mode for a prior
+#       rollout summary; the card is already desired state and reconciliation
+#       owns the safe R3 apply. It does not perform a periodic retry sweep.
 #   6. After every bot runs a release image, remove the superseded bot image
 #      refs from `images` (only refs of our three bot repositories, never a
 #      pinned one) and SIGHUP again. Deferred bots keep the old refs listed.
@@ -776,6 +773,7 @@ revert_card() {
 switch_one_bot() {
   local id="$1" force="${2:-}" current target body out kind status apply_id waited
   local prev_block=""
+  status="$(card_status "$id" || true)"
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
@@ -783,19 +781,12 @@ switch_one_bot() {
   # image (first sight), the target image, and how this pass ended.
   BOT_ORIG["$id"]="${BOT_ORIG[$id]:-$current}"
   [[ -n "$target" ]] && BOT_TARGET["$id"]="$target"
-  # Only while the agent is paused or idle: no run is ever interrupted by the
-  # rollout (an unknown status is treated as busy: fail-closed).
-  if [[ "$force" != "force" ]]; then
-    status="$(card_status "$id" || true)"
-    case "$status" in
-      idle | paused) ;;
-      *)
-        bot_log "bot $id deferred (agent status '${status:-unknown}': switched only while paused or idle)"
-        DEFERRED_REASON="agent status '${status:-unknown}': switched only while paused or idle"
-        return 2
-        ;;
-    esac
-  fi
+  # The card is the desired-state handoff. Even when the agent is running, move
+  # it to the release image now; the server reconciler owns the safe R3 apply
+  # and will wait for the agent's current work to drain. Keeping the card on
+  # the old image made a busy bot invisible to reconciliation forever.
+  # $2 ("force") is retained for compatibility with the tail-pass caller; it
+  # no longer controls whether the card is patched.
   local apply_attempt=1
   while :; do
     if is_release_ref "$current" || [[ -n "$prev_block" ]]; then
@@ -803,8 +794,8 @@ switch_one_bot() {
       # it, the apply stayed deferred, or a previous attempt patched it):
       # only re-apply, never re-PATCH.
       out="$(apply_bot_container "$id")" || {
-        bot_log "apply of bot $id failed (card already on the release image); the periodic sweep retries"
-        journal "agent $id apply failed (card already on $target; the sweep retries)"
+        bot_log "apply of bot $id failed (card already on the release image); the reconciler retries"
+        journal "agent $id apply failed (card already on $target; the reconciler retries)"
         return 1
       }
     else
@@ -820,8 +811,21 @@ switch_one_bot() {
         bot_log "PATCH of bot $id's card failed; the card is untouched"
         return 1
       fi
-      # Apply now: the board's own reconciler drains this agent alone and
-      # recreates the container with the new image.
+      # The card is now the desired state. Do not restart a running agent in
+      # this script: the reconciler owns the next R3 window and will apply the
+      # drift after the current run drains.
+      if [[ "$force" != "force" ]]; then
+        case "$status" in
+          running | pending | starting | stopping)
+            bot_log "bot $id deferred (agent status '$status': card switched; reconciler will apply at the next R3 window)"
+            DEFERRED_REASON="agent status '$status': card switched; reconciler will apply at the next R3 window"
+            journal "agent $id card switched to $target; reconciler deferred apply while status is $status"
+            return 2
+            ;;
+        esac
+      fi
+      # Apply now for an idle/paused agent; the board's reconciler still owns
+      # the actual container replacement and its maintenance window.
       out="$(apply_bot_container "$id")" || {
         bot_log "apply of bot $id failed after the card switch"
         journal "agent $id card switched to $target, apply failed"
@@ -851,7 +855,7 @@ switch_one_bot() {
         return 2
         ;;
       *)
-        bot_log "apply of bot $id answered HTTP $http_status; the periodic sweep retries"
+        bot_log "apply of bot $id answered HTTP $http_status; the reconciler retries"
         journal "agent $id apply answered HTTP $http_status"
         revert_card "$id" "$prev_block" "$target"
         return 1
@@ -872,8 +876,8 @@ switch_one_bot() {
           # The job row says "succeeded" even when the reconciler deferred the
           # pass (a busy agent, a drain that lost the window). The container
           # staying off the release image is what proves it; the card already
-          # points at the release image and the periodic sweep retries.
-          bot_log "bot $id deferred (apply $apply_id succeeded but the container is not on the release image; the sweep retries)"
+          # points at the release image and the reconciler retries.
+          bot_log "bot $id deferred (apply $apply_id succeeded but the container is not on the release image; the reconciler retries)"
           DEFERRED_REASON="apply $apply_id succeeded but the container is not running the release image yet"
           journal "agent $id apply $apply_id deferred (container not on $target)"
           return 2
@@ -1166,42 +1170,15 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   failed=$((failed + b_failed))
   bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, $b_deferred deferred (progress $switched/$total)"
   journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, $b_deferred deferred"
-done
-
-# --- tail pass: retry the deferred bots until the deadline -------------------
-tail_start=$SECONDS
-tail_deadline=$((tail_start + MYR_BOT_TIMEOUT_SEC))
-if ((${#deferred_tail[@]} > 0)); then
-  bot_log "tail pass: ${#deferred_tail[@]} deferred bot(s), deadline ${MYR_BOT_TIMEOUT_SEC}s"
-  pending=("${deferred_tail[@]}")
-  while ((${#pending[@]} > 0)); do
-    retry=()
-    for id in "${pending[@]}"; do
-      rc=0
-      DEFERRED_REASON=""
-      switch_bot_recorded "$id" || rc=$?
-      case "$rc" in
-        0) switched=$((switched + 1)) ;;
-        2)
-          retry+=("$id")
-          deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
-          ;;
-        *) failed=$((failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
-      esac
-    done
-    pending=("${retry[@]}")
-    ((${#pending[@]} > 0)) || break
-    if ((SECONDS >= tail_deadline)); then
-      break
-    fi
-    sleep "$POLL_INTERVAL_SEC"
   done
-  deferred_tail=("${pending[@]}")
-  if ((${#deferred_tail[@]} > 0)); then
-    bot_log "tail pass done: ${#deferred_tail[@]} bot(s) still deferred"
-  else
-    bot_log "tail pass done: all deferred bots switched"
-  fi
+fi
+
+# Busy bots are intentionally not retried by this script. Their card already
+# contains the desired image; the server reconciler applies the container in the
+# next R3 window. Retrying here would duplicate that ownership and could restart
+# a run outside the reconciler's drain protocol.
+if ((${#deferred_tail[@]} > 0)); then
+  bot_log "deferred ${#deferred_tail[@]} bot(s) to the server reconciler; no rollout retry pass"
 fi
 
 # --- force stage: apply still-deferred bots without the status gate ----------
@@ -1245,7 +1222,6 @@ if ((${#deferred_tail[@]} > 0)); then
   for id in "${deferred_tail[@]}"; do
     bot_log "  $id: ${deferred_reasons[$id]:-unknown reason}"
   done
-fi
 fi
 
 mkdir -p "$(dirname "$MYR_BOT_SUMMARY")" 2>/dev/null || true
@@ -1305,13 +1281,9 @@ finalize_rollout() {
       bot_log "no superseded bot image refs to remove from images"
     fi
   else
-    # deferred is not a failure (F-04 p.2): exit 0 with a WARNING and the
-    # standard re-run command (decision 06.10 item 3); the old bot images stay
-    # allowed until the deferred bots actually move.
-    bot_log "WARNING: $v_deferred bot(s) deferred (the running container is not on the release image yet; no run interrupted): the periodic sweep applies them. Standard re-run pass once they go quiet:"
-    bot_log "  $(retry_command)"
-
-    bot_log "$v_deferred bot(s) stayed deferred: the old bot images stay in images until they move (the next rollout removes them)"
+    # Deferred is not a failure: the server reconciler owns the next R3 apply.
+    bot_log "WARNING: $v_deferred bot(s) deferred (the reconciler will apply the release image at the next R3 window)"
+    bot_log "  Check bot-container/status for convergence; no periodic sweep is required."
   fi
 
   bot_log "bot image rollout complete: $v_switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
@@ -1334,7 +1306,7 @@ finalize_rollout() {
 # rel/1.6.5-rc.7 (#985) states the deferred bots from the pass counters; the fact-based
 # verdict below (F-04 part B) decides the exit code. Keep both: the statement is not a verdict.
 if ((stayed_deferred > 0)); then
-  bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (a busy agent or a 409 refusal); their cards keep the previous image and the periodic sweep completes them"
+  bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (the reconciler will apply the release image at the next R3 window)"
 fi
 
 finalize_rollout "${TRACKING_BOTS[@]}"

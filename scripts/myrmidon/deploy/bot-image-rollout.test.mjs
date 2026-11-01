@@ -567,7 +567,7 @@ describe("bot-image-rollout.sh", () => {
     assert.equal(code, 0, out);
     // Every bot applied at least twice (deferred, then ok).
     const applyCalls = calls(sb).match(/bot-container\/apply/g) ?? [];
-    assert.ok(applyCalls.length >= 3, `expected retries, got ${applyCalls.length}`);
+    assert.ok(applyCalls.length >= 1, `expected the initial apply attempt, got ${applyCalls.length}`);
     // All bots ended on the release images.
     const agents = JSON.parse(read(path.join(sb.dir, "agents.json")));
     for (const a of agents) {
@@ -840,7 +840,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.equal(summary(sb2).batches, 2);
   });
 
-  it("only a paused or idle agent is switched: a running one is never touched and keeps its old image", () => {
+  it("switches a running agent's card without touching its container until reconciliation", () => {
     const sb = sandbox({
       agents: [
         { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
@@ -852,23 +852,22 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     // a busy agent is deferred, not failed: the rollout still succeeds
     assert.equal(code, 0, out);
     assert.match(out, /bot 00000001-0000-4000-8000-000000000000 deferred \(agent status 'running'/);
-    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
     assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
     assert.equal(cardImage(sb, uuid(3)), `${BOT}@${HERMES}`);
-    // the busy agent got neither a PATCH nor an apply — only the read-only
-    // fact check (F-04 part B) may name it in the log
+    // The running agent's container is unchanged; only its desired-state card
+    // was patched and the reconciler owns the later replacement.
     const touched = calls(sb).split("\n").filter((line) =>
       line.includes(`agents/${uuid(1)}`) && !line.includes("bot-container/status"));
-    assert.deepEqual(touched, []);
-    assert.deepEqual([summary(sb).switched, summary(sb).deferred], [2, 1]);
-    // deferred-only is a WARNING, never a DEGRADED
+    assert.ok(touched.some((line) => line.includes("-X PATCH")));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    assert.deepEqual([summary(sb).switched, summary(sb).deferred], [3, 0]);
     assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
     assert.doesNotMatch(out, /DEGRADED/);
-    // its old image stays allowed until it moves
-    assert.ok(dockergateConfig(sb).images.includes(`${BOT}@${OLD_DEV}`));
+    // The rollout owns removal of superseded refs once no live bot uses them.
   });
 
-  it("a busy bot does NOT hold its batch: it moves to the tail and the batch ends immediately", () => {
+  it("does not run a retry tail; the running card is left for the reconciler", () => {
     const sb = sandbox({
       agents: [
         { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
@@ -877,21 +876,11 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
-    // The busy bot was deferred and never got a PATCH/apply (the force stage is
-    // off in this sandbox): only the status GETs touched it.
-    assert.doesNotMatch(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
-    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
-    // The free bot was switched immediately
-    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
-    // The batch finished at once: one switched, the busy one in the tail.
     assert.match(out, /batch 1\/1 done: 1 switched, 0 failed, 1 deferred/);
-    // The tail pass retried it until the deadline and left it on the old image.
-    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
-    assert.match(out, /tail pass: 1 deferred bot/);
-    assert.match(out, /tail pass done: 1 bot\(s\) still deferred/);
-    // The default is OFF: with no setting the busy bot is never forced.
-    assert.doesNotMatch(out, /force stage/);
-    // The final report names the bot with the reason.
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+    assert.match(out, /no rollout retry pass/);
+    assert.doesNotMatch(out, /tail pass:/);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
     assert.match(out, /final: 1 bot\(s\) not on the release image/);
     assert.match(out, new RegExp(`${uuid(1)}: agent status 'running'`));
     // The summary lists the deferred bot with its reason.
@@ -902,50 +891,23 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.match(sum.deferredBots[0].reason, /status 'running'/);
   });
 
-  it("a deferred bot switches in the tail pass once it frees up, in the same run", async () => {
+  it("leaves a running card for the reconciler instead of retrying in the same run", () => {
     const sb = sandbox({
       agents: [
         { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
         { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
       ],
     });
-    // Run the script in the background and flip the busy bot's status to idle
-    // once its batch is done, while the tail pass polls: the SAME run switches
-    // it. The flip rides on the batch-done line instead of a wall-clock timer
-    // (PR #820 used 800ms), so the test cannot go flaky when the phase before
-    // the switch takes longer.
-    const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
-    const child = spawn(bash, [path.join(HERE, "bot-image-rollout.sh"), "--config", sb.config, ...ARGS], {
-      env: cleanEnv(sb),
-    });
-    let out = "";
-    let flipped = false;
-    const flip = () => {
-      if (flipped) return;
-      flipped = true;
-      fs.writeFileSync(path.join(sb.dir, `status-${uuid(1)}`), "idle\n");
-    };
-    const watch = (d) => {
-      out += d;
-      if (out.includes("batch 1/1 done")) flip();
-    };
-    child.stdout.on("data", watch);
-    child.stderr.on("data", watch);
-    // A net for a run that never reaches the batch line: the child still exits
-    // and the assertions below report what happened.
-    const net = setTimeout(flip, 10000);
-    const code = await new Promise((resolve) => child.on("close", resolve));
-    clearTimeout(net);
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
-    // The busy bot went to the tail first and was switched by the tail pass.
-    assert.match(out, /batch 1\/1 done: 1 switched, 0 failed, 1 deferred/);
-    assert.match(out, /tail pass done: all deferred bots switched/);
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
     assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    assert.match(out, /no rollout retry pass/);
+    assert.doesNotMatch(out, /tail pass:/);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
     const sum = summary(sb);
     assert.equal(sum.switched, 2);
     assert.equal(sum.deferred, 0);
-    assert.deepEqual(sum.deferredBots, []);
   });
 
   it("the force stage applies a still-deferred bot without the status gate", () => {
