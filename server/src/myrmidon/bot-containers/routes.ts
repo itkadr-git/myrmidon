@@ -468,6 +468,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     assertCompanyAccess(req, companyId);
 
     const env = envNow();
+    const runtimeEnv = deps.env === undefined;
     const enabled = isBotContainersEnabled(env);
     const savedAllowlist = runtimeEnv ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
     const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
