@@ -1,19 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq, isNull } from "drizzle-orm";
-import {
-  issues,
-  legacyBlockedImports,
-  type Db,
-} from "../../../packages/db/src/index.js";
-import { buildRecoveryDedupeKey, type RecoveryFactoryKind, type RecoveryFactoryOwner } from "../../../packages/shared/src/recovery-factory.js";
+import { issues, legacyBlockedImports, type Db } from "../../../packages/db/src/index.js";
+import { buildRecoveryDedupeKey } from "../../../packages/shared/src/recovery-factory.js";
 import { issueRecoveryActionService } from "../../../server/src/services/issue-recovery-actions.js";
 import {
-  legacyBlockedClassSchema,
   legacyBlockedReportRowSchema,
   type LegacyBlockedReportRow,
 } from "../../../packages/shared/src/legacy-blocked.js";
-import { issueBlockReasonSchema } from "../../../packages/shared/src/validators/issue.js";
 import { runLegacyBlockedDryRun } from "./dry-run.js";
 
 export type LegacyBlockedApplyOptions = { apply?: boolean };
@@ -26,18 +20,9 @@ export type LegacyBlockedApplyRow = {
 };
 export type LegacyBlockedApplyResult = { rows: LegacyBlockedApplyRow[]; changed: number };
 
-function recoveryKind(row: LegacyBlockedReportRow): RecoveryFactoryKind | undefined {
-  // Only map explicitly identified recovery kinds; free-form prose cannot safely
-  // select an operational recovery action.
-  const match = row.evidence.match(/(?:kind|recovery kind)[:= ]+([a-z_]+)/i);
-  const candidate = match?.[1];
-  const supported: readonly string[] = [
-    "ci_restart", "github_access", "branch_relay", "review_participant_restore",
-    "workspace_myr_ws", "devbuild", "disk_space", "operator_action",
-    "missing_disposition", "deliberate_wait_without_target", "stranded_assigned_issue",
-    "workspace_validation", "configuration_validation", "active_run_watchdog", "issue_graph_liveness",
-  ];
-  return candidate && supported.includes(candidate) ? candidate as RecoveryFactoryKind : undefined;
+function recoveryKind(): RecoveryFactoryKind | undefined {
+  // The current source report cannot supply a typed kind.
+  return undefined;
 }
 
 function recoveryOwner(row: LegacyBlockedReportRow): RecoveryFactoryOwner | undefined {
@@ -48,23 +33,18 @@ function recoveryOwner(row: LegacyBlockedReportRow): RecoveryFactoryOwner | unde
 }
 
 function blockerMetadata(row: LegacyBlockedReportRow, source: { assigneeAgentId: string | null; assigneeUserId: string | null }) {
-  const parsedClass = legacyBlockedClassSchema.safeParse(row.class);
-  if (!parsedClass.success || parsedClass.data === "unknown" || parsedClass.data === "terminal" || parsedClass.data === "recovery") return undefined;
-  const reason = issueBlockReasonSchema.safeParse(parsedClass.data);
+  if (row.class !== "dependency" || row.oldBlockers.length === 0) return undefined;
   const owner = source.assigneeAgentId ? { agentId: source.assigneeAgentId } : source.assigneeUserId ? { userId: source.assigneeUserId } : undefined;
-  // Never synthesize a blocker reference from the import key; that is not evidence
-  // of a live dependency, external wait, or resource.
-  if (!reason.success || !owner) return undefined;
+  if (!owner) return undefined;
   const next = new Date(Date.now() + 60 * 60_000);
-  const metadata = {
-    blockReason: reason.data,
+  return {
+    blockReason: "dependency" as const,
     owner,
     nextCheckAt: next.toISOString(),
     timeoutAt: new Date(next.getTime() + 24 * 60 * 60_000).toISOString(),
-    escalationPolicy: "notify_lead",
-    externalRef: row.evidence,
+    escalationPolicy: "notify_lead" as const,
+    blockedByIssueIds: row.oldBlockers,
   };
-  return metadata.externalRef.trim().length > 0 ? metadata : undefined;
 }
 
 /**
@@ -82,20 +62,32 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
       continue;
     }
     const validRow = parsedReportRow.data;
-    if (validRow.class === "unknown" || validRow.class === "terminal") {
-      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "unknown", detail: `Retained blocked; classification=${validRow.class}; evidence=${validRow.evidence}` });
+    if (validRow.class === "unknown") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "unknown", detail: `Retained blocked; classification=unknown; evidence=${validRow.evidence}` });
+      continue;
+    }
+    if (validRow.class === "terminal") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: `Terminal class is not migrated; retained blocked; evidence=${validRow.evidence}` });
       continue;
     }
     if (!options.apply) {
       rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "dry_run", detail: `Would apply ${validRow.class}; evidence=${validRow.evidence}` });
       continue;
     }
-    if (validRow.class === "recovery" && (!recoveryKind(validRow) || !recoveryOwner(validRow) || validRow.proposedSlaMinutes === undefined)) {
-      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Recovery kind/owner/SLA are not explicitly present; retained blocked." });
+    if (validRow.class === "recovery") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Recovery class has no structured kind/owner/SLA in the source report; retained blocked." });
       continue;
     }
-    if (validRow.class !== "recovery" && !blockerMetadata(validRow, { assigneeAgentId: null, assigneeUserId: null })) {
-      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "No typed blocker reference and explicit owner are available; retained blocked." });
+    if (validRow.class === "dependency") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Dependency class lacks explicit dependency identifiers in the source report; retained blocked." });
+      continue;
+    }
+    if (validRow.class === "recovery") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Recovery class has no structured kind/owner/SLA in the source report; retained blocked." });
+      continue;
+    }
+    if (validRow.class === "dependency") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Dependency class lacks explicit dependency identifiers in the source report; retained blocked." });
       continue;
     }
     const outcome = await db.transaction(async (tx) => {
@@ -112,19 +104,14 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
 
       let resultIssueId: string | undefined;
       if (validRow.class === "recovery") {
-        const kind = recoveryKind(validRow);
+        const kind = recoveryKind();
         const owner = recoveryOwner(validRow);
         if (!owner || !kind || validRow.proposedSlaMinutes === undefined) {
           return { outcome: "skipped" as const, detail: "Missing explicit recovery kind, valid owner, or SLA; retained blocked." };
         }
-        const factory = issueRecoveryActionService(tx as unknown as Db);
         const result = await factory.ensureRecoveryIssue({
-          kind,
-          sourceIssueId: row.issueId,
-          dedupeKey: buildRecoveryDedupeKey({ kind, scope: source.companyId, cause: row.importKey }),
-          owner,
-          slaMinutes: validRow.proposedSlaMinutes,
-          nextCheckAt: new Date(Date.now() + validRow.proposedSlaMinutes * 60_000).toISOString(),
+          sourceIssueId: validRow.issueId,
+          dedupeKey: buildRecoveryDedupeKey({ scope: source.companyId, cause: validRow.importKey }),
           evidence: { source: "legacy_blocked_import", importKey: validRow.importKey, classification: validRow.class, evidence: validRow.evidence },
         });
         resultIssueId = result.recoveryIssueId ?? undefined;
