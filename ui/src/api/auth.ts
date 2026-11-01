@@ -177,8 +177,8 @@ export const authApi = {
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
       if (recovery) return recovery;
       if (res.status === 401) {
-        authSessionRecovery.handleUnauthorized(res.status, payload);
-        if (authSessionRecovery.isSessionExpired()) {
+        const authRecovery = authSessionRecovery.handleUnauthorized(res.status, payload);
+        if (authRecovery) {
           return new Promise<never>(() => undefined);
         }
         return null;

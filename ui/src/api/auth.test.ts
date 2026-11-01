@@ -11,6 +11,7 @@ import { authApi } from "./auth";
 
 afterEach(() => {
   authSessionRecovery.reset();
+  tenantSessionRecovery.reset();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -46,6 +47,10 @@ describe("authApi.getSession", () => {
   });
 
   it("returns null for an ordinary local 401", async () => {
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockReturnValue(false);
+    const handleUnauthorized = vi
+      .spyOn(authSessionRecovery, "handleUnauthorized")
+      .mockReturnValue(false);
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), {
         status: 401,
@@ -55,6 +60,7 @@ describe("authApi.getSession", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(authApi.getSession()).resolves.toBeNull();
+    expect(handleUnauthorized).toHaveBeenCalledWith(401, { error: "unauthorized" });
   });
 
   it("initiates recovery and stays pending for a Cloud tenant-session 401", async () => {
