@@ -812,11 +812,11 @@ import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
   invalidateFailedRunsCache,
-  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
 } from "../myrmidon/swarm-claim/index.js";
+import { PHEROMONE_EVAPORATING_RUN_STATUSES } from "../myrmidon/swarm-claim/effective-pheromone.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
@@ -13256,13 +13256,7 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
-    invalidateLastRunRowsCache(updated.companyId);
-    if (
-      updated.status === "failed" ||
-      updated.status === "timed_out" ||
-      (updated.status as string) === "blocked" ||
-      (updated.status as string) === "needs_followup"
-    ) {
+    if ((PHEROMONE_EVAPORATING_RUN_STATUSES as readonly string[]).includes(updated.status)) {
       invalidateFailedRunsCache(updated.companyId);
     }
     void emitAgentTaskRun(db, updated);
@@ -14130,11 +14124,13 @@ export function heartbeatService(
       idempotentWakeExists: Boolean(existingWake),
     });
 
-    // 1.7 AGENT-RUNTIME: гейт завершения прогона и эскалация холостых прогонов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: Гейт завершения прогона и эскалация повторов (OPE-10096)
     const initialStatus =
       typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
         ? String((context.issue as any).status)
         : null;
+    const evidence = await buildRunLivenessInput(run, parseObject(run.resultJson));
+    const evidenceCounts = evidence.evidence;
 
     const hasProgressEvidence =
       Boolean(detectedProgressSummary) ||
@@ -14158,7 +14154,10 @@ export function heartbeatService(
       statusBefore: initialStatus,
       statusAfter: issue?.status,
       livenessState: run.livenessState,
-      hasFileOrArtifactChanges: hasProgressEvidence,
+      hasFileOrArtifactChanges: hasProgressEvidence || (evidenceCounts?.activityEventsCreated ?? 0) > 0 || (evidenceCounts?.toolOrActionEventsCreated ?? 0) > 0,
+      workProductsCreated: evidenceCounts?.workProductsCreated ?? 0,
+      documentRevisionsCreated: evidenceCounts?.documentRevisionsCreated ?? 0,
+      workspaceOperationsCreated: evidenceCounts?.workspaceOperationsCreated ?? 0,
       repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
       repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
       isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
@@ -14172,7 +14171,10 @@ export function heartbeatService(
       statusBefore: initialStatus,
       statusAfter: issue?.status,
       livenessState: run.livenessState,
-      hasFileOrArtifactChanges: hasProgressEvidence,
+      hasFileOrArtifactChanges: hasProgressEvidence || (evidenceCounts?.activityEventsCreated ?? 0) > 0 || (evidenceCounts?.toolOrActionEventsCreated ?? 0) > 0,
+      workProductsCreated: evidenceCounts?.workProductsCreated ?? 0,
+      documentRevisionsCreated: evidenceCounts?.documentRevisionsCreated ?? 0,
+      workspaceOperationsCreated: evidenceCounts?.workspaceOperationsCreated ?? 0,
       repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
       repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
       isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
