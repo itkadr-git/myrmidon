@@ -3979,7 +3979,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.retryNotBefore).toBeTruthy();
     expect(new Date(result.retryNotBefore!).getTime() - Date.now()).toBeGreaterThanOrEqual(89_000);
   });
-  it("dispatches a configured fallback after a provider quota response", async () => {
+  it("falls back immediately when run creation reports usage_limit_reached", async () => {
     const ctx = makeCtx({ ...wsBaseConfig, model: "chatgpt-pool/gpt-6-sol", provider: "chatgpt-pool", models: { fallbacks: ["kie/gemini"] } });
     const bodies: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -4003,6 +4003,7 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("reserve");
   });
+
   it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {
     const result = mapFinalResultForTest({
       terminal: {

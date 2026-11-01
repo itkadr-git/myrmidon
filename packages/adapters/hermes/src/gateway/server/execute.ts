@@ -2218,6 +2218,10 @@ export function errorResult(
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
   const errorBody = asRecord(hermesError.body);
   const nestedError = asRecord(errorBody?.error);
+  const usageLimitError =
+    nestedError?.type === "usage_limit_reached" ||
+    errorBody?.error_type === "usage_limit_reached" ||
+    errorBody?.type === "usage_limit_reached";
   const bodyErrorMessage =
     nonEmpty(nestedError?.message) ??
     nonEmpty(errorBody?.message) ??
@@ -2242,6 +2246,7 @@ export function errorResult(
     errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
   const rawRetryNotBefore =
+    (usageLimitError ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
     hermesError.retryNotBefore ??
     nonEmpty(errorBody?.retry_not_before) ??
     nonEmpty(errorBody?.retryNotBefore) ??
@@ -2257,7 +2262,7 @@ export function errorResult(
   // classification, or every structured cooldown arriving on HTTP 429 would
   // be misfiled as transient_upstream.
   const errorFamily =
-    (isDeploymentCooldown || (isCooldown && !hermesError.status)
+    (isDeploymentCooldown || usageLimitError || (isCooldown && !hermesError.status)
       ? "provider_quota"
       : classified?.family) ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
@@ -2866,7 +2871,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
       };
     }
-    return errorResult(err, redactText);
+    const createFailure = errorResult(err, redactText);
+    if (createFailure.errorFamily === "provider_quota" && fallbackModels.length > 0) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] provider_quota on run creation; retrying with configured fallback ${fallbackModels[0]}\n`,
+      );
+      const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+      return execute({
+        ...ctx,
+        runId: fallbackAttemptId,
+        config: {
+          ...ctx.config,
+          model: fallbackModels[0],
+          models: { fallbacks: fallbackModels.slice(1) },
+          modelAttemptId: fallbackAttemptId,
+        },
+        onDispatch: undefined,
+        onExternalRunId: undefined,
+        onMeta: undefined,
+      });
+    }
+    return createFailure;
   }
   }
 
