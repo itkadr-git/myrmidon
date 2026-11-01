@@ -1,16 +1,16 @@
 // myrmidon(1.7 LOCALE-UPLOAD): localization catalog structure linter, validator and diff reporter.
-import { z } from \"zod\";
+import { z } from "zod";
 
 export const LOCALE_VALIDATION_ERROR_CODES = [
-  \"INVALID_ROOT\",
-  \"INVALID_KEY\",
-  \"INVALID_TYPE\",
-  \"NESTING_TOO_DEEP\",
-  \"DISALLOWED_PAYLOAD\",
-  \"STRING_TOO_LONG\",
-  \"PLACEHOLDER_SYNTAX_ERROR\",
-  \"PLACEHOLDER_MISMATCH\",
-  \"PARSE_ERROR\",
+  "INVALID_ROOT",
+  "INVALID_KEY",
+  "INVALID_TYPE",
+  "NESTING_TOO_DEEP",
+  "DISALLOWED_PAYLOAD",
+  "STRING_TOO_LONG",
+  "PLACEHOLDER_SYNTAX_ERROR",
+  "PLACEHOLDER_MISMATCH",
+  "PARSE_ERROR",
 ] as const;
 
 export type LocaleValidationErrorCode = (typeof LOCALE_VALIDATION_ERROR_CODES)[number];
@@ -18,10 +18,10 @@ export type LocaleValidationErrorCode = (typeof LOCALE_VALIDATION_ERROR_CODES)[n
 export const localeValidationErrorCodeSchema = z.enum(LOCALE_VALIDATION_ERROR_CODES);
 
 export const LOCALE_VALIDATION_WARNING_CODES = [
-  \"EMPTY_TRANSLATION\",
-  \"SUSPICIOUS_WHITESPACE\",
-  \"EXTRA_KEY\",
-  \"MISSING_KEY\",
+  "EMPTY_TRANSLATION",
+  "SUSPICIOUS_WHITESPACE",
+  "EXTRA_KEY",
+  "MISSING_KEY",
 ] as const;
 
 export type LocaleValidationWarningCode = (typeof LOCALE_VALIDATION_WARNING_CODES)[number];
@@ -94,17 +94,17 @@ export interface ValidateCatalogOptions {
 const DEFAULT_MAX_BYTE_SIZE = 5 * 1024 * 1024; // 5 MB
 const DEFAULT_MAX_STRING_LENGTH = 2000;
 const DEFAULT_MAX_DEPTH = 10;
-const FORBIDDEN_KEYS = new Set([\"__proto__\", \"constructor\", \"prototype\"]);
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === \"object\" && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function parseCatalogJson(
   content: string | Buffer,
   maxBytes = DEFAULT_MAX_BYTE_SIZE,
 ): { catalog: Record<string, unknown> | null; error?: string } {
-  const byteLength = typeof content === \"string\" ? new TextEncoder().encode(content).byteLength : content.byteLength;
+  const byteLength = typeof content === "string" ? new TextEncoder().encode(content).byteLength : content.byteLength;
   if (byteLength > maxBytes) {
     return {
       catalog: null,
@@ -112,13 +112,13 @@ export function parseCatalogJson(
     };
   }
 
-  const text = typeof content === \"string\" ? content : content.toString(\"utf8\");
+  const text = typeof content === "string" ? content : content.toString("utf8");
   try {
     const parsed = JSON.parse(text);
     if (!isPlainObject(parsed)) {
       return {
         catalog: null,
-        error: \"Root catalog element must be a JSON object\",
+        error: "Root catalog element must be a JSON object",
       };
     }
     return { catalog: parsed };
@@ -133,14 +133,14 @@ export function parseCatalogJson(
 export function extractPlaceholders(text: string): string[] {
   const doubleMatches = Array.from(text.matchAll(/\\{\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}\\}/g), (m) => m[1]);
   // Also collect single {param} placeholders if not inside {{...}}
-  const withoutDoubles = text.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, \"\");
+  const withoutDoubles = text.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, "");
   const singleMatches = Array.from(withoutDoubles.matchAll(/\\{([a-zA-Z0-9_.-]+)\\}/g), (m) => m[1]);
   return [...new Set([...doubleMatches, ...singleMatches])].sort();
 }
 
 export function flattenCatalog(
   source: Record<string, unknown>,
-  prefix = \"\",
+  prefix = "",
   depth = 1,
   maxDepth = DEFAULT_MAX_DEPTH,
 ): { entries: Map<string, string>; depthErrors: string[] } {
@@ -159,7 +159,7 @@ export function flattenCatalog(
       for (const [k, v] of child.entries) {
         entries.set(k, v);
       }
-    } else if (typeof value === \"string\") {
+    } else if (typeof value === "string") {
       entries.set(path, value);
     }
   }
@@ -169,9 +169,9 @@ export function flattenCatalog(
 
 function hasDisallowedPayloads(value: string, baseValue?: string): string[] {
   const checks: Array<[boolean, boolean, string]> = [
-    [/<script\\b/i.test(value), Boolean(baseValue && /<script\\b/i.test(baseValue)), \"<script tag\"],
-    [/\\son[a-zA-Z]+\\s*=/i.test(value), Boolean(baseValue && /\\son[a-zA-Z]+\\s*=/i.test(baseValue)), \"event-handler attribute\"],
-    [/\\b(?:javascript|data|vbscript)\\s*:/i.test(value), Boolean(baseValue && /\\b(?:javascript|data|vbscript)\\s*:/i.test(baseValue)), \"javascript:/data: URL\"],
+    [/<script\\b/i.test(value), Boolean(baseValue && /<script\\b/i.test(baseValue)), "<script tag"],
+    [/\\son[a-zA-Z]+\\s*=/i.test(value), Boolean(baseValue && /\\son[a-zA-Z]+\\s*=/i.test(baseValue)), "event-handler attribute"],
+    [/\\b(?:javascript|data|vbscript)\\s*:/i.test(value), Boolean(baseValue && /\\b(?:javascript|data|vbscript)\\s*:/i.test(baseValue)), "javascript:/data: URL"],
   ];
 
   return checks
@@ -181,14 +181,14 @@ function hasDisallowedPayloads(value: string, baseValue?: string): string[] {
 
 function checkPlaceholderSyntax(value: string): string | null {
   // Check for unmatched {{ without }}
-  const textWithoutValidDoubles = value.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, \"\");
+  const textWithoutValidDoubles = value.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, "");
   if (/\\{\\{/.test(textWithoutValidDoubles) || /\\}\\}/.test(textWithoutValidDoubles)) {
-    return \"Unbalanced or malformed double braces {{...}}\";
+    return "Unbalanced or malformed double braces {{...}}";
   }
   // Check for unmatched single { without }
-  const textWithoutValidSingles = textWithoutValidDoubles.replace(/\\{[a-zA-Z0-9_.-]+\\}/g, \"\");
+  const textWithoutValidSingles = textWithoutValidDoubles.replace(/\\{[a-zA-Z0-9_.-]+\\}/g, "");
   if (/\\{/.test(textWithoutValidSingles) || /\\}/.test(textWithoutValidSingles)) {
-    return \"Unbalanced or malformed single brace {...}\";
+    return "Unbalanced or malformed single brace {...}";
   }
   return null;
 }
@@ -208,7 +208,7 @@ export function lintStringValue(
   for (const p of payloads) {
     errors.push({
       path,
-      code: \"DISALLOWED_PAYLOAD\",
+      code: "DISALLOWED_PAYLOAD",
       message: `${path} contains disallowed ${p}`,
     });
   }
@@ -220,7 +220,7 @@ export function lintStringValue(
   if (value.length > relativeLimit) {
     errors.push({
       path,
-      code: \"STRING_TOO_LONG\",
+      code: "STRING_TOO_LONG",
       message: `${path} length (${value.length}) exceeds maximum allowed length of ${relativeLimit}`,
     });
   }
@@ -230,7 +230,7 @@ export function lintStringValue(
   if (syntaxErr) {
     errors.push({
       path,
-      code: \"PLACEHOLDER_SYNTAX_ERROR\",
+      code: "PLACEHOLDER_SYNTAX_ERROR",
       message: `${path} has syntax error in placeholder: ${syntaxErr}`,
     });
   }
@@ -239,11 +239,11 @@ export function lintStringValue(
   if (baseValue !== undefined) {
     const candPlaceholders = extractPlaceholders(value);
     const basePlaceholders = extractPlaceholders(baseValue);
-    if (candPlaceholders.join(\"\\u0000\") !== basePlaceholders.join(\"\\u0000\")) {
+    if (candPlaceholders.join("\\u0000") !== basePlaceholders.join("\\u0000")) {
       errors.push({
         path,
-        code: \"PLACEHOLDER_MISMATCH\",
-        message: `${path} placeholders must match base catalog: expected [${basePlaceholders.join(\", \")}], received [${candPlaceholders.join(\", \")}]`,
+        code: "PLACEHOLDER_MISMATCH",
+        message: `${path} placeholders must match base catalog: expected [${basePlaceholders.join(", ")}], received [${candPlaceholders.join(", ")}]`,
       });
     }
   }
@@ -252,13 +252,13 @@ export function lintStringValue(
   if (value.trim().length === 0) {
     warnings.push({
       path,
-      code: \"EMPTY_TRANSLATION\",
+      code: "EMPTY_TRANSLATION",
       message: `${path} has an empty or whitespace-only translation`,
     });
   } else if (value !== value.trim()) {
     warnings.push({
       path,
-      code: \"SUSPICIOUS_WHITESPACE\",
+      code: "SUSPICIOUS_WHITESPACE",
       message: `${path} contains untrimmed leading or trailing whitespace`,
     });
   }
@@ -270,8 +270,8 @@ export function validateCatalogStructure(
   candidate: unknown,
   options: ValidateCatalogOptions = {},
 ): LocaleValidationResult {
-  const targetLocale = options.targetLocale || \"custom\";
-  const baseLocale = options.baseLocale || \"en\";
+  const targetLocale = options.targetLocale || "custom";
+  const baseLocale = options.baseLocale || "en";
   const strict = Boolean(options.strict);
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxStringLength = options.maxStringLength ?? DEFAULT_MAX_STRING_LENGTH;
@@ -282,9 +282,9 @@ export function validateCatalogStructure(
   // Root validation
   if (!isPlainObject(candidate)) {
     errors.push({
-      path: \"<root>\",
-      code: \"INVALID_ROOT\",
-      message: \"Localization catalog must be a non-null, non-array JSON object\",
+      path: "<root>",
+      code: "INVALID_ROOT",
+      message: "Localization catalog must be a non-null, non-array JSON object",
     });
     const emptyReport: LocaleKeyDiffReport = {
       totalBaseKeys: 0,
@@ -313,7 +313,7 @@ export function validateCatalogStructure(
     if (currentDepth > maxDepth) {
       errors.push({
         path: prefix,
-        code: \"NESTING_TOO_DEEP\",
+        code: "NESTING_TOO_DEEP",
         message: `Catalog nesting exceeds maximum allowed depth of ${maxDepth} at ${prefix}`,
       });
       return;
@@ -325,16 +325,16 @@ export function validateCatalogStructure(
       // Key checks
       if (!key || key.trim().length === 0) {
         errors.push({
-          path: prefix || \"<root>\",
-          code: \"INVALID_KEY\",
-          message: `Empty key name at ${prefix || \"<root>\"}`,
+          path: prefix || "<root>",
+          code: "INVALID_KEY",
+          message: `Empty key name at ${prefix || "<root>"}`,
         });
         continue;
       }
       if (FORBIDDEN_KEYS.has(key)) {
         errors.push({
           path,
-          code: \"INVALID_KEY\",
+          code: "INVALID_KEY",
           message: `Forbidden prototype property key '${key}' at ${path}`,
         });
         continue;
@@ -342,7 +342,7 @@ export function validateCatalogStructure(
       if (key.length > 160) {
         errors.push({
           path,
-          code: \"INVALID_KEY\",
+          code: "INVALID_KEY",
           message: `Key length exceeds 160 characters at ${path}`,
         });
       }
@@ -350,24 +350,24 @@ export function validateCatalogStructure(
       // Value type checks
       if (isPlainObject(value)) {
         walk(value, path, currentDepth + 1);
-      } else if (typeof value === \"string\") {
+      } else if (typeof value === "string") {
         // leaf string value
       } else {
         errors.push({
           path,
-          code: \"INVALID_TYPE\",
-          message: `Value at ${path} must be a string or nested object, got ${Array.isArray(value) ? \"array\" : typeof value}`,
+          code: "INVALID_TYPE",
+          message: `Value at ${path} must be a string or nested object, got ${Array.isArray(value) ? "array" : typeof value}`,
         });
       }
     }
   }
 
-  walk(candidate, \"\", 1);
+  walk(candidate, "", 1);
 
   // Flatten candidate and base
-  const candidateFlat = flattenCatalog(candidate, \"\", 1, maxDepth).entries;
+  const candidateFlat = flattenCatalog(candidate, "", 1, maxDepth).entries;
   const baseFlat = options.baseCatalog
-    ? flattenCatalog(options.baseCatalog, \"\", 1, maxDepth).entries
+    ? flattenCatalog(options.baseCatalog, "", 1, maxDepth).entries
     : new Map<string, string>();
 
   // Lint all string values
@@ -416,13 +416,13 @@ export function validateCatalogStructure(
       if (strict) {
         errors.push({
           path: key,
-          code: \"INVALID_ROOT\",
+          code: "INVALID_ROOT",
           message: `Missing required key in strict mode: ${key}`,
         });
       } else {
         warnings.push({
           path: key,
-          code: \"MISSING_KEY\",
+          code: "MISSING_KEY",
           message: `Key is missing from candidate catalog: ${key}`,
         });
       }
@@ -432,13 +432,13 @@ export function validateCatalogStructure(
       if (strict) {
         errors.push({
           path: key,
-          code: \"INVALID_KEY\",
+          code: "INVALID_KEY",
           message: `Unexpected extra key in strict mode: ${key}`,
         });
       } else {
         warnings.push({
           path: key,
-          code: \"EXTRA_KEY\",
+          code: "EXTRA_KEY",
           message: `Key is not defined in base catalog: ${key}`,
         });
       }

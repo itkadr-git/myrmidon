@@ -1,11 +1,11 @@
 // myrmidon(1.7 LOCALE-UPLOAD): server-side catalog validator integration
-import { existsSync, readFileSync } from \"node:fs\";
+import { existsSync, readFileSync } from "node:fs";
 import {
   parseCatalogJson,
   validateCatalogStructure,
   type LocaleValidationResult,
   type ValidateCatalogOptions,
-} from \"@myrmidon/shared\";
+} from "@myrmidon/shared";
 
 export {
   parseCatalogJson,
@@ -13,7 +13,7 @@ export {
   flattenCatalog,
   lintStringValue,
   validateCatalogStructure,
-} from \"@myrmidon/shared\";
+} from "@myrmidon/shared";
 
 let cachedReferenceCatalog: Record<string, unknown> | null = null;
 
@@ -22,16 +22,16 @@ export function loadBaseReferenceCatalog(customPath?: string): Record<string, un
     return cachedReferenceCatalog;
   }
 
-  const referenceUrl = customPath ? new URL(customPath, import.meta.url) : new URL(\"./en-reference.json\", import.meta.url);
+  const referenceUrl = customPath ? new URL(customPath, import.meta.url) : new URL("./en-reference.json", import.meta.url);
 
   try {
     if (!existsSync(referenceUrl)) {
       throw new Error(`File not found: ${referenceUrl.toString()}`);
     }
-    const raw = readFileSync(referenceUrl, \"utf8\");
+    const raw = readFileSync(referenceUrl, "utf8");
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== \"object\" || Array.isArray(parsed)) {
-      throw new Error(\"Reference catalog root must be a JSON object\");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Reference catalog root must be a JSON object");
     }
     if (!customPath) {
       cachedReferenceCatalog = parsed as Record<string, unknown>;

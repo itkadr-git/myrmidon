@@ -1,9 +1,9 @@
 // myrmidon(1.7 LOCALE-UPLOAD): locale upload types and re-exports
-import { z } from \"zod\";
+import { z } from "zod";
 
-export * from \"./locale-validator.js\";
+export * from "./locale-validator.js";
 
-export const CUSTOM_LOCALES_SETTINGS_KEY = \"customLocales\";
+export const CUSTOM_LOCALES_SETTINGS_KEY = "customLocales";
 
 export const storedCustomLocaleSchema = z.object({
   locale: z.string(),

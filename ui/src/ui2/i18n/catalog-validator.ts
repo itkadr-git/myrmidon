@@ -5,10 +5,10 @@ import {
   flattenCatalog,
   type LocaleValidationResult,
   type ValidateCatalogOptions,
-} from \"@myrmidon/shared\";
+} from "@myrmidon/shared";
 
 export interface CatalogValidationSummary {
-  status: \"valid\" | \"invalid\";
+  status: "valid" | "invalid";
   valid: boolean;
   summary: string;
   matchedCount: number;
@@ -26,8 +26,8 @@ export function validateCatalogJsonContent(
   if (parsed.error || !parsed.catalog) {
     return {
       valid: false,
-      targetLocale: options.targetLocale || \"custom\",
-      baseLocale: options.baseLocale || \"en\",
+      targetLocale: options.targetLocale || "custom",
+      baseLocale: options.baseLocale || "en",
       report: {
         totalBaseKeys: 0,
         totalCandidateKeys: 0,
@@ -42,9 +42,9 @@ export function validateCatalogJsonContent(
       },
       errors: [
         {
-          path: \"<root>\",
-          code: \"PARSE_ERROR\",
-          message: parsed.error || \"Failed to parse catalog JSON\",
+          path: "<root>",
+          code: "PARSE_ERROR",
+          message: parsed.error || "Failed to parse catalog JSON",
         },
       ],
       warnings: [],
@@ -78,7 +78,7 @@ export function formatValidationSummary(result: LocaleValidationResult): Catalog
     : `Catalog has ${result.errors.length} validation error(s) and cannot be uploaded.`;
 
   return {
-    status: result.valid ? \"valid\" : \"invalid\",
+    status: result.valid ? "valid" : "invalid",
     valid: result.valid,
     summary,
     matchedCount: result.report.matchedCount,
