@@ -127,6 +127,7 @@ vi.mock("../context/GeneralSettingsContext", () => ({
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
+  useInboxBadge: () => ({ inbox: 0, approvals: 0, failedRuns: 0, joinRequests: 0, knowledgeSuggestions: 0, mineIssues: 0, alerts: 0 }),
   useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
   useInboxDismissals: () => ({ dismissedAtByKey: new Map(), dismiss: vi.fn() }),
   useReadInboxItems: () => ({
