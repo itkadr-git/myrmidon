@@ -3109,7 +3109,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const shouldTryFallback =
       finalResult.errorCode === "hermes_gateway_run_failed" &&
-      finalResult.errorFamily === "transient_upstream" &&
+      (finalResult.errorFamily === "transient_upstream" ||
+        finalResult.errorFamily === "provider_quota") &&
       fallbackModels.length > 0;
 
     if (shouldTryFallback) {
