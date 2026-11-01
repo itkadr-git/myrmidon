@@ -200,6 +200,9 @@ const en = {
   "ui2.costs.tile.remaining": "{{amount}} remaining",
   "ui2.costs.chart.title": "Spend breakdown",
   "ui2.costs.chart.empty": "No spend in this period",
+  "ui2.costs.forecast": "Forecast through month-end: {{amount}}",
+  "ui2.costs.unpriced": "Unpriced",
+  "ui2.costs.unpricedEvents": "{{count}} events without a price",
 
   "ui2.costs.policies.title": "Budget policies",
   "ui2.costs.policies.empty": "No budget policies are configured.",
@@ -766,6 +769,9 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.costs.tile.remaining": "Осталось {{amount}}",
   "ui2.costs.chart.title": "Разбивка расходов",
   "ui2.costs.chart.empty": "За период расходов нет",
+  "ui2.costs.forecast": "Прогноз до конца месяца: {{amount}}",
+  "ui2.costs.unpriced": "Неоценено",
+  "ui2.costs.unpricedEvents": "{{count}} событий без цены",
 
   "ui2.costs.policies.title": "Политики бюджета",
   "ui2.costs.policies.empty": "Политики бюджета не настроены.",
