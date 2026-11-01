@@ -11,6 +11,7 @@
 import type { Db } from "@myrmidon/db";
 import {
   mergeRunPrioritySettings,
+  assertRunPriorityQueueInvariant,
   type RunPriorityPatch,
 } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
@@ -96,6 +97,7 @@ export function runPriorityService(
         const general = await deps.settings.getGeneral();
         const before = resolveRunPriority(general.runPriority, env).settings;
         const next = mergeRunPrioritySettings(before, patch);
+        assertRunPriorityQueueInvariant(next);
 
         await deps.settings.updateGeneral({ runPriority: next });
 
