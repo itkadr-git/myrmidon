@@ -38,7 +38,7 @@ function defaultStorageBaseDir(): string {
 }
 
 export async function envCommand(opts: { config?: string }): Promise<void> {
-  p.intro(pc.bgCyan(pc.black(" paperclip env ")));
+  p.intro(pc.bgCyan(pc.black(" myrmidon env ")));
 
   const configPath = resolveConfigPath(opts.config);
   let config: PaperclipConfig | null = null;
