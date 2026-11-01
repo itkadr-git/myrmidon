@@ -1209,7 +1209,7 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({ status: "done" }),
       expect.anything(),
-      undefined,
+      expect.anything(),
       expect.any(Array),
     );
   });

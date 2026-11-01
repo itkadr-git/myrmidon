@@ -1098,7 +1098,7 @@ describe("issue execution policy routes", () => {
         actorUserId: "local-board",
       }),
       expect.anything(),
-      undefined,
+      expect.anything(),
       expect.any(Array),
     );
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
