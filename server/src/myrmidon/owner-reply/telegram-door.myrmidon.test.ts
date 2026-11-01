@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // owner is the resolver.
 import type { OwnerReplyCard } from "./parse-owner-reply.js";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
-import type { OwnerReplyOutcome } from "./owner-task-reply.js";
+import type { OwnerReplyOutcome, OwnerReplyDeps } from "./owner-task-reply.js";
 import { handleTelegramOwnerReply, loadRepliedInteractionIds, narrowCardsToReply, shouldSuppressTelegramOwnerWake } from "./telegram-door.js";
 import { listOwnerExplanations } from "../owner-delivery/owner-dialogue.js";
 
