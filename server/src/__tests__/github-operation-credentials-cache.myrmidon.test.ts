@@ -146,8 +146,10 @@ describe("github operation credentials in-memory cache (OPE-9997)", () => {
 
   it("does not return a cached credential after its connection is revoked", async () => {
     await resolveGitHubOperationCredentials(dummyDb, baseInput);
-    const where = dummyDb.select().from().where;
-    where.mockResolvedValueOnce([]);
+    const where = vi.fn().mockResolvedValueOnce([]);
+    dummyDb.select = vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockReturnValue({ where }),
+    }));
     vi.mocked(resolveManagedGitHubCredential).mockResolvedValueOnce({
       configured: true,
       credential: null,
