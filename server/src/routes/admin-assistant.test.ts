@@ -2,7 +2,8 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { agents, heartbeatRuns, issues } from "@myrmidon/db";
-import { adminAssistantRoutes, collectClusterHealth } from "./admin-assistant.js";
+import { adminAssistantRoutes, collectClusterHealth, measureDiskSpaceSafe } from "./admin-assistant.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 /**
  * Builds a mock drizzle query result that supports both
@@ -132,38 +133,50 @@ describe("admin assistant routes and health collection", () => {
   });
 
   describe("adminAssistantRoutes endpoints", () => {
-    it("responds with cluster health json on GET /admin-assistant/cluster-health", async () => {
-      const db = mockDb({});
-
+    it("requires instance admin for unscoped cluster health", async () => {
       const app = express();
-      app.use(adminAssistantRoutes(db));
+      app.use(adminAssistantRoutes(mockDb({})));
+      app.use(errorHandler);
 
       const res = await request(app).get("/admin-assistant/cluster-health");
 
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty("status");
-      expect(res.body).toHaveProperty("timestamp");
-      expect(res.body).toHaveProperty("agents");
-      expect(res.body).toHaveProperty("tasks");
-      expect(res.body).toHaveProperty("heartbeats");
-      expect(res.body).toHaveProperty("disk");
-      expect(typeof res.body.agents.total).toBe("number");
-      expect(typeof res.body.tasks.totalOpen).toBe("number");
-      expect(typeof res.body.heartbeats.activeRuns).toBe("number");
-      expect(typeof res.body.disk.freeBytes).toBe("number");
+      expect(res.status).toBe(403);
     });
 
-    it("responds with cluster health json on GET /admin-assistant/health", async () => {
-      const db = mockDb({});
-
+    it("requires instance admin for unscoped health routes", async () => {
       const app = express();
-      app.use(adminAssistantRoutes(db));
+      app.use((req, _res, next) => {
+        req.actor = {
+          type: "board",
+          userId: "user-1",
+          userEmail: null,
+          source: "session",
+          isInstanceAdmin: false,
+          companyIds: [],
+          memberships: [],
+        };
+        next();
+      });
+      app.use(adminAssistantRoutes(mockDb({})));
+      app.use(errorHandler);
 
       const res = await request(app).get("/admin-assistant/health");
 
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty("status");
-      expect(res.body).toHaveProperty("disk");
+      expect(res.status).toBe(403);
+    });
+
+    it("preserves health collection for a company-scoped request", async () => {
+      const app = express();
+      app.use(adminAssistantRoutes(mockDb({})));
+      app.use(errorHandler);
+
+      const res = await request(app).get("/companies/company-1/admin-assistant/cluster-health");
+
+      expect(res.status).not.toBe(500);
+    });
+
+    it("rejects arbitrary disk paths", async () => {
+      await expect(measureDiskSpaceSafe("/etc")).rejects.toMatchObject({ status: 400 });
     });
   });
 });
