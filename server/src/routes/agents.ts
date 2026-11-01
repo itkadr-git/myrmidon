@@ -14,6 +14,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
+import { getCompanyEmptyRunStats } from "../services/empty-run.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -84,6 +85,11 @@ import {
 import { readCompanyBaseSkillKeysPort } from "../services/company-base-skill-keys-port.js";
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
+import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+} from "../services/agents-filters.js";
 import {
   agentService,
   agentInstructionsService,
@@ -4135,7 +4141,10 @@ function getActorIdentityPart(req: Request): string {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+    const SUPPORTED_AGENT_LIST_QUERY_PARAMS = new Set(["q", "status", "role", "reportsTo"]);
+    const unsupportedQueryParams = Object.keys(req.query)
+      .filter((param) => !SUPPORTED_AGENT_LIST_QUERY_PARAMS.has(param))
+      .sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
@@ -4161,15 +4170,29 @@ function getActorIdentityPart(req: Request): string {
         : null,
       canReadConfigs,
     ]);
+
+    const filters: AgentListFilters = {
+      q: asNonEmptyString(req.query.q) ?? undefined,
+      status: typeof req.query.status === "string" || Array.isArray(req.query.status)
+        ? (req.query.status as string | string[])
+        : undefined,
+      role: asNonEmptyString(req.query.role) ?? undefined,
+      reportsTo: asNonEmptyString(req.query.reportsTo) ?? undefined,
+    };
+    const normalizedFilters = normalizeAgentListFilters(filters);
+
     // Compute the validator before the response query so a matching ETag
     // avoids hydrating and filtering the full agent list.
-    const vk = await svc.listSummariesVersionKey(companyId, actorShape);
+    const vk = normalizedFilters
+      ? await svc.listSummariesVersionKey(companyId, actorShape, JSON.stringify(normalizedFilters))
+      : await svc.listSummariesVersionKey(companyId, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
     const sourceRows = await svc.listSummaries(companyId);
     const result = await filterAgentsForActor(req, sourceRows);
+    const filteredRows = normalizedFilters ? filterAgentListItems(result, normalizedFilters) : result;
     const responseRows = canReadConfigs
-      ? result
-      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
+      ? filteredRows
+      : filteredRows.map((agent) => redactAgentListItemForRestrictedView(agent));
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
@@ -7151,6 +7174,8 @@ function getActorIdentityPart(req: Request): string {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
 
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
@@ -7160,11 +7185,36 @@ function getActorIdentityPart(req: Request): string {
         : null,
     ]);
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = (wakeReason !== undefined || hasResult)
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
+  });
+
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10096)
+  router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/empty-run-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/external-sessions", async (req, res) => {
@@ -7355,6 +7405,7 @@ function getActorIdentityPart(req: Request): string {
     // copy; a payload that differs from it is left untouched.
     const singleContinuationRun = {
       ...decoratedRun,
+      queuedReason: decoratedRun.queuedReason ?? null,
       contextSnapshot: withoutDuplicateExecutionContinuation(
         decoratedRun.contextSnapshot,
       ),

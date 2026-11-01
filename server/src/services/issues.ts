@@ -10932,6 +10932,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        commentBody?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10959,6 +10960,19 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      if (
+        existing.status !== "done" &&
+        data.status === "done" &&
+        dbOrTx === db
+      ) {
+        const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+        await assertKnowledgeGateSettled(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          issue: { title: existing.title, description: existing.description },
+          comment: typeof data.commentBody === "string" ? data.commentBody : null,
+        });
+      }
       const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
         && dbOrTx === db
         ? await (async () => {
@@ -11001,6 +11015,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        commentBody: _commentBody,
         ...issueData
       } = data;
       if (
@@ -11326,8 +11341,17 @@ export function issueService(db: Db) {
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
         if (receiptExisting.status !== "done" && patch.status === "done" && donePullRequestSnapshot) {
-          const { assertIssueDoneSnapshotUnchanged } = await import("../myrmidon/issue-done-gate/guard.js");
-          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot);
+          const [{ assertIssueDoneSnapshotUnchanged, inspectIssueDonePullRequests }, { createPullRequestMergeDetailsResolver }] = await Promise.all([
+            import("../myrmidon/issue-done-gate/guard.js"),
+            import("./github-pull-request-merge.js"),
+          ]);
+          const liveSnapshot = await inspectIssueDonePullRequests(
+            db,
+            existing.companyId,
+            id,
+            createPullRequestMergeDetailsResolver(db),
+          );
+          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot, liveSnapshot);
         } else if (receiptExisting.status !== "done" && patch.status === "done") {
           // External transaction callers cannot perform provider requests without
           // holding their transaction open; fail closed unless the stored facts
@@ -11947,7 +11971,21 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const nextStatus = issueRow.status === "in_review" ? "in_review" : "in_progress";
+      // Only the current participant of a pending review stage keeps the task in in_review (OPE-10082);
+      // an assignee resuming its own in_review task (e.g. after an interaction result) still promotes it.
+      // Fall back to the raw stored fields when the strict parser rejects a partial state.
+      const stageState = (parsedExecutionState ?? issueRow.executionState ?? null) as {
+        status?: unknown;
+        currentStageType?: unknown;
+        currentParticipant?: { type?: unknown; agentId?: unknown } | null;
+      } | null;
+      const keepInReview =
+        issueRow.status === "in_review" &&
+        stageState?.status === "pending" &&
+        stageState?.currentStageType === "review" &&
+        stageState?.currentParticipant?.type === "agent" &&
+        stageState?.currentParticipant?.agentId === agentId;
+      const nextStatus = keepInReview ? "in_review" : "in_progress";
       const updated = await db
         .update(issues)
         .set({
@@ -12066,7 +12104,7 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: current.status === "in_review" ? "in_review" : "in_progress",
+            status: current.status === "in_review" && keepInReview ? "in_review" : "in_progress",
             updatedAt: now,
           };
           if (current.status !== "in_progress" && current.status !== "in_review") {

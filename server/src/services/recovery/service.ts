@@ -54,6 +54,7 @@ import {
   activityLog,
   chatConversations,
   companies,
+  externalObjects,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -157,6 +158,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -192,6 +194,7 @@ import {
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
+  isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
@@ -208,6 +211,12 @@ import {
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
+import {
+  createGitHubPrHeadResolver,
+  pullRequestCiStateFromStatusPayload,
+  type PullRequestHeadResolver,
+} from "../../myrmidon/review-routing/github.js";
+import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -527,8 +536,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -972,6 +989,162 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
+const ADM_REVIEWER_AGENT_IDS = [
+  "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
+  "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
+  "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
+  "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
+  "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
+  "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
+];
+
+function getReviewerParticipantAgentId(issue: {
+  executionPolicy?: unknown;
+  executionState?: unknown;
+}): string | null {
+  const state = parseIssueExecutionState(issue.executionState);
+  if (
+    state?.currentStageType === "review" &&
+    state.currentParticipant?.type === "agent" &&
+    typeof state.currentParticipant.agentId === "string" &&
+    state.currentParticipant.agentId.length > 0
+  ) {
+    return state.currentParticipant.agentId;
+  }
+  const policy = issue.executionPolicy as Record<string, unknown> | null;
+  if (!policy || !Array.isArray(policy.stages)) return null;
+  for (const stage of policy.stages) {
+    if (
+      stage &&
+      typeof stage === "object" &&
+      stage.type === "review" &&
+      Array.isArray(stage.participants)
+    ) {
+      for (const p of stage.participants) {
+        if (
+          p &&
+          typeof p === "object" &&
+          p.type === "agent" &&
+          typeof p.agentId === "string" &&
+          p.agentId.length > 0
+        ) {
+          return p.agentId;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function pickReviewerForIssue(
+  db: Db,
+  issue: { companyId: string },
+  prProduct: typeof issueWorkProducts.$inferSelect,
+): Promise<string | null> {
+  const prInfo = selectRunPullRequest([
+    {
+      type: prProduct.type,
+      provider: prProduct.provider ?? "github",
+      url: prProduct.url,
+      status: prProduct.status,
+      metadata: prProduct.metadata,
+    } as any,
+  ]);
+  const prNumber = prInfo?.number;
+
+  const reviewerAgents = await db
+    .select({ id: agents.id, role: agents.role })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, issue.companyId),
+        inArray(agents.role, ["reviewer", "code_reviewer"]),
+      ),
+    );
+
+  if (reviewerAgents.length > 0) {
+    if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
+      const idx = Math.abs(prNumber) % reviewerAgents.length;
+      const target = reviewerAgents[idx];
+      if (target) return target.id;
+    }
+    return reviewerAgents[0]?.id ?? null;
+  }
+
+  if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
+    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length];
+    if (targetId) {
+      const [existing] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
+      if (existing) return existing.id;
+    }
+  }
+
+  return null;
+}
+
+async function resolvePrCiState(
+  companyId: string,
+  prProduct: typeof issueWorkProducts.$inferSelect,
+  resolver?: PullRequestHeadResolver,
+): Promise<{ ci: "green" | "not_green"; headSha: string | null }> {
+  const metadata = parseObject(prProduct.metadata);
+  if (metadata) {
+    if (metadata.ci === "green" || metadata.ci === "not_green") {
+      return {
+        ci: metadata.ci as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.ciState === "green" || metadata.ciState === "not_green") {
+      return {
+        ci: metadata.ciState as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.statusPayload && typeof metadata.statusPayload === "object") {
+      const ci = pullRequestCiStateFromStatusPayload(metadata.statusPayload as Record<string, unknown>);
+      return {
+        ci,
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+  }
+
+  if (resolver) {
+    const prInfo = selectRunPullRequest([
+      {
+        type: prProduct.type,
+        provider: prProduct.provider ?? "github",
+        url: prProduct.url,
+        status: prProduct.status,
+        metadata: prProduct.metadata,
+      } as any,
+    ]);
+    if (prInfo && typeof prInfo.number === "number") {
+      try {
+        const head = await resolver.resolve({
+          companyId,
+          repository: prInfo.repo,
+          number: prInfo.number,
+        });
+        if (head && (head.ci === "green" || head.ci === "not_green")) {
+          return { ci: head.ci, headSha: head.headSha };
+        }
+      } catch {
+        // Fall through to default not_green
+      }
+    }
+  }
+
+  return {
+    ci: "not_green",
+    headSha: typeof metadata?.headSha === "string" ? metadata.headSha : null,
+  };
+}
+
 export function recoveryService(
   db: Db,
   deps: {
@@ -983,12 +1156,14 @@ export function recoveryService(
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     /** myrmidon(OPE-10045): CI of the issue's open PR head; tests inject a fake. */
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    prHeadResolver?: PullRequestHeadResolver;
   },
 ) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
+  const defaultPrHeadResolver = createGitHubPrHeadResolver({ db });
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
   async function getAgent(agentId: string) {
@@ -2050,8 +2225,12 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
         return null;
       }
     }
@@ -2105,6 +2284,32 @@ export function recoveryService(
       continuationClaimKey = key;
     }
 
+    const extraContext = { ...(input.extraContext ?? {}) };
+    if (
+      (input.reason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+        input.retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+      !extraContext.executionStage
+    ) {
+      const [issueRow] = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+      const parsed = parseIssueExecutionState(issueRow?.executionState);
+      if (parsed) {
+        extraContext.executionStage = {
+          wakeRole: "reviewer" as const,
+          stageId: parsed.currentStageId ?? null,
+          stageType: parsed.currentStageType ?? null,
+          currentParticipant: parsed.currentParticipant ?? null,
+          returnAssignee: parsed.returnAssignee ?? null,
+          reviewRequest: parsed.reviewRequest ?? null,
+          lastDecisionOutcome: parsed.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        };
+      }
+    }
+
     let queued: typeof heartbeatRuns.$inferSelect | null;
     try {
       queued = await deps.enqueueWakeup(input.agentId, {
@@ -2127,7 +2332,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -2141,7 +2346,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -4081,6 +4286,8 @@ export function recoveryService(
           `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
           `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
           `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          `${input.ci.rateLimit?.remaining !== null && input.ci.rateLimit?.remaining !== undefined ? `GitHub rate limit remaining=${input.ci.rateLimit.remaining}/${input.ci.rateLimit.limit ?? "unknown"}; ` : ""}` +
+          `${input.ci.rateLimit?.resetEpochSeconds ? `rate limit reset at ${new Date(input.ci.rateLimit.resetEpochSeconds * 1000).toISOString()}; ` : ""}` +
           "the board wakes the reviewer to decide when the wait ends.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
@@ -4175,6 +4382,7 @@ export function recoveryService(
       latestRunId: latestRun.id,
       ciState: ci.state,
       ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      ...(ci.rateLimit ? { rateLimitRemaining: ci.rateLimit.remaining, rateLimitResetEpoch: ci.rateLimit.resetEpochSeconds } : {}),
       pullRequestUrl: ci.pullRequestUrl,
       headSha: ci.headSha,
     };
@@ -4188,13 +4396,17 @@ export function recoveryService(
             issueId: input.issue.id,
             identifier: input.issue.identifier,
             reason: ci.reason ?? null,
+            rateLimitRemaining: ci.rateLimit?.remaining ?? null,
+            rateLimitResetEpoch: ci.rateLimit?.resetEpochSeconds ?? null,
             attempt: decision.attempt,
             maxAttempts: decision.maxAttempts,
           },
           `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
         );
       }
-      const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+      const intervalCheckAt = Date.now() + REVIEW_CI_WAIT_INTERVAL_MS;
+      const resetCheckAt = (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000;
+      const nextCheckAt = new Date(Math.max(intervalCheckAt, resetCheckAt));
       const updated = await scheduleReviewCiWaitMonitor({
         issue: input.issue,
         latestRun,
@@ -4238,6 +4450,18 @@ export function recoveryService(
       entityId: input.issue.id,
       details: activityDetails,
     });
+    const executionStage = state
+      ? {
+          wakeRole: "reviewer" as const,
+          stageId,
+          stageType: state.currentStageType ?? null,
+          currentParticipant: state.currentParticipant ?? null,
+          returnAssignee: state.returnAssignee ?? null,
+          reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        }
+      : null;
     const queued = await enqueueStrandedIssueRecovery({
       issueId: input.issue.id,
       companyId: input.issue.companyId,
@@ -4249,6 +4473,7 @@ export function recoveryService(
       extraContext: {
         currentStageId: stageId,
         currentStageType: state.currentStageType ?? null,
+        ...(executionStage ? { executionStage } : {}),
         reviewRecoveryInstruction:
           `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
         reviewDecisionRetryAttempt: decision.attempt,
@@ -4269,12 +4494,87 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
+    hasPendingCi?: boolean;
   }) {
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
     // escalation keeps the stage (participant, return assignee) as it is.
     if (await deferStalledExecutionReview(input)) return input.issue;
+
+    const openPrProduct = await db.query.issueWorkProducts.findFirst({
+      where: and(
+        eq(issueWorkProducts.issueId, input.issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.status, [
+          "open",
+          "active",
+          "ready_for_review",
+          "approved",
+        ]),
+      ),
+    });
+
+    // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
+    // transitions to in_review at the current assignee (review in parallel with CI),
+    // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
+    if (
+      openPrProduct &&
+      isProductiveContinuationRecovery &&
+      (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
+    ) {
+      const prCi = await resolvePrCiState(
+        input.issue.companyId,
+        openPrProduct,
+        deps.prHeadResolver ?? defaultPrHeadResolver,
+      );
+      const existingReviewer = getReviewerParticipantAgentId(input.issue);
+      let patchExecutionPolicy: unknown = undefined;
+      let reviewerAgentId = existingReviewer;
+      if (!reviewerAgentId) {
+        reviewerAgentId = await pickReviewerForIssue(db, input.issue, openPrProduct);
+        if (reviewerAgentId) {
+          patchExecutionPolicy = {
+            mode: "normal",
+            stages: [
+              {
+                type: "review",
+                approvalsNeeded: 1,
+                participants: [{ type: "agent", agentId: reviewerAgentId }],
+              },
+            ],
+          };
+        }
+      }
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "in_review" as const,
+        ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
+      } as any);
+      if (prCi.ci === "green" && reviewerAgentId) {
+        await deps.enqueueWakeup(reviewerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: {
+            issueId: input.issue.id,
+            headSha: prCi.headSha,
+            ci: "green",
+          },
+          idempotencyKey: `ci_green:${input.issue.id}:${prCi.headSha ?? "green"}`,
+          contextSnapshot: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: "execution_review_requested",
+          },
+        }).catch(() => null);
+      }
+      return updated;
+    }
 
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
@@ -4422,6 +4722,31 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+
+      let hasPendingCi = input.hasPendingCi ?? false;
+      if (!hasPendingCi && openPrProduct) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, input.issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPrProduct.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, input.issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPrProduct.externalId),
+              ),
+            })
+          : null;
+        hasPendingCi = isPendingCiForOpenPr({
+          openPr: openPrProduct,
+          lastComment,
+          contextSnapshot: latestRun?.contextSnapshot,
+          externalPrObject,
+        });
+      }
+
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
@@ -4431,25 +4756,67 @@ export function recoveryService(
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
           ...input.issue,
-          hasOpenPullRequest: Boolean(await db.query.issueWorkProducts.findFirst({
-            where: and(
-              eq(issueWorkProducts.issueId, input.issue.id),
-              eq(issueWorkProducts.type, "pull_request"),
-              inArray(issueWorkProducts.status, [
-                "open",
-                "active",
-                "ready_for_review",
-                "approved",
-              ]),
-            ),
-            columns: { id: true },
-          })),
+          hasOpenPullRequest: Boolean(openPrProduct),
         }),
+        hasPendingCi,
         successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
-      if (autoPolicyDecision.kind === "retry") {
+      if (autoPolicyDecision.kind === "monitor_external_service") {
+        const nextCheckAt = autoPolicyDecision.nextCheckAt
+          ? new Date(autoPolicyDecision.nextCheckAt)
+          : new Date(Date.now() + 10 * 60 * 1000);
+        const previousPolicy = (input.issue.executionPolicy ?? null) as any;
+        const policy = {
+          ...(previousPolicy ?? {
+            mode: "normal" as const,
+            commentRequired: true,
+            stages: [],
+          }),
+          monitor: {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: autoPolicyDecision.notes,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: autoPolicyDecision.serviceName,
+            externalRef: openPrProduct?.url ?? null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          },
+        };
+        const transition = applyIssueMonitorPolicyTransition({
+          issue: input.issue,
+          policy,
+          previousPolicy,
+          requestedStatus: input.issue.status,
+          requestedAssigneePatch: {},
+          actor: { agentId: null, userId: null },
+          monitorExplicitlyUpdated: true,
+        });
+        const updated = await issuesSvc.update(input.issue.id, {
+          ...transition.patch,
+          executionPolicy: policy,
+        });
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: latestRun.id,
+          action: "issue.stranded_autopolicy_monitor_external_service",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier,
+            recoveryCause,
+            serviceName: autoPolicyDecision.serviceName,
+            nextCheckAt: nextCheckAt.toISOString(),
+          },
+        });
+        return updated;
+      } else if (autoPolicyDecision.kind === "retry") {
         // myrmidon(L4): `enqueueWakeup` *throws* (not a falsy return) when the
         // assignee turns out not to be invokable or is over its invocation
         // budget (heartbeat.ts's `conflict(...)` on both checks) — exactly
@@ -5450,6 +5817,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5472,6 +5913,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -6114,6 +6556,66 @@ export function recoveryService(
       }
 
       if (issue.status === "in_review") {
+        const openPr = await db.query.issueWorkProducts.findFirst({
+          where: and(
+            eq(issueWorkProducts.issueId, issue.id),
+            eq(issueWorkProducts.type, "pull_request"),
+            inArray(issueWorkProducts.status, [
+              "open",
+              "active",
+              "ready_for_review",
+              "approved",
+            ]),
+          ),
+        });
+        if (openPr) {
+          const prCi = await resolvePrCiState(
+            issue.companyId,
+            openPr,
+            deps.prHeadResolver ?? defaultPrHeadResolver,
+          );
+          if (prCi.ci === "green") {
+            let reviewerAgentId = getReviewerParticipantAgentId(issue);
+            if (!reviewerAgentId) {
+              reviewerAgentId = await pickReviewerForIssue(db, issue, openPr);
+              if (reviewerAgentId) {
+                await issuesSvc.update(issue.id, {
+                  executionPolicy: {
+                    mode: "normal",
+                    stages: [
+                      {
+                        type: "review",
+                        approvalsNeeded: 1,
+                        participants: [{ type: "agent", agentId: reviewerAgentId }],
+                      },
+                    ],
+                  },
+                } as any).catch(() => null);
+              }
+            }
+            if (reviewerAgentId) {
+              await deps.enqueueWakeup(reviewerAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "execution_review_requested",
+                payload: {
+                  issueId: issue.id,
+                  headSha: prCi.headSha,
+                  ci: "green",
+                },
+                idempotencyKey: `ci_green:${issue.id}:${prCi.headSha ?? "green"}`,
+                contextSnapshot: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  wakeReason: "execution_review_requested",
+                },
+              }).catch(() => null);
+            }
+          }
+          result.skipped += 1;
+          continue;
+        }
+
         if (!participantAgentId || !pendingExecutionState) {
           result.skipped += 1;
           continue;
@@ -6273,6 +6775,19 @@ export function recoveryService(
           continue;
         }
 
+        const executionStage = pendingExecutionState
+          ? {
+              wakeRole: "reviewer" as const,
+              stageId: pendingExecutionState.currentStageId ?? null,
+              stageType: pendingExecutionState.currentStageType ?? null,
+              currentParticipant: pendingExecutionState.currentParticipant ?? null,
+              returnAssignee: pendingExecutionState.returnAssignee ?? null,
+              reviewRequest: pendingExecutionState.reviewRequest ?? null,
+              lastDecisionOutcome: pendingExecutionState.lastDecisionOutcome ?? null,
+              allowedActions: ["approve", "request_changes"],
+            }
+          : null;
+
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
@@ -6285,6 +6800,7 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            ...(executionStage ? { executionStage } : {}),
             // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
               `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
@@ -6328,6 +6844,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;

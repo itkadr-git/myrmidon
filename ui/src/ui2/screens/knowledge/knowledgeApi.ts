@@ -36,6 +36,8 @@ interface KnowledgeRevisionDto {
   itemId: string;
   revisionNumber: number;
   status: string;
+  title?: string | null;
+  summary?: string | null;
   content: string;
   changeSummary?: string | null;
   rolledBackFromRevisionId?: string | null;
@@ -72,6 +74,11 @@ function toRevisionSummary(revision: KnowledgeRevisionDto): KnowledgeRevisionSum
     at: revision.createdAt,
     by: revision.approvedBy ?? "",
     note: revision.changeSummary,
+    sources: revision.sources.map((source) => ({
+      kind: source.kind,
+      ref: source.ref,
+      label: source.ref,
+    })),
   };
 }
 
@@ -151,6 +158,8 @@ export const knowledgeApi = {
         space: params.spaceKey,
         kind: params.kind,
         status: params.status,
+        // The tree needs every live item, not the default page of 50.
+        limit: "1000",
       })}`,
     );
     return { ...response, items: response.items.map(toSummary) };

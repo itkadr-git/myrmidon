@@ -52,6 +52,34 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /log "phase gateway_launch starting"/);
   });
 
+  it("declares hermes session maintenance before gateway launch when enabled", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const prune = source.indexOf("phase hermes_session_maintenance starting");
+    const launch = source.indexOf("phase gateway_launch starting");
+    assert.ok(prune >= 0, "session maintenance must be declared");
+    assert.ok(launch > prune, "gateway launch must follow session maintenance");
+    assert.match(source, /hermes sessions prune --yes --older-than "\$\{prune_days\}d"/);
+    assert.match(source, /hermes sessions optimize/);
+  });
+
+  it("closes only stale unpinned open sessions before prune", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    assert.match(source, /UPDATE sessions[\s\S]*SET ended_at = COALESCE/);
+    assert.match(source, /WHERE ended_at IS NULL/);
+    assert.match(source, /COALESCE\(pinned, 0\) = 0/);
+    assert.match(source, /end_reason = 'closed_task_stale'/);
+    assert.match(source, /last_activity_at/);
+    assert.match(source, /MAX\(timestamp\) FROM messages/);
+    assert.match(source, /stale unended hermes sessions older than/);
+  });
+
+  it("skips optimize-storage if timeout is unavailable and keeps the retry marker absent", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    assert.match(source, /if ! command -v timeout/);
+    assert.match(source, /skipping optimize-storage to protect container startup deadline/);
+    assert.match(source, /optimize_rc=127/);
+    assert.match(source, /will retry next idle start/);
+  });
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);
@@ -1272,7 +1300,20 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
   });
 });
 
-// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
+describe("hermes session storage maintenance", () => {
+  it("runs compact-index optimization once, logs size bounds, and leaves retry on timeout", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    assert.match(source, /optimize-storage\.v23\.done/);
+    assert.match(source, /hermes sessions optimize-storage --yes/);
+    assert.match(source, /before=\$\{optimize_before\} bytes/);
+    assert.match(source, /after=\$\{optimize_after\} bytes/);
+    assert.match(source, /MYRMIDON_HERMES_OPTIMIZE_TIMEOUT_SEC/);
+    assert.match(source, /if \[ "\$optimize_rc" -eq 0 \]; then/);
+    assert.match(source, /will retry next idle start/);
+    assert.doesNotMatch(source, /--force/);
+  });
+});
+
 // uid 10001, so the mode bits are the only barrier between one run's scratch/cache
 // and another bot's processes. The entrypoint sets umask 077 before any file write
 // and every child (gateway -> session -> terminal/tool) inherits it.

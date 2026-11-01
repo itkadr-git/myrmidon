@@ -337,7 +337,12 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         status: query.status as KnowledgeItemStatus | undefined,
         folderPrefix: query.space,
       });
-      res.json({ items: items.slice(0, query.limit ?? 50) });
+      // Archived and superseded items only when asked for by status: the tree showed archived
+      // import stubs («Нет данных») as live pages while real articles fell past the 50 cap (01.11).
+      const visible = query.status
+        ? items
+        : items.filter((item) => item.status !== "archived" && item.status !== "superseded");
+      res.json({ items: visible.slice(0, query.limit ?? 50) });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -475,6 +480,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           {
             content: req.body.content,
             changeSummary: req.body.changeSummary ?? null,
+            title: req.body.title,
+            summary: req.body.summary,
             sources: req.body.sources,
             force: req.body.force,
             reason: req.body.reason,

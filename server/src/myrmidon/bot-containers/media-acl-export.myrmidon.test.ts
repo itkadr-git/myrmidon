@@ -269,7 +269,61 @@ describe("runMediaAclExport", () => {
     await expect(fs.stat(file)).rejects.toThrow();
   });
 
-  it("a removed token deletes the entry on the next pass", async () => {
+  it("skips safely when the registry mount is unavailable", async () => {
+    const file = path.join("/not-mounted", "bots.json");
+    let listed = false;
+    const result = await runMediaAclExport({
+      listAgents: async () => {
+        listed = true;
+        return [agent(A)];
+      },
+      resolveCardEnv: resolverFor({ [A]: TOKEN_A }),
+      env: envOn,
+      path: file,
+      registryAvailable: async () => false,
+    });
+    expect(result).toMatchObject({ path: file, bots: 0, failedResolves: 0, skipped: true, changed: false });
+    expect(listed).toBe(false);
+  });
+
+  it("does not replace an existing registry with an empty one", async () => {
+    const file = await tmpFile();
+    const deps = {
+      listAgents: async () => [agent(A)],
+      resolveCardEnv: resolverFor({ [A]: TOKEN_A }),
+      env: envOn,
+      path: file,
+      registryAvailable: async () => true,
+    };
+    await runMediaAclExport(deps);
+    const before = await fs.readFile(file, "utf8");
+    const after = await runMediaAclExport({
+      ...deps,
+      listAgents: async () => [],
+    });
+    expect(after).toMatchObject({ bots: 0, skipped: false, changed: false });
+    expect(await fs.readFile(file, "utf8")).toBe(before);
+  });
+
+  it("preserves hand-maintained peer_host-only entries while adding generated bots", async () => {
+    const file = await tmpFile();
+    await fs.writeFile(file, `${JSON.stringify({ bots: { legacy: { peer_host: "legacy-peer", tools: ["file_get"] } } }, null, 2)}\n`);
+    await fs.chmod(file, 0o600);
+    const result = await runMediaAclExport({
+      listAgents: async () => [agent(A)],
+      resolveCardEnv: resolverFor({ [A]: TOKEN_A }),
+      env: envOn,
+      path: file,
+      registryAvailable: async () => true,
+    });
+    expect(result?.bots).toBe(1);
+    expect(JSON.parse(await fs.readFile(file, "utf8")).bots).toMatchObject({
+      legacy: { peer_host: "legacy-peer" },
+      [A]: { token_sha256: sha(TOKEN_A) },
+    });
+  });
+
+  it("a removed token deletes the generated entry on the next pass", async () => {
     const file = await tmpFile();
     const run = (tokens: Record<string, string | null>) =>
       runMediaAclExport({
@@ -277,6 +331,7 @@ describe("runMediaAclExport", () => {
         resolveCardEnv: resolverFor(tokens),
         env: envOn,
         path: file,
+        registryAvailable: async () => true,
       });
     await run({ [A]: TOKEN_A, [B]: TOKEN_B });
     const after = await run({ [A]: TOKEN_A, [B]: null });

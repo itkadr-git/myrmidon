@@ -232,6 +232,7 @@ export type WsDesiredPrState = z.infer<typeof wsDesiredPrStateSchema>;
 
 export const wsDesiredWorkspaceSchema = z.object({
   key: z.string().min(1),
+  id: z.string().min(1).optional(),
   repo: myrWsRepoNameSchema.optional(),
   state: wsDesiredWorkspaceStateSchema,
   since: z.string().datetime({ offset: false }),
@@ -239,6 +240,19 @@ export const wsDesiredWorkspaceSchema = z.object({
   branch: z.string().min(1).optional(),
 });
 export type WsDesiredWorkspace = z.infer<typeof wsDesiredWorkspaceSchema>;
+
+export const wsClosedKeyObjectSchema = z.object({
+  key: myrWsIssueKeySchema,
+  closedAt: z.string().datetime({ offset: false }).optional(),
+  issueId: z.string().min(1).optional(),
+});
+export type WsClosedKeyObject = z.infer<typeof wsClosedKeyObjectSchema>;
+
+export const wsClosedKeyEntrySchema = z.union([
+  myrWsIssueKeySchema,
+  wsClosedKeyObjectSchema,
+]);
+export type WsClosedKeyEntry = z.infer<typeof wsClosedKeyEntrySchema>;
 
 /**
  * Response of `GET /api/myrmidon/bots/me/workspaces` (auth: the bot's
@@ -274,6 +288,11 @@ export const wsDesiredStateSchema = z.object({
    * board omits it, and then such directories are never removed.
    */
   closedKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * myrmidon(1.6.6 DISK, OPE-9673): structured metadata for closed tasks
+   * (key, closedAt, issueId) for safe session retention without relying on updatedAt.
+   */
+  closedTasks: z.array(wsClosedKeyObjectSchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 
@@ -382,9 +401,21 @@ export const wsDiskReportSchema = z.object({
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
   foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  sessionPrune: z.object({
+    stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+    stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+    deletedSessions: z.number().int().nonnegative().optional(),
+  }).nullable().optional(),
   metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
+
+export const wsReportSessionPruneSchema = z.object({
+  stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+  stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+  deletedSessions: z.number().int().nonnegative().optional(),
+});
+export type WsReportSessionPrune = z.infer<typeof wsReportSessionPruneSchema>;
 
 /** Answer of the report route; `nextReportSec` paces the next botd pass. */
 export const wsDiskReportResponseSchema = z.object({
@@ -498,6 +529,7 @@ export const WS_BOT_DISK_SETTING_DEFAULTS = {
   partitionThresholdPercent: 85,
   partitionRefuseOpenPercent: 90,
   partitionCriticalPercent: 95,
+  sessionRetentionDays: 30,
 } as const;
 
 // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle fields exported
@@ -506,11 +538,13 @@ export const WS_BOT_DISK_SETTING_DEFAULTS = {
 export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
 export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+export const wsSessionRetentionDaysSchema = z.number().int().min(1).max(3650);
 
 export const wsBotDiskSettingsSchema = z
   .object({
     graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
     scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    sessionRetentionDays: wsSessionRetentionDaysSchema.optional(),
     legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
     partitionThresholdPercent: wsPartitionPercentSchema.optional(),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
@@ -522,6 +556,9 @@ export const wsBotDiskSettingsSchema = z
     /** myrmidon(1.6.5-BOT-DISK-H5c): seconds between two passes of the in-container
      *  disk daemon (botd). Compiled into the bot profile; absent = the in-image default. */
     botdIntervalSec: z.number().int().min(30).max(24 * 60 * 60).optional(),
+    hermesPruneEnabled: z.boolean().optional(),
+    hermesPruneDays: z.number().int().min(1).max(365).optional(),
+    gitMigrationEnabled: z.boolean().optional(),
   })
   .passthrough();
 export type WsBotDiskSettings = z.infer<typeof wsBotDiskSettingsSchema>;
@@ -552,8 +589,12 @@ export const WS_PROFILE_ENV = {
   botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
   graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
   scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+  sessionRetentionDays: "MYRMIDON_BOTD_SESSION_RETENTION_DAYS",
   boardUrl: "MYRMIDON_BOTD_BOARD_URL",
   boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+  hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
+  hermesPruneDays: "MYRMIDON_HERMES_PRUNE_DAYS",
+  gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
 } as const;
 
 /** The value {@link WS_PROFILE_ENV.boardKeyEnv} always carries: the board key

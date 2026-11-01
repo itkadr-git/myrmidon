@@ -169,6 +169,7 @@
         "savedKeys_one": "{{count}} saved API key available.",
         "savedKeys_other": "{{count}} saved API keys available.",
         "existingConnection": "An existing provider connection is available.",
+        "skipConnect": "Skip for now — you can hire the first agent later in Settings → Agents",
         "chooseSavedKey": "Choose a saved API key or enter a new one",
         "provideKey": "Provide your {{provider}} API key to connect",
         "apiKeyLabel": "API key",

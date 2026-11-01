@@ -41,6 +41,7 @@ describe("classifyChanges", () => {
       "scripts/run-vitest-stable.mjs",
       "packages/paperclip-runner/src/index.ts",
       "scripts/myrmidon/ci/select.mjs",
+      "scripts/myrmidon/vendor-name/vendor-name-policy.json",
     ]) {
       assert.equal(classifyChanges([file]).tier, "full", file);
     }
@@ -92,6 +93,30 @@ describe("classifyChanges", () => {
         ],
       }]);
     }
+  });
+
+  it("selects openapi-routes whenever a server route file changes (OPE-10350)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/__tests__/openapi-routes.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    for (const changedFile of [
+      "server/src/routes/users.ts",
+      "server/src/routes/costs/by-day.ts",
+      "server/src/routes/openapi.ts",
+    ]) {
+      const result = selectTests([changedFile], pkgs, tests);
+      assert.deepEqual(result.files, [{
+        package: "@myrmidon/server",
+        files: ["server/src/__tests__/openapi-routes.test.ts"],
+      }], changedFile);
+    }
+  });
+
+  it("keeps the routes guard inside the fast tier", () => {
+    const result = classifyChanges(["server/src/routes/users.ts"]);
+    assert.equal(result.tier, "fast");
   });
 
   it("honours a forced full run", () => {

@@ -10,6 +10,10 @@ import type { CorpusMcpPortProvider } from "./contract.js";
 import type { CorpusDocumentRecord, CorpusPorts, CorpusJobRecord, CorpusDatasetRecord } from "./ports.js";
 import { secretService } from "../../services/secrets.js";
 import type { Config } from "../../config.js";
+import { CORPUS_EMBED_BATCH_SIZE, embedInBatches } from "./embed-batches.js";
+
+/** How long one embedding request may take before it is aborted. A document is sent as many requests. */
+const CORPUS_EMBED_REQUEST_TIMEOUT_MS = 120_000;
 
 function countValue(row: { value?: number | bigint | string } | undefined): number { return Number(row?.value ?? 0); }
 
@@ -40,21 +44,19 @@ function bindQuery(text: string, values: readonly unknown[]) {
   return query;
 }
 
-type QueryRunner = Pick<Db, "execute">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type DbOrTx = Db | DbTransaction;
 
-function createSqlExecutor(db: Db): SqlExecutor {
-  const over = (runner: QueryRunner): SqlExecutor => ({
+export function createSqlExecutor(db: DbOrTx): SqlExecutor {
+  const over = (runner: DbOrTx): SqlExecutor => ({
     async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<Row[]> {
       return runner.execute(bindQuery(text, values)) as unknown as Promise<Row[]>;
     },
     async withTransaction<T>(run: (transaction: SqlExecutor) => Promise<T>): Promise<T> {
-      return run(over(runner));
+      return (runner.transaction as Db["transaction"])(async (tx) => run(over(tx)));
     },
   });
-  return {
-    query: (text, values) => over(db).query(text, values),
-    withTransaction: (run) => db.transaction(async (tx) => run(over(tx as unknown as QueryRunner))),
-  };
+  return over(db);
 }
 
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
@@ -66,12 +68,16 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const secretRow = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), eq(companySecrets.name, "MYRMIDON_CORPUS_EMBEDDER_API_KEY"), eq(companySecrets.status, "active"))).then((rows) => rows[0] ?? null);
     const apiKey = secretRow ? await secretService(db).resolveSecretValue(companyId, secretRow.id, "latest", { accessContext: { consumerType: "system", consumerId: "myrmidon-corpus" } }) : undefined;
     const endpoint = baseUrl ?? context.env.MYRMIDON_LLM_GATEWAY_BASE_URL ?? "http://127.0.0.1:3000/v1";
-    const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input, dimensions }) });
-    if (!response.ok) throw new Error(`corpus embeddings request failed (${response.status})`);
-    const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
-    const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
-    if (!vectorResults || vectorResults.length !== input.length || vectorResults.some((v) => !v || v.length !== dimensions)) throw new Error("corpus embeddings response has invalid dimensions");
-    return vectorResults as number[][];
+    // The key is resolved once per call; the batches below reuse it.
+    const embedBatch = async (batch: readonly string[]): Promise<number[][]> => {
+      const response = await fetch(`${endpoint.replace(/\/+$/, "")}/embeddings`, { method: "POST", headers: { "content-type": "application/json", ...(apiKey ? { authorization: "Bearer " + apiKey } : {}) }, body: JSON.stringify({ model, input: batch, dimensions }), signal: AbortSignal.timeout(CORPUS_EMBED_REQUEST_TIMEOUT_MS) });
+      if (!response.ok) throw new Error(`corpus embeddings request failed (${response.status})`);
+      const result = await response.json() as { data?: Array<{ index?: number; embedding?: number[] }> };
+      const vectorResults = result.data?.sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((item) => item.embedding);
+      if (!vectorResults || vectorResults.length !== batch.length || vectorResults.some((v) => !v || v.length !== dimensions)) throw new Error("corpus embeddings response has invalid dimensions");
+      return vectorResults as number[][];
+    };
+    return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };
   const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
   const index = {
