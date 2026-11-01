@@ -139,7 +139,12 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/accept",
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
   "POST /api/myrmidon/companies/{companyId}/knowledge/import",
-  "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // admin-assistant routes are mounted directly by app.ts, outside the
+  // scanner's route-file scope; their OpenAPI entries are contract-first here.
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/health",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
 function createApp() {
