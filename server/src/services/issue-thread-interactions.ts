@@ -3396,7 +3396,10 @@ export function issueThreadInteractionService(
       }
 
       const [issueRoutingRow] = await db
-        .select({ conversationAgentId: issues.conversationAgentId })
+        .select({
+          conversationAgentId: issues.conversationAgentId,
+          originKind: issues.originKind,
+        })
         .from(issues)
         .where(
           and(
@@ -3405,8 +3408,10 @@ export function issueThreadInteractionService(
           ),
         );
       const isConversationIssue = Boolean(issueRoutingRow?.conversationAgentId);
+      const isChatOriginatedIssue =
+        isConversationIssue || issueRoutingRow?.originKind === "chat_channel";
 
-      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId && !isConversationIssue) {
+      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId && !isChatOriginatedIssue) {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
@@ -3493,6 +3498,7 @@ export function issueThreadInteractionService(
               assigneeUserId: issues.assigneeUserId,
               assigneeAgentId: issues.assigneeAgentId,
               conversationAgentId: issues.conversationAgentId,
+              originKind: issues.originKind,
             })
             .from(issues)
             .where(
@@ -3501,23 +3507,18 @@ export function issueThreadInteractionService(
                 eq(issues.companyId, issue.companyId),
               ),
             );
-          if (!issueRow?.conversationAgentId) {
-            const candidateOwner =
-              issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? issueRow?.assigneeUserId ?? null;
-            // Telegram conversation issues historically persisted a synthetic
-            // `telegram:*` creator. That is not a resolver identity: the
-            // linked auth user is checked by the chat publication path.
-            issueOwnerUserId = candidateOwner?.startsWith("telegram:")
-              ? null
-              : candidateOwner;
-            issueHasAssignedAgent =
-              issueHasAssignedAgent || Boolean(issueRow?.assigneeAgentId);
-          }
+          // Chat-originated issues are excluded by the outer gate above; the
+          // owner fallback here only applies to ordinary board issues.
+          const candidateOwner =
+            issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? issueRow?.assigneeUserId ?? null;
+          issueOwnerUserId = candidateOwner;
+          issueHasAssignedAgent =
+            issueHasAssignedAgent || Boolean(issueRow?.assigneeAgentId);
         }
 
         if (issueOwnerUserId) {
           normalizedData.addresseeUserId = issueOwnerUserId;
-        } else if (!isConversationIssue && !issueHasAssignedAgent) {
+        } else if (!isChatOriginatedIssue && !issueHasAssignedAgent) {
           throw unprocessable(
             "An issue-thread interaction must specify an addressee (addresseeAgentId or addresseeUserId) or have an issue owner",
           );
