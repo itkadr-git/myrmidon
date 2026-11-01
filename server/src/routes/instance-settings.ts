@@ -5,6 +5,8 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
+  validateMaintenanceWindowCronRequestSchema,
+  validateMaintenanceWindowCronSchedule,
 } from "@myrmidon/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -444,6 +446,27 @@ export function instanceSettingsRoutes(
     });
     res.json({ wasActive });
   });
+
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator
+  router.post(
+    "/instance/maintenance-window/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/instance-settings/auto-update/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }

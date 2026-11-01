@@ -5,6 +5,10 @@ import { z } from "zod";
 import type { Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
+import {
+  validateMaintenanceWindowCronRequestSchema,
+  validateMaintenanceWindowCronSchedule,
+} from "@myrmidon/shared";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { assertDeployClassAllowed } from "../autonomy/deploy-class.js";
 import { MAINTENANCE_ON_TIMEOUT, MAINTENANCE_SCOPE_TYPES, type MaintenanceScope } from "./domain.js";
@@ -91,6 +95,27 @@ export function maintenanceRoutes(_db: Db, service: MaintenanceService) {
       throw toHttpError(err);
     }
   });
+
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator
+  router.post(
+    "/myrmidon/maintenance/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/myrmidon/auto-update/validate-cron",
+    validate(validateMaintenanceWindowCronRequestSchema),
+    async (req, res) => {
+      assertBoardOrgAccess(req);
+      const result = validateMaintenanceWindowCronSchedule(req.body);
+      res.json(result);
+    },
+  );
 
   return router;
 }
