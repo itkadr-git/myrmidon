@@ -24,6 +24,20 @@ async function advance(ms: number) {
   flushSync(() => {});
 }
 
+// React overrides the value setter on controlled inputs; restore the native
+// one so dispatching `input`/`change` actually propagates to React state.
+function setInputValue(input: HTMLInputElement, value: string) {
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+  nativeSetter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+  nativeSetter.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 describe("agents fleet screen", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -63,18 +77,16 @@ describe("agents fleet screen", () => {
     expect(container.querySelectorAll('a[href="/agents/a"]')).toHaveLength(1);
     expect(container.querySelectorAll('a[href="/agents/b"]')).toHaveLength(1);
   });
-  it("sends q, status, role and reportsTo filters to the agents API", async () => {
+  it("sends q and status filters to the agents API", async () => {
     mockApi.agentsList.mockResolvedValue([]);
     await renderScreen();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", undefined);
     // Type in the search box; the request fires only after the 300 ms debounce.
-    searchInput().value = "alp";
-    searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+    setInputValue(searchInput(), "alp");
     await advance(300);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
     // Pick a status; the query key changes and a filtered request goes out.
-    statusSelect().value = "paused";
-    statusSelect().dispatchEvent(new Event("change", { bubbles: true }));
+    setSelectValue(statusSelect(), "paused");
     await settle();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp", status: "paused" });
   });
@@ -83,8 +95,7 @@ describe("agents fleet screen", () => {
     await renderScreen();
     mockApi.agentsList.mockClear();
     for (const ch of ["a", "l", "p"]) {
-      searchInput().value = searchInput().value + ch;
-      searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+      setInputValue(searchInput(), searchInput().value + ch);
       await advance(100);
     }
     expect(mockApi.agentsList).not.toHaveBeenCalled();
@@ -95,15 +106,14 @@ describe("agents fleet screen", () => {
   it("clearing filters restores the unfiltered request", async () => {
     mockApi.agentsList.mockResolvedValue([]);
     await renderScreen();
-    searchInput().value = "alp";
-    searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+    setInputValue(searchInput(), "alp");
     await advance(300);
-    statusSelect().value = "paused";
-    statusSelect().dispatchEvent(new Event("change", { bubbles: true }));
+    setSelectValue(statusSelect(), "paused");
     await settle();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp", status: "paused" });
     const clearButton = container.querySelector<HTMLButtonElement>("button")!;
     clearButton.click();
+    await advance(300);
     await settle();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", undefined);
   });
@@ -112,8 +122,7 @@ describe("agents fleet screen", () => {
       { id: "a", name: "Alpha", role: "lead", status: "active" },
     ]);
     await renderScreen();
-    searchInput().value = "alp";
-    searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+    setInputValue(searchInput(), "alp");
     await advance(300);
     await settle();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });

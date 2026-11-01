@@ -229,12 +229,20 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
-    list: (companyId: string, filters?: { q?: string; status?: string; role?: string; reportsTo?: string }) =>
+    list: (
+      companyId: string,
+      filters?: {
+        q?: string;
+        status?: string | string[];
+        role?: string;
+        reportsTo?: string;
+      },
+    ) =>
       [
         "agents",
         companyId,
         filters?.q ?? "",
-        filters?.status ?? "",
+        Array.isArray(filters?.status) ? filters.status.join(",") : filters?.status ?? "",
         filters?.role ?? "",
         filters?.reportsTo ?? "",
       ] as const,
