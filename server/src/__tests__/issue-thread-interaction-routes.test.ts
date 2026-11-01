@@ -776,6 +776,30 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
+  it("creates an escalation interaction for an existing issue and returns JSON 404 for a missing issue", async () => {
+    mockInteractionService.create.mockResolvedValue({ id: "interaction-escalation" });
+    const app = await createApp();
+
+    const existingIssueRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({ kind: "ask_user_questions", payload: { version: 1, questions: [{ id: "next", prompt: "How should this escalate?", selectionMode: "single", options: [{ id: "owner", label: "Ask owner" }] }] } });
+    expect(existingIssueRes.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ISSUE_ID }),
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      expect.anything(),
+    );
+
+    mockIssueService.getById.mockResolvedValueOnce(null);
+    const missingIssueRes = await request(app)
+      .post(`/api/issues/${OTHER_ISSUE_ID}/interactions`)
+      .send({ kind: "ask_user_questions", payload: { version: 1, questions: [{ id: "next", prompt: "How should this escalate?", selectionMode: "single", options: [{ id: "owner", label: "Ask owner" }] }] } });
+    expect(missingIssueRes.status).toBe(404);
+    expect(missingIssueRes.headers["content-type"]).toMatch(/application\/json/);
+    expect(missingIssueRes.body).toMatchObject({ error: "Issue not found" });
+    expect(mockInteractionService.create).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
     const app = await createApp();
 
