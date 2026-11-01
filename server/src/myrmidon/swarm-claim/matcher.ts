@@ -1394,7 +1394,9 @@ async function openTaskIdsOfAgents(
   for (const row of assignedRows) {
     if (row.agentId && !blockedIssueIds.has(row.issueId)) slot(row.agentId).assigned.add(row.issueId);
   }
-  for (const row of leasedRows) slot(row.agentId).leased.add(row.issueId);
+  for (const row of leasedRows) {
+    if (!blockedIssueIds.has(row.issueId)) slot(row.agentId).leased.add(row.issueId);
+  }
   return out;
 }
 
