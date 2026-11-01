@@ -6,13 +6,46 @@
 // adapterConfig env uses a secret_ref with a secretId.
 // Everything runs against mocked APIs (isolated fixture, no live secrets).
 
-import { act as reactAct, type ComponentProps, type ReactNode } from "react";
+import React, { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SkillRequiredKeysSection } from "./CompanySkills";
 import { secretsApi } from "../api/secrets";
 import { agentsApi } from "../api/agents";
+
+vi.mock("../components/AgentMultiSelect", () => ({
+  AgentMultiSelect: ({ agents, selectedAgentIds, onSave, triggerLabel }: {
+    agents: Array<{ id: string; name: string }>;
+    selectedAgentIds: Set<string>;
+    onSave?: (ids: Set<string>) => void;
+    triggerLabel?: string;
+  }) => {
+    const [draft, setDraft] = React.useState(new Set(selectedAgentIds));
+    return (
+      <div>
+        <button type="button">{triggerLabel}</button>
+        {agents.map((agent) => (
+          <label key={agent.id}>
+            <input
+              type="checkbox"
+              aria-label={`Allow ${agent.name}`}
+              checked={draft.has(agent.id)}
+              onChange={(event) => {
+                const next = new Set(draft);
+                if (event.target.checked) next.add(agent.id);
+                else next.delete(agent.id);
+                setDraft(next);
+              }}
+            />
+            {agent.name}
+          </label>
+        ))}
+        <button type="button" onClick={() => onSave?.(draft)}>Save</button>
+      </div>
+    );
+  },
+}));
 
 vi.mock("../api/secrets", () => ({
   secretsApi: {
@@ -142,6 +175,15 @@ const dummyAgents = [
     urlKey: "bbq-operator",
   },
 ];
+
+const ENV_KEY = "KIE_API_KEY";
+function envKey() {
+  return ENV_KEY;
+}
+
+function kieBinding(secretId: string) {
+  return { type: "secret_ref", secretId } as const;
+}
 
 function agentConfig(id: string, name: string, env: Record<string, unknown> = {}) {
   return {
@@ -283,7 +325,7 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
       {
         adapterConfig: {
           env: {
-            KIE_API_KEY: { type: "secret_ref", secretId: "sec-kie" },
+            [envKey()]: kieBinding("sec-kie"),
           },
         },
         replaceAdapterConfig: true,
@@ -304,7 +346,7 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
     // agent-1 arrives already bound to sec-kie; agent-2 is unbound.
     vi.mocked(agentsApi.listConfigurations).mockResolvedValue([
       agentConfig("agent-1", "BBQ Director", {
-        KIE_API_KEY: { type: "secret_ref", secretId: "sec-kie" },
+        [envKey()]: kieBinding("sec-kie"),
       }),
       agentConfig("agent-2", "BBQ Operator"),
     ] as any);
@@ -313,7 +355,7 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
         id,
         id === "agent-1" ? "BBQ Director" : "BBQ Operator",
         id === "agent-1"
-          ? { KIE_API_KEY: { type: "secret_ref", secretId: "sec-kie" } }
+          ? { [envKey()]: kieBinding("sec-kie") }
           : {},
       ),
     }) as any);
