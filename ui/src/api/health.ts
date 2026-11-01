@@ -1,4 +1,8 @@
-import type { ServerInfoSnapshot } from "@myrmidon/shared";
+import type {
+  ReplicationHealthQuery,
+  ReplicationHealthResponse,
+  ServerInfoSnapshot,
+} from "@myrmidon/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 export type DevServerHealthStatus = {
@@ -71,5 +75,31 @@ export const healthApi = {
       if (recovery) return recovery;
       throw new Error(payload?.error ?? `Failed to request restart (${res.status})`);
     }
+  },
+  getReplication: async (
+    params?: ReplicationHealthQuery,
+  ): Promise<ReplicationHealthResponse> => {
+    const query = new URLSearchParams();
+    if (params?.maxLagSeconds !== undefined) {
+      query.set("maxLagSeconds", String(params.maxLagSeconds));
+    }
+    if (params?.warnLagSeconds !== undefined) {
+      query.set("warnLagSeconds", String(params.warnLagSeconds));
+    }
+    if (params?.role) {
+      query.set("role", params.role);
+    }
+    const qs = query.toString();
+    const res = await fetch(`/api/health/replication${qs ? `?${qs}` : ""}`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      throw new Error(payload?.error ?? `Failed to load replication health (${res.status})`);
+    }
+    return res.json();
   },
 };
