@@ -1,6 +1,10 @@
-# 1.6.6 OPE-9084: периодический pull deny-list клиентской установкой
+---
+divergence-section: Трек 1 — платформа
+---
 
-### The installation pulls the issuer's signed deny-list itself
+## changelog-en
+
+### The installation pulls the issuer's signed deny-list itself (OPE-9084, 1.6.6)
 
 - The board now periodically fetches the signed `license.deny.json` from the URL in
   `MYR_LICENSE_DENY_URL` (default interval 60s, override via `MYR_LICENSE_DENY_PULL_INTERVAL_MS`,
@@ -13,7 +17,9 @@
 - Timer lifecycle: started with the app's background work, stopped on the shutdown hook
   (`app.locals.paperclipShutdown`), `unref`'d so it never keeps the process alive.
 
-### Установка сама забирает подписанный список отзыва у issuer
+## changelog-ru
+
+### Установка сама забирает подписанный список отзыва у issuer (OPE-9084, 1.6.6)
 
 - Доска периодически скачивает подписанный `license.deny.json` по URL из
   `MYR_LICENSE_DENY_URL` (интервал по умолчанию 60 с, переопределяется

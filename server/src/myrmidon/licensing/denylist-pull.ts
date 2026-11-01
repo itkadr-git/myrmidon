@@ -47,10 +47,15 @@ export function startDenyListPuller(options: DenyListPullerOptions = {}): DenyLi
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
-  let pulling = false;
+  let pulling: Promise<void> | null = null;
 
   async function tick(): Promise<void> {
-    if (stopped || pulling) return;
+    if (stopped) return;
+    if (pulling) {
+      // A pull is already in flight (e.g. the startup tick): pullNow() joins it.
+      await pulling.catch(() => undefined);
+      return;
+    }
     if (!denyListUrl(env())) {
       // The URL is absent: make sure no stale timer keeps running.
       if (timer) {
@@ -59,18 +64,23 @@ export function startDenyListPuller(options: DenyListPullerOptions = {}): DenyLi
       }
       return;
     }
-    pulling = true;
-    try {
-      const result = await pullDenyListOnce(env(), trustedKeys, options.fetcher);
-      if (result.status === "updated") {
-        warn(`license deny-list pulled: serial ${result.serial} installed`);
-      } else if (result.status === "rejected") {
-        warn(`license deny-list pull rejected: serial ${result.serial} is lower than the accepted one`);
+    const run = (async () => {
+      try {
+        const result = await pullDenyListOnce(env(), trustedKeys, options.fetcher);
+        if (result.status === "updated") {
+          warn(`license deny-list pulled: serial ${result.serial} installed`);
+        } else if (result.status === "rejected") {
+          warn(`license deny-list pull rejected: serial ${result.serial} is lower than the accepted one`);
+        }
+      } catch (err) {
+        warn(`license deny-list pull failed: ${(err as Error).message}`);
       }
-    } catch (err) {
-      warn(`license deny-list pull failed: ${(err as Error).message}`);
+    })();
+    pulling = run;
+    try {
+      await run;
     } finally {
-      pulling = false;
+      pulling = null;
     }
   }
 
@@ -83,12 +93,11 @@ export function startDenyListPuller(options: DenyListPullerOptions = {}): DenyLi
 
   // Start lazily: an immediate tick installs the timer only when the URL is
   // configured. A later env change (test seam) is picked up by pullNow().
-  void tick().then(() => {
-    if (!stopped && denyListUrl(env())) ensureTimer();
-  });
+  const initialPull = tick();
 
   return {
     async pullNow(): Promise<void> {
+      await initialPull;
       await tick();
       if (!stopped && denyListUrl(env())) ensureTimer();
     },
