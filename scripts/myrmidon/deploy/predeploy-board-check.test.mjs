@@ -181,6 +181,8 @@ function sandbox({
     ["DUMP_DIR", `DUMP_DIR=${path.join(dir, "dumps")}`],
     ["BOARD_COMPANY_ID", `BOARD_COMPANY_ID=${COMPANY}`],
     ["MYRMIDON_PREDEPLOY_POSTGRES_IMAGE", "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine"],
+    ["MYRMIDON_PREDEPLOY_IO_DEVICE", "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data"],
+    ["MYRMIDON_PREDEPLOY_IO_RATE", "MYRMIDON_PREDEPLOY_IO_RATE=30000000"],
     ["MYRMIDON_PREDEPLOY_BOARD_ENV_FILE", `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${boardEnv}`],
     ["MYRMIDON_PREDEPLOY_BOARD_PORT", "MYRMIDON_PREDEPLOY_BOARD_PORT=13110"],
     ["MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC", "MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2"],
@@ -222,6 +224,7 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(log, /docker run -d --name myr-predeploy-board-[^ ]+ --network myr-predeploy-/);
     // the copy is a Postgres created with the configured database/user
     assert.match(log, /-e POSTGRES_DB=myrmidon/);
+    assert.match(log, /--device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000/);
     assert.match(log, /postgres:16-alpine/);
     // the NEW dockergate of the release, from its digest, on the same network
     assert.match(log, new RegExp(`docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-[^ ]+ ${DOCKERGATE_REPO}@${DG}`));

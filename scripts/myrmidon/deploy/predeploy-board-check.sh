@@ -156,6 +156,27 @@ esac
 [[ -n "$postgres_image" ]] || die "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE is required: the check restores the predeploy dump into its own Postgres (set MYRMIDON_PREDEPLOY_CHECK=0 to deploy without the check); nothing was changed"
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
 [[ -f "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE not found: $board_env_file; nothing was changed"
+io_device="${MYRMIDON_PREDEPLOY_IO_DEVICE:-}"
+io_rate="${MYRMIDON_PREDEPLOY_IO_RATE:-31457280}"
+[[ "$io_rate" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_PREDEPLOY_IO_RATE must be a positive integer of bytes per second (default 31457280 = 30 MiB/s); nothing was changed"
+if [[ -n "$io_device" ]]; then
+  # An explicit device is taken as-is (word-safe): Docker validates that it is
+  # a block device before the container starts, before anything is restored.
+  [[ "$io_device" == /* && "$io_device" != *' '* ]] || die "MYRMIDON_PREDEPLOY_IO_DEVICE must be an absolute path of a block device without spaces (got: '$io_device'); nothing was changed"
+else
+  # Auto-detect: the block device that carries Docker's data root — the same
+  # disk the running board and the copy share. A read-only `docker info` is the
+  # one docker call this input needs; it changes nothing on production.
+  require_cmd findmnt
+  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  io_device="$(findmnt -no SOURCE -T "${docker_root:-/var/lib/docker}" 2>/dev/null | head -n1 || true)"
+  io_device="${io_device%%\[*}" # btrfs SOURCE is /dev/sda1[/subvol]: the device is what docker must throttle
+  [[ -n "$io_device" ]] && io_device="$(readlink -f "$io_device" 2>/dev/null || printf '%s' "$io_device")"
+  case "$io_device" in
+    /dev/*) ;;
+    *) die "PREDEPLOY-IO: cannot find the block device behind Docker's data root (DockerRootDir='${docker_root:-<none>}', findmnt SOURCE='${io_device:-<none>}'): set MYRMIDON_PREDEPLOY_IO_DEVICE to the device backing it (for example /dev/nvme0n1). The copy restores a 13 GB dump on the board's own disk: without a limit it pushed the host to 74% io pressure and the board's health to 3-4.6 s (01.11, rc.23); nothing was changed" ;;
+  esac
+fi
 # The token is optional — without one the route walk answers 401/403 and that
 # stays a WARNING (the route was reached, the data path was not exercised).
 # A token file that IS set but unusable is an input of this step, so it fails
@@ -213,7 +234,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Predeploy check plan:"
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
-  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:<the image's data VOLUME> $postgres_image (database $db_name, user $db_user, generated password)"
+  plan "2. docker run -d --name $db_ctr --network $network --device-read-bps $io_device:$io_rate --device-write-bps $io_device:$io_rate -v $db_vol:<the image's data VOLUME> $postgres_image (database $db_name, user $db_user, generated password; restore and docker exec are in this throttled container)"
   plan "3. wait for the copy to accept connections, then check the copy against the dump (PREDEPLOY-PG-COMPAT, MYRMIDON_PREDEPLOY_PG_COMPAT=$pg_compat): the pg_dump major recorded in the dump header must equal the copy's server major, and every extension the dump restores must be available in the copy image"
   plan "3.1 restore the dump into the copy"
   if [[ -n "$dockergate_ref" ]]; then
@@ -288,9 +309,10 @@ db_mount="$(docker image inspect -f '{{range $k, $v := .Config.Volumes}}{{$k}}{{
 db_mount="${db_mount:-/var/lib/postgresql/data}"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$db_ctr" --network "$network" \
+  --device-read-bps "$io_device:$io_rate" --device-write-bps "$io_device:$io_rate" \
   -v "$db_vol:$db_mount" \
   -e POSTGRES_DB="$db_name" -e POSTGRES_USER="$db_user" -e POSTGRES_PASSWORD="$db_password" \
-  $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image); production was not touched"
+  $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image) with IO limit ${io_rate} B/s on $io_device; production was not touched"
 
 ready_deadline=$((SECONDS + health_timeout))
 until bash -c "$db_ready_command" >/dev/null 2>&1; do
