@@ -554,12 +554,20 @@ export async function seedPaperclip(options = {}) {
     // field, so the flag is requested by omitting the title, never sent.
     const titleNeedsGen = i <= 5;
 
+    const companyAgentIds = report.entities.agents
+      .filter((agent) => agent.companyId === company.id)
+      .map((agent) => agent.id);
+    const assigneeAgentId = companyAgentIds.length > 0
+      ? companyAgentIds[(i - 1) % companyAgentIds.length]
+      : undefined;
+
     const payload = {
       projectId: project.id,
       description: `### Описание задачи #${i}\n\nТребуется выполнить работы по теме: **${topic}**.\n\n#### Критерии приёмки:\n1. Реализован программный компонент в соответствии с техническими требованиями.\n2. Написаны модульные и интеграционные тесты с полным покрытием ветвлений.\n3. Документация обновлена, артефакты верифицированы в CI.\n4. Обеспечена обратная совместимость структуры данных.`,
       status,
       priority,
       allowDuplicate: true,
+      ...(assigneeAgentId ? { assigneeAgentId } : {}),
     };
     if (!titleNeedsGen) {
       payload.title = `Задача #${i}: ${topic}`;
