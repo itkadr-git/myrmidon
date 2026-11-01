@@ -3063,3 +3063,4 @@ export * from "./myrmidon-vendor-name.js";
 
 // myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
 export * from "./geo-check.js";
+export * from "./validators/geo-check.js";
