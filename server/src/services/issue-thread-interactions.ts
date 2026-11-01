@@ -3502,8 +3502,14 @@ export function issueThreadInteractionService(
               ),
             );
           if (!issueRow?.conversationAgentId) {
-            issueOwnerUserId =
+            const candidateOwner =
               issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? issueRow?.assigneeUserId ?? null;
+            // Telegram conversation issues historically persisted a synthetic
+            // `telegram:*` creator. That is not a resolver identity: the
+            // linked auth user is checked by the chat publication path.
+            issueOwnerUserId = candidateOwner?.startsWith("telegram:")
+              ? null
+              : candidateOwner;
             issueHasAssignedAgent =
               issueHasAssignedAgent || Boolean(issueRow?.assigneeAgentId);
           }
