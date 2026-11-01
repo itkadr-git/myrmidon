@@ -245,7 +245,6 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                       )}
                     </div>
                   )}
-                </div>
 
                 {row.budget && (
                   <div
@@ -268,6 +267,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
               </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
+
                   {!row.present ? (
                     <Button
                       size="sm"
