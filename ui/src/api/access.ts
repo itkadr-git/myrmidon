@@ -8,7 +8,7 @@ import type {
 } from "@myrmidon/shared";
 import { api } from "./client";
 
-export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
+export type HumanCompanyRole = HumanCompanyMembershipRole;
 
 type InviteSummary = {
   id: string;
