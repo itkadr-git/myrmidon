@@ -22,7 +22,7 @@
 //   - `exportTree()/importTree()` are canonical: export → import → export is
 //     byte-for-byte identical.
 
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeEvents,
@@ -39,6 +39,8 @@ import {
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
+  assertKnowledgeWriteProtection,
+  type KnowledgeWriteProtectionViolation,
   assertRevisionTransition,
   assertRuleFields,
   assertSingleLine,
@@ -101,6 +103,8 @@ export interface KnowledgeRevisionDto {
   status: KnowledgeRevisionStatus;
   lang: KnowledgeRevisionLang;
   translationOf: string | null;
+  title: string | null;
+  summary: string | null;
   content: string;
   changeSummary: string | null;
   rolledBackFromRevisionId: string | null;
@@ -147,6 +151,8 @@ export interface CreateKnowledgeInput {
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface DraftKnowledgeInput {
@@ -154,9 +160,13 @@ export interface DraftKnowledgeInput {
   lang?: KnowledgeRevisionLang;
   translationOf?: string | null;
   changeSummary?: string | null;
+  title?: string;
+  summary?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
+  force?: boolean;
+  reason?: string | null;
 }
 
 export interface ApproveKnowledgeInput {
@@ -225,6 +235,8 @@ function toRevisionDto(
     status: row.status,
     lang: row.lang,
     translationOf: row.translationOf,
+    title: row.title ?? null,
+    summary: row.summary ?? null,
     content: row.content,
     changeSummary: row.changeSummary,
     rolledBackFromRevisionId: row.rolledBackFromRevisionId,
@@ -276,7 +288,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
   async function mirrorActivity(input: {
     companyId: string;
-    itemId: string;
+    itemId?: string | null;
     slug: string;
     event: string;
     actor: KnowledgeActor;
@@ -288,7 +300,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       actorId: input.actor.actorId ?? input.actor.actorType,
       action: input.event,
       entityType: "knowledge_item",
-      entityId: input.itemId,
+      entityId: input.itemId ?? input.slug,
       agentId: input.actor.actorType === "agent" ? (input.actor.actorId ?? null) : null,
       details: { slug: input.slug, ...input.payload },
     });
@@ -363,6 +375,26 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     assertSingleLine(input.title, "Title");
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
+    let createViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      createViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused create for ${input.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: input.companyId,
+        itemId: input.slug,
+        slug: input.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: input.slug, cause: (err as Error).message, action: "create" },
+      }).catch(() => {});
+      throw err;
+    }
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     if (input.translationOf) throw new KnowledgeDomainError("translation_requires_canonical_item", 400, "A translation revision must be created against an existing knowledge item.");
     const kind = input.kind ?? "note";
@@ -426,6 +458,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           lang,
           translationOf: null,
+          title: input.title,
+          summary: input.summary ?? null,
           content: input.content,
           changeSummary: "created",
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -459,6 +493,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.created", actor, payload: { kind: row.kind } });
+    if (createViolation) {
+      await mirrorActivity({
+        companyId: row.companyId,
+        itemId: row.id,
+        slug: row.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: row.slug, violation: createViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     await reindex(row.nestId, row.id);
     return toItemDto(row);
   }
@@ -470,9 +514,39 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (current.status === "superseded") {
       throw new KnowledgeDomainError("superseded_read_only", 409, "A superseded item takes no new revisions.");
     }
+    if (input.title != null) assertSingleLine(input.title, "Title");
+    if (input.summary != null) assertSingleLine(input.summary, "Summary");
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
+
+    const [latestRevision] = await db
+      .select({ content: knowledgeRevisions.content })
+      .from(knowledgeRevisions)
+      .where(and(eq(knowledgeRevisions.nestId, nestId), eq(knowledgeRevisions.itemId, current.id)))
+      .orderBy(desc(knowledgeRevisions.revisionNumber))
+      .limit(1);
+
+    let draftViolation: KnowledgeWriteProtectionViolation | null = null;
+    try {
+      draftViolation = assertKnowledgeWriteProtection({
+        newContent: input.content,
+        previousContent: latestRevision?.content ?? null,
+        force: input.force,
+        reason: input.reason,
+      });
+    } catch (err) {
+      console.warn(`[KNOWLEDGE_WRITE_PROTECTION_ALERT] Refused draft for ${current.slug}: ${(err as Error).message}`);
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_alert",
+        actor,
+        payload: { slug: current.slug, cause: (err as Error).message, action: "draft" },
+      }).catch(() => {});
+      throw err;
+    }
 
     const row = await db.transaction(async (tx) => {
       // Lock the item row so concurrent drafts serialize on the revision
@@ -496,6 +570,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           throw new KnowledgeDomainError("invalid_translation_target", 400, "A translation must reference a canonical revision of the same item.");
         }
       }
+      const revisionTitle = input.title !== undefined ? input.title : locked!.title;
+      const revisionSummary = input.summary !== undefined ? (input.summary ?? null) : locked!.summary;
       const [revision] = await tx
         .insert(knowledgeRevisions)
         .values({
@@ -506,6 +582,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: input.submit ? "submitted" : "draft",
           lang,
           translationOf,
+          title: revisionTitle,
+          summary: revisionSummary,
           content: input.content,
           changeSummary: input.changeSummary ?? null,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -553,6 +631,16 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.draft", actor, payload: {} });
+    if (draftViolation) {
+      await mirrorActivity({
+        companyId: current.companyId,
+        itemId: current.id,
+        slug: current.slug,
+        event: "knowledge.write_protection_overridden",
+        actor,
+        payload: { slug: current.slug, violation: draftViolation.kind, reason: input.reason },
+      }).catch(() => {});
+    }
     return toItemDto(row);
   }
 
@@ -645,9 +733,14 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           .set({ status: "approved", approvedAt: now() })
           .where(eq(knowledgeRevisions.id, revision.id));
       }
+      const set: Partial<ItemRow> = { status: "published", deliveredRevisionId: revision.id, updatedAt: now() };
+      if (revision.title != null) {
+        set.title = revision.title;
+        set.summary = revision.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({ status: "published", deliveredRevisionId: revision.id, updatedAt: now() })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
       await appendEvent(tx, {
@@ -719,6 +812,10 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         assertItemTransition(current.status, "published");
         set.status = "published";
         set.deliveredRevisionId = revision.id;
+        if (revision.title != null) {
+          set.title = revision.title;
+          set.summary = revision.summary;
+        }
       } else if (current.status === "in_review") {
         set.status = "in_review";
       }
@@ -769,6 +866,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           itemId: current.id,
           revisionNumber: plan.newRevisionNumber,
           status: "approved",
+          title: target.title,
+          summary: target.summary,
           content: target.content,
           lang: target.lang,
           translationOf: target.translationOf,
@@ -798,14 +897,19 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       }
 
       const statusToDeliver = input.publish && current.status !== "published" ? "published" : current.status;
+      const set: Partial<ItemRow> = {
+        currentRevisionNumber: plan.newRevisionNumber,
+        deliveredRevisionId: copy!.id,
+        status: statusToDeliver,
+        updatedAt: now(),
+      };
+      if (target.title != null) {
+        set.title = target.title;
+        set.summary = target.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({
-          currentRevisionNumber: plan.newRevisionNumber,
-          deliveredRevisionId: copy!.id,
-          status: statusToDeliver,
-          updatedAt: now(),
-        })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
 
@@ -1311,6 +1415,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               itemId: item!.id,
               revisionNumber: 1,
               status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
+              title: page.title,
+              summary: page.summary ?? null,
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
@@ -1356,6 +1462,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
                 itemId: existing.id,
                 revisionNumber: existing.currentRevisionNumber + 1,
                 status: "draft",
+                title: page.title,
+                summary: page.summary ?? null,
                 content: page.content,
                 changeSummary: "import",
                 createdAt: timestamp,

@@ -171,7 +171,7 @@ answers it with ordinary text in the same Telegram chat.
 - Call site for card delivery: `server/src/services/chat-interaction-publications.ts`
   (marker `myrmidon(U2)`, after the vendor binding lookup; the mode filter
   lives inside the binding search).
-- Binding search: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
+- Binding search: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (since 1.7-ACTIVE-CHANNEL; the owner-delivery gate picks the channel).
 - Plain-text owner message (replaces the former card prefix `owner-card-text.ts`): `server/src/myrmidon/owner-delivery/telegram-text.ts`; see "Plain-text owner publications" above, which supersedes the button and header description for the owner DM.
 - Callback resolution: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Behaviour record: [../DIVERGENCE.md](../DIVERGENCE.md), row U2.

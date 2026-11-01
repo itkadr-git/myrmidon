@@ -562,6 +562,12 @@ export function checkCompatibility(
     }
   }
   const accepted = Boolean(options?.acceptVendorOnlyData);
+  const protectedLosses = vendorOnly.filter((f) => f.rows > 0 &&
+    ((f.table === "agents" && f.column === "appearance") ||
+     (f.table === "issues" && f.column === "title_needs_generation")));
+  if (protectedLosses.length > 0) {
+    problems.push(...protectedLosses.map((f) => `approved-column-not-preserved:${f.table}.${f.column}`));
+  }
   const skippedSourceData: SkippedSourceDatum[] = [
     ...vendorOnly.map((f) => ({
       table: f.table,

@@ -143,8 +143,12 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
       graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
       scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+      sessionRetentionDays: "MYRMIDON_BOTD_SESSION_RETENTION_DAYS",
       boardUrl: "MYRMIDON_BOTD_BOARD_URL",
       boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
+      hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",
+      hermesPruneDays: "MYRMIDON_HERMES_PRUNE_DAYS",
+      gitMigrationEnabled: "MYRMIDON_GIT_MIGRATION_ENABLED",
     });
     // botd authenticates with the bot's own board key, referenced by name only.
     expect(WS_BOTD_BOARD_KEY_ENV_VALUE).toBe("PAPERCLIP_API_KEY");
@@ -160,6 +164,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     expect(resolveBotDiskMechanics(undefined)).toEqual({
       graceClosingMinutes: 30,
       scratchTtlHours: 24,
+      sessionRetentionDays: 30,
       partitionThresholdPercent: 85,
       partitionRefuseOpenPercent: 90,
       partitionCriticalPercent: 95,
@@ -168,6 +173,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       resolveBotDiskMechanics({
         graceClosingMinutes: 45,
         scratchTtlHours: 12,
+        sessionRetentionDays: 14,
         partitionThresholdPercent: 80,
         partitionRefuseOpenPercent: 88,
         partitionCriticalPercent: 93,
@@ -178,6 +184,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     ).toEqual({
       graceClosingMinutes: 45,
       scratchTtlHours: 12,
+      sessionRetentionDays: 14,
       partitionThresholdPercent: 80,
       partitionRefuseOpenPercent: 88,
       partitionCriticalPercent: 93,
@@ -197,9 +204,33 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
     expect(resolveBotDiskMechanics(stored)).toEqual({
       graceClosingMinutes: 30,
       scratchTtlHours: 24,
+      sessionRetentionDays: 30,
       partitionThresholdPercent: 85,
       partitionRefuseOpenPercent: 90,
       partitionCriticalPercent: 95,
     });
+  });
+});
+
+describe("myrmidon(MYR-WS-RECOVER) open result and run workspace field", () => {
+  it("run workspace field carries an optional PR branch", () => {
+    const base = { key: "OPE-7967", repo: "itkadr-git/myrmidon-deploy" };
+    expect(runWorkspaceFieldSchema.safeParse(base).success).toBe(true);
+    expect(runWorkspaceFieldSchema.safeParse({ ...base, branch: "fix/ope-7967" }).success).toBe(true);
+    expect(runWorkspaceFieldSchema.safeParse({ ...base, branch: "bad ref^" }).success).toBe(false);
+    expect(runWorkspaceFieldSchema.safeParse({ ...base, branch: "" }).success).toBe(false);
+  });
+
+  it("open result may report what was recovered", () => {
+    const ok = { ok: true, key: "OPE-6975", path: "/workspace/OPE-6975", class: "E", reused: true };
+    expect(myrWsOpenResultSchema.safeParse(ok).success).toBe(true);
+    expect(
+      myrWsOpenResultSchema.safeParse({
+        ...ok,
+        recoveryRef: "refs/myr-ws/recovery/OPE-6975",
+        recovered: [{ problem: "merge_in_progress", action: "aborted", detail: "git merge --abort" }],
+      }).success,
+    ).toBe(true);
+    expect(myrWsOpenResultSchema.safeParse({ ...ok, recovered: [{ problem: "", action: "x" }] }).success).toBe(false);
   });
 });

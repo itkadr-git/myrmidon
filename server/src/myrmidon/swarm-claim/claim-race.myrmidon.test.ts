@@ -19,7 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { insertClaim } from "./store.js";
+import { clearExpiredAssignee, insertClaim, releaseClaim } from "./store.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 let db: Db;
@@ -142,6 +142,29 @@ describeDatabase("swarm claim capture under the race", () => {
     const afterRelease = await insertClaim(db, claimInput(agentTwo, new Date()));
     expect(afterRelease).not.toBeNull();
     expect(await liveClaimCount()).toBe(1);
+    await releaseClaim(db, { claimId: afterRelease!.id, reason: "run_finished" });
+  }, 30_000);
+
+  it("does not clear a newer explicit re-assignment when an old lease expires", async () => {
+    const claimedAt = new Date();
+    const releasedAt = new Date(claimedAt.getTime() + 2 * 60 * 60 * 1000);
+    const claim = await insertClaim(db, {
+      ...claimInput(agentOne, claimedAt),
+      expiresAt: new Date(claimedAt.getTime() + 60 * 60 * 1000),
+    });
+    expect(claim).not.toBeNull();
+    await db.update(issues).set({ assigneeAgentId: agentOne, updatedAt: claimedAt }).where(eq(issues.id, issueId));
+    expect(await releaseClaim(db, { claimId: claim!.id, reason: "lease_expired", now: releasedAt })).toBe(true);
+
+    // The same agent id does not make a subsequent manual assignment owned by
+    // the old lease. The issue timestamp fences the expiry cleanup.
+    const explicitAt = new Date(releasedAt.getTime() + 1);
+    await db.update(issues).set({ assigneeAgentId: agentOne, updatedAt: explicitAt }).where(eq(issues.id, issueId));
+    await expect(clearExpiredAssignee(db, {
+      companyId, issueId, agentId: agentOne, claimId: claim!.id, now: new Date(explicitAt.getTime() + 60_000),
+    })).resolves.toBe(false);
+    const [issue] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.assigneeAgentId).toBe(agentOne);
   }, 30_000);
 
   it("maps a unique violation raised by a racing writer to «занято», not to an error", async () => {

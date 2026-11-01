@@ -42,6 +42,7 @@
 //     (hermes_cli/config.py `_expand_env_vars`); the actual value belongs
 //     in input.env under that name.
 import { createHash } from "node:crypto";
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidon/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
@@ -1109,9 +1110,12 @@ function buildEnvFile(input: HermesProfileInput, warnings: string[]): string {
   // map, and always win over a same-named card entry.
   const reserved: Record<string, string> = {
     API_SERVER_KEY: requireNonEmpty(input.apiServerKey, "apiServerKey"),
-    PAPERCLIP_API_URL: requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"),
-    PAPERCLIP_API_KEY: requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"),
   };
+  // myrmidon(REBRAND-C): write the board URL and key under both the canonical
+  // MYRMIDON_* names and the PAPERCLIP_* alias so bots reading either prefix
+  // keep working through the transition.
+  writeProductEnv(reserved, "API_URL", requireNonEmpty(input.paperclipApiUrl, "paperclipApiUrl"));
+  writeProductEnv(reserved, "API_KEY", requireNonEmpty(input.paperclipApiKey, "paperclipApiKey"));
   for (const [name, value] of Object.entries(reserved)) {
     if (entries.has(name)) {
       warnings.push(`.env: "${name}" is reserved for the compiler's own value; the card's value was dropped`);
@@ -1244,7 +1248,7 @@ function buildSkillFiles(
         warnings.push(`skills.${name}: file path "${skillFile.path}" escapes the skill directory, dropped`);
         continue;
       }
-      out.push(file(`hermes/skills-board/${name}/${skillFile.path}`, skillFile.content, { secret: false }));
+      out.push(file(`hermes/skills/paperclip-managed/${name}/${skillFile.path}`, skillFile.content, { secret: false }));
     }
   }
   return out;
@@ -1327,24 +1331,16 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
   const configYaml = buildConfigYaml(input, warnings);
   const envFile = buildEnvFile(input, warnings);
   const hindsightConfigJson = buildHindsightConfigJson(input.hindsight, warnings);
-  // Restart-class, same as config.yaml/.env/hindsight config above: the
-  // vendor gateway's skills index is built once and cached in-process (LRU +
-  // disk snapshot) and does not watch the skills directory for changes —
-  // adding, removing or editing a skill's files never takes effect for a
-  // running gateway without a restart (agent/prompt_builder.py skills-index
-  // cache; agent/conversation_loop.py: "The skills index cache ... does not
-  // watch the skills dir"; the vendor's own `/reload-skills` command exists
-  // precisely to force this by hand otherwise). All of a skill's files go
-  // in, not just SKILL.md: its frontmatter alone drives the index entry, but
-  // a skill's other files (scripts, references) are also only ever (re)read
-  // through that same cached external_dirs listing.
+  // Skills are delivered as hot files directly into Hermes's run-scoped skills
+  // directory (/data/hermes/skills/paperclip-managed; patch 14) without a
+  // container restart or maintenance window. Hermes picks them up on the next
+  // run. Cold files (config.yaml, .env, hindsight/config.json) remain restart-class.
   const skillFiles = buildSkillFiles(input.skills, warnings);
 
   const restartFiles = [
     file("hermes/config.yaml", configYaml, { secret: hasMcpServerHeaders(input.mcpServers) }),
     file("hermes/.env", envFile, { secret: true }),
     file("hermes/hindsight/config.json", hindsightConfigJson, { secret: false }),
-    ...skillFiles,
   ];
 
   const hasAgentsMd = input.instructions.trim().length > 0;
@@ -1353,14 +1349,18 @@ export function compileHermesProfileDetailed(input: HermesProfileInput): Compile
       `workspace/AGENTS.md: ${input.instructions.length} characters, over Hermes's ${AGENTS_MD_WARN_CHARS}-character context-file floor; Hermes may truncate it at runtime, depending on the bot's model context window (the floor, not necessarily the effective limit for this bot)`,
     );
   }
-  // Files-class: AGENTS.md is re-read by the gateway on each run (it isn't
-  // cached the way the skills index is), so a running gateway picks up an
-  // edit without a restart. Blank instructions write no AGENTS.md at all (an
+  // Files-class: hot profile files (skills, AGENTS.md, workspace files). AGENTS.md
+  // and skills under /data/hermes/skills/paperclip-managed are picked up on each
+  // run without a restart (OPE-10086). Blank instructions write no AGENTS.md at all (an
   // empty file would still be a context file the gateway loads and reports).
   const agentsMdFiles = hasAgentsMd ? [file("workspace/AGENTS.md", input.instructions, { secret: false })] : [];
   // The bundle's sibling files ride the same class: the instructions name them
   // relatively, and the agent reads them on demand, never through a cache.
-  const filesTrackedFiles = [...agentsMdFiles, ...buildWorkspaceFiles(input.workspaceFiles, warnings)];
+  const filesTrackedFiles = [
+    ...skillFiles,
+    ...agentsMdFiles,
+    ...buildWorkspaceFiles(input.workspaceFiles, warnings),
+  ];
 
   const restartHash = hashEntries(restartFiles);
   const filesHash = hashEntries(filesTrackedFiles);

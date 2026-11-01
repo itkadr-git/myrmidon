@@ -31,7 +31,8 @@
     "decisionsBadge": "decisions",
     "quality": "Quality",
     "swarmSupervisor": "Swarm supervisor",
-    "foraging": "Foraging"
+    "foraging": "Foraging",
+    "knowledge": "Knowledge"
   },
   "common": {
     "cancel": "Cancel",
@@ -73,6 +74,13 @@
     "english": "English",
     "russian": "Русский",
     "switchTo": "Switch interface language"
+  },
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
   },
   "status": {
     "backlog": "Backlog",
@@ -148,6 +156,7 @@
       "project": "Project",
       "workspace": "Workspace",
       "parent": "Parent Task",
+      "topic": "Topic",
       "none": "None"
     },
     "olderThanDay": "Older than a day",
@@ -157,6 +166,7 @@
     "noWorkspaceGroup": "No Workspace",
     "noProjectGroup": "No Project",
     "noParentGroup": "No Parent",
+    "noTopicGroup": "No Topic",
     "unassigned": "Unassigned",
     "loadingMore": "Loading more tasks..."
   },
@@ -335,6 +345,7 @@
     "castes": "Agent castes",
     "models": "Models & providers",
     "wipLimit": "WIP limit",
+    "guardrails": "Guardrails",
     "features": "Features",
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
@@ -1108,6 +1119,24 @@
     "loadFailed": "Failed to load the live progress settings.",
     "saveFailed": "Saving the live progress settings failed."
   },
+  "ownerActiveChannel": {
+    "title": "Owner active channel",
+    "description": "Reports and plan answers go to the channel the owner used last: the portal or Telegram. A channel stays active until the owner is silent in it for longer than the threshold. Saving takes effect at the next delivery decision — no server restart.",
+    "currentLabel": "Owner is active in:",
+    "channelWeb": "Portal (Web)",
+    "channelTelegram": "Telegram",
+    "channelNone": "no channel — reports keep their standing rules",
+    "thresholdLabel": "Inactivity threshold, minutes",
+    "thresholdBounds": "{{min}}–{{max}} min",
+    "sourceSettings": "Saved here",
+    "sourceEnv": "Forced by the server environment",
+    "sourceDefault": "Default",
+    "save": "Save threshold",
+    "saving": "Saving...",
+    "loading": "Loading the active-channel settings...",
+    "loadFailed": "Failed to load the active-channel settings.",
+    "saveFailed": "Saving the active-channel settings failed."
+  },
   "evalResults": {
     "title": "Reference-task results",
     "subtitle": "Judge scores per reference task for the chosen run. The badge marks results whose judge comes from the same model family as the evaluated agent.",
@@ -1642,6 +1671,84 @@
     },
     "journalCreated": "Limit created: {{amount}}",
     "journalDeleted": "Limit deleted: {{amount}}",
-    "journalUpdated": "Was {{before}}, became {{after}}"
-  }
+    "journalUpdated": "Was {{before}}, became {{after}}",
+    "exportCsv": "Export CSV",
+    "exportJson": "Export JSON"
+  },
+  "pluginLabels": {
+    "myrmidon_personal-bot": {
+      "_plugin": "Personal bot",
+      "personal-bot-sidebar": "Personal bot",
+      "personal-bot-page": "Personal bot"
+    },
+    "myrmidon_license-issuer": {
+      "_plugin": "License issuing",
+      "license-issuer-sidebar": "License issuing",
+      "license-issuer-page": "License issuing"
+    },
+    "myrmidon_chatgpt-pool": {
+      "_plugin": "ChatGPT subscriptions",
+      "chatgpt-pool-sidebar": "ChatGPT subscriptions",
+      "chatgpt-pool-page": "ChatGPT subscriptions"
+    },
+    "myrmidon_google-ai": {
+      "_plugin": "Google AI Pro",
+      "google-ai-sidebar": "Google AI Pro",
+      "google-ai-page": "Google AI Pro"
+    },
+    "myrmidon_antigravity": {
+      "_plugin": "Antigravity",
+      "antigravity-sidebar": "Antigravity",
+      "antigravity-page": "Antigravity"
+    }
+  },
+  "guardrails": {
+    "title": "Guardrails",
+    "breadcrumb": "Guardrails",
+    "intro": "What a guardrail hit does: flag (journal only, the default), mask (replace the matched text), or block (withhold the answer). Set per company, caste, or agent; a change applies to the next run answer without a restart.",
+    "loading": "Loading the guardrail settings...",
+    "noCompany": "Select a company to edit its guardrails.",
+    "companyTitle": "Company-wide modes",
+    "companyHint": "Applies to every agent without its own or caste override. Inherit removes the override (default: flag).",
+    "casteTitle": "Caste modes",
+    "castePlaceholder": "Caste name",
+    "casteHint": "Type or pick a caste to override its modes; Inherit falls back to the company value.",
+    "agentsTitle": "Per-agent modes",
+    "noAgents": "No agents in this company yet.",
+    "colAgent": "Agent",
+    "colEffective": "Effective (source)",
+    "inherit": "Inherit",
+    "save": "Save guardrails",
+    "saving": "Saving...",
+    "mode": {
+      "flag": "Flag only",
+      "mask": "Mask",
+      "block": "Block"
+    },
+    "rule": {
+      "secret": "Secrets",
+      "pii": "Personal data",
+      "injection": "Prompt injection"
+    },
+    "source": {
+      "agent": "agent",
+      "caste": "caste",
+      "company": "company",
+      "default": "default",
+      "env": "env force"
+    },
+    "journalTitle": "Firing journal",
+    "filterKind": "Kind",
+    "filterSeverity": "Severity",
+    "filterRunId": "Run id",
+    "filterAny": "Any",
+    "colTime": "When",
+    "colSurface": "Surface",
+    "colRun": "Run",
+    "colSnippet": "Snippet",
+    "journalEmpty": "No guardrail events recorded yet.",
+    "journalLoading": "Loading the journal...",
+    "journalError": "Could not load the guardrail journal."
+  },
+  "ui2.nav.group.plugins": "Plugins"
 }

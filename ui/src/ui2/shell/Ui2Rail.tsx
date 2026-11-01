@@ -5,15 +5,24 @@
 // utilities that carry values are avoided on purpose so check-token-gates
 // never depends on an allowlist for ui2).
 import { useTranslation } from "@/i18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_NAV_GROUPS, type Ui2NavItem } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
 import { useKnowledgeAvailable } from "../useKnowledgeAvailable"; // myrmidon(K-4)
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const Icon = item.icon;
   return (
     <span
@@ -84,10 +93,18 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
 }
 
 export function Ui2Rail() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const { selectedCompany } = useCompany();
   const attentionCount = useUi2AttentionCount();
   const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
+  const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
+  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
   const groups = UI2_NAV_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter((item) => item.requires !== "knowledge" || knowledgeAvailable),
@@ -147,33 +164,31 @@ export function Ui2Rail() {
             ))}
           </div>
         ))}
+        {hasPlugins ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "6px 10px" }}>{t("ui2.nav.group.plugins", { defaultValue: "Plugins" })}</div>
+            {pluginSlots.map((slot) => (
+              <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
+            ))}
+            {selectedCompany ? (
+              <PluginLauncherOutlet
+                placementZones={["sidebar"]}
+                context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+                className="flex flex-col gap-0.5"
+                itemClassName="text-(length:--text-compact) font-medium"
+              />
+            ) : null}
+          </div>
+        ) : null}
       </nav>
 
       <div
         style={{
           marginTop: "auto",
           borderTop: "1px solid var(--myr-hairline)",
-          padding: "var(--myr-space-1) var(--myr-space-2)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 2,
         }}
       >
-        <span
-          style={{
-            fontSize: "var(--myr-text-nano)",
-            color: "var(--myr-ink)",
-            fontWeight: 600,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {selectedCompany?.name ?? t("ui2.owner")}
-        </span>
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.ownerChannel")}
-        </span>
+        <Ui2AccountMenu />
       </div>
     </aside>
   );

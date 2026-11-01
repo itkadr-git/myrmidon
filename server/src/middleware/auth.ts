@@ -57,6 +57,8 @@ function pruneCloudTenantWriteDebounce(
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): a session request marks the owner active in the portal.
+import { touchWebActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -214,6 +216,7 @@ interface ActorMiddlewareOptions {
 }
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+const monitoringAlertsWebhookPath = /^\/(?:api\/)?myrmidon\/monitoring\/alerts\/webhook\/?(?:\?.*)?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -230,18 +233,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
 
-    // Public MCP gateway protocol requests carry a pcgw_* bearer that is
-    // validated by the gateway service itself. Do not interpret that bearer as
-    // a board key or agent JWT here: doing so rejects the MCP handshake before
-    // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
-    // the normal actor authentication path below.
-    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+    // Public MCP gateway protocol requests and monitoring alert webhooks carry
+    // credentials validated by their route handlers. Do not interpret those
+    // bearers as a board key or agent JWT here; doing so rejects them before
+    // the route can verify its credential. Keep both bypasses path-restricted.
+    if (
+      hasBearerCredentials &&
+      (publicMcpGatewayProtocolPath.test(req.path) || monitoringAlertsWebhookPath.test(req.originalUrl))
+    ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
@@ -290,6 +294,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             runId: runIdHeader ?? undefined,
             source: "session",
           };
+          // myrmidon(1.7-ACTIVE-CHANNEL): a portal session request is the
+          // owner's `web` touch. Debounced and fire-and-forget: the request
+          // never waits on it and a failed write never fails the request.
+          touchWebActivityBestEffort(db, userId);
           next();
           return;
         }

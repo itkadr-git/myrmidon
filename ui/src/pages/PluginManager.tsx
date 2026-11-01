@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Trans } from "react-i18next";
 import { i18n, useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
@@ -214,8 +215,8 @@ export function PluginManager() {
     [installedPlugins, t]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
+  if (isLoading && !plugins) return <div className="p-4 text-sm text-muted-foreground">{t("area.adapters-plugins-2.plugin-manager.loading")}</div>;
+  if (error && !plugins) return <div className="p-4 text-sm text-destructive">{t("area.adapters-plugins-2.plugin-manager.loadFailed")}</div>;
 
   return (
     <div className="max-w-6xl space-y-6">
@@ -407,9 +408,9 @@ export function PluginManager() {
                       <Link
                         to={`/company/settings/instance/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
-                        title={plugin.manifestJson.displayName ?? plugin.packageName}
+                        title={pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName)} // myrmidon(OPE-9352)
                       >
-                        {plugin.manifestJson.displayName ?? plugin.packageName}
+                        {pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName) /* myrmidon(OPE-9352) */}
                       </Link>
                       {bundledByPackageName.has(plugin.packageName) && (
                         <Badge variant="outline">
@@ -463,21 +464,19 @@ export function PluginManager() {
                   <div className="flex shrink-0 self-center">
                     <div className="flex flex-col items-end gap-2">
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={
-                            plugin.status === "ready"
-                              ? "default"
-                              : plugin.status === "error"
-                                ? "destructive"
-                              : "secondary"
-                          }
-                          className={cn(
-                            "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
-                          )}
-                        >
-                          {plugin.status}
-                        </Badge>
+                        {plugin.status === "ready" ? (
+                          <Badge variant="default" className="shrink-0 bg-green-600 hover:bg-green-700">{plugin.status}</Badge>
+                        ) : plugin.status === "error" ? (
+                          <Badge variant="destructive" className="shrink-0">{plugin.status}</Badge>
+                        ) : plugin.status === "disabled" ? (
+                          <Badge variant="secondary" className="shrink-0">{plugin.status}</Badge>
+                        ) : plugin.status === "upgrade_pending" ? (
+                          <Badge variant="secondary" className="shrink-0">{plugin.status}</Badge>
+                        ) : (
+                          <Badge variant="secondary" className="shrink-0" role="status" aria-live="polite">
+                            {t("area.adapters-plugins-2.plugin-manager.loading")}
+                          </Badge>
+                        )}
                         <Button
                           variant="outline"
                           size="icon-sm"
@@ -486,11 +485,11 @@ export function PluginManager() {
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
-                            } else {
+                            } else if (plugin.status === "disabled" || plugin.status === "error") {
                               enableMutation.mutate(plugin.id);
                             }
                           }}
-                          disabled={enableMutation.isPending || disableMutation.isPending}
+                          disabled={plugin.status !== "ready" && plugin.status !== "disabled" && plugin.status !== "error" || enableMutation.isPending || disableMutation.isPending}
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
                         </Button>

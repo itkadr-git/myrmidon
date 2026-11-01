@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://myrmidon.invalid/schemas/adm-knowledge-item-v1.json",
+  "title": "ADM knowledge item metadata",
+  "description": "Version 1 metadata contract for ADM knowledge. Knowledge bodies are Markdown and are not executable instructions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "slug", "kind", "title", "summary", "tags", "triggers", "priority", "owner", "source_ref", "sensitivity", "status", "revision_id", "updated_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "slug": {"type": "string", "pattern": "^adm/(policy|trigger|reference|skills|lessons)/[a-z0-9][a-z0-9-]*$"},
+    "kind": {"enum": ["rule", "wiki", "skill_card"]},
+    "title": {"type": "string", "minLength": 1, "maxLength": 160},
+    "summary": {"type": "string", "maxLength": 300},
+    "tags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}},
+    "triggers": {"type": "array", "uniqueItems": true, "items": {"enum": ["ssh", "deploy", "paperclip-api", "incident", "config-change", "release", "merge", "owner-message"]}},
+    "priority": {"type": "integer", "minimum": 0, "maximum": 100},
+    "owner": {"type": "string", "minLength": 1},
+    "source_ref": {"type": "string", "minLength": 1},
+    "sensitivity": {"const": "internal"},
+    "status": {"enum": ["draft", "proposed", "published", "archived"]},
+    "revision_id": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "body": {"type": "string", "description": "Markdown body; never credentials or executable policy."},
+    "approver_kind": {"enum": ["owner"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "rule"}}, "required": ["kind"]}, "then": {"properties": {"slug": {"pattern": "^adm/(policy|trigger)/"}, "approver_kind": {"const": "owner"}}, "required": ["approver_kind"]}},
+    {"if": {"properties": {"kind": {"const": "wiki"}}, "required": ["kind"]}, "then": {"properties": {"slug": {"pattern": "^adm/(reference|lessons)/"}}}},
+    {"if": {"properties": {"kind": {"const": "skill_card"}}, "required": ["kind"]}, "then": {"properties": {"slug": {"pattern": "^adm/skills/"}}}}
+  ]
+}

@@ -26,10 +26,13 @@ export const REVIEW_ROUTING_SETTINGS_KEY = "reviewRouting";
 
 export const DEFAULT_REVIEW_ROUTING_ENABLED = true;
 /** Caste keys (`agents.role`) whose agents may be picked as reviewers. */
-export const DEFAULT_REVIEW_ROUTING_REVIEWER_ROLES: readonly string[] = ["reviewer"];
+export const DEFAULT_REVIEW_ROUTING_REVIEWER_ROLES: readonly string[] = ["reviewer", "lead"];
 /** A reviewer already holding this many tasks in flight is not picked. */
 export const DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER = 5;
 export const MAX_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER = 100;
+/** When an assigned reviewer holds more than this many queued+running runs, reassign to the least-loaded pool member. */
+export const DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD = 8;
+export const MAX_REVIEW_ROUTING_QUEUE_THRESHOLD = 100;
 /** Hours without a verdict before the review is signalled and reassigned; 0 = never. */
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
@@ -207,6 +210,12 @@ export const reviewRoutingSettingsSchema = z
       .min(0)
       .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS)
       .default(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS),
+    queueThreshold: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_REVIEW_ROUTING_QUEUE_THRESHOLD)
+      .default(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD),
     prWatch: reviewRoutingPrWatchField,
   })
   .strict();
@@ -226,6 +235,7 @@ export function normalizeReviewRoutingSettings(raw: unknown): ReviewRoutingSetti
 /** Activity actions the routing writes (one per event, on the issue). */
 export const REVIEW_ROUTING_ASSIGNED_ACTION = "issue.review_routing.assigned";
 export const REVIEW_ROUTING_REASSIGNED_ACTION = "issue.review_routing.reassigned";
+export const REVIEW_ROUTING_WAKE_ACTION = "issue.review_routing.wake_requested";
 /** The PR lane created a review task for a green, verdict-less PR head. */
 export const REVIEW_ROUTING_PR_TASK_CREATED_ACTION = "issue.review_routing.pr_task_created";
 /** The PR lane created a merge-steward task for an approved green PR head. */

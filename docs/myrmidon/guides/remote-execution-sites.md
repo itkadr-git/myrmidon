@@ -47,8 +47,12 @@ In Myrmidon, the board running on `vm-core` is the single management plane (`tar
 
 ## 2. Site-Agent API Contract
 
-All calls use standard HTTP over private network with a bearer authorization header:
-`Authorization: Bearer <SITE_TOKEN>`.
+All calls use HTTPS with mutual TLS and a bearer authorization header:
+- The board validates the site's HTTPS URL, CA certificate, client certificate, and client key before creating the transport.
+- The client certificate must be signed by the enrolled site CA; the CA fingerprint is checked against the enrollment record.
+- `Authorization: Bearer ***` is still required by site-agent after the TLS handshake.
+- Missing or invalid certificate material is rejected before the request is sent with a clear configuration error.
+
 Request and response bodies are JSON (`Content-Type: application/json; charset=utf-8`).
 
 ### 2.1 Route Catalog
@@ -352,6 +356,7 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
   "boardAddress": "192.0.2.1:3100",
+  // Legacy hostname stays resolvable as a compatibility alias during rollout.
   "boardExtraHost": "paperclip-server-1:192.0.2.1",
   "gatewayBindIp": "192.0.2.10",
   "gatewayPortStart": 18700,

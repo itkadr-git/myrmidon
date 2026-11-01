@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { i18n, useTranslation } from "@/i18n";
+import { pluginLabel } from "@/i18n/plugin-labels"; // myrmidon(OPE-9352)
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@myrmidon/shared";
@@ -127,7 +128,8 @@ export function PluginSettings() {
       { label: selectedCompany?.name ?? t("area.adapters-plugins-2.plugin-settings.breadcrumbOrganization"), href: "/dashboard" },
       { label: t("area.adapters-plugins-2.plugin-settings.breadcrumbSettings"), href: "/company/settings" },
       { label: t("area.adapters-plugins-2.plugin-settings.breadcrumbPlugins"), href: "/company/settings/instance/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? t("area.adapters-plugins-2.plugin-settings.breadcrumbPluginDetails") },
+      { label: (plugin ? pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson?.displayName ?? plugin.packageName) : null) ?? t( // myrmidon(OPE-9352)
+        "area.adapters-plugins-2.plugin-settings.breadcrumbPluginDetails") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin, t]);
 
@@ -175,7 +177,7 @@ export function PluginSettings() {
         </Link>
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
+          <h1 className="text-xl font-semibold">{pluginLabel(t, plugin.pluginKey, null, plugin.manifestJson.displayName ?? plugin.packageName) /* myrmidon(OPE-9352) */}</h1>
           <Badge variant={statusVariant} className="ml-2">
             {displayStatus}
           </Badge>
