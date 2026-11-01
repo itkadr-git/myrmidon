@@ -1242,6 +1242,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
         }
         patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+        const replacedReturnAssignee = replaceTerminatedReturnAssignee(existingState.returnAssignee, input.issue);
+        if (replacedReturnAssignee !== existingState.returnAssignee) {
+          const changesRequestedState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+          patch.executionState = {
+            ...changesRequestedState,
+            returnAssignee: replacedReturnAssignee,
+          };
+        }
         return {
           patch,
           decision,
