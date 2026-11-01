@@ -55,15 +55,26 @@ export function registerConnectorsForPlugin(plugin: {
     for (const d of decls) {
       registerModelProviderConnector({
         type: d.type,
-        name: d.name ?? (d.type === "chatgpt-pool" ? "ChatGPT / Codex Subscription Pool" : undefined),
+        name: d.name ??
+          (d.type === "chatgpt-pool"
+            ? "ChatGPT / Codex Subscription Pool"
+            : d.type === "antigravity-pool"
+              ? "Antigravity Pool"
+              : d.type === "google-ai-pool"
+                ? "Google AI Pool"
+                : undefined),
         pluginKey: plugin.pluginKey,
-        defaultBaseUrl: d.defaultBaseUrl ?? (d.type === "chatgpt-pool" ? "http://localhost:8895" : null),
-        defaultModels: d.defaultModels ?? (d.type === "chatgpt-pool" ? DEFAULT_CHATGPT_POOL_MODELS : undefined),
-      supportsChannels:
-        d.supportsChannels ??
-        (d.type === "chatgpt-pool" ||
-          d.type === "antigravity-pool" ||
-          d.type === "google-ai-pool"),
+        defaultBaseUrl:
+          d.defaultBaseUrl ??
+          (d.type === "chatgpt-pool" ? "http://localhost:8895" : null),
+        defaultModels:
+          d.defaultModels ??
+          (d.type === "chatgpt-pool" ? DEFAULT_CHATGPT_POOL_MODELS : undefined),
+        supportsChannels:
+          d.supportsChannels ??
+          (d.type === "chatgpt-pool" ||
+            d.type === "antigravity-pool" ||
+            d.type === "google-ai-pool"),
       });
     }
     return;

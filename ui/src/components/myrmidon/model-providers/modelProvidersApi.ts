@@ -128,6 +128,13 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    nextResetAt: number | null;
+  };
 }
 
 export interface LitellmChannelView {

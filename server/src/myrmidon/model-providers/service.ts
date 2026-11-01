@@ -781,12 +781,24 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const channels = rawAccounts.map(mapRawAccountToChannel);
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    const summary = {
+      total: channels.length,
+      live: channels.filter((channel) => !channel.isBanned && !channel.isExhausted).length,
+      exhausted: channels.filter((channel) => channel.isExhausted).length,
+      banned: channels.filter((channel) => channel.isBanned).length,
+      nextResetAt:
+        channels
+          .flatMap((channel) => [channel.limitedUntil, channel.windows.primary?.resetsAt, channel.windows.secondary?.resetsAt])
+          .filter((value): value is number => typeof value === "number" && value > 0)
+          .sort((a, b) => a - b)[0] ?? null,
+    };
 
     return {
       providerId: provider.id,
       providerType: provider.type,
       channels,
       signals,
+      summary,
     };
   }
 
@@ -807,7 +819,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const aggregated: PoolAccountRoleSignal[] = [];
     for (const p of providers) {
       const connector = getModelProviderConnector(p.type);
-      if (p.type === "chatgpt-pool" || connector?.supportsChannels) {
+      if (
+        p.type === "chatgpt-pool" ||
+        p.type === "antigravity-pool" ||
+        p.type === "google-ai-pool" ||
+        connector?.supportsChannels
+      ) {
         try {
           const channelsView = await listChannels(companyId, p.id);
           aggregated.push(...channelsView.signals);

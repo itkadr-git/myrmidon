@@ -584,7 +584,23 @@ function ProviderCard({
                 {t("modelProviders.channels.empty") || "No accounts found in pool."}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-md border border-border">
+              <>
+                {channelsQueryResult.data.summary && (
+                  <div className="flex flex-wrap gap-2 text-xs" data-testid="myrmidon-pool-summary">
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.live} live / {channelsQueryResult.data.summary.total} total
+                    </span>
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.exhausted} exhausted
+                    </span>
+                    {channelsQueryResult.data.summary.nextResetAt && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground">
+                        next reset {new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
                     <tr>
@@ -709,7 +725,8 @@ function ProviderCard({
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </div>
         </div>
