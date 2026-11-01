@@ -159,11 +159,11 @@ export function MaintenanceWindowCronInput({
 
           {validationResult.nextRuns.length > 0 && (
             <div className="pt-1 border-t border-emerald-500/20 space-y-1 text-muted-foreground">
-              <div className="flex items-center gap-1 text-[11px] font-medium text-foreground">
+              <div className="flex items-center gap-1 text-xs font-medium text-foreground">
                 <Calendar className="h-3.5 w-3.5" />
                 <span>Upcoming maintenance windows:</span>
               </div>
-              <ul className="space-y-0.5 font-mono text-[11px]">
+              <ul className="space-y-0.5 font-mono text-xs">
                 {validationResult.nextRuns.map((r, i) => (
                   <li key={i} className="flex justify-between items-center">
                     <span>{new Date(r.startsAt).toUTCString()}</span>
