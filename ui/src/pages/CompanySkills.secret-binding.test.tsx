@@ -102,6 +102,7 @@ const act = reactAct as unknown as (fn: () => Promise<unknown>) => Promise<void>
 
 const translatedLabels: Record<string, string> = {
   "area.settings-company.company-skills.bindToAgents": "Bind to agents",
+  "area.settings-company.company-skills.boundTo": "Bound to",
   "common.save": "Save",
   "common.cancel": "Cancel",
 };
@@ -113,6 +114,7 @@ vi.mock("@/i18n", () => ({
       if (label) return label;
       if (key.endsWith(".selectedShort")) return `${values?.count ?? 0} selected`;
       if (key.endsWith(".noneSelected")) return "None selected";
+      if (key.endsWith(".allowAria")) return `Allow ${values?.name ?? ""}`;
       return key;
     },
   }),
