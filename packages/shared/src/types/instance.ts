@@ -40,9 +40,12 @@ import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
 import type { BridgeLanguageSettings } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
 import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement modes stored in instance settings
+import type { GuardrailModesSettings } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
+import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 // myrmidon(F16): the issue-list agent defaults shape stored in the general row.
 import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
@@ -70,6 +73,8 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 import type { IdleStopSettings } from "../myrmidon-idle-stop.js";
+// myrmidon(1.7-REBRAND-F): the stored shape of the vendor-name gate setting.
+import type { StoredVendorNameCheckSettings } from "../myrmidon-vendor-name.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -334,6 +339,12 @@ export interface InstanceGeneralSettings {
    */
   wipLimit?: WipLimitSettings;
   /**
+   * myrmidon(1.7-GRD-MODES): per-rule guardrail enforcement modes, changed
+   * from `GET`/`PUT /api/myrmidon/companies/:companyId/guardrails/settings`.
+   * Absent means default (flag-only everywhere).
+   */
+  guardrailModes?: GuardrailModesSettings;
+  /**
    * myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
    * `GET`/`PUT /api/myrmidon/companies/:companyId/review-routing/settings`.
    * Absent means the defaults.
@@ -498,6 +509,17 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementPublicKey?: string;
+  /**
+   * myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+   * (ratchet / strict) and the ratchet baseline, changed from the instance
+   * settings page and `GET`/`PATCH /api/myrmidon/vendor-name-check`. Absent
+   * means "use the environment override, then the default (ratchet against the
+   * count the instance records)". Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  vendorNameCheck?: StoredVendorNameCheckSettings;
+  /** Owner active-channel inactivity threshold. */
+  ownerActiveChannel?: OwnerActiveChannelSettings;
 }
 
 

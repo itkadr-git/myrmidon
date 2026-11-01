@@ -80,6 +80,7 @@ describe("myrmidon:migrate pure guards", () => {
     ["v2026.1001.0", 282, "0283_jittery_psynapse"],
     ["v2026.1005.0", 292, "0293_broad_rattler"],
     ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
+    ["v2026.1023.0", 332, "0333_normal_wild_pack"],
   ];
 
   it("lists the supported Paperclip releases with their pinned chains", () => {
@@ -92,6 +93,7 @@ describe("myrmidon:migrate pure guards", () => {
     // an older release is a prefix of a newer one
     expect(release("v2026.1005.0").chain.slice(0, 282)).toEqual(release("v2026.1001.0").chain);
     expect(release("v2026.1012.0").chain.slice(0, 292)).toEqual(release("v2026.1005.0").chain);
+    expect(release("v2026.1023.0").chain.slice(0, 304)).toEqual(release("v2026.1012.0").chain);
   });
 
   it.each(SUPPORTED)("accepts exactly the chain of %s and reports its canonical release", (name, length) => {
@@ -110,10 +112,10 @@ describe("myrmidon:migrate pure guards", () => {
 
   it("rejects a truncated, extended or foreign chain with the right reason", () => {
     const base = rowsOf(release("v2026.916.1"));
-    const latest = rowsOf(release("v2026.1012.0"));
+    const latest = rowsOf(release("v2026.1023.0"));
     // truncated: one short of each release
     expect(checkVendorChain(base.slice(0, -1), releases).reason).toBe("older-than-supported-release");
-    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0"]) {
+    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"]) {
       const check = checkVendorChain(rowsOf(release(name)).slice(0, -1), releases);
       expect(check.reason).toBe("older-than-supported-release");
       expect(check.vendorRelease).toBe(name);
@@ -123,7 +125,7 @@ describe("myrmidon:migrate pure guards", () => {
     // extended past the newest supported release
     const newer = checkVendorChain([...latest, { hash: "x" }], releases);
     expect(newer.reason).toBe("newer-than-supported-release");
-    expect(newer.detail).toContain("v2026.1012.0");
+    expect(newer.detail).toContain("v2026.1023.0");
     expect(checkVendorChain([...base, { hash: "x" }], releases).reason).toBe("newer-than-supported-release");
     // a foreign hash anywhere, including the last row of every release
     for (const r of releases) {

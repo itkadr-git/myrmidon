@@ -10932,6 +10932,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        commentBody?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10959,6 +10960,19 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      if (
+        existing.status !== "done" &&
+        data.status === "done" &&
+        dbOrTx === db
+      ) {
+        const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+        await assertKnowledgeGateSettled(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          issue: { title: existing.title, description: existing.description },
+          comment: typeof data.commentBody === "string" ? data.commentBody : null,
+        });
+      }
       const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
         && dbOrTx === db
         ? await (async () => {
@@ -11001,6 +11015,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        commentBody: _commentBody,
         ...issueData
       } = data;
       if (
@@ -13268,8 +13283,13 @@ export function issueService(db: Db) {
       ) {
         const { issueThreadInteractionService } =
           await import("./issue-thread-interactions.js");
+        const { heartbeatService } = await import("./heartbeat.js");
+        const hb = heartbeatService(dbOrTx as Db);
         const expiredInteractions = await issueThreadInteractionService(
           dbOrTx,
+          {
+            wakeup: (agentId, options) => hb.wakeup(agentId, options),
+          },
         ).expireRequestConfirmationsSupersededByComment(
           { id: issueId, companyId: issue.companyId },
           comment,
