@@ -3060,3 +3060,6 @@ export * from "./locale-upload.js";
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.
 export * from "./myrmidon-vendor-name.js";
+
+// myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
+export * from "./geo-check.js";
