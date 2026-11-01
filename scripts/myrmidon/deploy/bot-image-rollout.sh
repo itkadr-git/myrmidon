@@ -555,13 +555,6 @@ dockergate_preflight_edited_config() {
   return "$rc"
 }
 
-# The standard re-run command for the deferred bots (F-04 p.3).
-retry_command() {
-  printf 'bash %s --config %s --resolution %s --ref %s --phase cards --retry-deferred --wait-sec %s\n' \
-    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bot-image-rollout.sh" \
-    "$(printf '%q' "$config")" "$resolution" "$res_ref" "$MYR_BOT_RETRY_WAIT_SEC"
-}
-
 # --retry-deferred input: the deferred bots of the previous run as recorded
 # by this script in its summary (id, pre-rollout card image, target image).
 read_deferred_bots() {
