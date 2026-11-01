@@ -258,9 +258,6 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     // Edge gateway fetcher (OPE-9642)
     "MYRMIDON_VMEXEC_URL",
     "MYRMIDON_VMEXEC_TOKEN",
-    // MEDIA-ACL rollout uses an explicit operator allowlist; its setting is
-    // documented in SETTINGS.md but is intentionally absent from FLAGS.md.
-    "MYRMIDON_BOT_CONTAINER_MEDIA_TOOLS_ENV_ALLOWLIST",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {
