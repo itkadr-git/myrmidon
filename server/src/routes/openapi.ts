@@ -1772,6 +1772,29 @@ const healthServerInfoSchema = z
 
 registry.registerPath({
   method: "get",
+  path: "/api/ha/standby",
+  tags: ["health"],
+  summary: "Standby site status",
+  responses: {
+    200: r.ok(
+      z.object({
+        status: z.enum(["ready", "unhealthy", "not_configured"]),
+        checkedAt: z.string().datetime(),
+        checks: z.array(
+          z.object({
+            name: z.string().min(1),
+            status: z.enum(["ready", "unhealthy", "not_configured"]),
+            checkedAt: z.string().datetime(),
+          }).strict(),
+        ),
+      }).strict(),
+    ),
+    503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/health",
   tags: ["health"],
   summary: "Health check",
