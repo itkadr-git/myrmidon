@@ -11,6 +11,7 @@
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
+import { badRequest } from "../../errors.js";
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { 
   computeBaselineMetrics, 
@@ -18,7 +19,9 @@ import {
   type BaselineMetricsResponse,
   getLatestBaselineSnapshot,
   compareWithBaseline,
-  type BaselineComparisonResult
+  type BaselineComparisonResult,
+  computeBaselineTrend,
+  type BaselineTrendPoint,
 } from "./service.js";
 import { baselineMetricSnapshots } from "@myrmidon/db";
 import { eq, and } from "drizzle-orm";
@@ -31,12 +34,37 @@ export interface BaselineRoutesDeps {
   compute?(db: Db, companyId: string, window: BaselineWindow, now: Date): Promise<BaselineMetricsResponse>;
   /** Overridable in tests; the real wiring uses getLatestBaselineSnapshot. */
   getBaselineSnapshot?(db: Db, companyId: string): Promise<BaselineMetricsResponse | null>;
+  /** Overridable in tests; the real wiring uses computeBaselineTrend. */
+  computeTrend?(db: Db, companyId: string, weeks: number, now: Date): Promise<BaselineTrendPoint[]>;
 }
 
 export function baselineRoutes(db: Db, deps: BaselineRoutesDeps) {
   const router = Router();
   const compute = deps.compute ?? computeBaselineMetrics;
   const getBaselineSnapshot = deps.getBaselineSnapshot ?? getLatestBaselineSnapshot;
+  const computeTrend = deps.computeTrend ?? computeBaselineTrend;
+
+  // Weekly trend endpoint
+  router.get("/myrmidon/companies/:companyId/baseline/trend", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    let weeks = 8;
+    if (req.query.weeks !== undefined) {
+      const raw = req.query.weeks;
+      if (typeof raw !== "string" || !/^\d+$/.test(raw)) {
+        throw badRequest("'weeks' must be an integer between 1 and 12");
+      }
+      const parsed = Number(raw);
+      if (parsed < 1 || parsed > 12) {
+        throw badRequest("'weeks' must be an integer between 1 and 12");
+      }
+      weeks = parsed;
+    }
+
+    const trend = await computeTrend(db, companyId, weeks, deps.now());
+    res.json(trend);
+  });
 
   // Original metrics endpoint
   router.get("/myrmidon/companies/:companyId/baseline/metrics", async (req, res) => {

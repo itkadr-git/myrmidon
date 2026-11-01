@@ -934,6 +934,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
@@ -1842,6 +1843,10 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+  type HaStandbyStatus,
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
 } from "./validators/index.js";
 
 export {

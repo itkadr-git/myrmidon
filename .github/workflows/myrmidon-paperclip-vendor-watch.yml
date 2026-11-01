@@ -1,8 +1,8 @@
 name: Myrmidon Paperclip vendor watch
 
 # Fails when Paperclip has published a release that `myrmidon migrate` does not
-# accept as a source yet. Scheduled on purpose, not part of PR checks: a vendor
-# release must not break unrelated pull requests.
+# accept as a source yet. Scheduled daily, and on PRs that change the vendor
+# release registry/check so support is verified on the proposed head.
 # Fix: node scripts/myrmidon/vendor-release-add.mjs <tag>, then commit the
 # regenerated cli/src/commands/myrmidon-migrate-vendor-releases.ts.
 
@@ -10,6 +10,13 @@ on:
   schedule:
     - cron: "17 5 * * *"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/myrmidon-paperclip-vendor-watch.yml
+      - scripts/myrmidon/vendor-release-add.mjs
+      - cli/src/commands/myrmidon-migrate-vendor-releases.ts
+      - cli/src/commands/myrmidon-migrate-vendor-chain.ts
+      - cli/src/commands/myrmidon-migrate.ts
 
 permissions:
   contents: read

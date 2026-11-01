@@ -134,7 +134,8 @@ export const knowledgeListQuerySchema = z.object({
   kind: z.enum(["note", "wiki", "answer", "task_outcome", "rule"]).optional(),
   status: z.enum(["draft", "in_review", "published", "archived", "superseded"]).optional(),
   q: z.string().max(500).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  // The UI tree asks for the whole catalog (254 items on 01.11); agents keep the default page of 50.
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
 export type KnowledgeListQuery = z.infer<typeof knowledgeListQuerySchema>;
 
