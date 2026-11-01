@@ -5,12 +5,32 @@ import { errorHandler } from "../middleware/index.js";
 import { usersRoutes } from "../routes/users.js";
 import { auditRoutes } from "../routes/audit.js";
 
+const testState = vi.hoisted(() => ({
+  auditEntries: [] as any[],
+}));
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn(async (_db: any, input: any) => {
+    testState.auditEntries.push({
+      id: `audit-${testState.auditEntries.length + 1}`,
+      companyId: input.companyId,
+      actorId: input.actorId,
+      actorType: input.actorType,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      details: input.details,
+      createdAt: new Date(),
+    });
+  }),
+}));
+
 describe("users block API and audit routes", () => {
   let mockInsertedBlocks: any[] = [];
   let mockDeletedSessions: any[] = [];
   let mockRevokedKeys: any[] = [];
   let mockUpdatedMemberships: any[] = [];
-  let mockAuditEntries: any[] = [];
+  const mockAuditEntries = testState.auditEntries;
 
   const mockDb = {
     insert: vi.fn((table: any) => ({
@@ -59,23 +79,6 @@ describe("users block API and audit routes", () => {
     })),
   };
 
-  // Mock logActivity
-  vi.mock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(async (_db: any, input: any) => {
-      mockAuditEntries.push({
-        id: `audit-${mockAuditEntries.length + 1}`,
-        companyId: input.companyId,
-        actorId: input.actorId,
-        actorType: input.actorType,
-        action: input.action,
-        entityType: input.entityType,
-        entityId: input.entityId,
-        details: input.details,
-        createdAt: new Date(),
-      });
-    }),
-  }));
-
   function createApp(actor: any) {
     const app = express();
     app.use(express.json());
@@ -106,11 +109,11 @@ describe("users block API and audit routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    testState.auditEntries.length = 0;
     mockInsertedBlocks = [];
     mockDeletedSessions = [];
     mockRevokedKeys = [];
     mockUpdatedMemberships = [];
-    mockAuditEntries = [];
   });
 
   describe("POST /api/users/:userId/block", () => {
@@ -202,23 +205,21 @@ describe("users block API and audit routes", () => {
     });
 
     it("returns audit records containing actor, target, and reason for admins", async () => {
-      mockAuditEntries = [
-        {
-          id: "audit-1",
-          companyId: "company-1",
-          actorId: "admin-user-id",
-          actorType: "user",
-          action: "user.blocked",
-          entityType: "user",
-          entityId: "user-123",
-          details: {
-            actor: "admin-user-id",
-            target: "user-123",
-            reason: "Violation of terms",
-          },
-          createdAt: new Date(),
+      mockAuditEntries.splice(0, mockAuditEntries.length, {
+        id: "audit-1",
+        companyId: "company-1",
+        actorId: "admin-user-id",
+        actorType: "user",
+        action: "user.blocked",
+        entityType: "user",
+        entityId: "user-123",
+        details: {
+          actor: "admin-user-id",
+          target: "user-123",
+          reason: "Violation of terms",
         },
-      ];
+        createdAt: new Date(),
+      });
 
       const app = createApp(adminActor);
       const res = await request(app).get("/api/audit");
