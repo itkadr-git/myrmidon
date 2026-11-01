@@ -29,6 +29,7 @@ const FIELDS: ReadonlyArray<{
   { key: "heartbeatRunsDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldRuns"), table: "runs" },
   { key: "activityLogDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldActivity"), table: "activity" },
   { key: "accessAuditDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldAccess"), table: "access" },
+  { key: "litellmCostEventsDays", label: () => i18n.t("area.settings-bots-host-1.data-retention-settings-panel.fieldLiteLLM"), table: "litellmCostEvents" },
 ];
 
 /** A whole number of days, or null when the draft is not one. `0` is valid and
@@ -47,6 +48,7 @@ function draftsFrom(settings: DataRetentionSettings): Drafts {
     heartbeatRunsDays: String(settings.heartbeatRunsDays),
     activityLogDays: String(settings.activityLogDays),
     accessAuditDays: String(settings.accessAuditDays),
+    litellmCostEventsDays: String(settings.litellmCostEventsDays),
   };
 }
 

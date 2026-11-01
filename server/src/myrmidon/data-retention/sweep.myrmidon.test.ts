@@ -32,6 +32,7 @@ import {
   financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
+  litellmCostEvents,
   inboxDismissals,
   instanceSettings,
   issues,
@@ -632,12 +633,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     expect(await runCount(dismissedRun)).toBe(0);
   });
 
-  it("keeps activity_log forever by default and clears the run reference of doomed runs; the access audit follows its retention", async () => {
-    // The default settings (90/0/180): the activity log is the audit trail
-    // and is never aged out; a doomed run's activity rows survive with a
-    // cleared run_id instead of going with the run. The access audit groups
-    // still follow their retention (180d by default — none of the seeded
-    // rows here are that old).
+  it("retains activity and cost events according to configurable windows and clears the run reference of doomed runs", async () => {
+    // activity defaults to 90d; cost events default to 30d, both overrideable.
     const { companyId, agentId } = await seedCompany();
     const keptRun = await seedRun({ companyId, agentId, status: "running", ageDays: 5, finished: false });
     const goneRun = await seedRun({ companyId, agentId, status: "succeeded", ageDays: 100 });
@@ -724,25 +721,21 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const { sweep } = makeSweep({ freshBackup: true });
     const result = await sweep.sweep();
 
-    // the audit trail outlives the runs: nothing is deleted at the default
-    // 0 (keep forever); the doomed run's own row survives with a cleared
-    // run_id (null_run_activity in sweep.ts) instead of going with the run
-    expect(result.perTable.activity.deleted).toBe(0);
+    // The expired activity row on the deleted run is removed with the 90-day
+    // policy; rows tied to the surviving run are kept to preserve its audit
+    // trail, and old orphan activity is eligible for retention deletion.
+    expect(result.perTable.activity.deleted).toBe(2);
     // the seeded access rows are 100 days old — inside the 180d default
     // access-audit retention, so nothing is deleted
     expect(result.perTable.access.deleted).toBe(0);
     const remainingActivity = await db
       .select({ action: activityLog.action, runId: activityLog.runId })
       .from(activityLog);
-    expect(remainingActivity.map((row) => row.action).sort()).toEqual([
-      "test.old_gone_run",
-      "test.old_kept_run",
-      "test.old_orphan",
-      "test.young",
-    ]);
-    // the doomed run's row kept its action but lost the run reference
-    const goneRow = remainingActivity.find((row) => row.action === "test.old_gone_run");
-    expect(goneRow?.runId).toBeNull();
+    const remainingActions = remainingActivity.map((row) => row.action).sort();
+    expect(remainingActions).toEqual(["test.old_kept_run", "test.young"]);
+    // Activity linked to the deleted run is not exempt from the configured
+    // retention window: it is removed rather than retained with a null run_id.
+    expect(remainingActivity.some((row) => row.action === "test.old_gone_run")).toBe(false);
     expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(2);
     expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(2);
   });
@@ -769,7 +762,12 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
 
     // the stored settings keep the untouched values
     const stored = await readDataRetentionSettings(settings);
-    expect(stored).toEqual({ heartbeatRunsDays: 90, activityLogDays: 0, accessAuditDays: 180 });
+    expect(stored).toEqual({
+      heartbeatRunsDays: 90,
+      activityLogDays: 90,
+      accessAuditDays: 180,
+      litellmCostEventsDays: 30,
+    });
   });
 
   it("the backup gate blocks deletes until a fresh backup appears, then lifts", async () => {
@@ -811,6 +809,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
         runs: { deletedTotal: 5, lastDeleted: 5, lastFreedBytes: 1000 },
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 2, lastDeleted: 2, lastFreedBytes: 234 },
+        litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
 
@@ -830,6 +829,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       heartbeatRunsDays: 90,
       activityLogDays: 30,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     const lastRun = await readDataRetentionLastRun(settings);
     expect(lastRun.freedBytesTotal).toBe(1234);
