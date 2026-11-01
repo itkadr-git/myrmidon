@@ -15410,12 +15410,18 @@ export function issueRoutes(
           // to clear the hold atomically. Hand the update's own publications
           // and post-commit actions to this route, which flushes them after
           // commit — the same effects the non-transactional update has.
-          if (shouldCollectCompletionPublication || humanUnblockPossible) {
+          if (
+            shouldCollectCompletionPublication ||
+            humanUnblockPossible ||
+            (shouldCollectTerminalIssueActions && actor.actorType === "user")
+          ) {
             return svc.update(
               id,
               issueUpdateData,
               tx,
-              postCommitActivityPublications,
+              shouldCollectCompletionPublication || humanUnblockPossible
+                ? postCommitActivityPublications
+                : undefined,
               postCommitIssueActions,
             );
           }
