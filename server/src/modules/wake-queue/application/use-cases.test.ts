@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./use-cases.js";
 import type { AdmitWakeBehindIssueExecutionInput } from "./use-cases.js";
@@ -47,12 +48,14 @@ const ISSUE: IssueSnapshot = {
   parentId: null,
   originId: null,
   originRunId: null,
+  issueRole: "engineer",
 };
 
 const AGENT: InvokableAgentSnapshot = {
   id: "deferred-agent",
   companyId: "company-1",
   name: "Deferred Agent",
+  role: "engineer",
   invokable: true,
 };
 
@@ -125,6 +128,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     hasExplicitBlockerPath: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
     isImmediateRecoverySourceBlocked: vi.fn(async () => false),
+    claimContinuationKey: vi.fn(async () => "created" as const),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
     queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
     ...overrides,
@@ -578,6 +582,101 @@ describe("releaseIssueExecution", () => {
     expect(transaction.failDeferredWake).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { label: "skips mismatched reviewer continuation", agentRole: "reviewer", issueRole: "engineer", promoted: false },
+    { label: "allows matching engineer continuation", agentRole: "engineer", issueRole: "engineer", promoted: true },
+    { label: "allows continuation when issue role is null", agentRole: "reviewer", issueRole: null, promoted: true },
+  ])("$label", async ({ agentRole, issueRole, promoted }) => {
+    const candidate = wakeCandidate({
+      id: "wake-role-check",
+      reason: "issue_continuation_needed",
+      wakeReason: "issue_continuation_needed",
+    });
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(candidate)
+        .mockResolvedValueOnce(null),
+      findInvokableAgent: vi.fn(async () => ({ ...AGENT, role: agentRole })),
+    });
+    const issue = { ...ISSUE, issueRole };
+    const recovery = createFakeRecovery();
+    const host = createFakeHost();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(host, transaction, issue),
+      recovery,
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(result.outcome.kind).toBe(promoted ? "promoted" : "queued_recovery");
+    if (promoted) {
+      expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
+      expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      return;
+    }
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
+      wakeId: candidate.id,
+      reason: "Deferred continuation skipped because agent and issue roles differ",
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+  });
+
+  // OPE-10383: a reviewer called by the review stage, a lead addressed by a
+  // comment, and the stage participant's own continuation are never role-gated.
+  it.each([
+    {
+      label: "promotes a deferred review request for a reviewer on an engineer issue",
+      agentRole: "reviewer",
+      candidate: { reason: "issue_execution_deferred", wakeReason: "execution_review_requested" },
+      issue: {},
+    },
+    {
+      label: "promotes a deferred comment wake for a lead on an engineer issue",
+      agentRole: "lead",
+      candidate: { reason: "issue_commented", wakeReason: "issue_commented" },
+      issue: {},
+    },
+    {
+      label: "promotes the current review participant's continuation",
+      agentRole: "reviewer",
+      candidate: { reason: "issue_continuation_needed", wakeReason: "issue_continuation_needed" },
+      issue: {
+        status: "in_review",
+        executionState: { status: "pending", currentParticipant: { type: "agent", agentId: "deferred-agent" } },
+      },
+    },
+    {
+      label: "promotes the assignee's continuation",
+      agentRole: "reviewer",
+      candidate: { reason: "issue_continuation_needed", wakeReason: "issue_continuation_needed" },
+      issue: { assigneeAgentId: "deferred-agent" },
+    },
+  ])("$label", async ({ agentRole, candidate: overrides, issue: issueOverrides }) => {
+    const candidate = wakeCandidate({ id: "wake-addressed", ...overrides });
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(candidate)
+        .mockResolvedValueOnce(null),
+      findInvokableAgent: vi.fn(async () => ({ ...AGENT, role: agentRole })),
+    });
+    const issue = { ...ISSUE, ...issueOverrides };
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(result.outcome.kind).toBe("promoted");
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalledWith(expect.objectContaining({
+      reason: "Deferred continuation skipped because agent and issue roles differ",
+    }));
+  });
+
   it("stops the loop after the first promotion", async () => {
     const findNextDeferredWake = vi.fn(async () => wakeCandidate({ id: "wake-promotes" }));
     const transaction = createFakeTransaction({ findNextDeferredWake });
@@ -642,6 +741,60 @@ describe("releaseIssueExecution", () => {
       code: "deferred_wake_not_advanced",
     });
     expect(findNextDeferredWake).toHaveBeenCalledTimes(2);
+  });
+
+  it("dedupes an immediate recovery for the same issue continuation head", async () => {
+    const claimContinuationKey = vi.fn(async () => "deduped" as const);
+    const transaction = createFakeTransaction({ claimContinuationKey });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(claimContinuationKey).toHaveBeenCalledWith({
+      companyId: ISSUE.companyId,
+      issueId: ISSUE.id,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+    });
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("released");
+    expect(result.postCommitEffects).toEqual([]);
+  });
+
+  it("dedupes a replayed deferred wake before promotion", async () => {
+    const candidate = wakeCandidate({ id: "wake-replayed", reason: "issue_continuation_needed", wakeReason: "issue_continuation_needed", deferredContextSeed: { continuationHead: RUN.id } });
+    const findNextDeferredWake = vi.fn()
+      .mockResolvedValueOnce(candidate)
+      .mockResolvedValueOnce(null);
+    const cancelDeferredWake = vi.fn(async () => true);
+    const claimContinuationKey = vi.fn(async () => "deduped" as const);
+    const transaction = createFakeTransaction({
+      findNextDeferredWake,
+      cancelDeferredWake,
+      claimContinuationKey,
+    });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(claimContinuationKey).toHaveBeenCalledWith({
+      companyId: ISSUE.companyId,
+      issueId: ISSUE.id,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+    });
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(cancelDeferredWake).toHaveBeenCalledExactlyOnceWith({
+      companyId: RUN.companyId,
+      wakeId: candidate.id,
+      reason: "Deferred execution wake continuation already claimed",
+      now: expect.any(Date),
+    });
+    expect(findNextDeferredWake).toHaveBeenCalledTimes(2);
+    expect(result.outcome.kind).toBe("released");
   });
 
   it("returns the post-commit effects as data without running them", async () => {
@@ -833,6 +986,69 @@ describe("releaseIssueExecution", () => {
       constructor: WakeQueueApplicationError,
       code: "responsible_user_unresolved",
     });
+  });
+
+  it("skips a terminal continuation head already claimed for this issue", async () => {
+    const queueImmediateRecoveryRun = vi.fn(async () => runSummary("unexpected-recovery"));
+    const claimContinuationKey = vi.fn(async () => "deduped" as const);
+    const transaction = createFakeTransaction({ queueImmediateRecoveryRun, claimContinuationKey });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(claimContinuationKey).toHaveBeenCalledWith({
+      companyId: ISSUE.companyId,
+      issueId: ISSUE.id,
+      key: buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+    });
+    expect(queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("released");
+  });
+
+  it("queues immediate recovery only after its continuation head is claimed", async () => {
+    const claimContinuationKey = vi.fn(async () => "created" as const);
+    const transaction = createFakeTransaction({
+      claimContinuationKey,
+      queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
+    });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    expect(claimContinuationKey.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(transaction.queueImmediateRecoveryRun).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("queues one continuation per event head and permits a new head", async () => {
+    const claimed = new Set<string>();
+    const claimContinuationKey = vi.fn(async ({ key }: { key: string }) => {
+      if (claimed.has(key)) return "deduped" as const;
+      claimed.add(key);
+      return "created" as const;
+    });
+    const queueImmediateRecoveryRun = vi.fn(async () => runSummary("immediate-recovery"));
+    const transaction = createFakeTransaction({ claimContinuationKey, queueImmediateRecoveryRun });
+    const releaseFor = (run: RunSnapshot) => createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, run),
+      recovery: createFakeRecovery(),
+    })({ companyId: run.companyId, runId: run.id, now: new Date() });
+
+    await releaseFor(RUN);
+    await releaseFor(RUN);
+    await releaseFor({ ...RUN, id: "new-head" });
+
+    expect(queueImmediateRecoveryRun).toHaveBeenCalledTimes(2);
+    expect(claimContinuationKey.mock.calls.map(([input]) => input.key)).toEqual([
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: RUN.id }),
+      buildContinuationKey({ issueId: ISSUE.id, event: "issue_continuation_needed", head: "new-head" }),
+    ]);
   });
 
   it("resolves the responsible user for an immediate recovery run before queuing it", async () => {

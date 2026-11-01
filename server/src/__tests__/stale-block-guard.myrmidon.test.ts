@@ -50,7 +50,7 @@ describe("stale-block reason reference guard (route level)", () => {
     return blockerId;
   }
 
-  it("rejects a blocked transition without a reason reference with 400 (validation error)", async () => {
+  it("rejects a blocked transition without typed metadata with 422 and missingFields", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
     const issueId = await seedTodoIssue(companyId, "Guarded issue");
 
@@ -58,8 +58,16 @@ describe("stale-block reason reference guard (route level)", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "blocked" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(JSON.stringify(res.body)).toContain("reason reference");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Entering blocked requires complete blockerMetadata");
+    expect(res.body.missingFields).toEqual([
+      "blockReason",
+      "owner",
+      "nextCheckAt",
+      "timeoutAt",
+      "escalationPolicy",
+      "blockedByIssueIds or externalRef",
+    ]);
     const after = await ctx.db
       .select({ status: issues.status })
       .from(issues)
@@ -137,8 +145,16 @@ describe("stale-block reason reference guard (route level)", () => {
         status: "blocked",
         unblockDescriptor: {
           owner: "board",
-          action: "Wait for the scheduled maintenance window",
+         action: "Wait for the scheduled maintenance window",
           reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+        blockerMetadata: {
+          blockReason: "human_decision",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-date",
+          nextCheckAt: "2026-10-10T00:00:00.000Z",
+          timeoutAt: "2026-10-11T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
         },
       });
 

@@ -164,7 +164,12 @@ export interface BotContainerRuntimeDeps {
    *  version of the profile this pass applied (the compiled profile's
    *  `apiServerKeyVersion`) — the card pins exactly it, so a secret rotation whose
    *  container switch failed (or has not happened yet) never reaches the card. */
-  syncCard?: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<{ changedKeys: string[] }>;
+  syncCard?: (
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ) => Promise<{ changedKeys: string[] }>;
   /** Optional. Called by every sweep with the ids of the agents the sweep reconciles: releases the board
    *  tool gateways made for any other agent (deleted, terminated, switched to another adapter or with the
    *  container turned off), which no reconcile pass reaches any more (board-gateway-ports.ts). */
@@ -211,7 +216,7 @@ export interface BotContainerRuntimeDeps {
    *  release. Returns null while its own flag checks exclude it. A throw is
    *  recorded in the activity log and does not fail the sweep: the facade keeps
    *  serving the previous registry. */
-  exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl?: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
   /**
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company of an agent,
    * for the back-import of the bot's own skills into the company catalog.
@@ -351,7 +356,19 @@ export async function applyBotContainerNow(
     });
     const appliedVersion = applied.profile?.apiServerKeyVersion;
     if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
+      let syncOptions: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null } | undefined;
+      const fleetHost = current.config.host ?? null;
+      if (fleetHost) {
+        try {
+          const status = await deps.driver.status(botKey);
+          if (status.gatewayPort) {
+            syncOptions = { gatewayPort: status.gatewayPort };
+          }
+        } catch {
+          // ignore status read error
+        }
+      }
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity, syncOptions);
     }
     return outcome;
   });
@@ -449,10 +466,13 @@ async function syncCardAfterReconcile(
   syncCard: NonNullable<BotContainerRuntimeDeps["syncCard"]>,
   appliedApiServerKeyVersion: number,
   activity: BotContainerActivitySink | undefined,
+  options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion);
+    const { changedKeys } = options !== undefined
+      ? await syncCard(agentId, botKey, appliedApiServerKeyVersion, options)
+      : await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
@@ -533,6 +553,16 @@ async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<voi
   try {
     const result = await deps.exportMediaAcl();
     if (!result) return;
+    if (result.skipped) {
+      await deps.activity?.record({
+        level: "info",
+        agentId: "*",
+        botKey: "*",
+        message: "media ACL registry export skipped; registry mount is unavailable",
+        details: { path: result.path },
+      });
+      return;
+    }
     if (!result.changed && result.failedResolves === 0) return;
     await deps.activity?.record({
       level: result.failedResolves > 0 ? "error" : "info",

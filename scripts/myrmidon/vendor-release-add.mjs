@@ -72,6 +72,18 @@ function readLocalJournal() {
   return JSON.parse(readFileSync(path.join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8")).entries;
 }
 
+// Approved Paperclip columns preserved in Myrmidon schema (PR #1702 / OPE-8044).
+// These columns are part of Myrmidon's core schema and must not be marked
+// as vendor-only extra columns in VENDOR_EXTRA_RELEASES.
+export const PRESERVED_MIGRATION_COLUMNS = new Set([
+  "agents.appearance",
+  "issues.title_needs_generation",
+]);
+
+export function sanitizeMigrationColumns(columns) {
+  return columns.filter((c) => !PRESERVED_MIGRATION_COLUMNS.has(c));
+}
+
 function buildRelease(tag, local) {
   const ref = encodeURIComponent(tag);
   const journal = JSON.parse(ghRaw(`repos/${UPSTREAM}/contents/${UPSTREAM_MIGRATIONS}/meta/_journal.json?ref=${ref}`).toString("utf8")).entries;
@@ -94,7 +106,7 @@ function buildRelease(tag, local) {
     const buf = ghRaw(`repos/${UPSTREAM}/contents/${UPSTREAM_MIGRATIONS}/${e.tag}.sql?ref=${ref}`);
     if (gitBlobSha(buf) !== blobByName.get(`${e.tag}.sql`)) throw new Error(`${tag}: ${e.tag}.sql download does not match its git blob id`);
     const parsed = parseMigrationSql(buf.toString("utf8"));
-    return { tag: e.tag, sha256: sha256(buf), when: e.when, tables: parsed.tables, columns: parsed.columns };
+    return { tag: e.tag, sha256: sha256(buf), when: e.when, tables: parsed.tables, columns: sanitizeMigrationColumns(parsed.columns) };
   });
   return { release: tag, extra: entries };
 }

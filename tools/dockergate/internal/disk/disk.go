@@ -172,6 +172,9 @@ func Collect(ctx context.Context, volumeRoot string, deps Deps) (*Response, erro
 	return resp, nil
 }
 
+// partition reports physical filesystem allocation: shared reflink extents count
+// once in statfs. Project quota counters are logical charges; never sum them to
+// compute this value. Free uses Bavail (allocatable); used uses Bfree (physical).
 func partition(mount string, fs Fs) Partition {
 	total := fs.Blocks * fs.BlockSize
 	freeAll := fs.FreeRoot * fs.BlockSize

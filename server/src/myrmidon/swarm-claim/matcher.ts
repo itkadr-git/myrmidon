@@ -47,11 +47,13 @@ import {
   companies,
   heartbeatRuns,
   issueClaims,
-  issueRelations,
   issues,
+  issueRelations,
+  issueWorkProducts,
   type Db,
 } from "@myrmidon/db";
 import {
+  DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
   SWARM_MATCHED_ACTION,
@@ -91,6 +93,8 @@ import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
   failedRunsSinceLastChangeSql,
+  failedRunsValuesSql,
+  getCachedFailedRunsMap,
   swarmQueueOrderBy,
   type SwarmQueueOrderOptions,
 } from "./effective-pheromone.js";
@@ -174,6 +178,8 @@ export interface SwarmMatcherCaste {
  * periodic pass) passes nothing and the agent's own tasks are all offered.
  */
 export interface SwarmFreedAgentOptions {
+  /** Restrict a dev-review handoff to the exact source project. */
+  projectId?: string;
   /** The task whose run just ended: past work, never offered back at once. */
   excludeIssueId?: string | null;
   /**
@@ -434,7 +440,13 @@ function freeAgentsOfPair(
 ): SwarmMatcherAgent[] {
   // The ceiling of the caste wins over the global one (the same reading the
   // sweeper's idle pass used before this file took the pass over).
-  const maxActiveTasks = caste?.maxActiveTasks ?? settings.maxActiveTasks;
+  // 1.6.6 (OPE-9678): Cap automatic assignment at two tasks per agent (DEFAULT_SWARM_MAX_ACTIVE_TASKS).
+  // A caste or settings ceiling can restrict further, but cannot exceed 2 for auto-assignment.
+  const rawMax = caste?.maxActiveTasks ?? settings.maxActiveTasks;
+  const maxActiveTasks =
+    rawMax !== null && rawMax !== undefined
+      ? Math.min(rawMax, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
+      : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
   return pair.agents
     .filter((agent) => {
       if (
@@ -523,6 +535,7 @@ async function claimTaskForAgent(
     waitedMs: number | null;
     /** The ceiling the pool read applied to the agent; null/absent = none. */
     maxActiveTasks?: number | null;
+    projectId?: string;
   },
 ): Promise<ClaimOutcome> {
   const plan = planClaim({
@@ -545,7 +558,9 @@ async function claimTaskForAgent(
         .from(issues)
         .where(
           and(
+            eq(issues.companyId, companyId),
             eq(issues.id, target.issueId),
+            ...(target.projectId ? [eq(issues.projectId, target.projectId)] : []),
             ...readyQueueConditions(txDb, companyId),
             // Revalidate scope after locking the issue. The pool/membership
             // reads are advisory; only this predicate protects the write.
@@ -561,17 +576,20 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      // 1.6.6 (SWARM-B): the capacity check is atomic. Two passes (or a pass and
+      // 1.6.6 (SWARM-B / OPE-9678): the capacity check is atomic. Two passes (or a pass and
       // the claim API) that pick the same agent queue on this lock; the second one
       // counts the first one's committed assignment and stops at the ceiling.
-      if (target.maxActiveTasks !== undefined && target.maxActiveTasks !== null) {
-        await txDb.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
-        );
-        const load = await agentOpenLoad(txDb, companyId, target.agentId);
-        if (swarmActiveTaskLimitReached(load, { maxActiveTasks: target.maxActiveTasks })) {
-          throw new MatcherAgentFull();
-        }
+      // Auto-assignment is strictly capped at DEFAULT_SWARM_MAX_ACTIVE_TASKS (2).
+      const effectiveLimit =
+        target.maxActiveTasks !== undefined && target.maxActiveTasks !== null
+          ? Math.min(target.maxActiveTasks, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
+          : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+      await txDb.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
+      );
+      const load = await agentOpenLoad(txDb, companyId, target.agentId);
+      if (swarmActiveTaskLimitReached(load, { maxActiveTasks: effectiveLimit })) {
+        throw new MatcherAgentFull();
       }
       const claim = await insertClaim(txDb, { companyId, ...plan, origin: plan.origin ?? "auto_match" });
       if (!claim) throw new MatcherClaimLost();
@@ -813,16 +831,13 @@ export async function matchIssue(
   if (!row?.companyId) return null;
   if (row.assigneeAgentId) return null;
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
-  if (await isCooling(deps, row.companyId, issueId)) return null;
-
-  // Event-driven matching must obey the same queue readiness predicate as
-  // periodic matching. Looking the issue up by id is not itself a claim gate.
-  const [readyCandidate] = await deps.db
-    .select({ issueId: issues.id })
+  const [ready] = await deps.db
+    .select({ id: issues.id })
     .from(issues)
     .where(and(...readyQueueConditions(deps.db, row.companyId), eq(issues.id, issueId)))
     .limit(1);
-  if (!readyCandidate) return null;
+  if (!ready) return null;
+  if (await isCooling(deps, row.companyId, issueId)) return null;
 
   const castes = await casteDirectoryOf(deps, row.companyId);
   // Only this task is read, in every pool: the routing decides which one holds it.
@@ -901,6 +916,7 @@ export async function matchAgent(
   const pairs = await listIdleRolePairs(deps.db, agentRow.companyId, {
     order: queueOrderOf(deps),
     roles: [agentRow.role],
+    projectId: opts.projectId,
   });
   const pair = pairs.find((entry) => entry.role === agentRow.role);
   if (!pair) return null;
@@ -919,6 +935,7 @@ export async function matchAgent(
   // read once per project for the loop.
   const memberOf = new Map<string, boolean>();
   for (const candidate of pair.queue) {
+    if (candidate.issueId === opts.excludeIssueId) continue;
     if (candidate.assigneeAgentId) continue;
     if (candidate.projectId) {
       let member = memberOf.get(candidate.projectId);
@@ -946,6 +963,7 @@ export async function matchAgent(
       identifier: candidate.identifier ?? null,
       waitedMs: waitedMsOf(task, deps.now),
       maxActiveTasks: self.maxActiveTasks,
+      projectId: opts.projectId,
     });
     // The agent could not be woken, or is at its ceiling: another task would
     // fail the same way.
@@ -984,7 +1002,7 @@ async function matchOwnAssignedTask(
   options: SwarmFreedAgentOptions,
 ): Promise<SwarmMatcherPair | "budget_spent" | null> {
   if (options.pickupAllowed === false) return null;
-  const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps) });
+  const pairs = await listIdleRolePairs(deps.db, companyId, { order: queueOrderOf(deps), projectId: options.projectId });
   for (const pair of pairs) {
     // The pool read is already in the queue order (`swarmQueueOrderBy`).
     const own = pair.queue.filter((entry) => entry.assigneeAgentId === agentId);
@@ -1102,12 +1120,92 @@ export interface SwarmIdleRolePair {
 
 /** What a pool read is narrowed to. */
 export interface SwarmPoolReadOptions {
+  projectId?: string;
   /** The queue order of the pass (P0 switch, pheromone dynamics, clock). */
   order?: SwarmQueueOrderOptions;
   /** Only these castes (the freed agent's own); default every caste an agent holds. */
   roles?: readonly string[];
   /** Only this task (the event "this task became ready"). */
   issueId?: string;
+}
+
+export {
+  clearFailedRunsCache,
+  invalidateFailedRunsCache,
+  DEFAULT_FAILED_RUNS_CACHE_TTL_MS,
+} from "./effective-pheromone.js";
+
+export interface SwarmLastRunRow {
+  agentId: string;
+  lastActiveAt: Date | string | null;
+}
+
+export const LAST_RUN_ROWS_CACHE_TTL_MS = 60_000;
+
+interface LastRunRowsCacheEntry {
+  rows: SwarmLastRunRow[];
+  expiresAt: number;
+  inFlight?: Promise<SwarmLastRunRow[]>;
+}
+
+const lastRunRowsCache = new Map<string, LastRunRowsCacheEntry>();
+
+export async function getCachedLastRunRows(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+): Promise<SwarmLastRunRow[]> {
+  const nowMs = now.getTime();
+  const entry = lastRunRowsCache.get(companyId);
+  if (entry && entry.expiresAt > nowMs && !entry.inFlight) {
+    return entry.rows;
+  }
+  if (entry?.inFlight) {
+    return entry.inFlight;
+  }
+  let inFlightPromise: Promise<SwarmLastRunRow[]> | undefined;
+  const execute = async (): Promise<SwarmLastRunRow[]> => {
+    try {
+      const rows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId))
+        .groupBy(heartbeatRuns.agentId);
+      lastRunRowsCache.set(companyId, {
+        rows,
+        expiresAt: now.getTime() + LAST_RUN_ROWS_CACHE_TTL_MS,
+      });
+      return rows;
+    } finally {
+      const current = lastRunRowsCache.get(companyId);
+      if (current && inFlightPromise && current.inFlight === inFlightPromise) {
+        delete current.inFlight;
+      }
+    }
+  };
+  const promise = execute();
+  inFlightPromise = promise;
+  if (entry) {
+    entry.inFlight = promise;
+  } else {
+    lastRunRowsCache.set(companyId, {
+      rows: [],
+      expiresAt: 0,
+      inFlight: promise,
+    });
+  }
+  return promise;
+}
+
+export function invalidateLastRunRowsCache(companyId?: string): void {
+  if (companyId) {
+    lastRunRowsCache.delete(companyId);
+  } else {
+    lastRunRowsCache.clear();
+  }
 }
 
 /**
@@ -1125,47 +1223,41 @@ export async function listIdleRolePairs(
   options: SwarmPoolReadOptions = {},
 ): Promise<SwarmIdleRolePair[]> {
   const poolNow = options.order?.now ?? new Date();
-  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] = await Promise.all([
-    db
-      .select({
-        id: agents.id,
-        companyId: agents.companyId,
-        name: agents.name,
-        reportsTo: agents.reportsTo,
-        role: agents.role,
-        status: agents.status,
-        pausedAt: agents.pausedAt,
-        metadata: agents.metadata,
-      })
-      .from(agents)
-      .innerJoin(companies, eq(companies.id, agents.companyId))
-      .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
-      // A stable order of the pool. Two passes over equal facts see the same
-      // rows in the same order; the pick itself is the scent (T10).
-      .orderBy(asc(agents.id)),
-    db
-      .select({ agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+  const [agentRows, liveRunAgentIds, lastRunRows, activeClaimCounts, loadByAgent] =
+    await Promise.all([
+      db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          reportsTo: agents.reportsTo,
+          role: agents.role,
+          status: agents.status,
+          pausedAt: agents.pausedAt,
+          metadata: agents.metadata,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.companyId, companyId), eq(companies.status, "active")))
+        // A stable order of the pool. Two passes over equal facts see the same
+        // rows in the same order; the pick itself is the scent (T10).
+        .orderBy(asc(agents.id)),
+      db
+        .select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+          ),
         ),
-      ),
-    db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        lastActiveAt: sql<Date | string | null>`max(${heartbeatRuns.createdAt})`,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, companyId))
-      .groupBy(heartbeatRuns.agentId),
-    // The live leases of the company, per agent. The per-agent ceiling needs
-    // them: an agent that already holds a lease is not a free agent, and a
-    // hardcoded zero here would hand it a second task it cannot start.
-    liveClaimCountsByAgent(db, companyId),
-    openLoadByAgent(db, companyId),
-  ] as const);
+      getCachedLastRunRows(db, companyId, poolNow),
+      // The live leases of the company, per agent. The per-agent ceiling needs
+      // them: an agent that already holds a lease is not a free agent, and a
+      // hardcoded zero here would hand it a second task it cannot start.
+      liveClaimCountsByAgent(db, companyId),
+      openLoadByAgent(db, companyId),
+    ] as const);
 
   // The quota facts are read for the candidate agents of this pass only.
   const quotaHoldByAgent = await quotaHoldsByAgent(
@@ -1194,11 +1286,19 @@ export async function listIdleRolePairs(
     .filter((role) => !wanted || wanted.has(role))
     .sort();
 
+  const failedRunsMap = await getCachedFailedRunsMap(
+    db,
+    companyId,
+    options.order?.now,
+  );
+
   const queues = await Promise.all(
     roles.map((role) =>
       listReadyQueueCandidates(db, companyId, role, {
         order: options.order,
         issueId: options.issueId,
+        failedRunsMap,
+        projectId: options.projectId,
       }),
     ),
   );
@@ -1234,48 +1334,53 @@ async function openTaskIdsOfAgents(
   companyId: string,
   agentId: string | null,
 ): Promise<Map<string, { assigned: Set<string>; leased: Set<string> }>> {
-  const [assignedRows, blockedIssueRows, leasedRows] = await Promise.all([
-    db
-      .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          isNotNull(issues.assigneeAgentId),
-          inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
-          isNull(issues.hiddenAt),
-          ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
-        ),
+  const assignedRows = await db
+    .select({ agentId: issues.assigneeAgentId, issueId: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNotNull(issues.assigneeAgentId),
+        inArray(issues.status, [...SWARM_LOAD_ISSUE_STATUSES]),
+        isNull(issues.hiddenAt),
+        ...(agentId ? [eq(issues.assigneeAgentId, agentId)] : []),
       ),
-    db
-      .select({ issueId: issueRelations.relatedIssueId })
-      .from(issueRelations)
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.id, issueRelations.issueId),
-          eq(issues.companyId, companyId),
-          isNull(issues.hiddenAt),
-          blockerOpenSql("issues.status"),
-        ),
-      )
-      .where(
-        and(
-          eq(issueRelations.companyId, companyId),
-          eq(issueRelations.type, "blocks"),
-        ),
+    );
+  const assignedIds = new Set(assignedRows.map((row) => row.issueId));
+  const relatedIds = [...assignedIds];
+  const blockedIssueRows: Array<{ issueId: string }> = relatedIds.length === 0
+    ? []
+    : await db
+        .select({
+          issueId: issueRelations.relatedIssueId,
+        })
+        .from(issueRelations)
+        .innerJoin(
+          issues,
+          and(
+            eq(issues.id, issueRelations.issueId),
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            blockerOpenSql("issues.status"),
+          ),
+        )
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, relatedIds),
+          ),
+        );
+  const leasedRows = await db
+    .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
+    .from(issueClaims)
+    .where(
+      and(
+        eq(issueClaims.companyId, companyId),
+        isNull(issueClaims.releasedAt),
+        ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
       ),
-    db
-      .select({ agentId: issueClaims.agentId, issueId: issueClaims.issueId })
-      .from(issueClaims)
-      .where(
-        and(
-          eq(issueClaims.companyId, companyId),
-          isNull(issueClaims.releasedAt),
-          ...(agentId ? [eq(issueClaims.agentId, agentId)] : []),
-        ),
-      ),
-  ]);
+    );
   const blockedIssueIds = new Set(blockedIssueRows.map((row) => row.issueId));
   const out = new Map<string, { assigned: Set<string>; leased: Set<string> }>();
   const slot = (id: string) => {
@@ -1296,21 +1401,60 @@ async function openTaskIdsOfAgents(
 /**
  * 1.6.6 (SWARM-B): the open load per agent of one company - assigned `todo` and
  * `in_progress` tasks (the reserved ones included) plus live leases, a task that
- * is both counted once. Tasks with unresolved blockers aren't actionable and
- * don't consume a slot. The idle/live-run flags alone said nothing about it.
+ * is both counted once. The idle/live-run flags alone said nothing about it.
  */
 export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<string, number>> {
+  const tasks = await openTaskIdsOfAgents(db, companyId, null);
+  const ciWaiting = await ciWaitingPullRequestIssueIds(db, companyId);
   const loads = new Map<string, number>();
-  for (const [agentId, entry] of await openTaskIdsOfAgents(db, companyId, null)) {
-    loads.set(agentId, openLoadOf(entry.assigned, entry.leased));
-  }
+  for (const [agentId, entry] of tasks) loads.set(agentId, openLoadOf(entry.assigned, entry.leased, ciWaiting));
   return loads;
+}
+
+/**
+ * Only a recently observed active CI state for the exact current PR head
+ * discounts an assigned issue. Completed runs never release load.
+ */
+async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
+  const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId })
+    .from(issueWorkProducts)
+    .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+    .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github")));
+  const current = new Map<string, { head: string; issueId: string }>();
+  for (const product of products) {
+    const metadata = product.metadata as Record<string, unknown> | null;
+    const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
+    const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
+    const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
+    const ciRepository = typeof ci?.repository === "string" ? ci.repository.toLowerCase() : null;
+    const ciNumber = Number(ci?.number);
+    const ciHead = typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : null;
+    if (product.issueStatus === "in_progress" && repository && Number.isSafeInteger(number) && number > 0 && ciRepository === repository.toLowerCase() && ciNumber === number && ciHead) current.set(`${repository.toLowerCase()}#${number}`, { head: ciHead, issueId: product.issueId });
+  }
+  if (!current.size) return new Set();
+  const now = Date.now();
+  const waiting = new Set<string>();
+  for (const product of products) {
+    if (product.issueStatus !== "in_progress") continue;
+    const meta = product.metadata as Record<string, unknown> | null;
+    const ci = meta?.activeCi && typeof meta.activeCi === "object" ? meta.activeCi as Record<string, unknown> : null;
+    const repository = typeof meta?.repository === "string" ? meta.repository : typeof meta?.repo === "string" ? meta.repo : null;
+    const number = typeof meta?.number === "number" ? meta.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
+    if (!repository || !Number.isSafeInteger(number) || !ci || (ci.status !== "queued" && ci.status !== "in_progress")) continue;
+    const currentPr = current.get(`${repository.toLowerCase()}#${number}`);
+    if (!currentPr || currentPr.issueId !== product.issueId) continue;
+    const observed = typeof ci.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
+    const age = now - observed;
+    if (currentPr.head === String(ci.headSha).toLowerCase() && age >= 0 && age <= 15 * 60_000) waiting.add(product.issueId);
+  }
+  return waiting;
 }
 
 /** The open load of one agent, read on the executor it is given (a transaction). */
 async function agentOpenLoad(db: Db, companyId: string, agentId: string): Promise<number> {
   const entry = (await openTaskIdsOfAgents(db, companyId, agentId)).get(agentId);
-  return entry ? openLoadOf(entry.assigned, entry.leased) : 0;
+  const ciWaiting = await ciWaitingPullRequestIssueIds(db, companyId);
+  return entry ? openLoadOf(entry.assigned, entry.leased, ciWaiting) : 0;
 }
 
 /**
@@ -1519,6 +1663,14 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
     )`,
     // myrmidon(HOLD-READY): not held by an execution hold (see idle-pickup.ts).
     issueHasNoExecutionHold(db),
+    // myrmidon(OPE-7707): exclude issues waiting for thread interaction
+    sql`not exists (
+      select 1
+      from issue_thread_interactions iti
+      where iti.company_id = ${issues.companyId}
+        and iti.issue_id = ${issues.id}
+        and iti.status = 'pending'
+    )`,
     // A task that is already covered — a live lease, or a wake in flight
     // (not parked on a hold) — is being worked on and is not a queue
     // candidate; the pool is what is genuinely waiting.
@@ -1549,15 +1701,25 @@ async function listReadyQueueCandidates(
   db: Db,
   companyId: string,
   role: string,
-  options: { order?: SwarmQueueOrderOptions; issueId?: string } = {},
+  options: {
+    order?: SwarmQueueOrderOptions;
+    issueId?: string;
+    projectId?: string;
+    failedRunsMap?: ReadonlyMap<string, number>;
+  } = {},
 ): Promise<SwarmMatcherQueueCandidate[]> {
   const conditions = [
+    ...readyQueueConditions(db, companyId),
     or(
       and(isNotNull(issues.assigneeAgentId), eq(agents.role, role)),
       and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
     ),
   ];
   if (options.issueId) conditions.push(eq(issues.id, options.issueId));
+  if (options.projectId) conditions.push(eq(issues.projectId, options.projectId));
+  const failedRunsMap =
+    options.failedRunsMap ??
+    (await getCachedFailedRunsMap(db, companyId, options.order?.now));
   const rows = await db
     .select({
       issueId: issues.id,
@@ -1571,9 +1733,9 @@ async function listReadyQueueCandidates(
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
-    // One bounded pass over the recent evaporating runs, joined once (#1047).
-    .leftJoin(failedRunsDerivedSql(companyId, options.order?.now), failedRunsJoinOnSql())
-    .where(and(...readyQueueConditions(db, companyId), ...conditions))
+    // 1.6.6 PERF: join cached failed runs map as VALUES instead of heavy derived table (#OPE-10012)
+    .leftJoin(failedRunsValuesSql(failedRunsMap), failedRunsJoinOnSql())
+    .where(and(...conditions))
     .orderBy(...swarmQueueOrderBy(options.order))
     .limit(SWARM_POOL_READ_LIMIT);
   return rows.map((row) => ({

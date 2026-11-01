@@ -1,0 +1,3 @@
+# Myrmidon REDACT dependencies
+# Core recognizers, checksums and HTTP service run on standard library.
+# Optional MCP and FastAPI/uvicorn dependencies can be added for extended setups.

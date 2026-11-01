@@ -59,7 +59,7 @@ export function startSiteHealth(db: Db, opts: { env?: NodeJS.ProcessEnv; clientM
 
   const { clientManager } = opts;
   const store = siteHealthStore(db);
-  const moves = createFleetMoveContext(db);
+  const moves = createFleetMoveContext(db, () => clientManager);
   const replicas = fleetReplicaStoreFromEnv(env);
   const keyOf = (site: Pick<MonitoredSite, "companyId" | "name">) => fleetSiteKey(site.companyId, site.name);
 

@@ -96,6 +96,7 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export { interactionEscalations } from "./interaction_escalations.js";
 export { issueQuestionResponseDeliveries } from "./issue_question_response_deliveries.js";
 export {
   decisions,
@@ -235,6 +236,8 @@ export {
   myrmidonScopeSettings,
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner's last activity per channel (portal / Telegram).
+export { myrmidonOwnerActivity } from "./myrmidon_owner_activity.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
 export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
@@ -335,3 +338,5 @@ export { corpusShadowLog } from "./corpus_shadow_log.js";
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 // myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
+// myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
+export { legacyBlockedImports } from "./legacy_blocked_imports.js";

@@ -101,16 +101,24 @@ function fakeSettings(initial: Record<string, unknown> = {}) {
 // store is touched.
 function appFor(
   actor: unknown,
-  options: { env?: Record<string, string>; settings?: ReturnType<typeof fakeSettings> } = {},
+  options: {
+    env?: Record<string, string>;
+    settings?: ReturnType<typeof fakeSettings>;
+    store?: FakeStore;
+    computeUsage?: any;
+  } = {},
 ) {
-  const store = fakeStore();
+  const store = options.store ?? fakeStore();
   const settings = options.settings ?? fakeSettings();
-  void store;
-  void settings;
-  // The real router builds createBudgetLimitStore({ db }) — a fake db whose
-  // select chain returns nothing is enough for access-rule tests, but for
-  // read/write paths we need the store; patch via the routes' deps instead.
-  // The routes only use db for the store + activity log; a thrown log is fine.
+  const computeUsage =
+    options.computeUsage ??
+    vi.fn(async (_deps: unknown, _companyId: string, level: any, ref: string, period: any) => ({
+      level,
+      ref,
+      period,
+      spentCents: 12500,
+      events: 5,
+    }));
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -121,6 +129,8 @@ function appFor(
     "/api",
     budgetLimitsRoutes({} as unknown as Db, {
       env: (options.env ?? {}) as NodeJS.ProcessEnv,
+      store: store as any,
+      computeUsage: computeUsage as any,
     }),
   );
   app.use(errorHandler);
@@ -135,6 +145,7 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
     await request(app).get(`${base}`).expect(403);
     await request(app).get(`${base}/journal`).expect(403);
     await request(app).get(`${base}/signal-only`).expect(403);
+    await request(app).get(`${base}/export`).expect(403);
   });
 
   it("refuses a limit write from an agent (board only)", async () => {
@@ -170,11 +181,56 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
       .expect(400);
   });
 
-  it("answers 400 on an invalid amount", async () => {
+  it("answers stable 400 contracts for an invalid amount and a missing limit", async () => {
     const { app } = appFor(boardActor);
-    await request(app)
+    const invalid = await request(app)
       .put(`${base}/limits/caste/engineer`)
       .send({ amountCents: -5 })
       .expect(400);
+    expect(invalid.body).toMatchObject({ error: "Validation error" });
+    expect(invalid.body.details).toEqual(expect.any(Array));
+
+    const missing = await request(app).get(`${base}/limits/caste/engineer`).expect(404);
+    expect(missing.body).toEqual({ error: "Limit not found" });
+  });
+
+  it("answers 400 on an invalid export format", async () => {
+    const { app } = appFor(boardActor);
+    await request(app).get(`${base}/export?format=yaml`).expect(400);
+  });
+
+  it("exports budget limits report in CSV and JSON", async () => {
+    const store = fakeStore();
+    await store.upsert(
+      "company-a",
+      "nest",
+      "company",
+      {
+        amountCents: 50000,
+        period: "calendar_month_utc",
+        mode: "soft",
+      },
+      { actorType: "user", actorId: "u1" },
+    );
+    const { app } = appFor(boardActor, { store });
+
+    const csvRes = await request(app).get(`${base}/export?format=csv`).expect(200);
+    expect(csvRes.headers["content-type"]).toContain("text/csv");
+    expect(csvRes.headers["content-disposition"]).toContain('filename="budget-limits-report-company-a.csv"');
+    expect(csvRes.text).toContain("level,ref,period,mode,amount_cents,spent_cents");
+    expect(csvRes.text).toContain("nest,company,calendar_month_utc,soft,50000");
+
+    const jsonRes = await request(app).get(`${base}/export?format=json`).expect(200);
+    expect(jsonRes.headers["content-type"]).toContain("application/json");
+    expect(jsonRes.headers["content-disposition"]).toContain('filename="budget-limits-report-company-a.json"');
+    expect(jsonRes.body.companyId).toBe("company-a");
+    expect(jsonRes.body.report).toHaveLength(1);
+    expect(jsonRes.body.report[0].ref).toBe("company");
+
+    const directCsvRes = await request(app).get(`${base}/export.csv`).expect(200);
+    expect(directCsvRes.headers["content-type"]).toContain("text/csv");
+
+    const directJsonRes = await request(app).get(`${base}/export.json`).expect(200);
+    expect(directJsonRes.body.companyId).toBe("company-a");
   });
 });
