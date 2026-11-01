@@ -229,7 +229,15 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
-    list: (companyId: string) => ["agents", companyId] as const,
+    list: (companyId: string, filters?: { q?: string; status?: string; role?: string; reportsTo?: string }) =>
+      [
+        "agents",
+        companyId,
+        filters?.q ?? "",
+        filters?.status ?? "",
+        filters?.role ?? "",
+        filters?.reportsTo ?? "",
+      ] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
     // myrmidon(PERF-DIET-G): the configuration read an agent-row consumer falls
     // back to once the company list stopped shipping adapterConfig.
