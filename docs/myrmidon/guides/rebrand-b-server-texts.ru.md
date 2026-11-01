@@ -21,7 +21,7 @@
   сервера: `server/src/myrmidon/product.ts`).
 - **Onboarding-документы для внешних агентов** (`routes/access.ts`) называют
   Myrmidon в видимом тексте.
-- **User-agent исходящих запросов** (например, `Paperclip/1.0` →
+- **User-agent исходящих запросов** (например, `Myrmidon/1.0` →
   `Myrmidon/1.0`).
 - **Предупреждение о версии Node** (`packages/shared/src/node-version.ts`):
   префикс `[myrmidon]`, строка перезапуска — Myrmidon.

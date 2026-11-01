@@ -21,7 +21,7 @@ remains only in the license notice, the third-party notices file, and the
   (server constant: `server/src/myrmidon/product.ts`).
 - **Onboarding documents for external agents** (`routes/access.ts`) name
   Myrmidon in the rendered text.
-- **Outgoing request user agents** (for example `Paperclip/1.0` →
+- **Outgoing request user agents** (for example `Myrmidon/1.0` →
   `Myrmidon/1.0`).
 - **Node version warning** (`packages/shared/src/node-version.ts`): the
   warning prefix is `[myrmidon]` and the restart line says Myrmidon.
@@ -34,7 +34,7 @@ remains only in the license notice, the third-party notices file, and the
 - Environment variables (`PAPERCLIP_*`), HTTP headers (`X-Paperclip-*`),
   `@paperclipai/*` packages, API paths, the `paperclip_runner` adapter type.
 - `~/.paperclip` state directory paths.
-- MCP server names "Paperclip connections" and "Paperclip projects" — these
+- MCP server names "Myrmidon connections" and "Myrmidon projects" — these
   are session identity keys used by adapters; renaming them once would reset
   every native session.
 - Frozen pre-rename snapshots (`priorCloseCopyDefinition`,
