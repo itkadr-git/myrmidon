@@ -76,36 +76,45 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
   const rows: LegacyBlockedApplyRow[] = [];
   let changed = 0;
   for (const row of dryRun.report.rows) {
-    if (row.class === "unknown" || row.class === "terminal") {
-      rows.push({ issueId: row.issueId, class: row.class, outcome: "unknown", detail: `Retained blocked; classification=${row.class}; evidence=${row.evidence}` });
+    const parsedReportRow = legacyBlockedReportRowSchema.safeParse(row);
+    if (!parsedReportRow.success) {
+      rows.push({ issueId: row.issueId, class: String(row.class), outcome: "skipped", detail: "Invalid classification report row; retained blocked." });
+      continue;
+    }
+    const validRow = parsedReportRow.data;
+    if (validRow.class === "unknown" || validRow.class === "terminal") {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "unknown", detail: `Retained blocked; classification=${validRow.class}; evidence=${validRow.evidence}` });
       continue;
     }
     if (!options.apply) {
-      rows.push({ issueId: row.issueId, class: row.class, outcome: "dry_run", detail: `Would apply ${row.class}; evidence=${row.evidence}` });
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "dry_run", detail: `Would apply ${validRow.class}; evidence=${validRow.evidence}` });
       continue;
     }
-    if (row.class === "recovery" && (!recoveryKind(row) || !recoveryOwner(row) || row.proposedSlaMinutes === undefined)) {
-      rows.push({ issueId: row.issueId, class: row.class, outcome: "skipped", detail: "Recovery kind/owner/SLA are not explicitly present; retained blocked." });
+    if (validRow.class === "recovery" && (!recoveryKind(validRow) || !recoveryOwner(validRow) || validRow.proposedSlaMinutes === undefined)) {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "Recovery kind/owner/SLA are not explicitly present; retained blocked." });
       continue;
     }
-    if (row.class !== "recovery" && !blockerMetadata(row, { assigneeAgentId: null, assigneeUserId: null })) {
-      rows.push({ issueId: row.issueId, class: row.class, outcome: "skipped", detail: "No typed blocker reference and explicit owner are available; retained blocked." });
+    if (validRow.class !== "recovery" && !blockerMetadata(validRow, { assigneeAgentId: null, assigneeUserId: null })) {
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: "No typed blocker reference and explicit owner are available; retained blocked." });
       continue;
     }
     const outcome = await db.transaction(async (tx) => {
-      const [source] = await tx.select().from(issues).where(and(eq(issues.id, row.issueId), eq(issues.status, "blocked"))).for("update");
+      const [source] = await tx.select().from(issues).where(and(eq(issues.id, validRow.issueId), eq(issues.status, "blocked"))).for("update");
       if (!source) return { outcome: "skipped" as const, detail: "Source no longer blocked or missing." };
+      if (source.blockerMetadata != null) {
+        return { outcome: "skipped" as const, detail: "Source already has blocker metadata; retained without overwrite." };
+      }
       const [journal] = await tx.select().from(legacyBlockedImports).where(and(
         eq(legacyBlockedImports.companyId, source.companyId),
-        eq(legacyBlockedImports.importKey, row.importKey),
+        eq(legacyBlockedImports.importKey, validRow.importKey),
       ));
       if (journal?.resultIssueId) return { outcome: "already_applied" as const, detail: "Import journal already has a result.", resultIssueId: journal.resultIssueId };
 
       let resultIssueId: string | undefined;
-      if (row.class === "recovery") {
-        const kind = recoveryKind(row);
-        const owner = recoveryOwner(row);
-        if (!owner || !kind || row.proposedSlaMinutes === undefined) {
+      if (validRow.class === "recovery") {
+        const kind = recoveryKind(validRow);
+        const owner = recoveryOwner(validRow);
+        if (!owner || !kind || validRow.proposedSlaMinutes === undefined) {
           return { outcome: "skipped" as const, detail: "Missing explicit recovery kind, valid owner, or SLA; retained blocked." };
         }
         const factory = issueRecoveryActionService(tx as unknown as Db);
@@ -114,13 +123,13 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
           sourceIssueId: row.issueId,
           dedupeKey: buildRecoveryDedupeKey({ kind, scope: source.companyId, cause: row.importKey }),
           owner,
-          slaMinutes: row.proposedSlaMinutes,
-          nextCheckAt: new Date(Date.now() + row.proposedSlaMinutes * 60_000).toISOString(),
-          evidence: { source: "legacy_blocked_import", importKey: row.importKey, classification: row.class, evidence: row.evidence },
+          slaMinutes: validRow.proposedSlaMinutes,
+          nextCheckAt: new Date(Date.now() + validRow.proposedSlaMinutes * 60_000).toISOString(),
+          evidence: { source: "legacy_blocked_import", importKey: validRow.importKey, classification: validRow.class, evidence: validRow.evidence },
         });
         resultIssueId = result.recoveryIssueId ?? undefined;
       } else {
-        const metadata = blockerMetadata(row, source);
+        const metadata = blockerMetadata(validRow, source);
         if (!metadata) {
           return { outcome: "skipped" as const, detail: "No explicit owner or live blocker reference; retained blocked." };
         }
