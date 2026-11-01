@@ -13,9 +13,9 @@
 
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { authUsers, companyMemberships, type Db } from "@paperclipai/db";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
-import type { WorkspaceReadiness, WorkspaceReadinessProbeResult } from "@paperclipai/shared";
+import { authUsers, companyMemberships, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
+import type { WorkspaceReadiness, WorkspaceReadinessProbeResult } from "@myrmidon/shared";
 import {
   deriveWorkspaceHandoffKey,
   deriveWorkspaceReadinessToken,

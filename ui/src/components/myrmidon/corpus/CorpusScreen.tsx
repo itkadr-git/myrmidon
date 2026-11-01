@@ -203,7 +203,7 @@ export function CorpusScreenView({
               <Input
                 id="myrmidon-corpus-parsing-base-url"
                 className="max-w-md"
-                placeholder="http://parsing:8080"
+                placeholder={t("area.settings-models-runtime-2.corpus-screen.parsingBaseUrlPlaceholder")}
                 aria-invalid={urlOk ? undefined : true}
                 value={current.parsingServiceBaseUrl}
                 onChange={(event) => setDraft({ ...current, parsingServiceBaseUrl: event.target.value })}

@@ -65,9 +65,10 @@ Myrmidon — система управления компаниями из ИИ-
 
 | Файл | О чём |
 |---|---|
+| [guides/ui2-servers.md](guides/ui2-servers.md) | Экран UI2 «Серверы» (/fleet): что показывает, ошибки мониторинга вместо пустого состояния, пункты меню |
 | [guides/features-page.md](guides/features-page.md) | Страница Instance → Features: реестр возможностей форка, их настройки и живое здоровье, сигнал во внимание, как добавить возможность |
-| [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API; причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
-| [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка внимания `queue_stall`, пороги, действия оператора |
+| [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API, вид нагрузки (очередь, загрузка хоста, снимок памяти); причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
+| [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка `queue_stall`, автоматическое истечение, настройка порога, метрика Prometheus и настройка тревоги |
 | [guides/backup-retention.md](guides/backup-retention.md) | Хранение резервных копий БД: тиры daily/weekly/monthly, режим «хранить только последнюю копию» (1.6.5) с проверкой дампа перед удалением старых, чистка сирот `.sql` |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
@@ -93,7 +94,8 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/connector-panel.md](guides/connector-panel.md) | Панель коннекторов (Company settings → Connectors): устройства, выдача кодов, allowlist, политика подписи, журнал |
 | [guides/chat-endpoint-setup.md](guides/chat-endpoint-setup.md) | Настройка чат-эндпоинта: прямое завершение `verifying` после тестового диалога и нейтральный сигнал `verifyingStale` |
 | [guides/ocr.md](guides/ocr.md) | Путь OCR: PDF в текст в workspace бота — инструмент `ocr.pdf`, бэкенды, лимиты, журнал |
-| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Как решения владельца доходят до его Telegram-лички с агентом-автором: режим `via_bot` по умолчанию (сообщение бота, ответ текстом) или карточки с кнопками (U2) |
+| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
+| [guides/owner-active-channel.md](guides/owner-active-channel.md) | Активный канал владельца (1.7-ACTIVE-CHANNEL): отметки активности в портале и Telegram-личке, доставка докладов в активный канал, порог неактивности как живая настройка, статус в интерфейсе вместо литерала «Web · сейчас» |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
 | [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
@@ -123,6 +125,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/debate-asym.md](guides/debate-asym.md) | Движок асимметричных дебатов (1.7 DEBATE-ASYM A): генератор/критик/судья из разных семейств моделей, независимые первые ответы, ≤3 круга, потолок токенов, остановка по `[AGREE]`; документ `debate-result` на задаче со стоимостью, cost-события на уровне задачи, живые настройки и запуск по API через матрицу автономии |
 | [guides/debate-asym-castes.md](guides/debate-asym-castes.md) | Дебаты на касту (1.7 DEBATE-ASYM B): вкл/выкл, модели ролей, инструкция на роль, круги и потолок токенов на каждую касту поверх конфигурации инстанса; кнопка «Обсудить» в очереди роли на «Надзор за роем» с показом вердикта, остановки, расхода и документа результата; пилот — каста маркетинга |
 | [guides/guardrails-ci-corpus.md](guides/guardrails-ci-corpus.md) | GUARDRAILS (1.7-GRD-CI): eval ложных срабатываний по эталонному корпусу как шаг CI — скоринг precision/recall по правилу, ложный блок на чистой фикстуре красит проверку, закоммиченный артефакт `report.json`/`report.md` со сторожем расхождения, pending-режим детекторов части A до их мержа |
+| [guides/rebrand-vendor-name.md](guides/rebrand-vendor-name.md) | Имя вендора в сборке (1.7 REBRAND F): сторож по собранному бандлу интерфейса и снимкам ответов основных эндпоинтов, два класса токенов (видимое имя — гейт, написания-идентификаторы — отчёт), режимы `ratchet`/`strict`, список исключений, съёмка снимков, шаги CI и настройка на Instance → General |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
 | [guides/custom-castes.md](guides/custom-castes.md) | Свои касты (CUSTOM-CASTES): справочник ролей компании в базе, двенадцать встроенных каст при первом чтении, поля касты, REST API с переводом агентов при удалении, живое чтение без перезапуска |

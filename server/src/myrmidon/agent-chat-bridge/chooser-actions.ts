@@ -29,11 +29,11 @@ import {
   chatMessageLinks,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   SafeChatPublicationPayload,
   SafeExternalChatCardAction,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import {
   runBridgedChooserPick,

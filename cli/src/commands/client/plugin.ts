@@ -99,7 +99,7 @@ interface PluginCompanyOptions extends PluginJsonOptions {
 function requireCompanyId(ctx: { companyId?: string }): string {
   if (!ctx.companyId) {
     throw new Error(
-      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `myrmidon context set`.",
     );
   }
   return ctx.companyId;
@@ -342,7 +342,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--display-name <name>", "Manifest display name")
       .option("--description <description>", "Manifest description")
       .option("--author <author>", "Manifest author")
-      .option("--sdk-path <path>", "Local @paperclipai/plugin-sdk package path")
+      .option("--sdk-path <path>", "Local @myrmidon/plugin-sdk package path")
       .action((packageName: string, opts: PluginInitOptions) => {
         try {
           const result = runPluginInitCommand(packageName, opts);

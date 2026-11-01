@@ -23,11 +23,14 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, AlarmClock } from "lucide-react";
 import type {
+  InstanceGeneralSettings,
+  ScentSettings,
   SwarmClaimSettingsPatch,
   SwarmClaimSettingSource,
   SwarmSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
+  readScentSettings,
   SWARM_COOLDOWN_BASE_MIN_DEFAULT,
   SWARM_COOLDOWN_BASE_MIN_MAX,
   SWARM_COOLDOWN_BASE_MIN_MIN,
@@ -35,12 +38,15 @@ import {
   SWARM_COOLDOWN_CEILING_HOURS_MAX,
   SWARM_COOLDOWN_CEILING_HOURS_MIN,
   SWARM_RUN_WITHOUT_TASK_GATE_DEFAULT,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { api } from "@/api";
+import { secretsApi } from "@/api/secrets";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { useTranslation } from "@/i18n";
 import {
@@ -561,17 +567,17 @@ export function SwarmCoolingSettingsPanelView({
   }, [numbers, gate]);
 
   return (
-    <section className="space-y-4" data-testid="myrmidon-swarm-cooling">
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <AlarmClock className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">{t("swarmClaim.cooling.title")}</h2>
-        </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">{t("swarmClaim.cooling.intro")}</p>
+    <section className="space-y-4 rounded-lg border p-4" data-testid="swarm-cooling-settings-panel">
+      <div>
+        <h3 className="text-base font-semibold">{t("swarmClaim.cooling.title")}</h3>
+        <p className="text-sm text-muted-foreground">{t("swarmClaim.cooling.intro")}</p>
       </div>
 
       {error ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className="rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive"
+          data-testid="swarm-cooling-banner"
+        >
           {error}
         </div>
       ) : null}
@@ -646,6 +652,179 @@ export function SwarmCoolingSettingsPanelView({
   );
 }
 
+type GeneralSwarm = NonNullable<InstanceGeneralSettings["swarm"]>;
+
+export interface SwarmScentSettingsPanelViewProps {
+  swarm: GeneralSwarm | undefined;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  onSave: (swarm: GeneralSwarm) => void;
+}
+
+export function SwarmScentSettingsPanelView({
+  swarm,
+  loading,
+  saving,
+  error,
+  onSave,
+}: SwarmScentSettingsPanelViewProps) {
+  const { t } = useTranslation();
+  const companyContext = useOptionalCompany();
+  const selectedCompanyId = companyContext?.selectedCompanyId;
+
+  const secretsQuery = useQuery({
+    queryKey: ["companySecrets", selectedCompanyId],
+    queryFn: () => (selectedCompanyId ? secretsApi.list(selectedCompanyId) : Promise.resolve([])),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const modelsQuery = useQuery({
+    queryKey: ["gatewayModels", selectedCompanyId],
+    queryFn: async () => {
+      if (!selectedCompanyId) return [];
+      try {
+        return await api.get<Array<{ model: string }>>(`/myrmidon/companies/${selectedCompanyId}/litellm/models`);
+      } catch {
+        return [];
+      }
+    },
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const baseScent = readScentSettings(swarm);
+  const storedModel = baseScent.model;
+  const storedSecret = baseScent.apiKeySecretName ?? "";
+
+  const [draftModel, setDraftModel] = useState<string>(storedModel);
+  const [draftSecret, setDraftSecret] = useState<string>(storedSecret);
+  const [modelMode, setModelMode] = useState<"select" | "custom">("select");
+
+  const [syncedKey, setSyncedKey] = useState<string>(`${storedModel}:${storedSecret}`);
+  const currentKey = `${storedModel}:${storedSecret}`;
+  if (syncedKey !== currentKey) {
+    setSyncedKey(currentKey);
+    setDraftModel(storedModel);
+    setDraftSecret(storedSecret);
+  }
+
+  const availableModels = useMemo(() => {
+    const list = (modelsQuery.data ?? []).map((m) => m.model).filter(Boolean);
+    if (draftModel && !list.includes(draftModel)) {
+      return [draftModel, ...list];
+    }
+    return list;
+  }, [modelsQuery.data, draftModel]);
+
+  const secrets = secretsQuery.data ?? [];
+
+  const handleSave = () => {
+    const nextScent: ScentSettings = {
+      ...baseScent,
+      model: draftModel.trim() || baseScent.model,
+      apiKeySecretName: draftSecret.trim() ? draftSecret.trim() : null,
+    };
+    onSave({
+      ...(swarm ?? {}),
+      scent: nextScent,
+    });
+  };
+
+  return (
+    <section className="space-y-4 rounded-lg border p-4" data-testid="swarm-scent-settings-panel">
+      <div>
+        <h3 className="text-base font-semibold">{t("swarmClaim.scent.title")}</h3>
+        <p className="text-sm text-muted-foreground">{t("swarmClaim.scent.description")}</p>
+      </div>
+
+      {error ? (
+        <div
+          className="rounded border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive"
+          data-testid="swarm-scent-banner"
+        >
+          {error}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="text-sm text-muted-foreground">{t("swarmClaim.scent.loading")}</p>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="swarm-scent-model">{t("swarmClaim.scent.model.label")}</Label>
+              <button
+                type="button"
+                className="text-xs text-primary underline"
+                onClick={() => setModelMode(modelMode === "select" ? "custom" : "select")}
+              >
+                {modelMode === "select"
+                  ? t("swarmClaim.scent.model.customMode")
+                  : t("swarmClaim.scent.model.selectMode")}
+              </button>
+            </div>
+            {modelMode === "select" && availableModels.length > 0 ? (
+              <select
+                id="swarm-scent-model"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={draftModel}
+                onChange={(e) => setDraftModel(e.target.value)}
+                data-testid="swarm-scent-model-select"
+              >
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                id="swarm-scent-model"
+                placeholder="qwen-turbo"
+                value={draftModel}
+                onChange={(e) => setDraftModel(e.target.value)}
+                data-testid="swarm-scent-model-input"
+              />
+            )}
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.scent.model.help")}</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="swarm-scent-secret">{t("swarmClaim.scent.secret.label")}</Label>
+            <select
+              id="swarm-scent-secret"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              value={draftSecret}
+              onChange={(e) => setDraftSecret(e.target.value)}
+              data-testid="swarm-scent-secret-select"
+            >
+              <option value="">{t("swarmClaim.scent.secret.defaultOption")}</option>
+              {secrets.map((s) => (
+                <option key={s.id ?? s.name} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{t("swarmClaim.scent.secret.help")}</p>
+          </div>
+
+          <div className="md:col-span-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={saving}
+              onClick={handleSave}
+              data-testid="swarm-scent-save"
+            >
+              {saving ? t("swarmClaim.saving") : t("swarmClaim.scent.save")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SwarmClaimSettingsPanel() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
@@ -686,7 +865,7 @@ export function SwarmClaimSettingsPanel() {
     retry: false,
   });
   const coolingSave = useMutation({
-    mutationFn: (swarm: SwarmSettings) => instanceSettingsApi.updateGeneral({ swarm }),
+    mutationFn: (swarm: GeneralSwarm) => instanceSettingsApi.updateGeneral({ swarm }),
     onMutate: () => {
       setCoolingError(null);
       setCoolingSavedNote(null);
@@ -721,6 +900,13 @@ export function SwarmClaimSettingsPanel() {
         error={banner}
       />
       <SwarmCoolingSettingsPanelView
+        swarm={generalQuery.data?.swarm}
+        loading={generalQuery.isLoading}
+        saving={coolingSave.isPending}
+        error={coolingBanner}
+        onSave={(swarm) => coolingSave.mutate(swarm)}
+      />
+      <SwarmScentSettingsPanelView
         swarm={generalQuery.data?.swarm}
         loading={generalQuery.isLoading}
         saving={coolingSave.isPending}

@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidon/adapter-utils";
 
 import {
   DEFAULT_GRACE_SEC,
@@ -17,7 +17,7 @@ function providerLabel(provider: string): string {
     .join(" ");
 }
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {

@@ -10,7 +10,7 @@ import { serverVersion } from "../../version.js";
 import { parseBuildCommit, readBuildCommit } from "../../build-commit.js";
 import { parseBuildVersion, readBuildVersion } from "../../build-version.js";
 import { PRODUCT_NAME } from "../product.js";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 
 /** Build metadata exposed on the About surface. Null = not available. */
 export interface AboutBuildInfo {

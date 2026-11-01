@@ -26,12 +26,12 @@ import {
   instanceSettings,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   OWNER_DELIVERY_SETTINGS_KEY,
   type ChatProvider,
   type SafeChatPublicationPayload,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { readOwnerDeliveryMode } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import { instanceSettingsService } from "../services/instance-settings.js";

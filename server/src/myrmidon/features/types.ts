@@ -11,7 +11,7 @@ import type {
   FeatureHealthStatus,
   FeatureSettingsLink,
   FeatureToggle,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { OutcomeSummary } from "./recorder.js";
 
 export type { FeatureConfigEntry, FeatureHealth, FeatureHealthStatus };
@@ -88,6 +88,15 @@ export interface FeaturePorts {
   budget: {
     stats(since: Date): Promise<{ activePolicies: number; openIncidents: number; incidentsSince: number }>;
   };
+  scent: {
+    stats(since: Date): Promise<{ total: number; failed: number }>;
+    isModelInGateway(model: string): Promise<boolean>;
+    hasSecret(secretName: string): Promise<boolean>;
+    baseUrl(): string | null;
+  };
+  executionHolds: {
+    stats(): Promise<{ count: number; oldestAt: Date | null }>;
+  };
   lsp: { modeCounts(general: Record<string, unknown>): Promise<{ total: number; limited: number; full: number; off: number }> };
   runtime: {
     runAdmission(): RunAdmissionState;
@@ -128,7 +137,7 @@ export interface FeatureDefinition {
   health(ctx: FeatureContext, config: FeatureConfig): FeatureHealth | Promise<FeatureHealth>;
   /** Flip the feature's own switch; present only for simple on/off features. */
   setEnabled?(
-    ctx: FeatureContext & { db: import("@paperclipai/db").Db },
+    ctx: FeatureContext & { db: import("@myrmidon/db").Db },
     enabled: boolean,
     actor: FeatureActor,
   ): Promise<void>;

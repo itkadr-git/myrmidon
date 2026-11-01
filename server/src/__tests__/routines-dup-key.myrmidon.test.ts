@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueRelations,
   issues,
   projectWorkspaces,
   projects,
@@ -18,7 +19,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -78,6 +79,7 @@ describeEmbeddedPostgres("routine execution duplicate-key guard", () => {
     await db.delete(documents);
     await db.delete(documentRevisions);
     await db.delete(heartbeatRuns);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -231,6 +233,39 @@ describeEmbeddedPostgres("routine execution duplicate-key guard", () => {
       error = caught;
     }
     expect(uniqueViolationConstraint(error)).toBe("issues_open_routine_execution_uq");
+  });
+
+  it("reopens a recovery-blocked routine execution and wakes the assignee", async () => {
+    const { routine, svc, runs } = await seedFixture();
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(first.status).toBe("issue_created");
+    const issueId = first.linkedIssueId!;
+    const priorWakes = runs.length;
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+
+    const second = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(second.status).toBe("coalesced");
+    expect(second.linkedIssueId).toBe(issueId);
+    expect(runs).toHaveLength(priorWakes + 1);
+    expect(runs.at(-1)?.issueId).toBe(issueId);
+    const [reopened] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(reopened.status).toBe("todo");
+  });
+
+  it("does not coalesce into a genuinely blocked routine execution", async () => {
+    const { companyId, agentId, routine, svc } = await seedFixture();
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+    const blocker = await db.insert(issues).values({
+      companyId, title: "open dependency", status: "todo", priority: "medium", assigneeAgentId: agentId,
+    }).returning();
+    await db.insert(issueRelations).values({
+      companyId, issueId: blocker[0].id, relatedIssueId: first.linkedIssueId!, type: "blocks",
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, first.linkedIssueId!));
+
+    const second = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(second.status).toBe("skipped");
+    expect(second.linkedIssueId).toBe(first.linkedIssueId);
   });
 
   it("coalesces instead of duplicating when the previous execution's run finished", async () => {

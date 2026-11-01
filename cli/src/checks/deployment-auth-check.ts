@@ -1,8 +1,8 @@
-import { inferBindModeFromHost } from "@paperclipai/shared";
+import { inferBindModeFromHost } from "@myrmidon/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { PRODUCT_NAME } from "../myrmidon-product.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
   const mode = config.server.deploymentMode;

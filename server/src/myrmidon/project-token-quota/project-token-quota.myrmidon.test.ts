@@ -22,7 +22,7 @@ import {
   projectTokenQuotaRejectionMessage,
   projectTokenQuotaSchema,
   sumCostEventTokens,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   currentIsoWeekWindow,
   currentUtcDayWindow,

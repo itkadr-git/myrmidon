@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { i18n, useTranslation } from "@/i18n";
 import { CollapsibleSection, DraftInput, Field, ToggleField } from "../agent-config-primitives";
 import {
   APPLY_POLL_INTERVAL_MS,
@@ -90,24 +91,33 @@ function NumberField({
 function stateLabel(state: "running" | "stopped" | "missing" | "unhealthy"): string {
   switch (state) {
     case "running":
-      return "Running";
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.stateRunning");
     case "stopped":
-      return "Stopped";
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.stateStopped");
     case "unhealthy":
-      return "Unhealthy";
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.stateUnhealthy");
     default:
-      return "Not created yet";
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.stateMissing");
   }
 }
 
 function statusText(status: BotContainerStatus | null, statusError: string | null): string {
-  if (!status) return statusError ? `Container status unavailable: ${statusError}` : "Checking container status...";
-  if (!status.enabled) return "Bot containers are switched off on this instance: nothing here is applied.";
-  if (!status.runtimeConfigured) return "No container runtime is configured on this instance yet.";
-  if (status.containerError) return `Container status unavailable: ${status.containerError}`;
-  if (!status.container) return "Container status is not available for this agent.";
+  if (!status) {
+    return statusError
+      ? i18n.t("area.settings-agent-card.agent-card-container-fields.statusUnavailableWith", { error: statusError })
+      : i18n.t("area.settings-agent-card.agent-card-container-fields.statusChecking");
+  }
+  if (!status.enabled) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusContainersOff");
+  if (!status.runtimeConfigured) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusNoRuntime");
+  if (status.containerError) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusUnavailableWith", { error: status.containerError });
+  if (!status.container) return i18n.t("area.settings-agent-card.agent-card-container-fields.statusNoAgentStatus");
   const image = status.container.image ? ` (${status.container.image})` : "";
-  return `${stateLabel(status.container.state)}${image}`;
+  const runtime = status.idleStopRuntime;
+  const timestamps = runtime?.lastStoppedAt || runtime?.lastStartedAt
+    ? `; last stopped ${runtime.lastStoppedAt ? new Date(runtime.lastStoppedAt).toLocaleString() : "never"}; last started ${runtime.lastStartedAt ? new Date(runtime.lastStartedAt).toLocaleString() : "never"}`
+    : "";
+  const label = runtime?.idleStopped ? "Stopped on idle (starts before the next run)" : stateLabel(status.container.state);
+  return `${label}${image}${timestamps}`;
 }
 
 /** One line for the rollout category of the saved card, or null when the server did not say. */
@@ -116,11 +126,13 @@ export function imageTrackingText(status: BotContainerStatus | null): string | n
   if (!tracking) return null;
   switch (tracking.category) {
     case "tracks_release":
-      return `Bot image rollout: follows the release (now ${tracking.image}).`;
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.trackingFollows", { image: tracking.image });
     case "pinned":
-      return `Bot image rollout: pinned${tracking.image ? ` to ${tracking.image}` : ""}; the release does not move this bot.`;
+      return tracking.image
+        ? i18n.t("area.settings-agent-card.agent-card-container-fields.trackingPinnedTo", { image: tracking.image })
+        : i18n.t("area.settings-agent-card.agent-card-container-fields.trackingPinned");
     default:
-      return `Bot image rollout: not applicable (${tracking.reason}).`;
+      return i18n.t("area.settings-agent-card.agent-card-container-fields.trackingNotApplicable", { reason: tracking.reason });
   }
 }
 
@@ -129,8 +141,8 @@ export function imageTrackingText(status: BotContainerStatus | null): string | n
 export function imageRolloutText(status: BotContainerStatus | null): string | null {
   const rollout = status?.imageRollout;
   if (!rollout) return null;
-  if (rollout.onReleaseImage) return "On the release image.";
-  return `Not on the current release image: ${rollout.reason}.`;
+  if (rollout.onReleaseImage) return i18n.t("area.settings-agent-card.agent-card-container-fields.rolloutOnRelease");
+  return i18n.t("area.settings-agent-card.agent-card-container-fields.rolloutNotOnRelease", { reason: rollout.reason });
 }
 
 /** Why "Apply now" cannot run right now, or null when it can. */
@@ -139,11 +151,17 @@ export function applyBlockedReason(
   unsaved: boolean,
   statusError: string | null,
 ): string | null {
-  if (unsaved) return "Save the card first: Apply now uses the saved settings.";
-  if (!status) return statusError ? "Container status is unavailable." : "Checking container status...";
-  if (!status.enabled) return "Bot containers are not enabled on this instance.";
-  if (!status.runtimeConfigured) return "The bot container runtime is not configured on this instance.";
-  if (!status.eligible) return `The saved card cannot be applied: ${status.reason ?? "it is not a complete container config."}`;
+  if (unsaved) return i18n.t("area.settings-agent-card.agent-card-container-fields.blockedSaveFirst");
+  if (!status) {
+    return statusError ? i18n.t("area.settings-agent-card.agent-card-container-fields.blockedStatusUnavailable") : i18n.t("area.settings-agent-card.agent-card-container-fields.statusChecking");
+  }
+  if (!status.enabled) return i18n.t("area.settings-agent-card.agent-card-container-fields.blockedNotEnabled");
+  if (!status.runtimeConfigured) return i18n.t("area.settings-agent-card.agent-card-container-fields.blockedNoRuntime");
+  if (!status.eligible) {
+    return i18n.t("area.settings-agent-card.agent-card-container-fields.blockedCannotApply", {
+      reason: status.reason ?? i18n.t("area.settings-agent-card.agent-card-container-fields.blockedDefaultReason"),
+    });
+  }
   return null;
 }
 
@@ -188,12 +206,12 @@ export function concurrencyView(status: BotContainerStatus | null): ConcurrencyV
   const limit = status.gatewayConcurrency;
   if (!limit && !status.gatewayConcurrencyNote && !status.gatewayConcurrencyWarning) return null;
   return {
-    board: `Board: ${limit?.board ?? status.boardMaxConcurrentRuns}`,
+    board: i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyBoard", { value: limit?.board ?? status.boardMaxConcurrentRuns }),
     gateway: limit
       ? limit.applied === null
-        ? "Gateway: not reported yet"
-        : `Gateway: ${limit.applied}`
-      : "Gateway: not managed by the board",
+        ? i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayNotReported")
+        : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGateway", { value: limit.applied })
+      : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayUnmanaged"),
     diverged: limit?.diverged ?? false,
     note: status.gatewayConcurrencyNote,
     warning: status.gatewayConcurrencyWarning,
@@ -212,6 +230,7 @@ export function AgentCardContainerFieldsView({
   onApply,
   onRefresh,
 }: AgentCardContainerFieldsViewProps) {
+  const { t } = useTranslation();
   const card = readBotContainerCard(value);
   const enabled = card.enabled === true;
   // A legacy block without `enabled` shows its fields too, so the missing values are visible.
@@ -227,11 +246,11 @@ export function AgentCardContainerFieldsView({
   const concurrency = concurrencyView(status);
 
   return (
-    <CollapsibleSection title="Container" open={expanded} onToggle={() => setExpanded((open) => !open)}>
+    <CollapsibleSection title={t("area.settings-agent-card.agent-card-container-fields.title")} open={expanded} onToggle={() => setExpanded((open) => !open)}>
       <div className="space-y-3" data-testid="myrmidon-bot-container">
         <ToggleField
-          label="Enabled"
-          hint="Run this agent's gateway in its own container with the limits below. Off leaves the agent as it is."
+          label={t("area.settings-agent-card.agent-card-container-fields.enabledLabel")}
+          hint={t("area.settings-agent-card.agent-card-container-fields.enabledHint")}
           checked={enabled}
           onChange={(on) => onChange(on ? enableBotContainer(card) : disableBotContainer(card))}
           toggleTestId="myrmidon-bot-container-enabled"
@@ -239,29 +258,55 @@ export function AgentCardContainerFieldsView({
 
         {showFields && (
           <>
-            <Field label="Image" hint="The bot image to run. Only images the instance allows can be applied.">
+            <Field label={t("area.settings-agent-card.agent-card-container-fields.imageLabel")} hint={t("area.settings-agent-card.agent-card-container-fields.imageHint")}>
               <DraftInput
                 value={image}
                 onCommit={(text) => onChange(setBotContainerText(card, "image", text))}
                 immediate
                 className={inputClass}
-                placeholder="registry/name:tag"
-                aria-label="Image"
+                placeholder={t("area.settings-agent-card.agent-card-container-fields.imagePlaceholder")}
+                aria-label={t("area.settings-agent-card.agent-card-container-fields.imageLabel")}
                 data-testid="myrmidon-bot-container-image"
               />
               {allowlist !== null && (
                 <p className="mt-1 text-xs text-muted-foreground" data-testid="myrmidon-bot-container-allowlist">
                   {allowlist.length > 0
-                    ? `Allowed on this instance: ${allowlist.join(", ")}`
-                    : "This instance allows no images yet, so nothing can be applied."}
+                    ? t("area.settings-agent-card.agent-card-container-fields.allowlist", { list: allowlist.join(", ") })
+                    : t("area.settings-agent-card.agent-card-container-fields.allowlistEmpty")}
                 </p>
               )}
               {savedImageNotAllowed && (
                 <p className="mt-1 text-xs text-amber-400" data-testid="myrmidon-bot-container-image-not-allowed">
-                  The saved image is not on the allowlist and will be refused.
+                  {t("area.settings-agent-card.agent-card-container-fields.imageNotAllowed")}
                 </p>
               )}
             </Field>
+
+            <div className="space-y-3 rounded-md border border-border p-3" data-testid="myrmidon-bot-idle-stop">
+              <Field label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")} hint={t("area.settings-agent-card.agent-card-container-fields.idleStopHint")}>
+                <select
+                  className={inputClass}
+                  aria-label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")}
+                  data-testid="myrmidon-bot-idle-stop-mode"
+                  value={card.idleStopMode === "always_on" ? "always_on" : "on_demand"}
+                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" })}
+                >
+                  <option value="on_demand">{t("area.settings-agent-card.agent-card-container-fields.idleStopOnDemand")}</option>
+                  <option value="always_on">{t("area.settings-agent-card.agent-card-container-fields.idleStopAlwaysOn")}</option>
+                </select>
+              </Field>
+              <div className="text-xs text-muted-foreground" data-testid="myrmidon-bot-idle-stop-runtime">
+                {t("area.settings-agent-card.agent-card-container-fields.idleStopContainer", {
+                  state: status?.idleStopRuntime?.idleStopped
+                    ? t("area.settings-agent-card.agent-card-container-fields.idleStopStoppedOnIdle")
+                    : status?.container
+                      ? stateLabel(status.container.state).toLowerCase()
+                      : t("area.settings-agent-card.agent-card-container-fields.idleStopUnknown"),
+                })}
+                {status?.idleStopRuntime?.lastStoppedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStopped", { at: new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString() })}
+                {status?.idleStopRuntime?.lastStartedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStarted", { at: new Date(status.idleStopRuntime.lastStartedAt).toLocaleString() })}
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {NUMBER_FIELD_ORDER.map((field) => (
@@ -274,19 +319,19 @@ export function AgentCardContainerFieldsView({
               ))}
             </div>
 
-            <Field label="Group" hint="Empty means the agent gets its own container.">
+            <Field label={t("area.settings-agent-card.agent-card-container-fields.groupLabel")} hint={t("area.settings-agent-card.agent-card-container-fields.groupHint")}>
               <DraftInput
                 value={group}
                 onCommit={(text) => onChange(setBotContainerText(card, "group", text))}
                 immediate
                 className={inputClass}
-                placeholder="Empty: own container"
-                aria-label="Group"
+                placeholder={t("area.settings-agent-card.agent-card-container-fields.groupPlaceholder")}
+                aria-label={t("area.settings-agent-card.agent-card-container-fields.groupLabel")}
                 data-testid="myrmidon-bot-container-group"
               />
               {group && (
                 <p className="mt-1 text-xs text-amber-400" data-testid="myrmidon-bot-container-group-warning">
-                  Shared containers are not supported yet: the container will not be applied while Group is set.
+                  {t("area.settings-agent-card.agent-card-container-fields.groupWarning")}
                 </p>
               )}
             </Field>
@@ -304,7 +349,7 @@ export function AgentCardContainerFieldsView({
         <div className="space-y-2 rounded-md border border-border px-2.5 py-2">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-xs text-muted-foreground">Container status</div>
+              <div className="text-xs text-muted-foreground">{t("area.settings-agent-card.agent-card-container-fields.statusTitle")}</div>
               <div className="break-words text-sm" data-testid="myrmidon-bot-container-status">
                 {statusText(status, statusError)}
               </div>
@@ -320,11 +365,11 @@ export function AgentCardContainerFieldsView({
                       className="inline-flex shrink-0 items-center rounded-full border border-amber-400/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
                       data-testid="myrmidon-bot-container-not-on-release"
                     >
-                      Not on the current image
+                      {t("area.settings-agent-card.agent-card-container-fields.notOnCurrentImage")}
                     </span>
                   )}
                   <span className={status?.imageRollout?.onReleaseImage ? "text-muted-foreground" : "text-amber-400/90"}>
-                    Release image: {imageRolloutText(status)}
+                    {t("area.settings-agent-card.agent-card-container-fields.releaseImage", { text: imageRolloutText(status) })}
                   </span>
                 </div>
               )}
@@ -338,7 +383,7 @@ export function AgentCardContainerFieldsView({
                 disabled={applying}
                 data-testid="myrmidon-bot-container-refresh"
               >
-                Refresh
+                {t("area.settings-agent-card.agent-card-container-fields.refresh")}
               </Button>
               <Button
                 type="button"
@@ -350,7 +395,7 @@ export function AgentCardContainerFieldsView({
                 data-testid="myrmidon-bot-container-apply"
               >
                 {applying && <Loader2 className="mr-1.5 size-3 animate-spin" aria-hidden="true" />}
-                {applying ? "Applying..." : "Apply now"}
+                {applying ? t("area.settings-agent-card.agent-card-container-fields.applying") : t("area.settings-agent-card.agent-card-container-fields.applyNow")}
               </Button>
             </div>
           </div>
@@ -368,7 +413,9 @@ export function AgentCardContainerFieldsView({
               for the agent's busy runs to drain inside its maintenance window. */}
           {status?.profileUpdatePendingSince && (
             <p className="text-xs text-muted-foreground" data-testid="myrmidon-bot-container-profile-pending">
-              {`Profile update pending since ${new Date(status.profileUpdatePendingSince).toLocaleString()}`}
+              {t("area.settings-agent-card.agent-card-container-fields.profilePending", {
+                time: new Date(status.profileUpdatePendingSince).toLocaleString(i18n.language),
+              })}
             </p>
           )}
           {feedback && (
@@ -390,7 +437,7 @@ export function AgentCardContainerFieldsView({
 
         {concurrency && (
           <div className="space-y-1 rounded-md border border-border px-2.5 py-2" data-testid="myrmidon-bot-container-concurrency">
-            <div className="text-xs text-muted-foreground">Concurrent runs limit</div>
+            <div className="text-xs text-muted-foreground">{t("area.settings-agent-card.agent-card-container-fields.concurrencyTitle")}</div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm" data-testid="myrmidon-bot-container-concurrency-board">
                 {concurrency.board}
@@ -403,7 +450,7 @@ export function AgentCardContainerFieldsView({
                   className="rounded-full border border-border px-2 py-0.5 text-xs text-amber-400"
                   data-testid="myrmidon-bot-container-concurrency-diverged"
                 >
-                  Diverged from the board
+                  {t("area.settings-agent-card.agent-card-container-fields.concurrencyDiverged")}
                 </span>
               )}
             </div>
@@ -550,7 +597,7 @@ export function AgentCardContainerFields({
       }
       // A pre-ASYNC-BOT-APPLY server answered synchronously with the outcome;
       // keep that path working (UI ships against both server generations).
-      setFeedback(describeApplyOutcome(result.outcome ?? { kind: "error", message: "the server answered neither applyId nor outcome." }));
+      setFeedback(describeApplyOutcome(result.outcome ?? { kind: "error", message: i18n.t("area.settings-agent-card.agent-card-container-fields.applyNoAnswer") }));
       void refresh();
     },
     onError: (error) => {
@@ -577,7 +624,7 @@ export function AgentCardContainerFields({
         statusQuery.isError
           ? statusQuery.error instanceof Error
             ? statusQuery.error.message
-            : "The status request failed."
+            : i18n.t("area.settings-agent-card.agent-card-container-fields.statusRequestFailed")
           : null
       }
       applying={posting || activeApplyId !== null}

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   assets,
   agents,
@@ -19,7 +19,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 import {
   isAllowedContentType,

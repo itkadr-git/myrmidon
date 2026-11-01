@@ -41,7 +41,7 @@
 
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
-import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paperclipai/db";
+import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
 import { reconcileUnpricedCostEvents } from "./reconcile.js";

@@ -1,19 +1,20 @@
 import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
+import { invalidateFailedRunsCache } from "../../myrmidon/swarm-claim/effective-pheromone.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
 export type NativeControllerIdentity = {
@@ -967,7 +968,11 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     });
-    if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport);
+    if (terminalRunToReport) {
+      const failedRun = terminalRunToReport as typeof heartbeatRuns.$inferSelect;
+      invalidateFailedRunsCache(failedRun.companyId);
+      void reportRunFailure(input.db, failedRun);
+    }
     dispositions.push(disposition);
   }
   return dispositions;

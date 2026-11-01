@@ -19,7 +19,7 @@ import {
   DEFAULT_PROCESSES_SETTINGS,
   type ProcessesSettingKey,
   type ProcessesSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 interface Harness {
   deps: ProcessesSettingsDeps;

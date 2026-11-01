@@ -18,8 +18,8 @@ import {
   isGoogleWorkspaceConnectorProfileId,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
+} from "@myrmidon/shared";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
 import {
   loadPaperclipCloudConnectorIdentity,
   paperclipCloudConnectorEnrollmentStatus,

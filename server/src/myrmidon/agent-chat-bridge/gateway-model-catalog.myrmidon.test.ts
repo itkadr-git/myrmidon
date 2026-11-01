@@ -5,7 +5,7 @@
 // failure came back as the same bare `null`.
 
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { readGatewayModelCatalog, type GatewayModelCatalogDeps } from "./gateway-model-catalog.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";

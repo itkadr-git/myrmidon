@@ -16,8 +16,8 @@ import {
   issueComments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import { getEmbeddedPostgresTestSupport } from "@paperclipai/db";
+} from "@myrmidon/db";
+import { getEmbeddedPostgresTestSupport } from "@myrmidon/db";
 import { useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

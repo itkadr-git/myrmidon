@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FEATURE_ATTENTION_AFTER_MS, isFeatureBroken, type FeatureView } from "@paperclipai/shared";
+import { FEATURE_ATTENTION_AFTER_MS, isFeatureBroken, type FeatureView } from "@myrmidon/shared";
 import { sweepBotVolume } from "../bot-containers/draft-lifecycle.js";
 import {
   observeFeatureHealth,
@@ -62,6 +62,15 @@ function fakePorts(overrides: Partial<FeaturePorts> = {}): FeaturePorts {
     chatStatus: { stats: async () => ({ delivered: 0, failed: 0, lastDeliveredAt: null, lastError: null }) },
     costs: { stats: async () => ({ collected: 0, lastCollectedAt: null, unpricedStale: 0 }) },
     budget: { stats: async () => ({ activePolicies: 0, openIncidents: 0, incidentsSince: 0 }) },
+    scent: {
+      stats: async () => ({ total: 0, failed: 0 }),
+      isModelInGateway: async () => true,
+      hasSecret: async () => true,
+      baseUrl: () => "http://gateway.test",
+    },
+    executionHolds: {
+      stats: async () => ({ count: 0, oldestAt: null }),
+    },
     lsp: { modeCounts: async () => ({ total: 0, limited: 0, full: 0, off: 0 }) },
     runtime: {
       runAdmission: () => ({ gate: { state: "off", availableMb: null, thresholdMb: null, reason: null, heldSince: null } }),
@@ -146,7 +155,7 @@ describe("swarm self-claim", () => {
   });
 
   it("fails when free agents sit next to a queue and nothing was claimed or woken in 24 h", async () => {
-    recordFeatureOutcome("swarm-claim", { ok: true, effect: 0, detail: { idleFreeAgents: 2 }, at: new Date(NOW.getTime() - 1000) });
+    recordFeatureOutcome("swarm-claim", { ok: true, effect: 0, detail: { idleUnmatchedTasks: 2 }, at: new Date(NOW.getTime() - 1000) });
     const result = await view(swarmClaimFeature, ctx({ general: enabled }));
     expect(result.health.status).toBe("failing");
     expect(result.health.effect).toEqual({ label: "issues claimed in 24 h", value: 0 });
@@ -603,6 +612,9 @@ describe("registry", () => {
       "chat-holds",
       "budget-enforcement",
       "plugin-entitlements",
+      "swarm-scent",
+      "execution-holds",
+      "github-app-identity",
     ]) {
       expect(keys).toContain(key);
     }
@@ -702,5 +714,186 @@ describe("service", () => {
     const report = await service.report({ fresh: true });
     expect(report.features[0]!.needsAttentionSince).toBe(NOW.toISOString());
     expect(readFeatureAttentionSignals(at)).toHaveLength(1);
+  });
+
+  describe("github-app-identity", () => {
+    it("reports failing when >= 5 denied with 0 issued in the last 10 min", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 5;
+        if (actions.includes("myrmidon.github_app.issued")) return 0;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("5 GitHub App token request(s) denied (0 issued)");
+    });
+
+    it("reports failing when denied share > 50% in the last 10 min", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 6;
+        if (actions.includes("myrmidon.github_app.issued")) return 4;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("6 of 10 GitHub App token requests denied (60%)");
+    });
+
+    it("reports working when issued > 0 and denied <= 50%", async () => {
+      const { githubAppIdentityFeature } = await import("./definitions/github-app-identity.js");
+      const baseCtx = ctx();
+      baseCtx.ports.activity.count = async (actions) => {
+        if (actions.includes("myrmidon.github_app.denied")) return 1;
+        if (actions.includes("myrmidon.github_app.issued")) return 9;
+        return 0;
+      };
+      const result = await view(githubAppIdentityFeature, baseCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("9 GitHub App token(s) issued in the last 10 min (1 denied)");
+    });
+  });
+
+  describe("swarm-scent", () => {
+    it("reports off when classifier is disabled", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({ general: { swarm: { scent: { enabled: false } } } });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("off");
+      expect(result.health.reason).toContain("classifier is disabled");
+    });
+
+    it("reports misconfigured when base URL is missing", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => null,
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("нет базового URL");
+    });
+
+    it("reports misconfigured when secret is missing in company secrets", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => false,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("секрет ключа");
+      expect(result.health.reason).toContain("отсутствует в компании");
+    });
+
+    it("reports misconfigured when model is not in LiteLLM gateway", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => false,
+            stats: async () => ({ total: 0, failed: 0 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("misconfigured");
+      expect(result.health.reason).toContain("отсутствует в шлюзе LiteLLM");
+    });
+
+    it("reports failing when >50% of classifications fail", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 10, failed: 6 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain(">50% классификаций за час завершились ошибкой (6/10, 60%)");
+    });
+
+    it("reports working when classifications succeed", async () => {
+      const { swarmScentFeature } = await import("./definitions/swarm-scent.js");
+      const testCtx = ctx({
+        ports: {
+          scent: {
+            baseUrl: () => "http://gateway.test",
+            hasSecret: async () => true,
+            isModelInGateway: async () => true,
+            stats: async () => ({ total: 10, failed: 2 }),
+          },
+        },
+      });
+      const result = await view(swarmScentFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("8/10 classifications succeeded in the last hour");
+    });
+  });
+
+  describe("execution-holds", () => {
+    it("reports working when 0 open tasks held", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 0, oldestAt: null }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("no open tasks with execution holds");
+    });
+
+    it("reports working when open tasks held but none older than 24h", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 3, oldestAt: new Date(NOW.getTime() - 12 * 3600_000) }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("working");
+      expect(result.health.reason).toContain("none older than 24 h (oldest 12 h)");
+    });
+
+    it("reports failing when open tasks held older than 24h", async () => {
+      const { executionHoldsFeature } = await import("./definitions/execution-holds.js");
+      const testCtx = ctx({
+        ports: {
+          executionHolds: {
+            stats: async () => ({ count: 5, oldestAt: new Date(NOW.getTime() - 30 * 3600_000) }),
+          },
+        },
+      });
+      const result = await view(executionHoldsFeature, testCtx);
+      expect(result.health.status).toBe("failing");
+      expect(result.health.reason).toContain("oldest held for 30 h (>24 h)");
+    });
   });
 });

@@ -10,7 +10,8 @@
 // path uses them; this module re-exports the names and keeps the millisecond
 // view the sweep works in.
 
-import { readRunStallFromEnv } from "@paperclipai/shared";
+import { readRunStallFromEnv } from "@myrmidon/shared";
+import { liveRunStallSettings } from "../runs-queue-settings/live.js";
 
 export {
   DEFAULT_RUN_STALL_CHECK_INTERVAL_SEC,
@@ -26,7 +27,7 @@ export {
   RUN_STALL_ENABLED_ENV,
   RUN_STALL_PAGE_SIZE_ENV,
   RUN_STALL_THRESHOLD_SEC_ENV,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export interface RunStallSettings {
   enabled: boolean;
@@ -44,14 +45,15 @@ export interface RunStallSettings {
  * rule).
  */
 export function readRunStallEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return readRunStallFromEnv(env).enabled;
+  return liveRunStallSettings(env).enabled;
 }
 
 export function readRunStallSettings(env: NodeJS.ProcessEnv = process.env): RunStallSettings {
   const values = readRunStallFromEnv(env);
+  const live = liveRunStallSettings(env);
   return {
-    enabled: values.enabled,
-    thresholdMs: values.thresholdSec * 1000,
+    enabled: live.enabled,
+    thresholdMs: live.thresholdSec * 1000,
     checkIntervalMs: values.checkIntervalSec * 1000,
     pageSize: values.pageSize,
   };

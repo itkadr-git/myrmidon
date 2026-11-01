@@ -10,7 +10,7 @@
 // step then says "no pass since start" instead of guessing. Durable signals
 // (activity_log, run tables) are read by the definitions directly.
 
-import { FEATURE_HEALTH_WINDOW_MS } from "@paperclipai/shared";
+import { FEATURE_HEALTH_WINDOW_MS } from "@myrmidon/shared";
 import { redactSensitiveText } from "../../redaction.js";
 
 /** Cap on the stored events per feature: a pass every second for 24 h would be 86 400. */

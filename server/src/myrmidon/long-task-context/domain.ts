@@ -20,7 +20,7 @@ import {
   shouldResetTaskSessionForLongTaskContext,
   longTaskContextPct,
   type LongTaskContextSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /**
  * What the runtime prints when compression could not finish inside its budget.

@@ -1,0 +1,152 @@
+{
+  "area": {
+    "apps-connections-2": {
+      "ai-connection-credential-step": {
+        "environmentError": "Could not resolve the sign-in environment.",
+        "nameLabel": "Connection name",
+        "environmentLabel": "Sign-in environment",
+        "preparing": "Preparing sign-in…",
+        "apiKeyPlaceholder": "Enter API key here",
+        "connecting": "Connecting…",
+        "connect": "Connect"
+      },
+      "ai-connection-design-examples": {
+        "intro": "Shared AI connection identity, account selection, and existing authentication chrome. The full interactive state matrix lives in Storybook under AI Connections / Review. Example controls below do not connect accounts.",
+        "providerNote": "Provider lists and account management use Browse and AppDetail from the Connectors interface. The picker below uses ConnectionChoiceList, also used by ConnectionSetupFlow.",
+        "exampleAccountName": "My Claude subscription",
+        "exampleOwner": "You",
+        "apiKeyPlaceholder": "Enter API key here"
+      },
+      "ai-connection-field": {
+        "incompatible": "This connection does not support the current harness and model. Choose a compatible connection before saving.",
+        "adoptTitle": "Adopt Connections for {{agent}}",
+        "adoptDescription": "Saving tests this account in {{agent}}’s environment before replacing its existing authentication. Other agents keep their current configuration.",
+        "responsibleDefault": "Responsible user’s default. For you: {{name}}. Other users use their own default.",
+        "notConnected": "Not connected",
+        "adoptNote": "After adoption, missing credentials block execution. Previous authentication will not be used as a fallback.",
+        "useBinding": "Use this binding when saved",
+        "connectTitle": "Connect account",
+        "defaultNameSubscription": "My {{provider}} subscription",
+        "defaultNameApi": "My {{provider}} API"
+      },
+      "ai-connection-management": {
+        "legacyTitle": "Existing authentication — not managed by Connections",
+        "legacyDescription": "This agent keeps its current authentication until you choose and test a managed connection. Confirm the account and who may use it before adopting.",
+        "chooseButton": "Choose a managed connection"
+      },
+      "ai-connection-picker": {
+        "title": "AI connection",
+        "loadingLabel": "Loading AI connections",
+        "retryButton": "Retry connections",
+        "responsibleName": "Responsible user’s connection",
+        "responsibleForYou": "For you: {{name}}",
+        "notConnected": "Not connected",
+        "responsibleOthers": "Other users’ tasks use their own {{provider}} connection.",
+        "companyShared": "Company shared",
+        "connectAnother": "Connect another account"
+      },
+      "managed-ai-connection-details": {
+        "row": {
+          "personal": "Personal",
+          "companyShared": "Company shared"
+        },
+        "details": {
+          "loading": "Loading AI account…",
+          "unavailable": "This account is not available to you.",
+          "runsError": "Could not load active runs. Retry before revoking.",
+          "stopRun": "Stop run"
+        }
+      },
+      "agent-provider-connection": {
+        "modelProviderLabel": "Connect your model provider",
+        "savedKeysAvailable_one": "{{count}} saved API key available.",
+        "savedKeysAvailable_other": "{{count}} saved API keys available.",
+        "chooseSavedKey": "Choose a saved API key or enter a new one",
+        "provideKey": "Provide your {{provider}} API key to connect",
+        "apiKeyLabel": "API key",
+        "keyEntered": "Key entered. Retry the connection.",
+        "apiKeyPlaceholder": "Enter API key here",
+        "loginNoConnection": "The login did not return a saved connection. Try again.",
+        "retrieveFailed": "Could not retrieve the saved connection. Go back and retry.",
+        "providerNoResponse": "The provider did not respond. Check the connection and try again.",
+        "connectFailed": "Could not connect to the provider.",
+        "useSavedClaude": "Use your saved Claude subscription for this agent.",
+        "useExistingConnection": "Use the existing provider connection for this environment.",
+        "noBrowserSignIn": "This environment does not support browser sign-in. Choose a sign-in environment or connect with an API key.",
+        "checkSavedFailed": "Could not check your saved Claude subscription. Try again.",
+        "prepareFailed": "Could not prepare sign-in. Reload this page to try again.",
+        "waitingForCode": "Waiting for code",
+        "connecting": "Connecting",
+        "signInTo": "Sign in to {{provider}}",
+        "useSavedSubscription": "Use saved subscription",
+        "useSavedKey": "Use saved API key",
+        "connect": "Connect",
+        "defaultNameSubscription": "My {{provider}} subscription",
+        "defaultNameApi": "My {{provider}} API"
+      },
+      "connect-model-preview": {
+        "title": "Connect a model",
+        "lede": "Myrmidon works with your existing subscription or API keys.",
+        "sourceLabel": "Model source",
+        "useApiKeys": "Use API keys instead",
+        "connect": "Connect"
+      },
+      "footer-nav": {
+        "back": "Back"
+      },
+      "saved-provider-key-select": {
+        "apiKey": "API key",
+        "subscription": "Subscription",
+        "savedApiKey": "Saved API key",
+        "savedSubscription": "Saved subscription",
+        "newKey": "Enter a new API key",
+        "otherAccount": "Sign in to another account",
+        "checking": "Checking saved API keys…",
+        "loadError": "Some saved keys could not be loaded. You can still enter a new key.",
+        "reuseKey": "Reuse this saved key for this agent.",
+        "reuseSubscription": "Reuse this saved subscription for this agent."
+      },
+      "connection-intent-interaction-body": {
+        "connected": "{{service}} connected",
+        "connectedAi": "This agent can now use the connection.",
+        "connectedService": "{{agent}} can use this connection on the continuation run.",
+        "declinedTitle": "Connection declined",
+        "declinedAi": "The task still needs a working AI connection before it can run.",
+        "declinedService": "{{agent}} was notified and can continue without it.",
+        "supersededTitle": "Request superseded",
+        "expiredTitle": "Connection request expired",
+        "supersededBody": "This request was replaced. Use the latest connection card instead.",
+        "expiredBody": "This request is no longer active.",
+        "waitingTitle": "Waiting for {{name}}",
+        "waitingBody": "Only the addressed person can choose an identity or authorize this connection.",
+        "loadingOptions": "Loading connection options…",
+        "loadError": "Couldn’t load connection setup",
+        "tryAgainHint": "Try again.",
+        "tryAgain": "Try again",
+        "ready": "{{name}} is ready.",
+        "continuing": "Continuing…",
+        "continueTask": "Continue task",
+        "accountOwner": "The account owner",
+        "mustReconnectPersonal": "{{owner}} must reconnect {{name}}.",
+        "mustReconnectShared": "The account owner must reconnect {{name}}.",
+        "restoreNote": "You can continue here once it is restored.",
+        "defaultAccountName": "My {{provider}} account",
+        "accountUnavailable": "The selected account is no longer available to you. Ask its owner to restore access, or choose an available AI connection in the agent’s settings.",
+        "aiNeedsAttention": "AI connection needs attention",
+        "serviceNeeds": "{{agent}} needs {{service}}",
+        "aiBody": "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically.",
+        "serviceBody": "Connect your identity or reuse an eligible connection. Access is added only for this agent.",
+        "needsRetry": "Authorization didn’t finish. Your previous choices are safe; try again.",
+        "notNow": "Not now",
+        "closeSetup": "Close setup",
+        "fixConnection": "Fix connection",
+        "continueSetup": "Continue setup",
+        "connectOrUseExisting": "Connect / Use existing",
+        "connect": "Connect",
+        "dialogTitle": "Connect {{service}}",
+        "dialogDescription": "Complete connection setup without leaving this task.",
+        "updateFailed": "Couldn’t update this connection request."
+      }
+    }
+  }
+}

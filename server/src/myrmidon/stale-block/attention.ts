@@ -12,7 +12,7 @@
 // process lives longer. The task's own system comment stays as the durable
 // audit trail either way.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 
 /** How long a lifted-block card stays in the feed, in milliseconds. */
 export const DEFAULT_STALE_BLOCK_SIGNAL_TTL_MS = 24 * 60 * 60 * 1000;

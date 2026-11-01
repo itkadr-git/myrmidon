@@ -1,5 +1,8 @@
 export const queryKeys = {
   fleet: (companyId: string) => ["fleet", companyId] as const,
+  fleetSites: (companyId: string) => ["fleet-sites", companyId] as const,
+  fleetSiteOverview: (companyId: string) => ["fleet-sites", companyId, "overview"] as const,
+  fleetSiteBots: (companyId: string, site: string) => ["fleet-sites", companyId, "bots", site] as const,
   agentChats: {
     detail: (companyId: string | null, userId: string | null, agentId: string | undefined) =>
       ["agent-chat", companyId, userId, agentId] as const,
@@ -111,8 +114,20 @@ export const queryKeys = {
       ] as const,
   },
   audit: {
-    runs: (companyId: string, agentId?: string | null) =>
-      ["audit", companyId, "runs", agentId ?? "__all"] as const,
+    runs: (
+      companyId: string,
+      agentId?: string | null,
+      wakeReason?: string | null,
+      hasResult?: boolean | null,
+    ) =>
+      [
+        "audit",
+        companyId,
+        "runs",
+        agentId ?? "__all",
+        wakeReason ?? "__all",
+        hasResult ? "with-result" : "all",
+      ] as const,
     agentActions: (
       companyId: string,
       filters: {
@@ -624,6 +639,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    taskDrain: ["instance", "task-drain"] as const,
   },
   health: ["health"] as const,
   cloud: {

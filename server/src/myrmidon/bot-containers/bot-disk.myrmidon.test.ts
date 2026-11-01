@@ -9,12 +9,12 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   BOT_DISK_DEFAULT_IDLE_TTL_MS,
   BOT_DISK_UPDATED_ACTION,
   instanceGeneralSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { botDiskRoutes } from "./bot-disk-routes.js";
 import {

@@ -24,7 +24,7 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
-  "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
+  "paperclipai", // @myrmidon/* packages, the paperclipai CLI, vendor repo URLs
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers
@@ -53,7 +53,7 @@ const ALLOWLIST = [
   "\"Paperclip\"", "\"Paperclip …\"",
   "paperclip:2026.", "paperclipVersionMin",
   "Copyright (c) 2025 Paperclip",
-  "Based on Paperclip",
+  "Based on Paperclip", "Base: Paperclip",
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
@@ -76,8 +76,7 @@ const ALLOWLIST = [
   "Base Paperclip version", "base Paperclip version", "базового Paperclip",
   "**База:** Paperclip", "Paperclip (MIT)»",
   "PaperclipIcon", "PaperclipLockup.tsx", "Paperclip»-строки",
-  "`Paperclip`", "Paperclip, взятого",
-  "Paperclip**", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
+  "`Paperclip`", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
   "Paperclip-managed", // managed-by-vendor flows named in prose; kept one release
   "управляемые навыки Paperclip",
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",

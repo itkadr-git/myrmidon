@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@myrmidon/shared";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -101,6 +101,15 @@ describe.sequential("plugin scoped API routes", () => {
   const peerAgentId = "33333333-3333-4333-8333-333333333334";
   const runId = "44444444-4444-4444-8444-444444444444";
   const issueId = "55555555-5555-4555-8555-555555555555";
+
+  // Load the route module graph once, outside any test's budget. It is huge
+  // (routes/*.ts and everything they import), and its cold load took ~10 s on
+  // a GitHub runner and more on a slower one. It used to be paid inside the
+  // first test's 15 s budget, which timed it out on a slow runner. 60 s is about
+  // 2x the slowest cold load measured.
+  beforeAll(async () => {
+    await Promise.all([import("../routes/plugins.js"), import("../middleware/index.js")]);
+  }, 60_000);
 
   beforeEach(() => {
     vi.clearAllMocks();

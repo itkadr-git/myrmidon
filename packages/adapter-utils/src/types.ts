@@ -6,7 +6,7 @@ import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 import type { PromptBreakdown } from "./prompt-meter.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@myrmidon/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -101,6 +101,7 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  failedBeforeModel?: boolean;
   usage?: UsageSummary;
   /**
    * myrmidon(1.6.5 PROMPT-BUDGET A): prompt-token breakdown of the request
@@ -213,6 +214,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  runGuard?: import("./run-guard.js").RunGuard;
+  onModelCall?: () => void;
+  /** Called when a guard trips; implementations should stop their active process. */
+  onRunGuardStop?: (reason: import("./run-guard.js").RunGuardStopReason) => Promise<void>;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
@@ -280,6 +285,8 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  pricing?: "free" | "paid";
+  accounts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -510,6 +517,21 @@ export interface ServerAdapterModule {
       reason: string;
     };
   }) => Promise<{ stopped: boolean }>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+   * is still alive on the bot gateway, completed, missing (404), or unreachable.
+   */
+  probeGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;

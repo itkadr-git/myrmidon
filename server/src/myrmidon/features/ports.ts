@@ -11,12 +11,16 @@ import {
   budgetPolicies,
   chatPublications,
   companies,
+  companySecrets,
   costEvents,
   heartbeatRuns,
+  issueRecoveryActions,
+  issues,
   litellmCostEvents,
+  litellmModels,
   type Db,
-} from "@paperclipai/db";
-import { countBotLspModes, resolveBotLsp, type BotLspSettings } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { countBotLspModes, resolveBotLsp, type BotLspSettings } from "@myrmidon/shared";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "../bot-containers/agents-query.js";
 import { hostDiskRuntime } from "../host-disk/index.js";
 import { currentHostMemoryGate } from "../run-admission.js";
@@ -26,6 +30,19 @@ import type { FeaturePorts } from "./types.js";
 /** How far back "last success" is looked up; the counts use the 24-hour window. */
 const LATEST_LOOKBACK_MS = 7 * 24 * 60 * 60_000;
 const STALE_UNPRICED_AFTER_MS = 60 * 60_000;
+
+/** A details filter key must be a plain word: it is inlined into the
+ * statement as a literal (see activityWhere), so anything but [a-zA-Z0-9_]+
+ * is rejected instead of interpolated. The keys are feature-definition
+ * constants ("continuation"), not user input. */
+const DETAIL_KEY_RE = /^[A-Za-z0-9_]+$/;
+
+function detailKeyLiteral(key: string): string {
+  if (!DETAIL_KEY_RE.test(key)) {
+    throw new Error(`activity details filter key is not a plain word: ${JSON.stringify(key)}`);
+  }
+  return `'${key}'`;
+}
 
 export function createDbFeaturePorts(db: Db): FeaturePorts {
   async function companyIds(): Promise<string[]> {
@@ -38,7 +55,17 @@ export function createDbFeaturePorts(db: Db): FeaturePorts {
       inArray(activityLog.companyId, ids),
       inArray(activityLog.action, actions),
       gte(activityLog.createdAt, from),
-      detail ? sql`${activityLog.details} ->> ${detail.key} = ${detail.value}` : undefined,
+      // The key is inlined as a literal, not bound: the chat-holds leg's
+      // expression index (0419) carries (details->>'continuation') as an index
+      // column, and an index expression only matches a constant key — a bound
+      // parameter would defeat it in every plan (custom and generic), leaving
+      // the details residual on the heap (rc.16: 16k rows, 36-52 ms). The key
+      // is an internal feature-definition constant, checked to be a plain
+      // word so inlining cannot break the statement; the value stays a bound
+      // parameter.
+      detail
+        ? sql`${activityLog.details} ->> ${sql.raw(detailKeyLiteral(detail.key))} = ${detail.value}`
+        : undefined,
     );
   }
 
@@ -183,6 +210,83 @@ export function createDbFeaturePorts(db: Db): FeaturePorts {
           activePolicies: Number(policies?.n ?? 0),
           openIncidents: Number(open?.n ?? 0),
           incidentsSince: Number(recent?.n ?? 0),
+        };
+      },
+    },
+
+    scent: {
+      async stats(since) {
+        const rows = await db
+          .select({
+            ok: sql<unknown>`${activityLog.details}->>'ok'`,
+          })
+          .from(activityLog)
+          .where(
+            and(
+              inArray(activityLog.action, ["issue.scent_classified", "agent.scent_classified"]),
+              gte(activityLog.createdAt, since),
+            ),
+          );
+        let failed = 0;
+        for (const r of rows) {
+          if (r.ok === "false" || r.ok === false) {
+            failed++;
+          }
+        }
+        return { total: rows.length, failed };
+      },
+      async isModelInGateway(model) {
+        if (!model) return false;
+        const [row] = await db
+          .select({ id: litellmModels.id })
+          .from(litellmModels)
+          .where(eq(litellmModels.modelName, model.trim()))
+          .limit(1);
+        return Boolean(row);
+      },
+      async hasSecret(secretName) {
+        if (!secretName) return false;
+        const [row] = await db
+          .select({ id: companySecrets.id })
+          .from(companySecrets)
+          .where(eq(companySecrets.name, secretName.trim()))
+          .limit(1);
+        return Boolean(row);
+      },
+      baseUrl() {
+        return (
+          process.env.SCENT_BASE_URL?.trim() ||
+          process.env.MYRMIDON_EVALS_BASE_URL?.trim() ||
+          null
+        );
+      },
+    },
+
+    executionHolds: {
+      async stats() {
+        const rows = await db
+          .select({
+            createdAt: issueRecoveryActions.createdAt,
+            updatedAt: issueRecoveryActions.updatedAt,
+          })
+          .from(issueRecoveryActions)
+          .innerJoin(issues, eq(issues.id, issueRecoveryActions.sourceIssueId))
+          .where(
+            and(
+              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+            ),
+          );
+        let oldestAt: Date | null = null;
+        for (const row of rows) {
+          const at = row.createdAt ?? row.updatedAt;
+          if (at && (!oldestAt || at < oldestAt)) {
+            oldestAt = at;
+          }
+        }
+        return {
+          count: rows.length,
+          oldestAt,
         };
       },
     },

@@ -6,7 +6,7 @@
 // MYRMIDON_BOT_CANARY_SELECTOR names a canary bot) nothing is created or
 // read, and the routes answer "not enabled".
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import type { BotContainerAgent, ApplyBotContainerOutcome } from "./index.js";
@@ -17,6 +17,8 @@ import { botCanaryService, type BotCanaryRuntimePort, type BotCanaryService } fr
 import { readBotCanarySettings } from "./canary-settings.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { apiServerKeySecretName } from "./profile-ports.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { createUpdateNotifier } from "./update-notify.js";
 
 /**
  * The runtime port over the registered bot container runtime (startup.ts
@@ -95,6 +97,7 @@ function canaryServiceDeps(db: Db): Parameters<typeof botCanaryService>[1] {
     runtime: botCanaryRuntimePort(db),
     logActivity: ((dbArg: unknown, entry: Parameters<typeof logActivity>[1]) =>
       logActivity(dbArg as Db, entry)) as typeof logActivity,
+    notifyUpdate: createUpdateNotifier(db),
   };
 }
 
@@ -110,7 +113,7 @@ export function startBotCanary(db: Db, opts: { env?: NodeJS.ProcessEnv; deps?: P
   const settings = readBotCanarySettings(env);
   if (!settings.enabled) return () => undefined;
   const service = botCanaryService(db, { ...canaryServiceDeps(db), ...(opts.deps ?? {}) });
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "bot canary tick failed"));
   }, settings.tickMs);
   timer.unref?.();

@@ -9,8 +9,8 @@
 // maintenance tick, so no restart is needed.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchBotDiskSettingsSchema, type BotDiskSettingsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { patchBotDiskSettingsSchema, type BotDiskSettingsPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { botDiskService, type BotDiskService } from "./bot-disk-service.js";

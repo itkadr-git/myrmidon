@@ -72,9 +72,9 @@ import {
   environmentLeases,
   principalPermissionGrants,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
-import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/db";
+import type { ChatProvider } from "@myrmidon/shared";
+import { isPaperclipExternalChatTurn } from "@myrmidon/adapter-utils/server-utils";
 import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -1059,7 +1059,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db.insert(companies).values({
       id: companyId,
       name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+      issuePrefix: `C${companyId.replaceAll("-", "").toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
     const now = new Date();
@@ -59015,8 +59015,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           return builder;
         });
         restoreMocks.push(() => insertSpy.mockRestore());
+        // Row sets are compared as sets: a SELECT without ORDER BY returns rows in
+        // heap order, which shifts when the fixture updates rows between reads.
+        const sortedIds = (rows: Array<{ id: string }>) =>
+          rows.map((row) => row.id).sort();
         const unchangedRows = async () =>
-          Promise.all([
+          (await Promise.all([
             db
               .select({ id: issueComments.id })
               .from(issueComments)
@@ -59033,7 +59037,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               .select({ id: chatPublications.id })
               .from(chatPublications)
               .where(eq(chatPublications.endpointId, endpoint.id)),
-          ]);
+          ])).map(sortedIds);
         const baseline = await unchangedRows();
         const wakeupCount = wakeup.mock.calls.length;
         const postCount = providerRuntime.posts.length;

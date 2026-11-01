@@ -15,8 +15,8 @@
 
 import { Router, type Request, type Response } from "express";
 import { and, eq, ne } from "drizzle-orm";
-import { companySecrets, type Db } from "@paperclipai/db";
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { companySecrets, type Db } from "@myrmidon/db";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,

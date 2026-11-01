@@ -1,0 +1,10 @@
+# OPE-8950: area agents-1
+components/AgentActionButtons.tsx
+components/AgentChatPicker.tsx
+components/AgentChatSidebar.tsx
+components/AgentConfigForm.tsx
+components/AgentContextualSidebar.tsx
+components/AgentIconPicker.tsx
+components/AgentMultiSelect.tsx
+components/AgentProperties.tsx
+components/BuiltInAgentGate.tsx

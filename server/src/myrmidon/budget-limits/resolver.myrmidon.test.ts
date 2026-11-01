@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BudgetLimitView } from "@paperclipai/shared";
+import type { BudgetLimitView } from "@myrmidon/shared";
 import { resolveEffectiveBudgetLimit } from "./store.js";
 
 const limit = (level: BudgetLimitView["level"], ref: string, amountCents: number): BudgetLimitView => ({
@@ -44,5 +44,30 @@ describe("resolveEffectiveBudgetLimit", () => {
     expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: "project-1", casteKey: "backend" }).sourceLevel).toBe("foraging");
     expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: "project-1", casteKey: null }).sourceLevel).toBe("foraging");
     expect(resolveEffectiveBudgetLimit([rows[0]], { issueId: "issue-1", projectId: "project-1", casteKey: null }).sourceRef).toBe("company");
+  });
+
+  it("returns an explicit empty effective view when no configured limit applies", () => {
+    expect(
+      resolveEffectiveBudgetLimit([], { issueId: "issue-1", projectId: null, casteKey: null }),
+    ).toEqual({
+      amountCents: null,
+      period: null,
+      mode: null,
+      sourceLevel: null,
+      sourceRef: null,
+      sourceLimitId: null,
+    });
+  });
+
+  it("ignores inactive limits and falls back to the next configured level", () => {
+    const inactiveTicket = { ...limit("issue", "issue-1", 500), isActive: false };
+    const caste = limit("caste", "backend", 400);
+    expect(
+      resolveEffectiveBudgetLimit([inactiveTicket, caste], {
+        issueId: "issue-1",
+        projectId: null,
+        casteKey: "backend",
+      }),
+    ).toMatchObject({ amountCents: 400, sourceLevel: "caste", sourceRef: "backend" });
   });
 });

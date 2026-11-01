@@ -4,7 +4,7 @@ import {
   resolveModelMenu,
   type ModelMenuNode,
   type ResolvedModelMenu,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   MODEL_MENU_ENTRY_LABEL_MAX_CHARS,
   MODEL_MENU_MAX_ENTRIES,

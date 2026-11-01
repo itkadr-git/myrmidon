@@ -11,19 +11,25 @@
 // the two cannot disagree about what "the top of the queue" is.
 
 import {
+  checkCapacity,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
+  orderCandidatesWithPolicy,
   orderSwarmQueueCandidates,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
+  type CapacityCandidate,
+  type CapacityMetrics,
+  type CapacityPolicy,
   type PheromoneDynamicsSettings,
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export {
+  checkCapacity,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
   orderSwarmQueueCandidates,
@@ -31,7 +37,7 @@ export {
   swarmLeaseExpiresAt,
   swarmPriorityRank,
 };
-export type { SwarmClaimLease, SwarmQueueCandidate };
+export type { CapacityCandidate, CapacityMetrics, CapacityPolicy, SwarmClaimLease, SwarmQueueCandidate };
 
 /**
  * The live lease of one task, or null. A task may not have two live claims: the
@@ -83,9 +89,36 @@ export function selectQueueForAgent(input: {
    */
   dynamics?: PheromoneDynamicsSettings;
   now?: Date;
+  /**
+   * 1.6.6 (P2.12 CAPACITY-POLICY): capacity policy for the queue.
+   * When enabled, candidates are ordered with fairness, aging, and limits.
+   * When disabled (default-off) or rolled back, falls back to legacy order.
+   */
+  capacityPolicy?: CapacityPolicy;
+  activeByProject?: Readonly<Record<string, number>>;
+  activeByCaste?: Readonly<Record<string, number>>;
 }): SwarmQueueCandidate[] {
   const now = input.now ?? new Date();
   const covered = liveClaimIssueIds(input.liveClaims, now);
+
+  if (input.capacityPolicy?.enabled) {
+    const policyResult = orderCandidatesWithPolicy(
+      input.candidates as any,
+      {
+        now,
+        activeByProject: input.activeByProject ?? {},
+        activeByCaste: input.activeByCaste ?? {},
+        queueOptions: {
+          p0Preemption: input.p0Preemption,
+          dynamics: input.dynamics,
+          now,
+        },
+      },
+      input.capacityPolicy,
+    );
+    return policyResult.ordered.filter((candidate: SwarmQueueCandidate) => !covered.has(candidate.issueId));
+  }
+
   return orderSwarmQueueCandidates(input.candidates, {
     p0Preemption: input.p0Preemption,
     dynamics: input.dynamics,
@@ -106,8 +139,20 @@ export function nextQueueTaskForAgent(input: {
   settings: Pick<SwarmClaimSettings, "maxActiveTasks" | "enabled" | "p0Preemption"> & {
     /** 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design §2.3). */
     pheromoneDynamics?: PheromoneDynamicsSettings;
+    /** 1.6.6 (P2.12 CAPACITY-POLICY): optional capacity policy. */
+    capacityPolicy?: CapacityPolicy;
   };
+  /**
+   * 1.6.6 (OPE-9197 admission wiring): an explicit capacity policy for this
+   * admission decision. When set, candidates the policy rejects (project or
+   * caste at its active ceiling) are skipped even when the settings flag is
+   * off; `activeCounts` carries the live-claim counts it decides on.
+   */
+  capacityPolicy?: CapacityPolicy;
+  activeCounts?: Pick<CapacityMetrics, "activeByProject" | "activeByCaste">;
   now?: Date;
+  activeByProject?: Readonly<Record<string, number>>;
+  activeByCaste?: Readonly<Record<string, number>>;
 }): SwarmQueueCandidate | null {
   if (!input.settings.enabled) return null;
   if (swarmActiveTaskLimitReached(input.activeTasks, input.settings)) return null;
@@ -117,7 +162,26 @@ export function nextQueueTaskForAgent(input: {
     p0Preemption: input.settings.p0Preemption,
     dynamics: input.settings.pheromoneDynamics,
     now: input.now,
+    capacityPolicy: input.settings.capacityPolicy,
+    activeByProject: input.activeByProject,
+    activeByCaste: input.activeByCaste,
   });
+  // 1.6.6 (OPE-9197): admission limits apply on the ordered queue regardless
+  // of the settings flag, so a saturated project or caste never gets a claim.
+  if (input.capacityPolicy) {
+    for (const candidate of queue) {
+      const candidateWithScope = candidate as SwarmQueueCandidate & CapacityCandidate;
+      const decision = checkCapacity(
+        input.activeCounts ?? { activeByProject: {}, activeByCaste: {} },
+        candidateWithScope,
+        input.capacityPolicy,
+      );
+      if (decision.allowed) {
+        return candidate;
+      }
+    }
+    return null;
+  }
   return queue[0] ?? null;
 }
 

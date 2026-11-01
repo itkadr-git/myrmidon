@@ -12,7 +12,7 @@ import {
   type FeatureHealthStatus,
   type FeaturesReport,
   type FeatureView,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";

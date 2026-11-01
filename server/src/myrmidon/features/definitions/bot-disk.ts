@@ -5,7 +5,7 @@
 // The failure this entry exists for: the sweep listed a volume root that does
 // not exist, failed with ENOENT on every pass, and only a console line said so.
 
-import { BOT_DISK_ENV_KEYS, resolveBotDiskSettings } from "@paperclipai/shared";
+import { BOT_DISK_ENV_KEYS, resolveBotDiskSettings } from "@myrmidon/shared";
 import { botDiskService } from "../../bot-containers/bot-disk-service.js";
 import { BOT_CONTAINERS_ENV, isBotContainersEnabled } from "../../bot-containers/agent-config.js";
 import { BOT_VOLUME_ROOT_ENV } from "../../bot-containers/docker-driver.js";

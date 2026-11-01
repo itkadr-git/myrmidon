@@ -1,4 +1,4 @@
-import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, parseJson, parseObject } from "@myrmidon/adapter-utils/server-utils";
 import { applyTurnBoundary, createTurnBoundaryState } from "../shared/turn-boundary.js";
 
 export interface ParsedGrokJsonl {

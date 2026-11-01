@@ -27,9 +27,9 @@ import {
   issues,
   projectMemberships,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq } from "drizzle-orm";
-import { resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { resolveSwarmClaimSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

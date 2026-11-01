@@ -20,7 +20,7 @@
 import { describe, it, beforeEach, vi, expect } from "vitest";
 import request from "supertest";
 import express, { type Request, type Response, type NextFunction } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { HttpError } from "../errors.js";
 import { agentRoutes } from "./agents.js";
 

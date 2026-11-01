@@ -6,7 +6,7 @@
 // round count (max 3) and the token ceiling. PATCH saves
 // `instance_settings.general.debate`; the next debate run already uses it —
 // no server restart. GET also reports the source of the effective value.
-import type { DebateSettings } from "@paperclipai/shared";
+import type { DebateSettings } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface DebateGatewayView {

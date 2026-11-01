@@ -10,8 +10,8 @@
 // Values are applied without a restart: PROCS-1.2 routes them into the
 // process supervisor, which forks or drains the api children and moves the
 // worker's own listener between single and split.
+import type { Db } from "@myrmidon/db";
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
 import {
   describeProcessesEffect,
   mergeProcessesSettings,
@@ -23,7 +23,7 @@ import {
   type ProcessesSettingSource,
   type ProcessesSettings,
   type ProcessesSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
@@ -193,8 +193,17 @@ export function applyProcessesSettingsToProcess(
   }
 }
 
+/** The slice of the process bus (PROCS-1.3) a save announces itself on. */
+export interface ProcessesSettingsBus {
+  publish(channel: "settings_changed", payload: unknown): Promise<void>;
+}
+
 /** Production dependencies: the instance settings, the journal, and this process. */
-export function defaultProcessesSettingsDeps(db: Db, supervisor: ProcessSupervisor | null = null): ProcessesSettingsDeps {
+export function defaultProcessesSettingsDeps(
+  db: Db,
+  supervisor: ProcessSupervisor | null = null,
+  processBus: ProcessesSettingsBus | null = null,
+): ProcessesSettingsDeps {
   const settings = instanceSettingsService(db);
   return {
     // The service narrows the full instance-settings shape to just the
@@ -207,7 +216,16 @@ export function defaultProcessesSettingsDeps(db: Db, supervisor: ProcessSupervis
     },
     listCompanyIds: () => settings.listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
-    apply: (settings, changedKeys) => applyProcessesSettingsToProcess(settings, changedKeys, supervisor),
+    apply: (settings, changedKeys) => {
+      applyProcessesSettingsToProcess(settings, changedKeys, supervisor);
+      // myrmidon(OPE-10011): in split the PATCH lands on an api child, which
+      // has no supervisor — tell the other processes, so the worker re-reads
+      // the row and its supervisor applies it (settings appliers, PROCS-1.8).
+      // The bus drops a process's own message, so the saver never re-applies.
+      void processBus?.publish("settings_changed", { changedKeys: ["processes"] }).catch((err: unknown) => {
+        logger.warn({ err }, "myrmidon(OPE-10011): processes settings_changed publish failed");
+      });
+    },
     env: process.env,
     // One advisory lock for the instance: the lock connection is held only for
     // the duration of the update, the update itself runs on the pool.

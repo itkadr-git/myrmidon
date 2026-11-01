@@ -1,6 +1,6 @@
 // Maintenance mode (R3) entry point. Design: docs/myrmidon/design/maintenance-mode.md
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 // Same entry point as the vendor server/src/index.ts, so startup tests that mock it keep working.
 import { heartbeatService } from "../../services/index.js";
@@ -25,6 +25,7 @@ export {
   filterAgentsOutsideMaintenance,
   resetMaintenanceGateCaches,
 } from "./gate.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 export { preserveMaintenanceGeneralKey } from "./store.js";
 export { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./domain.js";
 export { maintenanceService } from "./service.js";
@@ -127,7 +128,7 @@ export async function startMaintenanceMode(db: Db): Promise<() => void> {
     // below retries; a failed read here must not stop the server from starting.
     logger.error({ err }, "failed to restore maintenance mode state at startup");
   }
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void service.tick().catch((err) => logger.error({ err }, "maintenance tick failed"));
     // myrmidon(BOT-DISK-A): bot disk lifecycle sweep; re-reads general.botDisk every tick.
     void runBotDiskSweep(db).catch((err) =>

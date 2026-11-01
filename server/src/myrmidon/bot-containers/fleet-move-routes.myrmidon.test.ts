@@ -43,7 +43,7 @@ function harness() {
     next();
   });
   app.use(express.json());
-  app.use("/", fleetMoveRoutes({ service, botCompanyId }));
+  app.use("/", fleetMoveRoutes({ service, botCompanyId, getSiteLogs: vi.fn(async () => "") }));
   app.use(errorHandler);
   return { app, service, botCompanyId };
 }
@@ -94,5 +94,14 @@ describe("fleet move routes", () => {
     const { app, service } = harness();
     service.getLatestMove.mockResolvedValueOnce(null);
     await request(app).get(`/fleet/bots/${BOT_A}/move`).expect(404);
+  });
+
+  it("answers 409 with the explanation when the bot already has an unfinished move", async () => {
+    const { app, service } = harness();
+    const text = 'Bot "x" already has an unfinished move (move m1 from "a" to "b", phase "restore"); wait for it to finish, or repeat the request with the same destination to resume it';
+    service.startMove.mockRejectedValueOnce(new FleetMoveError(text, "conflict"));
+    const res = await request(app).post(`/fleet/bots/${BOT_A}/move`).send({ to: "vm-core" }).expect(409);
+    expect(JSON.stringify(res.body)).toContain("already has an unfinished move");
+    expect(JSON.stringify(res.body)).toContain("wait for it to finish");
   });
 });

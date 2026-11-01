@@ -37,7 +37,7 @@
 // row for the next pass.
 
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
+import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@myrmidon/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -49,7 +49,7 @@ import {
   resolveSwarmClaimSettings,
   type SwarmClaimSettings,
   type SwarmClaimLease,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { recordFeatureOutcome } from "../features/recorder.js"; // myrmidon(FEATURES)
 import { SWARM_CLAIM_SWEEP_FEATURE_KEY } from "../features/reporters.js"; // myrmidon(FEATURES)
@@ -71,7 +71,7 @@ import {
 function recordSwarmPass(result: SwarmClaimSweepResult, failure: string | null): void {
   const detail = {
     idleRoles: result.idleRoles,
-    idleFreeAgents: result.idleFreeAgents,
+    idleUnmatchedTasks: result.idleUnmatchedTasks,
     idleWoken: result.idleWoken,
     idleSkippedReason: result.idleSkippedReason,
   };
@@ -125,8 +125,8 @@ export interface SwarmClaimSweepResult {
   idleClaimLost: number;
   /** Roles with a non-empty ready queue the idle pass examined. */
   idleRoles: number;
-  /** Free agents seen at a non-empty queue (the supervisor's zero metric). */
-  idleFreeAgents: number;
+  /** Ready tasks left without an available agent in this pass. */
+  idleUnmatchedTasks: number;
   /**
    * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): roles that have ready tasks queued
    * but no agent at all — a configuration gap (a `role:<key>` label naming a
@@ -190,7 +190,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         idleClaimed: 0,
         idleClaimLost: 0,
         idleRoles: 0,
-        idleFreeAgents: 0,
+        idleUnmatchedTasks: 0,
         idleUnstaffedRoles: 0,
         idleSkippedReason: null,
       };
@@ -308,7 +308,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           const released = await releaseClaim(deps.db, {
             claimId: row.id,
             reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
-            now,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
           });
           if (!released) continue;
           result.expiredReleased += 1;
@@ -329,7 +329,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             issueId: row.issueId,
             agentId: row.agentId,
             claimId: row.id,
-            now,
+            now: new Date(Math.max(now.getTime(), row.claimedAt.getTime())),
           });
           if (expired) {
             await deps.logActivity?.({
@@ -385,7 +385,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         result.idleRoles += matched.companies;
         // Ready tasks no free agent of their caste was found for — the number
         // an operator watches while the fleet is saturated.
-        result.idleFreeAgents += matched.unmatched;
+        result.idleUnmatchedTasks += matched.unmatched;
         if (matched.claimed > 0) {
           logger.warn(
             {

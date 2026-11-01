@@ -1,5 +1,8 @@
-import type { Db } from "@paperclipai/db";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
+import type { Db } from "@myrmidon/db";
+import {
+  createGitHubExternalObjectProvider,
+  type GitHubExternalObjectProviderOptions,
+} from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -23,9 +26,11 @@ export type PullRequestMergeDetails = {
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
+  defaultBranch?: string | null;
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
+  mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -94,8 +99,11 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 
 const DENIED_ERROR_CODES = new Set(["github_auth_required", "github_forbidden", "github_token_unavailable"]);
 
-export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db).resolvers
+export function createPullRequestMergeDetailsResolver(
+  db: Db,
+  opts?: GitHubExternalObjectProviderOptions,
+): PullRequestMergeDetailsResolver {
+  const resolver = createGitHubExternalObjectProvider(db, opts).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
@@ -117,6 +125,12 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
     const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
       ? statusKey
       : undefined;
+    const rawMergeable = data?.mergeable ?? data?.mergeableState ?? data?.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : typeof rawMergeable === "string" ? rawMergeable : null;
     return {
       state: statusKey === "merged" || data?.merged === true
         ? "merged"
@@ -128,9 +142,11 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
       ...(workProductState ? { workProductState } : {}),
       draft: data?.draft === true,
       baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,
+      defaultBranch: typeof data?.defaultBranch === "string" ? data.defaultBranch : (typeof data?.default_branch === "string" ? data.default_branch : "main"),
       additions: typeof data?.additions === "number" ? data.additions : null,
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
+      mergeable,
     };
   };
 }

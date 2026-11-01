@@ -1,13 +1,22 @@
+import { useOwnerActiveChannel, formatOwnerActiveChannelLabel } from "../useOwnerActiveChannel.js";
 // myrmidon(UI-0a): UI-2.0 phone frame — 56px header (logo + status) and the
 // bottom tab bar (Center / Decisions / Agents / Servers / Commander / More) at 390px.
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
 // Desktop rail is hidden on phone; pages render in the column between the
 // two bars.
+import { useEffect, useRef } from "react";
 import { useTranslation } from "@/i18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Link, useLocation } from "@/lib/router";
+import { toCompanyRelativePath } from "@/lib/company-routes";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
+import { usePluginSlots, PluginSlotMount } from "@/plugins/slots";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { useCompany } from "@/context/CompanyContext";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function PhoneTab({
   to,
@@ -93,10 +102,16 @@ function PhoneTab({
 import type { Gauge as GaugeIcon } from "lucide-react";
 
 export function Ui2PhoneHeader() {
-  const { t } = useTranslation();
+  const { t: tApp, i18n } = useTranslation();
+  const activeChannel = useOwnerActiveChannel();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   return (
     <div
-      className="myr-ui2__phone-header"
+      className="myr-ui2__phone-header myr-ui2-phone-header"
       style={{
         height: "var(--myr-phone-topbar-height)",
         display: "flex",
@@ -108,44 +123,104 @@ export function Ui2PhoneHeader() {
       }}
     >
       <MyrmidonLockup className="max-h-6 w-auto" decorative />
-      <span style={{ marginLeft: "auto", fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-        {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
-      </span>
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+        <LanguageSwitch compact />
+        <span
+          style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}
+          data-testid="ui2-phone-owner-active-channel"
+        >
+          {formatOwnerActiveChannelLabel(activeChannel, t, { locale: i18n?.language })}
+        </span>
+        <Ui2AccountMenu compact />
+      </div>
     </div>
   );
 }
 
+export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean {
+  const relativePath = toCompanyRelativePath(pathname);
+  const normalizedPath = relativePath.split("?")[0].replace(/\/$/, "") || "/";
+  const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
+  if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
+  if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
+  return normalizedPath === normalizedTabPath || normalizedPath.startsWith(`${normalizedTabPath}/`);
+}
+
 export function Ui2PhoneTabBar() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const location = useLocation();
   const attentionCount = useUi2AttentionCount();
-  const activeSegment = location.pathname.split("/").filter(Boolean).slice(1)[0] ?? "dashboard";
+  const { selectedCompany } = useCompany();
+  const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });
+  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId: selectedCompany?.id, enabled: !!selectedCompany?.id });
+  const hasPlugins = pluginSlots.length > 0 || launchers.length > 0;
+  const navigationRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = navigationRef.current;
+    if (!element) return;
+    const updateHeight = () => {
+      const pluginSection = element.querySelector("section");
+      element.parentElement?.style.setProperty("--myr-phone-plugins-height", `${pluginSection ? pluginSection.getBoundingClientRect().height : 0}px`);
+    };
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [hasPlugins, pluginSlots.length, launchers.length]);
 
   return (
-    <nav
-      className="myr-ui2__phone-tabbar"
-      style={{
-        height: "var(--myr-phone-tabbar-height)",
-        display: "grid",
-        gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
-        background: "var(--myr-surface-raised)",
-        borderTop: "1px solid var(--myr-hairline)",
-      }}
-      aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
+    <div
+      ref={navigationRef}
+      className="myr-ui2__phone-navigation"
+      style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--myr-surface-raised)", borderTop: "1px solid var(--myr-hairline)" }}
     >
-      {UI2_PHONE_TABS.map((tab) => {
-        const segment = tab.to.replace(/^\//, "").split("/")[0];
-        return (
-          <PhoneTab
-            key={tab.labelKey}
-            to={tab.to}
-            icon={tab.icon}
-            label={t(tab.labelKey)}
-            active={segment === activeSegment}
-            badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
-          />
-        );
-      })}
-    </nav>
+      <nav
+        className="myr-ui2__phone-tabbar"
+        style={{
+          height: "var(--myr-phone-tabbar-height)",
+          display: "grid",
+          gridTemplateColumns: `repeat(${UI2_PHONE_TABS.length}, 1fr)`,
+          background: "var(--myr-surface-raised)",
+          borderTop: "1px solid var(--myr-hairline)",
+        }}
+        aria-label={t("ui2.nav.railLabel", { defaultValue: "Main navigation" })}
+      >
+        {UI2_PHONE_TABS.map((tab) => {
+          const active = isUi2PhoneTabActive(tab.to, location.pathname);
+          return (
+            <PhoneTab
+              key={tab.labelKey}
+              to={tab.to}
+              icon={tab.icon}
+              label={t(tab.labelKey)}
+              active={active}
+              badge={tab.badge === "attention" ? (attentionCount ?? undefined) : undefined}
+            />
+          );
+        })}
+      </nav>
+      {hasPlugins ? (
+        <section aria-label={t("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
+          <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "2px 4px 6px" }}>
+            {t("ui2.nav.group.plugins")}
+          </div>
+          {pluginSlots.map((slot) => (
+            <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />
+          ))}
+          {selectedCompany ? (
+            <PluginLauncherOutlet
+              placementZones={["sidebar"]}
+              context={{ companyId: selectedCompany.id, companyPrefix: selectedCompany.issuePrefix }}
+              itemClassName="myr-ui2__phone-plugin-link"
+            />
+          ) : null}
+        </section>
+      ) : null}
+    </div>
   );
 }

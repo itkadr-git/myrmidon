@@ -1,8 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { BOARD_ADMIN_PERMISSION_KEYS, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@myrmidon/adapter-opencode-local";
+import { BOARD_ADMIN_PERMISSION_KEYS, LOW_TRUST_REVIEW_PRESET } from "@myrmidon/shared";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -142,15 +142,15 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
-    const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
+  vi.doMock("@myrmidon/adapter-opencode-local/server", async () => {
+    const actual = await vi.importActual<typeof import("@myrmidon/adapter-opencode-local/server")>("@myrmidon/adapter-opencode-local/server");
     return {
       ...actual,
       ensureOpenCodeModelConfiguredAndAvailable: mockEnsureOpenCodeModelConfiguredAndAvailable,
     };
   });
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@myrmidon/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -731,6 +731,36 @@ describe.sequential("agent permission routes", () => {
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
     );
   }, 20_000);
+
+  it("filters heartbeat runs by wakeReason and hasResult", async () => {
+    mockHeartbeatService.listVersionKey.mockResolvedValue("vk-filtered");
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-with-result", resultJson: { summary: "ok" } }]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?wakeReason=issue_commented&hasResult=true&agentId=agent-1`),
+    );
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      false,
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      "issue_commented",
+      true,
+    );
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      { summary: false, wakeReason: "issue_commented", hasResult: true },
+    );
+  });
 
   it("redacts env values in agent mutation responses", async () => {
     const plaintextValue = "mutation-value-must-not-leak";

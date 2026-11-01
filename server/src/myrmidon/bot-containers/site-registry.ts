@@ -3,16 +3,17 @@
 // myrmidon(1.6.6 T1): Remote sites registry, CRUD, env bootstrap, and
 // dynamic FleetClientManager for mTLS and hot-reload.
 
-import { createHash } from "node:crypto";
+import { X509Certificate, createHash } from "node:crypto";
 import https from "node:https";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   companies,
   myrmidonFleetSites,
   myrmidonFleetAffinity,
   type FleetSiteCapacity,
+  type FleetSiteHealth,
   type FleetSiteProfile,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
@@ -21,6 +22,15 @@ import { fleetdBotContainerDriver, type FleetdDriverConfig } from "./fleetd-driv
 import { fleetSiteKey, parseFleetHosts, type FleetHostConfig } from "./fleetd-hosts.js";
 
 let fleetRegistryVersion = 1;
+let activeFleetClientManager: FleetClientManager | null = null;
+
+export function setActiveFleetClientManager(manager: FleetClientManager | null): void {
+  activeFleetClientManager = manager;
+}
+
+export function getActiveFleetClientManager(): FleetClientManager | null {
+  return activeFleetClientManager;
+}
 
 export function getFleetRegistryVersion(): number {
   return fleetRegistryVersion;
@@ -45,6 +55,8 @@ export interface FleetSite {
   capacity: FleetSiteCapacity;
   profile: FleetSiteProfile;
   labels?: Record<string, string> | null;
+  /** The site health monitor's persisted state (REMOTE-SITES-T4); null until the first probe. */
+  health?: FleetSiteHealth | null;
   enrolledAt: Date;
   lastSeenAt?: Date | null;
   certRotatedAt?: Date | null;
@@ -309,6 +321,12 @@ export interface FleetClientManagerDeps {
   /** Max age of the client map before ensureFresh re-reads the registry. Default 30 s. */
   refreshTtlMs?: number;
   now?: () => number;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): keep the client of a draining site. Off (the default) a
+   * draining site loses its client like any site that is not active, as before T4; the
+   * startup turns it on together with MYRMIDON_SITE_HEALTH.
+   */
+  keepDrainingClients?: boolean;
   readCompanySecret?: (companyId: string, name: string) => Promise<string | null>;
   createDriver?: (config: FleetdDriverConfig) => BotContainerDriver;
   log?: {
@@ -318,8 +336,27 @@ export interface FleetClientManagerDeps {
   };
 }
 
+/** How the board reaches a site-agent: the address, the bearer token and the mTLS agent of a live client. */
+export interface FleetSiteTransport {
+  baseUrl: string;
+  token?: string;
+  agent?: https.Agent;
+  caCert?: string;
+  clientCert?: string;
+  clientKey?: string;
+  /** Only true when the registry resolved the CA and both client credentials. */
+  mtls: boolean;
+}
+
 export interface FleetClientManager {
   getClients(): ReadonlyMap<string, BotContainerDriver>;
+  /**
+   * myrmidon(1.6.6 REMOTE-SITES-T4): the transport behind each client (same keys as getClients),
+   * for the health probe and the site-agent calls that are not part of the driver contract.
+   */
+  getTransports?(): ReadonlyMap<string, FleetSiteTransport>;
+  getSites?(): ReadonlyMap<string, FleetSite>;
+  getSite?(name: string, companyId?: string): FleetSite | null;
   refresh(): Promise<ReadonlyMap<string, BotContainerDriver>>;
   getVersion(): number;
   /**
@@ -329,6 +366,15 @@ export interface FleetClientManager {
    */
   ensureFresh(): Promise<void>;
   close(): void;
+}
+
+/** sha256 (lowercase hex) of the DER of the first certificate in `pem`; null when it is not a certificate. */
+export function caCertFingerprint(pem: string): string | null {
+  try {
+    return createHash("sha256").update(new X509Certificate(pem).raw).digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 export function parseTlsCredentials(raw: string): { cert?: string; key?: string } {
@@ -384,6 +430,8 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
   // rotated secret value rebuilds the client even if the secret name is the same.
   const clientFingerprints = new Map<string, string>();
   const clientAgents = new Map<string, https.Agent>();
+  const clientTransports = new Map<string, FleetSiteTransport>();
+  const clientSites = new Map<string, FleetSite>();
   let lastVersion = -1;
   let lastAttemptAt = 0;
   let lastOk = false;
@@ -407,6 +455,8 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
 
   function dropClient(key: string): void {
     clients.delete(key);
+    clientTransports.delete(key);
+    clientSites.delete(key);
     clientFingerprints.delete(key);
     const agent = clientAgents.get(key);
     if (agent) {
@@ -430,12 +480,25 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     lastAttemptAt = now();
     try {
       const sites = await listFleetSites(deps.db);
-      const activeSites = sites.filter((s) => s.status === "active");
+      // A draining site keeps its client: its bots are still managed there until they are moved
+      // off, and a site that went draining on a failed probe must be reachable again for the
+      // return pass. Placement of new bots is the scheduler's rule, not the client map's.
+      const activeSites = sites.filter((s) => s.status === "active" || (deps.keepDrainingClients === true && s.status === "draining"));
       const activeKeys = new Set<string>();
 
       for (const site of activeSites) {
         const key = fleetSiteKey(site.companyId, site.name);
         activeKeys.add(key);
+
+        // myrmidon(OPE-8999): the CA pinned at enroll must still be the CA we are about to trust.
+        if (site.caCert && site.caCertFingerprint && caCertFingerprint(site.caCert) !== site.caCertFingerprint) {
+          logWarn(
+            { companyId: site.companyId, site: site.name },
+            "fleet site CA does not match its enrolled fingerprint; dropping cached client",
+          );
+          dropClient(key);
+          continue;
+        }
 
         let token: string | undefined;
         if (site.tokenSecret) {
@@ -445,8 +508,9 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
             // configured with a token: keep whatever client exists, add none.
             logWarn(
               { companyId: site.companyId, site: site.name, tokenSecret: site.tokenSecret },
-              "fleet site token secret did not resolve; client not (re)built",
+              "fleet site token secret did not resolve; dropping cached client",
             );
+            dropClient(key);
             continue;
           }
           token = resolved;
@@ -483,17 +547,20 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           if (!clientCert || !clientKey) {
             logWarn(
               { companyId: site.companyId, site: site.name, clientCertSecretKey: base },
-              "fleet site client certificate or key did not resolve; client not (re)built",
+              "fleet site client certificate or key did not resolve; dropping cached client",
             );
+            dropClient(key);
             continue;
           }
         }
 
-        const fingerprint = createHash("sha256")
+        const existingFingerprint = createHash("sha256")
           .update(JSON.stringify([site.url, token ?? null, site.caCert ?? null, clientCert ?? null, clientKey ?? null]))
           .digest("hex");
-        if (clients.has(key) && clientFingerprints.get(key) === fingerprint) continue;
-
+        if (clients.has(key) && clientFingerprints.get(key) === existingFingerprint) continue;
+        const fingerprint = existingFingerprint;
+        const mtls = site.url.startsWith("https:") && Boolean(site.caCert && clientCert && clientKey);
+        const requiresMtls = site.url.startsWith("https:") || Boolean(site.caCert || clientCert || clientKey);
         let httpsAgent: https.Agent | undefined;
         if (site.url.startsWith("https:") || site.caCert || clientKey || clientCert) {
           httpsAgent = new https.Agent({
@@ -504,6 +571,12 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           });
         }
 
+        if (requiresMtls && !mtls) {
+          httpsAgent?.destroy();
+          logWarn({ companyId: site.companyId, site: site.name }, `fleet site requires HTTPS, CA certificate, client certificate, and client key; dropping cached client`);
+          dropClient(key);
+          continue;
+        }
         const driverConfig: FleetdDriverConfig = {
           baseUrl: site.url,
           ...(token ? { token } : {}),
@@ -523,6 +596,8 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         // The replaced client's agent is released only after the new one is in.
         const oldAgent = clientAgents.get(key);
         clients.set(key, driver);
+        clientSites.set(key, site);
+        clientTransports.set(key, { baseUrl: site.url, ...(token ? { token } : {}), ...(httpsAgent ? { agent: httpsAgent } : {}), ...(site.caCert ? { caCert: site.caCert } : {}), ...(clientCert ? { clientCert } : {}), ...(clientKey ? { clientKey } : {}), mtls });
         clientFingerprints.set(key, fingerprint);
         if (httpsAgent) clientAgents.set(key, httpsAgent);
         else clientAgents.delete(key);
@@ -572,6 +647,25 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     return clients;
   }
 
+  function getTransports(): ReadonlyMap<string, FleetSiteTransport> {
+    return clientTransports;
+  }
+
+  function getSites(): ReadonlyMap<string, FleetSite> {
+    return clientSites;
+  }
+
+  function getSite(name: string, companyId?: string): FleetSite | null {
+    if (companyId) {
+      const site = clientSites.get(fleetSiteKey(companyId, name));
+      if (site) return site;
+    }
+    for (const site of clientSites.values()) {
+      if (site.name === name) return site;
+    }
+    return null;
+  }
+
   function getVersion(): number {
     return getFleetRegistryVersion();
   }
@@ -580,14 +674,23 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     for (const agent of clientAgents.values()) agent.destroy();
     clientAgents.clear();
     clients.clear();
+    clientTransports.clear();
+    clientSites.clear();
     clientFingerprints.clear();
   }
 
   return {
     getClients,
+    getTransports,
+    getSites,
+    getSite,
     refresh,
     getVersion,
     ensureFresh,
     close,
   };
+}
+
+export function getActiveFleetSite(name: string, companyId?: string): FleetSite | null {
+  return activeFleetClientManager?.getSite?.(name, companyId) ?? null;
 }

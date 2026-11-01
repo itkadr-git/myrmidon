@@ -17,7 +17,7 @@ import {
   toolCatalogEntries,
   toolConnections,
   toolInvocations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
+import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@myrmidon/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
@@ -15,6 +15,8 @@ const apiPrefixes: Record<string, string> = {
   "pipelines.ts": "/api",
   "cases.ts": "/api",
   "smoke-lab.ts": "/api",
+  "admin-assistant.ts": "/api",
+  "guardrails.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
@@ -25,6 +27,7 @@ const apiPrefixes: Record<string, string> = {
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
+  "blocker-graph.ts": "/api",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
@@ -73,6 +76,7 @@ const apiPrefixes: Record<string, string> = {
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
+  "users.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =

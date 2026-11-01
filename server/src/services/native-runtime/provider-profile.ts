@@ -3,7 +3,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerPermissionMode,
   type PaperclipRunnerProvider,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../../myrmidon/product.js";
 import {

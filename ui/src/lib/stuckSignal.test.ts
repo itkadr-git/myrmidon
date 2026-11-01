@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getStuckSignalCounts } from "./stuckSignal";
-import type { AgentListItem, AttentionItem, Issue } from "@paperclipai/shared";
+import type { AgentListItem, AttentionItem, Issue } from "@myrmidon/shared";
 
 describe("getStuckSignalCounts", () => {
   it("counts distinct attention-linked issues and active engineers with no open assignment", () => {

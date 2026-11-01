@@ -12,7 +12,7 @@ import type {
   SecretProviderDescriptor,
   UserSecretCoverageSummary,
   UserSecretDefinition,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderVaultsTab, Secrets } from "./Secrets";
 import { ApiError } from "../api/client";
@@ -64,6 +64,13 @@ const mockAgentsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockInstanceSecretSettingsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  setRef: vi.fn(),
+  clearRef: vi.fn(),
+  migrationPlan: vi.fn(),
+}));
+
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 
@@ -75,8 +82,21 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("@/api/instanceSecretSettings", () => ({
+  instanceSecretSettingsApi: mockInstanceSecretSettingsApi,
+  instanceSecretSettingsQueryKey: ["instance", "secret-settings"],
+}));
+
+vi.mock("../api/instanceSecretSettings", () => ({
+  instanceSecretSettingsApi: mockInstanceSecretSettingsApi,
+  instanceSecretSettingsQueryKey: ["instance", "secret-settings"],
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
+    selectedCompanyId: "company-1",
+  }),
+  useOptionalCompany: () => ({
     selectedCompanyId: "company-1",
   }),
 }));
@@ -390,6 +410,10 @@ describe("Secrets page layout", () => {
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSecretSettingsApi.list.mockResolvedValue({ settings: [] });
+    mockInstanceSecretSettingsApi.setRef.mockResolvedValue({});
+    mockInstanceSecretSettingsApi.clearRef.mockResolvedValue({});
+    mockInstanceSecretSettingsApi.migrationPlan.mockResolvedValue({ plan: [] });
   });
 
   afterEach(() => {
@@ -457,6 +481,46 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       vaultRoot.unmount();
+    });
+  });
+
+  it("renders the instance secret settings panel when instance settings are registered", async () => {
+    mockInstanceSecretSettingsApi.list.mockResolvedValue({
+      settings: [
+        {
+          name: "bot.disk.dockergate_token",
+          description: "Board-to-dockergate token for the physical bot disk",
+          envOverride: "BOT_DISK_DOCKERGATE_TOKEN",
+          envOverrideActive: false,
+          consumers: [],
+          ref: null,
+          effectiveSource: "unset",
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await waitForReact(() => container.querySelector('[data-testid="instance-secret-settings-panel"]') !== null);
+
+    expect(container.querySelector('[data-testid="instance-secret-settings-panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="secret-setting-bot.disk.dockergate_token"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
     });
   });
 

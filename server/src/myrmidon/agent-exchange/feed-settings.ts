@@ -18,7 +18,7 @@ import {
   type AgentExchangeFeedSettings,
   type AgentExchangeFeedSettingsPatch,
   type ResolvedAgentExchangeFeedSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export { AGENT_EXCHANGE_FEED_SETTINGS_KEY };
 

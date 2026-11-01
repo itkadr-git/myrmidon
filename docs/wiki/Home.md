@@ -20,12 +20,23 @@ needs one. It is an independent product maintained as a fork of
   cards, digests and escalations, group topics as a task inbox.
 - [Models and budgets](Models-and-keys) — model providers, budget
   enforcement, prompt-cost advice, run admission limits.
+- [Streaming cost overlay for LiteLLM v1.104.1](../myrmidon/guides/litellm-streaming-cost-overlay.md) ([Russian](../myrmidon/guides/litellm-streaming-cost-overlay.ru.md)) — operator runbook for deployment and verification of streaming spend accounting.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
+- [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)
+  ([Russian](../myrmidon/design/post-task-reflect.ru.md)) — the proposal for
+  capturing reusable role lessons after task outcomes.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
+- [UI2 plugin navigation](../myrmidon/changes/1-6-6-ui2-plugin-nav.md) —
+  desktop and mobile plugin entries and direct plugin-page loading; see the
+  [UI2 shell guide](../myrmidon/guides/ui2-shell.md).
+
+## Corpus
+
+- [Corpus server integration](../myrmidon/changes/ope-7844-corpus-integration.md) — configuration and end-to-end verification.
 
 ## Getting started
 

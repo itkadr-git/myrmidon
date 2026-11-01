@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -49,8 +49,18 @@ const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
+const mockTxSelectWhere = vi.hoisted(() => vi.fn(async () => []));
+const mockTxSelectFrom = vi.hoisted(() =>
+  vi.fn(() => ({
+    innerJoin: vi.fn(() => ({ where: mockTxSelectWhere })),
+  })),
+);
+const mockTxSelect = vi.hoisted(() =>
+  vi.fn(() => ({ from: mockTxSelectFrom })),
+);
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
+  select: mockTxSelect,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
@@ -119,7 +129,7 @@ const mockRunnerGoalService = vi.hoisted(() => ({
   act: vi.fn(),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@myrmidon/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -327,6 +337,15 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  // Load the route module graph once, outside any test's budget. It is huge
+  // (routes/*.ts and everything they import), and its cold load took 10-12 s
+  // on a GitHub runner and more on a slower one. It used to be paid inside the
+  // first test's 15 s budget, which timed it out on a slow runner. 60 s is about
+  // 2x the slowest cold load measured.
+  beforeAll(async () => {
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  }, 60_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -366,6 +385,9 @@ describe.sequential("issue comment reopen routes", () => {
     mockCrossIssueInfluenceRunContextError.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
+    mockTxSelect.mockReset();
+    mockTxSelectFrom.mockReset();
+    mockTxSelectWhere.mockReset();
     mockDbSelect.mockReset();
     mockDbSelectFrom.mockReset();
     mockDbSelectWhere.mockReset();
@@ -373,6 +395,11 @@ describe.sequential("issue comment reopen routes", () => {
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockTxSelectWhere.mockResolvedValue([]);
+    mockTxSelectFrom.mockImplementation(() => ({
+      innerJoin: vi.fn(() => ({ where: mockTxSelectWhere })),
+    }));
+    mockTxSelect.mockImplementation(() => ({ from: mockTxSelectFrom }));
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
@@ -4131,6 +4158,95 @@ describe.sequential("issue comment reopen routes", () => {
               stageType: "review",
               lastDecisionOutcome: "changes_requested",
               allowedActions: ["address_changes", "resubmit"],
+            }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("returns changes_requested on a blocked issue to the executor in_progress and wakes them", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [
+            { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+          ],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("blocked"),
+      status: "blocked",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      blockerMetadata: { blockReason: "execution_review_participant" },
+      unblockDescriptor: { owner: "board" },
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: {
+          type: "agent",
+          agentId: "33333333-3333-4333-8333-333333333333",
+        },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    let capturedUpdatePatch: Record<string, unknown> | null = null;
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => {
+        capturedUpdatePatch = patch;
+        return {
+          ...issue,
+          ...patch,
+          updatedAt: new Date(),
+        };
+      },
+    );
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-2",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "in_progress",
+        comment: "Please revise this implementation",
+      });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdatePatch).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      blockerMetadata: null,
+      unblockDescriptor: null,
+    });
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "execution_changes_requested",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            executionStage: expect.objectContaining({
+              wakeRole: "executor",
+              stageType: "review",
+              lastDecisionOutcome: "changes_requested",
             }),
           }),
         }),

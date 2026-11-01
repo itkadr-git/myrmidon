@@ -18,7 +18,7 @@ import {
   createDb,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import {
   autoCloseOwnerDecisionOnOwnerComment,

@@ -12,12 +12,12 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agents, companies, createDb } from "@paperclipai/db";
+import { agents, companies, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { resolvePauseGuardSettings } from "@paperclipai/shared";
+import { resolvePauseGuardSettings } from "@myrmidon/shared";
 import { readPauseGuardSignal, resetPauseGuardSignals, recordPauseGuardSignal } from "./attention.js";
 import {
   PAUSE_GUARD_ACTIVITY_ACTION,

@@ -10,13 +10,13 @@
 // same rows as an uncached one.
 
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { ToolPolicySnapshotLoader } from "./cache.js";
 import type { ToolPolicyCacheRows } from "./snapshot.js";
 

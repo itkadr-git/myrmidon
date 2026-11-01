@@ -9,6 +9,8 @@ import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import {
   describeResolveError,
   formError,
@@ -25,16 +27,20 @@ const SELECT_CLASS = "h-9 w-full rounded-md border border-input bg-background px
 const ALERT_CLASS =
   "border border-red-300/70 bg-red-50 text-red-950 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-100";
 
-const OUTCOME_LABELS: Record<ReplayBlockedOutcome, string> = {
-  restore: "Continue the task (back to todo)",
-  done: "Close as done",
-  cancel: "Cancel the task",
+// myrmidon(OPE-8950): visible strings live in area.settings-bots-host-2.replay-blocked.*
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+// Lazy: the language is read at render time, not frozen at import.
+const OUTCOME_KEYS: Record<ReplayBlockedOutcome, string> = {
+  restore: "area.settings-bots-host-2.replay-blocked.outcomeRestore",
+  done: "area.settings-bots-host-2.replay-blocked.outcomeDone",
+  cancel: "area.settings-bots-host-2.replay-blocked.outcomeCancel",
 };
 
-const ACTION_OUTCOME_LABELS: Record<ReplayBlockedActionOutcome, string> = {
-  completed: "The run's actions were completed",
-  not_performed: "The run's actions were not performed",
-  mixed: "Some actions were completed, some not",
+const ACTION_OUTCOME_KEYS: Record<ReplayBlockedActionOutcome, string> = {
+  completed: "area.settings-bots-host-2.replay-blocked.actionsCompleted",
+  not_performed: "area.settings-bots-host-2.replay-blocked.actionsNotPerformed",
+  mixed: "area.settings-bots-host-2.replay-blocked.actionsMixed",
 };
 
 /** One shared request per company: every row and the task page read the same list. */
@@ -55,15 +61,16 @@ export function useReplayBlockedIssue(companyId: string | null | undefined, issu
 }
 
 export function ReplayBlockedChipView({ item }: { item: ReplayBlockedIssue | null }) {
+  const { t } = useTranslation() as { t: Translate };
   if (!item) return null;
   return (
     <span
       data-testid="myrmidon-replay-blocked-chip"
-      title={`Replay blocked: ${item.nextAction ?? item.cause}. Open the task to review and clear it.`}
+      title={t("area.settings-bots-host-2.replay-blocked.chipTitle", { reason: item.nextAction ?? item.cause })}
       className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium ${ALERT_CLASS}`}
     >
       <OctagonX className="h-3 w-3" />
-      Replay blocked
+      {t("area.settings-bots-host-2.replay-blocked.chipLabel")}
     </span>
   );
 }
@@ -88,6 +95,7 @@ export function ReplayBlockedNoticeView({
   error: string | null;
   onSubmit: (form: ReplayBlockedForm) => void;
 }) {
+  const { t } = useTranslation() as { t: Translate };
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<ReplayBlockedForm>({ outcome: "restore", actionOutcome: "not_performed", checked: "" });
   const invalid = formError(form, item);
@@ -97,15 +105,19 @@ export function ReplayBlockedNoticeView({
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2 font-semibold">
             <OctagonX className="h-4 w-4 shrink-0" />
-            Replay blocked — this task will not be woken again
+            {t("area.settings-bots-host-2.replay-blocked.noticeTitle")}
           </div>
           <p>
-            {item.nextAction ?? "Automatic recovery stopped."} Cause: <code>{item.cause}</code>.
+            <Trans
+              i18nKey="area.settings-bots-host-2.replay-blocked.causeLine"
+              values={{ action: item.nextAction ?? t("area.settings-bots-host-2.replay-blocked.defaultAction"), cause: item.cause }}
+              components={{ code: <code /> }}
+            />
             {item.runId && item.runAgentId ? (
               <>
                 {" "}
                 <Link to={`/agents/${item.runAgentId}/runs/${item.runId}`} className="underline">
-                  Open the stopped run
+                  {t("area.settings-bots-host-2.replay-blocked.openRun")}
                 </Link>
               </>
             ) : null}
@@ -113,7 +125,7 @@ export function ReplayBlockedNoticeView({
         </div>
         {!open && (
           <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-            Review and clear
+            {t("area.settings-bots-host-2.replay-blocked.reviewAndClear")}
           </Button>
         )}
       </div>
@@ -126,23 +138,23 @@ export function ReplayBlockedNoticeView({
           }}
         >
           <div className="flex flex-col gap-1">
-            <Label htmlFor="myrmidon-replay-outcome">Outcome</Label>
+            <Label htmlFor="myrmidon-replay-outcome">{t("area.settings-bots-host-2.replay-blocked.outcomeLabel")}</Label>
             <select
               id="myrmidon-replay-outcome"
               className={SELECT_CLASS}
               value={form.outcome}
               onChange={(event) => setForm({ ...form, outcome: event.target.value as ReplayBlockedOutcome })}
             >
-              {(Object.keys(OUTCOME_LABELS) as ReplayBlockedOutcome[]).map((value) => (
+              {(Object.keys(OUTCOME_KEYS) as ReplayBlockedOutcome[]).map((value) => (
                 <option key={value} value={value}>
-                  {OUTCOME_LABELS[value]}
+                  {t(OUTCOME_KEYS[value])}
                 </option>
               ))}
             </select>
           </div>
           {form.outcome === "restore" && (
             <div className="flex flex-col gap-1">
-              <Label htmlFor="myrmidon-replay-action-outcome">What happened to the stopped run's actions</Label>
+              <Label htmlFor="myrmidon-replay-action-outcome">{t("area.settings-bots-host-2.replay-blocked.actionOutcomeLabel")}</Label>
               <select
                 id="myrmidon-replay-action-outcome"
                 className={SELECT_CLASS}
@@ -151,20 +163,20 @@ export function ReplayBlockedNoticeView({
                   setForm({ ...form, actionOutcome: event.target.value as ReplayBlockedActionOutcome })
                 }
               >
-                {(Object.keys(ACTION_OUTCOME_LABELS) as ReplayBlockedActionOutcome[]).map((value) => (
+                {(Object.keys(ACTION_OUTCOME_KEYS) as ReplayBlockedActionOutcome[]).map((value) => (
                   <option key={value} value={value}>
-                    {ACTION_OUTCOME_LABELS[value]}
+                    {t(ACTION_OUTCOME_KEYS[value])}
                   </option>
                 ))}
               </select>
             </div>
           )}
           <div className="flex flex-col gap-1">
-            <Label htmlFor="myrmidon-replay-checked">What was checked</Label>
+            <Label htmlFor="myrmidon-replay-checked">{t("area.settings-bots-host-2.replay-blocked.checkedLabel")}</Label>
             <Textarea
               id="myrmidon-replay-checked"
               value={form.checked}
-              placeholder="For example: the provider process is stopped; the commit from the run is not in the branch."
+              placeholder={t("area.settings-bots-host-2.replay-blocked.checkedPlaceholder")}
               onChange={(event) => setForm({ ...form, checked: event.target.value })}
             />
           </div>
@@ -176,10 +188,10 @@ export function ReplayBlockedNoticeView({
           )}
           <div className="flex gap-2">
             <Button type="submit" size="sm" disabled={!!invalid || pending}>
-              {pending ? "Clearing…" : "Clear the block"}
+              {pending ? t("area.settings-bots-host-2.replay-blocked.clearing") : t("area.settings-bots-host-2.replay-blocked.clearButton")}
             </Button>
             <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
-              Close
+              {t("common.close")}
             </Button>
           </div>
         </form>

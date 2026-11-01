@@ -27,7 +27,7 @@ import {
 } from "./profile-compile.js";
 import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
 import { readMediaMcpSignals, resetMediaMcpSignals } from "./media-mcp.js";
-import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidon/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
 
 // Placeholder data only: fake ids, example.com URLs, obviously-fake secrets.
@@ -117,6 +117,37 @@ function fileContent(profile: CompiledProfile, path: string): string {
 }
 
 describe("myrmidon(W2a) createBotProfileCompile", () => {
+  it("compiles a card pinned to a fleet host with site-specific endpoints", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "site-a" } };
+    const compile = createBotProfileCompile(board.ports, {
+      env: INSTANCE_ENV,
+      fleetHostForAgent: async () => ({
+        name: "site-a",
+        url: "https://fleet.example.com",
+        tokenSecret: "site-token",
+        hindsightUrl: "https://site.example.com/hindsight",
+        llmBaseUrl: "https://site.example.com/llm/v1",
+        boardExtraHost: "board.example.com",
+        volumeRoot: "/srv/site-bots",
+        network: "site-network",
+        imageAllowlist: ["registry.example.com/bots/*"],
+        mcpEndpoints: [],
+      }),
+    });
+    const profile = await compile("agent-a", "agent-a");
+    expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
+    expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+  });
+
+  it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "missing-site" } };
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV, fleetHostForAgent: async () => null });
+    await expect(compile("agent-a", "agent-a")).rejects.toThrow("not registered");
+    expect(board.calls).not.toContain("ensureApiServerKey");
+  });
+
   it("compiles a card into the profile files, credentials in .env only", async () => {
     const board = fakeBoard();
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
@@ -218,6 +249,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
           partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
           partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+          sessionRetentionDays: WS_BOT_DISK_SETTING_DEFAULTS.sessionRetentionDays,
         }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
@@ -245,6 +277,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       });
@@ -268,6 +301,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -284,6 +318,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const changed = fakeBoard({
@@ -293,6 +328,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const first = await createBotProfileCompile(defaults.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -308,6 +344,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       };
@@ -1279,11 +1316,18 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
 describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language servers", () => {
   it("compiles the limited mode for a coding role and off for another", async () => {
     const board = fakeBoard();
-    board.agent.current = agentRecord({ role: "engineer" });
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const engineer = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
     expect(fileContent(engineer, "hermes/config.yaml")).toContain('useSyntaxServer: "never"');
+    expect(fileContent(engineer, "hermes/config.yaml")).toContain("maxTsServerMemory: 409");
 
-    board.agent.current = agentRecord({ role: "general" });
+    board.agent.current = agentRecord({
+      role: "general",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const general = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
     expect(fileContent(general, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
   });
@@ -1295,7 +1339,10 @@ describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language server
         return policy;
       },
     });
-    board.agent.current = agentRecord({ role: "dev-lead" });
+    board.agent.current = agentRecord({
+      role: "dev-lead",
+      adapterConfig: { container: { enabled: true, memoryMb: 1024 } },
+    });
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
     const before = await compile("agent-a", "agent-a");
     expect(fileContent(before, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
@@ -1303,7 +1350,25 @@ describe("myrmidon(BOT-LSP-DEFAULTS) createBotProfileCompile — language server
     policy = { codingRoles: ["dev-lead"] };
     const after = await compile("agent-a", "agent-a");
     expect(fileContent(after, "hermes/config.yaml")).toContain("idle_timeout: 120");
+    expect(fileContent(after, "hermes/config.yaml")).toContain("maxTsServerMemory: 409");
     expect(after.restartHash).not.toBe(before.restartHash);
+  });
+
+  it("safely turns language servers off when container memory is unknown or insufficient", async () => {
+    const board = fakeBoard();
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: false } },
+    });
+    const unknownMem = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(unknownMem, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
+
+    board.agent.current = agentRecord({
+      role: "engineer",
+      adapterConfig: { container: { enabled: true, memoryMb: 512 } },
+    });
+    const insufficientMem = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
+    expect(fileContent(insufficientMem, "hermes/config.yaml")).toContain("lsp:\n  enabled: false");
   });
 });
 

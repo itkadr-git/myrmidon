@@ -10,6 +10,7 @@ import { Cpu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import {
   describeModelServiceSettingSource,
   modelServiceSettingsApi,
@@ -21,30 +22,32 @@ import {
 type FieldKind = "text" | "int" | "bool" | "map" | "backend";
 interface Field {
   key: string;
-  label: string;
+  /** Catalog key of the label; resolved at render so it follows the language. */
+  labelKey: string;
   kind: FieldKind;
-  hint?: string;
+  /** Catalog key of the hint, when the field has one. */
+  hintKey?: string;
 }
 
 export const MODEL_SERVICE_FIELDS: Field[] = [
-  { key: "litellmCostIntervalSec", label: "LiteLLM cost sweep interval, s", kind: "int" },
-  { key: "botCompressionThresholdTokens", label: "Bot compression threshold, tokens", kind: "int", hint: "0 turns compression off." },
-  { key: "botModelContextLengths", label: "Bot model context lengths", kind: "map", hint: "model=tokens, comma-separated." },
-  { key: "botAuxTitleModel", label: "Bot auxiliary title model", kind: "text", hint: "Empty — not set." },
-  { key: "botAuxCompressionModel", label: "Bot auxiliary compression model", kind: "text", hint: "Empty — not set." },
-  { key: "botHelperModel", label: "Bot helper model", kind: "text" },
-  { key: "ctoChatModel", label: "CTO chat model", kind: "text" },
-  { key: "ctoChatTimeoutSec", label: "CTO chat timeout, s", kind: "int" },
-  { key: "ctoChatMaxTasks", label: "CTO chat max tasks", kind: "int" },
-  { key: "evalsModel", label: "Evals judge model", kind: "text" },
-  { key: "evalsTimeoutSec", label: "Evals timeout, s", kind: "int" },
-  { key: "evalsLangfuseExport", label: "Evals Langfuse export", kind: "bool" },
-  { key: "ocrBackend", label: "OCR backend", kind: "backend" },
-  { key: "ocrModel", label: "OCR model", kind: "text" },
-  { key: "ocrMaxBytes", label: "OCR max bytes", kind: "int" },
-  { key: "ocrMaxPages", label: "OCR max pages", kind: "int" },
-  { key: "ocrMaxChars", label: "OCR max characters", kind: "int" },
-  { key: "ocrTimeoutSec", label: "OCR timeout, s", kind: "int" },
+  { key: "litellmCostIntervalSec", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.litellmCostIntervalSec", kind: "int" },
+  { key: "botCompressionThresholdTokens", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.botCompressionThresholdTokens", kind: "int", hintKey: "area.settings-models-runtime-1.model-service-settings-panel.hints.compressionHint" },
+  { key: "botModelContextLengths", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.botModelContextLengths", kind: "map", hintKey: "area.settings-models-runtime-1.model-service-settings-panel.hints.contextHint" },
+  { key: "botAuxTitleModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.botAuxTitleModel", kind: "text", hintKey: "area.settings-models-runtime-1.model-service-settings-panel.hints.notSetHint" },
+  { key: "botAuxCompressionModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.botAuxCompressionModel", kind: "text", hintKey: "area.settings-models-runtime-1.model-service-settings-panel.hints.notSetHint" },
+  { key: "botHelperModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.botHelperModel", kind: "text" },
+  { key: "ctoChatModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ctoChatModel", kind: "text" },
+  { key: "ctoChatTimeoutSec", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ctoChatTimeoutSec", kind: "int" },
+  { key: "ctoChatMaxTasks", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ctoChatMaxTasks", kind: "int" },
+  { key: "evalsModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.evalsModel", kind: "text" },
+  { key: "evalsTimeoutSec", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.evalsTimeoutSec", kind: "int" },
+  { key: "evalsLangfuseExport", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.evalsLangfuseExport", kind: "bool" },
+  { key: "ocrBackend", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrBackend", kind: "backend" },
+  { key: "ocrModel", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrModel", kind: "text" },
+  { key: "ocrMaxBytes", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrMaxBytes", kind: "int" },
+  { key: "ocrMaxPages", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrMaxPages", kind: "int" },
+  { key: "ocrMaxChars", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrMaxChars", kind: "int" },
+  { key: "ocrTimeoutSec", labelKey: "area.settings-models-runtime-1.model-service-settings-panel.fields.ocrTimeoutSec", kind: "int" },
 ];
 
 function toText(field: Field, value: unknown): string {
@@ -65,18 +68,18 @@ export function parseModelServiceField(
   const text = raw.trim();
   if (field.kind === "text") return { value: text };
   if (field.kind === "backend") {
-    return text === "ragflow" || text === "litellm" ? { value: text } : { error: "ragflow or litellm" };
+    return text === "ragflow" || text === "litellm" ? { value: text } : { error: i18n.t("area.settings-models-runtime-1.model-service-settings-panel.errors.backend") };
   }
   if (field.kind === "bool") return { value: text === "true" };
   if (field.kind === "int") {
     const n = Number(text);
-    return text !== "" && Number.isSafeInteger(n) && n >= 0 ? { value: n } : { error: "Enter a whole number" };
+    return text !== "" && Number.isSafeInteger(n) && n >= 0 ? { value: n } : { error: i18n.t("area.settings-models-runtime-1.model-service-settings-panel.errors.int") };
   }
   const map: Record<string, number> = {};
   for (const part of text.split(",").map((p) => p.trim()).filter(Boolean)) {
     const [model, tokens] = part.split("=").map((p) => p.trim());
     const n = Number(tokens);
-    if (!model || !Number.isSafeInteger(n) || n <= 0) return { error: "Use model=tokens, comma-separated" };
+    if (!model || !Number.isSafeInteger(n) || n <= 0) return { error: i18n.t("area.settings-models-runtime-1.model-service-settings-panel.errors.map") };
     map[model] = n;
   }
   return { value: map };
@@ -95,12 +98,13 @@ export function ModelServiceSettingsPanelView({
   error: string | null;
   saved: boolean;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Record<string, string>>({});
   if (!view) {
     return (
       <section className="space-y-4" data-testid="myrmidon-model-service-settings">
-        <h2 className="text-sm font-semibold">Service models &amp; limits</h2>
-        <p className="text-sm text-muted-foreground">Loading model settings...</p>
+        <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.model-service-settings-panel.title")}</h2>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-1.model-service-settings-panel.loading")}</p>
       </section>
     );
   }
@@ -121,17 +125,15 @@ export function ModelServiceSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Cpu className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Service models &amp; limits</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-1.model-service-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Cost sweep, bot tuning, CTO chat, evals judge and OCR limits. Changes apply without a restart; an
-          environment variable stays a forced override and is shown read-only. Service addresses and secret
-          names are set in the environment.
+          {t("area.settings-models-runtime-1.model-service-settings-panel.description")}
         </p>
       </div>
       {saved && !pending && !error ? (
         <div role="status" data-testid="model-service-saved" className="text-sm text-muted-foreground">
-          Model settings saved.
+          {t("area.settings-models-runtime-1.model-service-settings-panel.saved")}
         </div>
       ) : null}
       {error ? (
@@ -144,7 +146,7 @@ export function ModelServiceSettingsPanelView({
           const pinned = view.sources[field.key] === "env";
           return (
             <div key={field.key} className="space-y-1">
-              <Label htmlFor={`model-service-${field.key}`}>{field.label}</Label>
+              <Label htmlFor={`model-service-${field.key}`}>{t(field.labelKey)}</Label>
               {field.kind === "bool" ? (
                 <input
                   id={`model-service-${field.key}`}
@@ -171,13 +173,13 @@ export function ModelServiceSettingsPanelView({
                   </span>
                 ) : null}
               </div>
-              {field.hint ? <p className="text-xs text-muted-foreground">{field.hint}</p> : null}
+              {field.hintKey ? <p className="text-xs text-muted-foreground">{t(field.hintKey)}</p> : null}
             </div>
           );
         })}
         <div className="md:col-span-2">
           <Button type="button" size="sm" disabled={pending || !canSave} onClick={() => onSave(patch)}>
-            {pending ? "Saving..." : "Save model settings"}
+            {pending ? t("area.settings-models-runtime-1.shared.saving") : t("area.settings-models-runtime-1.model-service-settings-panel.saveButton")}
           </Button>
         </div>
       </div>
@@ -186,6 +188,7 @@ export function ModelServiceSettingsPanelView({
 }
 
 export function ModelServiceSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -200,7 +203,7 @@ export function ModelServiceSettingsPanel() {
       setError(null);
       setSaved(false);
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Saving the model settings failed."),
+    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-models-runtime-1.model-service-settings-panel.saveFailed")),
     onSuccess: async () => {
       setSaved(true);
       await queryClient.invalidateQueries({ queryKey: modelServiceSettingsQueryKey });
@@ -209,7 +212,7 @@ export function ModelServiceSettingsPanel() {
   if (query.error) {
     return (
       <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : "Failed to load model settings."}
+        {query.error instanceof Error ? query.error.message : t("area.settings-models-runtime-1.model-service-settings-panel.loadFailed")}
       </div>
     );
   }

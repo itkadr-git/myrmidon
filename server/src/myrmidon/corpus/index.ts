@@ -8,7 +8,7 @@
 // `CORPUS_PARSE_SWEEP_INTERVAL_MS`.
 //
 // Everything shared with the other parts — the settings shape, the wire shapes,
-// the route paths — comes from `@paperclipai/shared` (myrmidon-corpus.ts), so
+// the route paths — comes from `@myrmidon/shared` (myrmidon-corpus.ts), so
 // part D (MCP tools) and part E (the UI screen) read the same contract this part
 // serves, and part E cannot drift from it.
 
@@ -57,6 +57,9 @@ export type {
 } from "./ports.js";
 
 import type { CorpusPortsResolver } from "./ports.js";
+import { createCorpusPorts, createCorpusMcpProvider } from "./adapters.js";
+import type { Config } from "../../config.js";
+import { corpusService } from "./service.js";
 
 /**
  * The ports of this build.
@@ -64,21 +67,23 @@ import type { CorpusPortsResolver } from "./ports.js";
  * Parts A and B own the implementation (`packages/corpus`: the pgvector store,
  * the work queue, the blob store, the search index, the HTTP parse client) and
  * the file boundary in OPE-6165 is hard: part C never edits `packages/corpus/**`.
- * Until part B merges, this build has nothing to return, and `null` is the
- * documented answer for it — the routes keep serving the settings (`available:
- * false`), every data route answers 503 `corpus_not_configured` and the parse
- * sweep is a no-op. The module therefore stays silent on the fleet while any of
- * its parts is still in flight, which is exactly the acceptance criterion
- * "при выключенном модуле доска работает без изменений".
- *
- * After part B merges this becomes one line, in this file and nowhere else:
- *
- *   export const resolveCorpusPorts: CorpusPortsResolver = (context) =>
- *     createCorpusPorts({ db, env: context.env, settings: context.settings });
- *
- * The shape of what has to be returned is `CorpusPorts` in ./ports.ts.
+ * Resolve adapters only after the caller checks the module-enabled switch; this
+ * keeps disabled requests and sweeps from touching corpus storage.
  */
-export const resolveCorpusPorts: CorpusPortsResolver = () => null;
+let corpusAdapter: { db: Db; config: Config } | null = null;
+
+export function configureCorpusAdapters(db: Db, config: Config): void {
+  corpusAdapter = { db, config };
+  registerCorpusMcpPortProvider(createCorpusMcpProvider(async (companyId) => {
+    const view = await corpusService(db, { ports: resolveCorpusPorts }).readSettings();
+    return view.settings;
+  }, (context) => createCorpusPorts(db, context, config)));
+}
+
+export const resolveCorpusPorts: CorpusPortsResolver = (context) => {
+  if (!context.settings.enabled || !corpusAdapter) return null;
+  return createCorpusPorts(corpusAdapter.db, context, corpusAdapter.config);
+};
 
 // myrmidon(1.6.6 CORPUS-2.0, part D): what the server mounts, and the one hook
 // the data side uses to reach the tools.
@@ -95,7 +100,7 @@ export const resolveCorpusPorts: CorpusPortsResolver = () => null;
 // Nothing here touches the corpus or the network at import time: an instance
 // that never enables the module pays one row read per MCP call and nothing else.
 
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import type { CorpusMcpDeps, CorpusMcpPort, CorpusMcpPortProvider } from "./contract.js";
 import { myrmidonCorpusMcpRoutes as createCorpusMcpRoutes } from "./mcp.js";

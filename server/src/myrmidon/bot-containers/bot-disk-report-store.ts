@@ -7,7 +7,7 @@
 // The key is the bot key (the agent id), taken from the caller's API key by the
 // route — a bot can neither write nor read another bot's entry.
 
-import type { WsDiskReport } from "@paperclipai/shared";
+import type { WsDiskReport } from "@myrmidon/shared";
 
 export interface BotDiskReportEntry {
   botKey: string;

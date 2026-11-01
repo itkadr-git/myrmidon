@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -16,7 +16,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -63,8 +63,8 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
 
   const companyId = randomUUID();
   const agentId = randomUUID();
-  const HOUR = 3_600_000;
-  const longAgo = () => new Date(Date.now() - 6 * HOUR);
+  const MINUTE = 60_000;
+  const longAgo = () => new Date(Date.now() - 15 * MINUTE);
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stranded-deferred-wake-");
@@ -126,7 +126,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
 
   async function seedFinishedRun(issueId: string, extra: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
     const id = randomUUID();
-    const finishedAt = new Date(Date.now() - 8 * HOUR);
+    const finishedAt = new Date(Date.now() - 20 * MINUTE);
     await db.insert(heartbeatRuns).values({
       id,
       companyId,
@@ -145,6 +145,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
 
   async function seedDeferredWake(issueId: string, extra: Partial<typeof agentWakeupRequests.$inferInsert> = {}) {
     const id = randomUUID();
+    const defaultTime = extra.requestedAt ?? longAgo();
     await db.insert(agentWakeupRequests).values({
       id,
       companyId,
@@ -153,8 +154,9 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
       reason: "issue_assigned",
       payload: { issueId },
       status: "deferred_issue_execution",
-      requestedAt: longAgo(),
-      updatedAt: longAgo(),
+      requestedAt: defaultTime,
+      createdAt: defaultTime,
+      updatedAt: defaultTime,
       ...extra,
     });
     return id;
@@ -164,6 +166,57 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     const [row] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id));
     return row!;
   }
+
+  it("does not expire execution-wait wakes even after thirty minutes", async () => {
+    const issueId = await seedIssue("todo");
+    const expiredAt = new Date(Date.now() - 31 * 60_000);
+    const wakeId = await seedDeferredWake(issueId, {
+      payload: { issueId, executionWait: { reason: "process_running", message: "Waiting for process." } },
+      requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt,
+    });
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(0);
+    expect(row.status).toBe("deferred_issue_execution");
+  });
+
+  it("expires deferred wakes older than thirty minutes and records the reason", async () => {
+    const issueId = await seedIssue("todo");
+    const expiredAt = new Date(Date.now() - 31 * 60_000);
+    const wakeId = await seedDeferredWake(issueId, { requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt });
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(1);
+    expect(row.status).toBe("cancelled");
+    expect(row.error).toBe("deferred_issue_execution_expired");
+    expect(row.finishedAt).not.toBeNull();
+  });
+
+  it("expires deferred wakes older than thirty minutes even when the issue has a completed historical run", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId);
+    const expiredAt = new Date(Date.now() - 31 * 60_000);
+    const wakeId = await seedDeferredWake(issueId, { requestedAt: expiredAt, createdAt: expiredAt, updatedAt: expiredAt });
+
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+
+    const row = await wakeRow(wakeId);
+    expect(result.expired).toBe(1);
+    expect(row.status).toBe("cancelled");
+    expect(row.error).toBe("deferred_issue_execution_expired");
+    expect(row.finishedAt).not.toBeNull();
+
+    const rewakes = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, agentId),
+      eq(agentWakeupRequests.reason, "deferred_issue_execution_expired"),
+    ));
+    expect(rewakes).toHaveLength(1);
+    expect(rewakes[0]!.payload).toMatchObject({
+      issueId,
+      expiredWakeId: wakeId,
+    });
+  });
 
   it("cancels deferred wakes of a closed task whose lock is free, with the close marker", async () => {
     const done = await seedIssue("done");
@@ -201,6 +254,52 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect((await wakeRow(wakeFresh)).status).toBe("deferred_issue_execution");
   });
 
+  it("promotes a deferred wake when its native run has no interaction metadata", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId, { contextSnapshot: {}, nativeIssueId: issueId });
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "issue_reopened_via_comment",
+      payload: { issueId },
+    });
+
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect(result.revisited).toBe(1);
+    expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
+    const promoted = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wakeId));
+    expect(promoted).toHaveLength(1);
+  });
+
+  it("promotes a deferred wake when its finished run is keyed only by taskId", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId, { contextSnapshot: { taskId: issueId } });
+    const wakeId = await seedDeferredWake(issueId, { payload: { issueId } });
+
+    const result = await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect(result.revisited).toBe(1);
+    expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
+  });
+
+  it("leaves the deferred wake alone while a live native run keyed by nativeIssueId owns the issue", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "running", contextSnapshot: {}, nativeIssueId: issueId,
+      // older than the finished run, so the latest run is terminal and the
+      // reconcile reaches its live-run guard (the path this test pins)
+      createdAt: new Date(Date.now() - 25 * MINUTE),
+    });
+    const wakeId = await seedDeferredWake(issueId, { payload: { issueId } });
+
+    await heartbeat.reconcileStrandedDeferredWakes();
+
+    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+    const promoted = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wakeId));
+    expect(promoted).toHaveLength(0);
+  });
+
   it("promotes a deferred wake without comment ids on an open task whose lock is free", async () => {
     const issueId = await seedIssue("todo");
     await seedFinishedRun(issueId);
@@ -225,7 +324,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
       resultJson: { executionCancellation: { state: "acknowledged" } },
     });
     const wakeAfter = await seedDeferredWake(after, {
-      requestedAt: new Date(Date.now() - 2 * HOUR), updatedAt: new Date(Date.now() - 2 * HOUR),
+      requestedAt: new Date(Date.now() - 15 * MINUTE), updatedAt: new Date(Date.now() - 15 * MINUTE),
     });
 
     const before = await seedIssue("todo");
@@ -234,7 +333,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
       resultJson: { executionCancellation: { state: "acknowledged" } },
     });
     const wakeBefore = await seedDeferredWake(before, {
-      requestedAt: new Date(Date.now() - 12 * HOUR), updatedAt: new Date(Date.now() - 12 * HOUR),
+      requestedAt: new Date(Date.now() - 25 * MINUTE), updatedAt: new Date(Date.now() - 25 * MINUTE),
     });
 
     await heartbeat.reconcileStrandedDeferredWakes();
@@ -280,6 +379,6 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     const second = await heartbeat.reconcileStrandedDeferredWakes();
 
     expect(first.cancelledTerminal).toBe(1);
-    expect(second).toEqual({ cancelledTerminal: 0, revisited: 0 });
+    expect(second).toEqual({ cancelledTerminal: 0, revisited: 0, expired: 0 });
   });
 });

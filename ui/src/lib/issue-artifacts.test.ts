@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueAttachment, IssueWorkProduct } from "@myrmidon/shared";
 import {
   documentDisplayTitle,
   getAttachmentBackedWorkProductAttachmentIds,

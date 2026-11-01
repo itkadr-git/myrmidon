@@ -12,7 +12,7 @@
 /**
  * CONSOLIDATION-OPE-6318: mirror of `defaultAliasFromName` in
  * server/src/myrmidon/agent-chat-bridge/addressing.ts (part A kept the rule
- * server-side, not in @paperclipai/shared). Same rule: the last dash-separated
+ * server-side, not in @myrmidon/shared). Same rule: the last dash-separated
  * segment of the name, lower-cased, latin letters/digits/underscore only
  * (`adm-dev-eng-15` → `15`, `Wiki Maintainer` → `wikimaintainer`). A tail with
  * no latin character yields "" and the card shows no default. When the rule

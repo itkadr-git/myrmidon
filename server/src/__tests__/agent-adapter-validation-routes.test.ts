@@ -2,7 +2,7 @@ import express from "express";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -239,13 +239,25 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent routes adapter validation", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
@@ -604,8 +616,75 @@ describe("agent routes adapter validation", () => {
       expect(noLimits.status, JSON.stringify(noLimits.body)).toBe(422);
       expect(String(noLimits.body.error ?? noLimits.body.message ?? "")).toContain("memoryMb");
 
-      const complete = await create({ enabled: true, image: "example/hermes@sha256:aa", memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+      const pinned = `example/hermes@sha256:${"a".repeat(64)}`;
+      const limits = { memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const byTag = await create({ enabled: true, image: "myrmidon-hermes:latest", ...limits });
+      expect(byTag.status, JSON.stringify(byTag.body)).toBe(422);
+      expect(String(byTag.body.error ?? byTag.body.message ?? "")).toContain("not pinned by digest");
+
+      const complete = await create({ enabled: true, image: pinned, ...limits });
       expect(complete.status, JSON.stringify(complete.body)).toBe(201);
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("keeps the pinned container image on edit of an existing hermes_gateway agent and refuses a tag-only image (OPE-8916)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const pinned = `example/hermes@sha256:${"b".repeat(64)}`;
+      const container = { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: { container, note: "old" },
+      });
+      const app = await createApp();
+      const agentPath = "/api/agents/11111111-1111-4111-8111-111111111111";
+
+      // The UI patch-builder sends the whole merged config back with replaceAdapterConfig.
+      const edit = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, memoryMb: 3072 }, note: "new" },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+      const saved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const savedContainer = (saved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(savedContainer.image).toBe(pinned);
+      expect(JSON.stringify(saved)).not.toContain(":latest");
+
+      // A non-container edit without replace keeps the stored container block untouched.
+      mockAgentService.update.mockClear();
+      const plain = await requestApp(app, (baseUrl) =>
+        request(baseUrl).patch(agentPath).send({ adapterConfig: { note: "again" } }),
+      );
+      expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+      const plainSaved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const plainContainer = (plainSaved.adapterConfig as Record<string, unknown>).container as Record<string, unknown>;
+      expect(plainContainer.image).toBe(pinned);
+
+      // A tag-only image is refused with a clear 422 and nothing is written.
+      mockAgentService.update.mockClear();
+      const bad = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: { container: { ...container, image: "myrmidon-hermes:latest" } },
+            replaceAdapterConfig: true,
+          }),
+      );
+      expect(bad.status, JSON.stringify(bad.body)).toBe(422);
+      expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("not pinned by digest");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
     } finally {
       unregisterServerAdapter("hermes_gateway");
       if (previous) registerServerAdapter(previous);

@@ -1,0 +1,87 @@
+name: Myrmidon browser extension package
+
+# Builds extension/ (Chrome/Edge, MV3) into dist-extension/ and zips it.
+#   pull request / push to main touching extension/**: the zip is a workflow artifact.
+#   tag extension-v*: the zip is also published as a GitHub Release.
+#   workflow_dispatch: artifact only.
+
+on:
+  push:
+    branches: [main]
+    paths: ["extension/**", ".github/workflows/myrmidon-extension-package.yml"]
+    tags: ["extension-v*"]
+  pull_request:
+    paths: ["extension/**", ".github/workflows/myrmidon-extension-package.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: typecheck, test, build, zip dist-extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: every file the manifest names is in the build
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const m = JSON.parse(fs.readFileSync("dist-extension/manifest.json", "utf8"));
+            const files = [m.background?.service_worker, m.action?.default_popup, m.options_page, ...(m.content_scripts ?? []).flatMap((c) => c.js ?? [])].filter(Boolean);
+            const missing = files.filter((f) => !fs.existsSync(`dist-extension/${f}`));
+            if (missing.length) { console.error("missing from dist-extension:", missing.join(", ")); process.exit(1); }
+            console.log("manifest files present:", files.join(", "));
+          '
+
+      - name: zip
+        id: zip
+        run: |
+          v=$(node -p 'require("./manifest.json").version')
+          if [[ "$GITHUB_REF" == refs/tags/extension-v* ]]; then
+            [ "${GITHUB_REF_NAME#extension-v}" = "$v" ] || { echo "tag ${GITHUB_REF_NAME} does not match manifest version $v"; exit 1; }
+          else
+            v="$v-${GITHUB_SHA::9}"
+          fi
+          name="myrmidon-bridge-extension-$v"
+          mkdir -p ../out
+          (cd dist-extension && zip -qr "../../out/$name.zip" .)
+          (cd ../out && sha256sum "$name.zip" > "$name.zip.sha256")
+          unzip -l "../out/$name.zip" | tail -3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myrmidon-bridge-extension
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: publish the GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/extension-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: myrmidon-bridge-extension
+          path: out
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "Myrmidon Bridge extension ${GITHUB_REF_NAME#extension-v}" \
+            --notes "Unpacked Chrome/Edge extension (Manifest V3). Unzip, open chrome://extensions or edge://extensions, enable developer mode, Load unpacked."

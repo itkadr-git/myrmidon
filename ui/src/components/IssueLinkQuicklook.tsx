@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useMemo } from "react";
 import * as RouterDom from "react-router-dom";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidon/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { timeAgo } from "@/lib/timeAgo";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/issueDetailCache";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
@@ -246,6 +247,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   },
   ref,
 ) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const instanceId = React.useMemo(() => Symbol("issue-quicklook"), []);
   const open = useIsQuicklookOpen(instanceId);
@@ -442,7 +444,7 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load task preview.</p>
+              <p className="text-xs text-muted-foreground">{t("area.issue-threads-runs-1.issue-link-quicklook.loadFailed")}</p>
             ) : null}
           </div>
         )}

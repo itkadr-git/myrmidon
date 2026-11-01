@@ -16,7 +16,7 @@ let providerPromise: Promise<SecretProvider> | null = null;
 
 /** The existing server provider is the only place that implements the cipher. */
 export function loadProvider(): Promise<SecretProvider> {
-  providerPromise ??= import("@paperclipai/server/secrets/local-encrypted-provider").then(
+  providerPromise ??= import("@myrmidon/server/secrets/local-encrypted-provider").then(
     (mod) => mod.localEncryptedProvider as unknown as SecretProvider,
   );
   return providerPromise;
@@ -45,13 +45,16 @@ export async function loadKeyMaterial(label: string, spec: KeySpec, env: NodeJS.
 
 /** Runs fn with the given master key visible to the provider, then restores the environment. */
 export async function withMasterKey<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.MYRMIDON_SECRETS_MASTER_KEY;
+  const previousMyrmidon = process.env.MYRMIDON_SECRETS_MASTER_KEY;
+  const previousPaperclip = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   process.env.MYRMIDON_SECRETS_MASTER_KEY = key;
+  delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   try {
     return await fn();
   } finally {
-    if (previous === undefined) delete process.env.MYRMIDON_SECRETS_MASTER_KEY;
-    else process.env.MYRMIDON_SECRETS_MASTER_KEY = previous;
+    if (previousMyrmidon === undefined) delete process.env.MYRMIDON_SECRETS_MASTER_KEY;
+    else process.env.MYRMIDON_SECRETS_MASTER_KEY = previousMyrmidon;
+    if (previousPaperclip !== undefined) process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousPaperclip;
   }
 }
 

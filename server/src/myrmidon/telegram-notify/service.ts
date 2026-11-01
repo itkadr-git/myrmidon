@@ -22,7 +22,7 @@ import {
   type TelegramNotifyDocument,
   type TelegramNotifySettings,
   type TelegramNotifySettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { TelegramNotifyStore } from "./settings-store.js";
 
 /** A typed refusal the route layer turns into an HTTP status. */
@@ -46,7 +46,14 @@ export interface TelegramNotifyServiceDeps {
 }
 
 type SectionKey = keyof TelegramNotifySettingsPatch;
-const SECTION_KEYS = ["digest", "errors", "inbound", "escalations", "proactivity"] as const;
+const SECTION_KEYS = [
+  "digest",
+  "errors",
+  "inbound",
+  "escalations",
+  "proactivity",
+  "updates",
+] as const;
 
 /**
  * The merge rule: an explicit value in the patch replaces the stored value,

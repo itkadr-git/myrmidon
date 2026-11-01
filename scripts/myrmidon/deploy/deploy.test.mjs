@@ -313,10 +313,10 @@ function pathWithoutGit(sb) {
   return `${sb.bin}:${tools}`;
 }
 
-function run(sb, script, args, input) {
+function run(sb, script, args, input, extraEnv = {}) {
   const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}) },
+    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
     input,
   });
@@ -353,6 +353,31 @@ describe("deploy.sh", () => {
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
     assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // OPE-9318 (1.6.6 DEBRAND): the compose project must be pinnable to the new
+  // board name without changing anything for an install that does not set it.
+  // Unset → the deploy keeps the directory-derived project (no --project-name
+  // flag, identity of volumes/networks untouched); set → every compose call
+  // carries the pin, and the rendered boot unit stays byte-identical so an
+  // existing verify_boot_unit comparison does not flag a unit change.
+  it("keeps the directory-derived compose project when COMPOSE_PROJECT_NAME is unset", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(calls(sb), /--project-name/, "unset must not add a project pin");
+  });
+
+  it("pins the compose project when COMPOSE_PROJECT_NAME is set", () => {
+    const sb = sandbox();
+    const before = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], undefined, {
+      COMPOSE_PROJECT_NAME: "myrmidon-board",
+    });
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker compose --project-directory \S+ --project-name myrmidon-board /);
+    const after = read(path.join(sb.dir, "systemd", "paperclip.service"));
+    assert.equal(before, after, "the boot unit must render identically with a project pin");
   });
 
   // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on
@@ -506,6 +531,47 @@ describe("deploy.sh", () => {
     });
   });
 
+  describe("shared package cache preflight", () => {
+    const cacheSandbox = ({ readOnly = false, missing = false } = {}) => {
+      const sb = sandbox();
+      const cache = path.join(sb.dir, "shared-cache");
+      if (!missing) fs.mkdirSync(cache);
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({
+          services: {
+            server: {
+              volumes: [{ type: "bind", source: cache, target: cache, ...(readOnly ? { read_only: true } : {}) }],
+            },
+          },
+        }),
+      );
+      sb.env = { MYRMIDON_SHARED_PACKAGE_CACHE_PATH: cache };
+      return { sb, cache };
+    };
+
+    it("requires a writable cache directory and a read/write server bind", () => {
+      const { sb } = cacheSandbox();
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops before pulling when the cache directory is missing", () => {
+      const { sb } = cacheSandbox({ missing: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache path is not a directory/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+
+    it("rejects a read-only cache bind", () => {
+      const { sb } = cacheSandbox({ readOnly: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache is not mounted read\/write/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+  });
   it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
     const sb = sandbox({ composeConfigFails: true });
     const before = read(sb.override);

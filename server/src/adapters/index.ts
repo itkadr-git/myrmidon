@@ -10,6 +10,13 @@ export {
   unregisterServerAdapter,
   requireServerAdapter,
 } from "./registry.js";
+export {
+  listGatewayModels,
+  refreshGatewayModels,
+  resetGatewayModelsCacheForTests,
+  resolveGatewayApiKey,
+  resolveGatewayBaseUrl,
+} from "./hermes-gateway-models.js";
 export type {
   ServerAdapterModule,
   AcpTargetDescriptor,
@@ -30,5 +37,5 @@ export type {
   UsageSummary,
   AdapterAgent,
   AdapterRuntime,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 export { runningProcesses } from "./utils.js";

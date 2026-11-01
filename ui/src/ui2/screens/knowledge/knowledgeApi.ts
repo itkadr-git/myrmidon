@@ -14,6 +14,7 @@ import type {
   KnowledgeItemDetail,
   KnowledgeItemSummary,
   KnowledgeRevisionSummary,
+  KnowledgeSourceRef,
 } from "./knowledgeModel";
 
 interface KnowledgeItemDto {
@@ -35,6 +36,8 @@ interface KnowledgeRevisionDto {
   itemId: string;
   revisionNumber: number;
   status: string;
+  title?: string | null;
+  summary?: string | null;
   content: string;
   changeSummary?: string | null;
   rolledBackFromRevisionId?: string | null;
@@ -71,6 +74,31 @@ function toRevisionSummary(revision: KnowledgeRevisionDto): KnowledgeRevisionSum
     at: revision.createdAt,
     by: revision.approvedBy ?? "",
     note: revision.changeSummary,
+    sources: revision.sources.map((source) => ({
+      kind: source.kind,
+      ref: source.ref,
+      label: source.ref,
+    })),
+  };
+}
+
+interface KnowledgeBacklinkDto {
+  sourceItemId: string;
+  sourceSlug: string;
+  sourceTitle: string;
+  targetSlug: string;
+  resolved: boolean;
+}
+
+/** A page that links here, as a source row of kind `page`. */
+export function toBacklinkRef(backlink: KnowledgeBacklinkDto, fallbackSpace: string): KnowledgeSourceRef {
+  // The backlink row carries the slug only; the page is looked up in the
+  // space of the page it links to (a slug with `/` is already a full path).
+  return {
+    kind: "page",
+    ref: backlink.sourceSlug,
+    label: backlink.sourceTitle || backlink.sourceSlug,
+    space: fallbackSpace,
   };
 }
 
@@ -151,6 +179,11 @@ export const knowledgeApi = {
       `${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/revisions`,
     );
     const revisions = revisionsResponse.revisions;
+    // Backlinks are an extra read: a failure there must not hide the page.
+    const backlinks = await api
+      .get<{ backlinks: KnowledgeBacklinkDto[] }>(`${base(companyId)}/items/${encodeURIComponent(idOrSlug)}/backlinks`)
+      .then((response) => response.backlinks.map((backlink) => toBacklinkRef(backlink, spaceKey)))
+      .catch(() => [] as KnowledgeSourceRef[]);
     const selected = options.revision == null
       ? revisions[revisions.length - 1]
       : revisions.find((revision) => revision.revisionNumber === options.revision || revision.id === options.revision);
@@ -161,6 +194,7 @@ export const knowledgeApi = {
         body: selected?.content ?? "",
         revisions: revisions.map(toRevisionSummary),
         sources: selected?.sources ?? [],
+        backlinks,
       },
     };
   },

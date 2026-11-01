@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import {

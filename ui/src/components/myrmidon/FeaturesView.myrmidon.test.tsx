@@ -6,7 +6,7 @@ import * as React from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FeaturesReport, FeatureView } from "@paperclipai/shared";
+import type { FeaturesReport, FeatureView } from "@myrmidon/shared";
 import { FeaturesView, sortFeatures } from "./FeaturesView";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -10,7 +10,7 @@
 // is exactly this plus the sweep).
 //
 // The per-agent ceiling and the P0 order are NOT re-implemented here: they are
-// decisions of the shared contract (`@paperclipai/shared`) applied through
+// decisions of the shared contract (`@myrmidon/shared`) applied through
 // `nextQueueTaskForAgent`, so the supervisor view and the core cannot disagree.
 //
 // The wake goes through the existing `enqueueWakeup` admission path (the same
@@ -18,7 +18,7 @@
 // this module re-deriving any of them.
 
 import { and, eq } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
@@ -33,7 +33,7 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
@@ -212,12 +212,27 @@ export async function claimNextTaskForAgent(
   ]);
   const liveClaims = [...companyClaims, ...agentClaims];
 
+  const activeByProject: Record<string, number> = {};
+  const activeByCaste: Record<string, number> = {};
+  const candidateMap = new Map(candidates.map((c) => [c.issueId, c]));
+  for (const claim of liveClaims) {
+    const candidate = candidateMap.get(claim.issueId);
+    if (candidate?.projectId) {
+      activeByProject[candidate.projectId] = (activeByProject[candidate.projectId] ?? 0) + 1;
+    }
+    if (candidate?.casteId) {
+      activeByCaste[candidate.casteId] = (activeByCaste[candidate.casteId] ?? 0) + 1;
+    }
+  }
+
   const next = nextQueueTaskForAgent({
     candidates,
     liveClaims,
     activeTasks: agentClaims.length,
     settings: effectiveSettings,
     now,
+    activeByProject,
+    activeByCaste,
   });
   if (!next) {
     // Distinguish "nothing to take" from "not allowed to take".
@@ -228,6 +243,8 @@ export async function claimNextTaskForAgent(
         activeTasks: 0,
         settings: effectiveSettings,
         now,
+        activeByProject,
+        activeByCaste,
       });
       if (bareQueue) return { claim: null, reason: "limit_reached" };
     }

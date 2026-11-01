@@ -7,8 +7,8 @@ import type {
   ToolCatalogEntry,
   ToolPolicy,
   ToolProfileEffectiveSummary,
-} from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+} from "@myrmidon/shared";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 
 const mockToolsApi = vi.hoisted(() => ({
@@ -46,6 +46,26 @@ async function flushReact(cycles = 4) {
       await Promise.resolve();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
+  }
+}
+
+// Re-run the assertions until they hold or the time budget is spent. How many
+// flush cycles the dependent queries need to settle (connections, then the
+// per-connection catalog) depends on how loaded the machine is, so a fixed
+// number of cycles followed by one read passes on a fast runner and sees a
+// half-rendered tab on a slow one. 3 s stays under the 5 s default test timeout.
+async function waitForAssertion(assertion: () => void, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    await flushReact(1);
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) throw lastError;
   }
 }
 
@@ -104,6 +124,16 @@ function makePolicy(overrides: Partial<ToolPolicy>): ToolPolicy {
 describe("AgentToolsTab", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
+  let AgentToolsTab: typeof import("./AgentToolsTab").AgentToolsTab;
+  let mergeInstallDraft: typeof import("./AgentToolsTab").mergeInstallDraft;
+
+  // The tab pulls in a large component graph. It used to be imported inside the
+  // first test, so the cold import (several seconds on a slow runner) ran inside
+  // that test's 5 s budget and timed it out. Import it once, outside any test.
+  // 30 s is several times the measured cold import.
+  beforeAll(async () => {
+    ({ AgentToolsTab, mergeInstallDraft } = await import("./AgentToolsTab"));
+  }, 30_000);
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -133,7 +163,6 @@ describe("AgentToolsTab", () => {
   });
 
   async function renderTab() {
-    const { AgentToolsTab } = await import("./AgentToolsTab");
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const agent = { id: "agent-1", name: "Coder" } as never;
     await act(async () => {
@@ -150,8 +179,6 @@ describe("AgentToolsTab", () => {
   }
 
   it("preserves checkbox changes made after the last saved install state", async () => {
-    const { mergeInstallDraft } = await import("./AgentToolsTab");
-
     expect(
       mergeInstallDraft(
         { "conn-1": true, "conn-2": false },
@@ -243,21 +270,23 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("Effective access");
-    expect(text).toContain("github.read_repo");
-    expect(text).toContain("Production GitHub");
-    expect(text).toContain("GitHub safe");
-    expect(text).toContain("Access profiles");
-    expect(text).toContain("Organization default");
-    expect(container.querySelector('a[href="/apps/advanced/profiles/prof-1"]')?.textContent).toBe("GitHub safe");
-    expect(container.querySelector('a[href="/apps/advanced/profiles?check=1"]')?.textContent).toBe("Check access");
-    // Governing policy #1 is the company-wide require_approval rule.
-    expect(text).toContain("#1 Require approval for writes");
-    // The policy that targets a different agent must NOT appear.
-    expect(text).not.toContain("Block other agent");
-    // Unavailable tool surfaced from the full tool list minus allowed.
-    expect(text).toContain("github.delete_repo");
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Effective access");
+      expect(text).toContain("github.read_repo");
+      expect(text).toContain("Production GitHub");
+      expect(text).toContain("GitHub safe");
+      expect(text).toContain("Access profiles");
+      expect(text).toContain("Organization default");
+      expect(container.querySelector('a[href="/apps/advanced/profiles/prof-1"]')?.textContent).toBe("GitHub safe");
+      expect(container.querySelector('a[href="/apps/advanced/profiles?check=1"]')?.textContent).toBe("Check access");
+      // Governing policy #1 is the company-wide require_approval rule.
+      expect(text).toContain("#1 Require approval for writes");
+      // The policy that targets a different agent must NOT appear.
+      expect(text).not.toContain("Block other agent");
+      // Unavailable tool surfaced from the full tool list minus allowed.
+      expect(text).toContain("github.delete_repo");
+    });
   });
 
   it("shows the empty allow-list message when no profile applies", async () => {
@@ -275,11 +304,13 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("No tools are allowed for this agent");
-    expect(text).toContain("No active profile applies");
-    expect(text).toContain("Use responsible person's GitHub");
-    expect(container.querySelector('a[href="/apps/connect?source=github"]')?.textContent).toBe("Connect my GitHub");
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("No tools are allowed for this agent");
+      expect(text).toContain("No active profile applies");
+      expect(text).toContain("Use responsible person's GitHub");
+      expect(container.querySelector('a[href="/apps/connect?source=github"]')?.textContent).toBe("Connect my GitHub");
+    });
   });
 
   it("shows an active dedicated GitHub identity as the agent override", async () => {
@@ -333,11 +364,13 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("@dottabot");
-    expect(text).toContain("takes precedence over the responsible person's GitHub");
-    expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
-    expect(text).not.toContain("Connect my GitHub");
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("@dottabot");
+      expect(text).toContain("takes precedence over the responsible person's GitHub");
+      expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
+      expect(text).not.toContain("Connect my GitHub");
+    });
   });
 
   it("does not display a grant from a disabled or uninstalled GitHub connection", async () => {
@@ -367,10 +400,12 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    const text = container.textContent ?? "";
-    expect(mockToolsApi.listConnectionGrants).not.toHaveBeenCalled();
-    expect(text).toContain("Use responsible person's GitHub");
-    expect(text).not.toContain("@dottabot");
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(mockToolsApi.listConnectionGrants).not.toHaveBeenCalled();
+      expect(text).toContain("Use responsible person's GitHub");
+      expect(text).not.toContain("@dottabot");
+    });
   });
 
   it("shows a retryable error instead of connection setup when grants cannot be loaded", async () => {
@@ -401,11 +436,13 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("Could not load GitHub identity");
-    expect(text).toContain("Your existing setup was not changed");
-    expect(text).not.toContain("Connect my GitHub");
-    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Retry")).toBe(true);
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Could not load GitHub identity");
+      expect(text).toContain("Your existing setup was not changed");
+      expect(text).not.toContain("Connect my GitHub");
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Retry")).toBe(true);
+    });
   });
 
   it("autosaves installed apps for the current agent", async () => {
@@ -427,20 +464,24 @@ describe("AgentToolsTab", () => {
 
     await renderTab();
 
-    expect(container.textContent).toContain("Installed apps");
-    expect(container.textContent).toContain("Permitted only");
-    expect(container.textContent).toContain("Permitted but not installed — tools will not appear in runs.");
-    expect(container.querySelector('a[href="/apps/conn-1/permissions"]')?.textContent).toBe("Open permissions");
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Installed apps");
+      expect(container.textContent).toContain("Permitted only");
+      expect(container.textContent).toContain("Permitted but not installed — tools will not appear in runs.");
+      expect(container.querySelector('a[href="/apps/conn-1/permissions"]')?.textContent).toBe("Open permissions");
+      expect(container.querySelector('[aria-label="Install Production GitHub on Coder"]')).toBeTruthy();
+    });
     const installCheckbox = container.querySelector<HTMLElement>('[aria-label="Install Production GitHub on Coder"]');
-    expect(installCheckbox).toBeTruthy();
     await act(async () => {
       installCheckbox!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
     });
-    await flushReact();
 
-    expect(mockToolsApi.putConnectionInstalls).toHaveBeenCalledWith("conn-1", [
-      { targetType: "agent", targetId: "agent-1" },
-    ]);
+    // The tab saves 250 ms after the last checkbox change. Wait for the save
+    // itself, not for a fixed sleep a little longer than the debounce.
+    await waitForAssertion(() => {
+      expect(mockToolsApi.putConnectionInstalls).toHaveBeenCalledWith("conn-1", [
+        { targetType: "agent", targetId: "agent-1" },
+      ]);
+    });
   });
 });

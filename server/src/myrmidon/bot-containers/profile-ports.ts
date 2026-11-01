@@ -29,10 +29,10 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@paperclipai/db";
+import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@myrmidon/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@myrmidon/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import {
   agentInstructionsService,
@@ -56,6 +56,7 @@ import { createCardEnvResolver } from "./card-env.js";
 import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
+import { listFleetSites } from "./site-registry.js";
 import {
   createActivityWarningSink,
   createBotProfileCompile,
@@ -71,9 +72,8 @@ import type { BotContainerActivitySink } from "./reconciler.js";
 import type { BotProfilePass } from "./profile-pass.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(1.6-WIKI): approved wiki regulations reach a bot through its compiled profile.
-import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
-import { createWikiRegulationService } from "../wiki-cortex/service.js";
-import { createDbRegulationStore } from "../wiki-cortex/store.js";
+import { createKnowledgeRegulationResolver, loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
+import { createKnowledgeModule } from "../knowledge/index.js";
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
@@ -187,8 +187,18 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
   const skillLifecycle = skillLifecycleService(db);
   const instructions = agentInstructionsService();
   const instanceSettings = instanceSettingsService(db);
-  // myrmidon(1.6-WIKI): the wiki regulations of the company, delivered through the profile.
-  const wikiRegulations = createWikiRegulationService(createDbRegulationStore(db));
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): the rules of a caste are `kind=rule`
+  // items of the company's knowledge module (one nest per company today), so the
+  // profile compiler reads the knowledge module, not the wiki tables. The module
+  // is built per company and memoised for the life of this ports object.
+  const knowledgeModules = new Map<string, ReturnType<typeof createKnowledgeModule>>();
+  const knowledgeModuleFor = (companyId: string) => {
+    const existing = knowledgeModules.get(companyId);
+    if (existing) return existing;
+    const created = createKnowledgeModule(db, companyId);
+    knowledgeModules.set(companyId, created);
+    return created;
+  };
   const resolveCardEnv = createCardEnvResolver(
     {
       resolveEnvBindings: (companyId, bindings, context) => secrets.resolveEnvBindings(companyId, bindings, context),
@@ -514,10 +524,12 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return general.botLsp;
     },
 
-    // myrmidon(1.6-WIKI): the approved regulations of the agent's role, as workspace files
-    // for the container profile. An empty wiki produces no file at all.
+    // myrmidon(1.6-WIKI, 1.6.6 KNOWLEDGE-2.0 K-3): the approved rules of the
+    // agent's caste, as workspace files for the container profile. An instance
+    // with no rules produces no file at all.
     async loadRegulations(agent, context) {
-      return loadRegulationWorkspaceFiles(wikiRegulations, { companyId: agent.companyId, role: agent.role }, context);
+      const resolver = createKnowledgeRegulationResolver(knowledgeModuleFor(agent.companyId));
+      return loadRegulationWorkspaceFiles(resolver, { companyId: agent.companyId, role: agent.role }, context);
     },
   };
 }
@@ -530,6 +542,11 @@ export function createDbBotCardSyncPorts(db: Db, profilePorts: BotProfilePorts =
   return {
     loadAgent: profilePorts.loadAgent,
     ensureApiServerKey: profilePorts.ensureApiServerKey,
+    async fleetSiteUrl(companyId: string, hostName: string) {
+      const sites = await listFleetSites(db, companyId);
+      const site = sites.find((entry) => entry.name === hostName && entry.status === "active");
+      return site?.url ?? null;
+    },
     async saveAdapterConfig(agent, adapterConfig) {
       await agents.update(agent.id, { adapterConfig }, { recordRevision: { source: "myrmidon_bot_containers" } });
     },
@@ -557,18 +574,42 @@ export function botProfileWiring(
    *  bot is done, so nothing survives into the next tick. */
   beginProfilePass: () => BotProfilePass;
   endProfilePass: (pass: BotProfilePass) => void;
-  syncCard: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult>;
+  syncCard: (
+    agentId: string,
+    botKey: string,
+    appliedApiServerKeyVersion: number,
+    options?: { fleetGatewayApiBaseUrl?: string | null; gatewayPort?: number | null },
+  ) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
   /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
    *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
    *  resolver — so its per-agent cache and secret-stamp validation are the
    *  profile compiler's, not a second set. */
-  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
+  const fleetHostForAgent: NonNullable<BotProfileCompileOptions["fleetHostForAgent"]> = async (agent, hostName) => {
+    const site = (await listFleetSites(db, agent.companyId)).find((entry) => entry.name === hostName && entry.status === "active");
+    if (!site) return null;
+    return {
+      name: site.name,
+      url: site.url,
+      tokenSecret: site.tokenSecret ?? "",
+      hindsightUrl: site.profile.hindsightUrl,
+      llmBaseUrl: site.profile.llmBaseUrl,
+      boardExtraHost: site.profile.boardExtraHost,
+      volumeRoot: site.profile.volumeRoot,
+      network: site.profile.network,
+      imageAllowlist: site.profile.imageAllowlist,
+    };
+  };
   const onWarnings = compileOptions.onWarnings ?? (activity ? createActivityWarningSink(activity) : undefined);
-  const compile = createBotProfileCompile(ports, { ...compileOptions, ...(onWarnings ? { onWarnings } : {}) });
+  const compile = createBotProfileCompile(ports, {
+    ...compileOptions,
+    fleetHostForAgent,
+    ...(onWarnings ? { onWarnings } : {}),
+  });
   return {
     compile,
     beginProfilePass: compile.beginPass,

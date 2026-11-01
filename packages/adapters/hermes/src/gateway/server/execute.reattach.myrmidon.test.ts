@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import { execute, probeGatewayRunForBoard, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
 
 // myrmidon(HERMES-RUN-REATTACH): after a board restart, the reattach sweep
 // re-dispatches the same heartbeat run with the gateway run id it persisted
@@ -314,5 +314,49 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
 
     expect(stopped.stopped).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("probeGatewayRunForBoard (HERMES-RUN-REATTACH, OPE-10023)", () => {
+  it("reports live when gateway returns a non-terminal status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "running" }), { status: 200 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "live", status: "running" });
+  });
+
+  it("reports terminal when gateway returns a terminal status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "completed" }), { status: 200 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "terminal", status: "completed" });
+  });
+
+  it("reports not_found when gateway returns 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "not_found", status: null });
+  });
+
+  it("reports unreachable when gateway request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network error");
+    }));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res.state).toBe("unreachable");
   });
 });

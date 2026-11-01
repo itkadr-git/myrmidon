@@ -11,7 +11,7 @@ import type {
   TeamLivenessSettings,
   TeamLivenessSettingsPatch,
   TeamLivenessSource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 export interface TeamLivenessView {

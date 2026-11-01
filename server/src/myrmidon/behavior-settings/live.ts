@@ -8,7 +8,7 @@
 import {
   behaviorSettingRegistry,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 let liveSettings: Record<string, unknown> = {};
 let liveSources: Record<string, string> = {};
@@ -28,4 +28,14 @@ export function liveBehaviorSettingsView(): ResolvedBehaviorSettings {
 export function applyLiveBehaviorSettings(view: ResolvedBehaviorSettings): void {
   liveSettings = { ...view.settings };
   liveSources = { ...view.sources };
+}
+
+/**
+ * The value an operator saved from the UI, or undefined while the key is
+ * still on its environment value or default. Consumers prefer it and fall
+ * back to their own environment reading, so a saved value wins once it
+ * exists (the contract of `resolveSetting`) and nothing changes before.
+ */
+export function liveSavedSetting<T = unknown>(key: string): T | undefined {
+  return liveSources[key] === "ui" ? (liveSettings[key] as T) : undefined;
 }

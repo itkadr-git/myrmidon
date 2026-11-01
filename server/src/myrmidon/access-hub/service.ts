@@ -18,7 +18,7 @@ import {
   companySecretBindings,
   companySecrets,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";

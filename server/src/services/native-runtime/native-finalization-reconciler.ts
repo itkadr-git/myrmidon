@@ -2,7 +2,7 @@ import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } 
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   completionContracts,
   heartbeatRunEvents,
@@ -15,7 +15,7 @@ import {
   statusDecisions,
   workAssessments,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   finalizeNativeRun,
   pendingNativeGovernance,
@@ -35,6 +35,7 @@ import { recoveryLivenessDescriptor } from "../../myrmidon/stale-block/event-key
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { reportRunFailure } from "../run-failure-report.js";
+import { invalidateFailedRunsCache } from "../../myrmidon/swarm-claim/effective-pheromone.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -534,8 +535,10 @@ export async function claimNativeSessionResumptions(input: {
     // Telemetry is best-effort background work; it must not delay claiming
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
-      void emitAgentTaskRun(input.db, terminalRunToEmit);
-      void reportRunFailure(input.db, terminalRunToEmit);
+      const failedRun = terminalRunToEmit as typeof heartbeatRuns.$inferSelect;
+      invalidateFailedRunsCache(failedRun.companyId);
+      void emitAgentTaskRun(input.db, failedRun);
+      void reportRunFailure(input.db, failedRun);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }

@@ -45,7 +45,7 @@
 // the bounded retry follows the gateway's own hint.
 
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
 
@@ -73,6 +73,24 @@ export interface GatewayRunReattachHeartbeatPort {
     runId: string,
     gatewayRunId: string,
   ) => Promise<void>;
+  /**
+   * Optional gateway probe hook to verify run liveness with the bot gateway.
+   */
+  probeGatewayRun?: (input: {
+    companyId?: string;
+    agentId?: string | null;
+    runId?: string | null;
+    adapterConfig?: Record<string, unknown> | null;
+    baseUrl?: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
 }
 
 export interface GatewayRunReattachOptions {
@@ -85,6 +103,12 @@ export interface GatewayRunReattachOptions {
    * means a live controller.
    */
   adoptableControllerBootIds?: readonly string[];
+  /**
+   * True when run during startup recovery. At startup, predecessor controllers
+   * died on board restart, so runs confirmed live by the gateway can be claimed
+   * immediately without waiting out the dead predecessor's lease.
+   */
+  isStartup?: boolean;
 }
 
 export interface GatewayRunReattachResult {
@@ -99,6 +123,10 @@ export interface GatewayRunReattachResult {
    * still live under a boot id this pass may not adopt -- the owner process
    * supervises them. */
   skippedLiveLease: number;
+  /** Runs skipped because the gateway was unreachable; deferred for grace period. */
+  skippedUnreachable: number;
+  /** Runs confirmed absent (404) by the gateway; left for orphan reaper to finalize. */
+  lostNotFound: number;
   /** Claim or dispatch failures; the reaper or a later pass handles them. */
   failed: number;
   runIds: string[];
@@ -128,9 +156,11 @@ export async function sweepGatewayRunReattach(
     .select({
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
       externalRunId: heartbeatRuns.externalRunId,
       controllerBootId: heartbeatRuns.controllerBootId,
       controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+      adapterConfig: agents.adapterConfig,
     })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -148,6 +178,8 @@ export async function sweepGatewayRunReattach(
     reattached: 0,
     skippedAlreadyMarked: 0,
     skippedLiveLease: 0,
+    skippedUnreachable: 0,
+    lostNotFound: 0,
     failed: 0,
     runIds: [],
   };
@@ -157,25 +189,73 @@ export async function sweepGatewayRunReattach(
 
   for (const candidate of candidates) {
     try {
+      if (candidate.controllerBootId === legacyControllerBootId) {
+        continue;
+      }
+
       // myrmidon(T1.6): pre-filter on the row's lease so a live controller's
       // runs are never marked and the pass reports them; the claim UPDATE
       // repeats the condition atomically, because the lease may have moved
       // between the SELECT and the UPDATE (renewed, expired, or revoked).
+      // On startup, the previous controller died with the board restart, so
+      // unexpired predecessor leases can be adopted once confirmed live.
       const leaseLive =
         candidate.controllerLeaseExpiresAt != null &&
         candidate.controllerLeaseExpiresAt.getTime() > nowMs;
-      if (leaseLive && !adoptableSet.has(candidate.controllerBootId ?? "")) {
+      if (!options.isStartup && leaseLive && !adoptableSet.has(candidate.controllerBootId ?? "")) {
         result.skippedLiveLease += 1;
         continue;
       }
 
+      // myrmidon(OPE-10023): check with bot gateway if probe is available
+      if (heartbeat.probeGatewayRun && candidate.externalRunId) {
+        const rawConfig =
+          typeof candidate.adapterConfig === "object" && candidate.adapterConfig !== null
+            ? (candidate.adapterConfig as Record<string, unknown>)
+            : {};
+        const baseUrl =
+          (typeof rawConfig.apiBaseUrl === "string" && rawConfig.apiBaseUrl.trim()) ||
+          (typeof rawConfig.baseUrl === "string" && rawConfig.baseUrl.trim()) ||
+          (typeof rawConfig.url === "string" && rawConfig.url.trim()) ||
+          null;
+        const apiKey =
+          (typeof rawConfig.apiKey === "string" && rawConfig.apiKey.trim()) ||
+          (typeof rawConfig.token === "string" && rawConfig.token.trim()) ||
+          null;
+
+        const probe = await heartbeat.probeGatewayRun({
+          companyId: candidate.companyId,
+          agentId: candidate.agentId,
+          runId: candidate.id,
+          adapterConfig: rawConfig,
+          baseUrl: baseUrl ?? undefined,
+          apiKey: apiKey ?? undefined,
+          headers: rawConfig.headers as any,
+          gatewayRunId: candidate.externalRunId,
+        });
+
+        if (probe.state === "not_found") {
+          result.lostNotFound += 1;
+          logger.info(
+            { runId: candidate.id, gatewayRunId: candidate.externalRunId },
+            "gateway run reattach: run not found on gateway (404); skipping reattach so reaper can finalize",
+          );
+          continue;
+        }
+
+        if (probe.state === "unreachable") {
+          result.skippedUnreachable += 1;
+          logger.warn(
+            { runId: candidate.id, gatewayRunId: candidate.externalRunId, error: probe.error },
+            "gateway run reattach: gateway unreachable; waiting before finalizing",
+          );
+          continue;
+        }
+      }
+
       // Atomically mark the run for reattach and claim the legacy controller
       // lease in one UPDATE: only a row that is still running, still carries
-      // the gateway run id, has no reattach marker yet, and whose lease is
-      // adoptable wins. The lease claim mirrors legacyControllerClaim (same
-      // boot id, a fresh 60s lease, a distinct execution stage) so the
-      // reaper's hasLiveLegacyController check sees a live controller while
-      // the execution spins up.
+      // the gateway run id, and whose lease is adoptable wins.
       const [claimed] = await db
         .update(heartbeatRuns)
         .set({
@@ -200,6 +280,7 @@ export async function sweepGatewayRunReattach(
             sql`coalesce((${heartbeatRuns.contextSnapshot} ->> ${REATTACH_GATEWAY_RUN_ID_CONTEXT_KEY}), '') = ''`,
             // myrmidon(T1.6): the atomic half of the lease guard.
             or(
+              ...(options.isStartup ? [sql`true`] : []),
               isNull(heartbeatRuns.controllerLeaseExpiresAt),
               lte(
                 heartbeatRuns.controllerLeaseExpiresAt,
@@ -231,10 +312,20 @@ export async function sweepGatewayRunReattach(
     }
   }
 
-  if (result.reattached > 0) {
+  if (result.scanned > 0 || options.isStartup) {
     logger.info(
-      { ...result },
-      "gateway run reattach: redispatched running gateway runs after restart",
+      {
+        scanned: result.scanned,
+        reattached: result.reattached,
+        skippedAlreadyMarked: result.skippedAlreadyMarked,
+        skippedLiveLease: result.skippedLiveLease,
+        skippedUnreachable: result.skippedUnreachable,
+        lostNotFound: result.lostNotFound,
+        failed: result.failed,
+        runIds: result.runIds,
+        isStartup: Boolean(options.isStartup),
+      },
+      `gateway run reattach sweep finished: ${result.reattached} reattached, ${result.lostNotFound} not found (lost), ${result.skippedUnreachable} unreachable (waiting), ${result.skippedLiveLease} skipped live lease, ${result.failed} failed out of ${result.scanned} scanned`,
     );
   }
   return result;

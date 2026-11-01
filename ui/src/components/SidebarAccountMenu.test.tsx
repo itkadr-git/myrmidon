@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -145,7 +145,7 @@ describe("SidebarAccountMenu", () => {
     const feedbackButton = container.querySelector<HTMLAnchorElement>(
       'a[aria-label="Share feedback"]',
     );
-    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(feedbackButton?.getAttribute("href")).toBe("https://github.com/itkadr-git/myrmidon/issues");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
     expect(feedbackButton?.classList).toContain("text-muted-foreground/50");
     expect(feedbackButton?.classList).not.toContain("text-border");
@@ -156,6 +156,20 @@ describe("SidebarAccountMenu", () => {
     expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
     expect(feedbackButton?.hasAttribute("title")).toBe(false);
+
+    await act(async () => {
+      accountTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    const docsLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="https://github.com/itkadr-git/myrmidon/tree/main/docs"]',
+    );
+    expect(docsLink).not.toBeNull();
+    expect(docsLink?.getAttribute("target")).toBe("_blank");
+    expect(docsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(docsLink?.textContent).toContain("Documentation");
 
     await act(async () => root.unmount());
   });
@@ -184,7 +198,7 @@ describe("SidebarAccountMenu", () => {
     const feedbackButton = container.querySelector<HTMLAnchorElement>(
       'a[aria-label="Share feedback"]',
     );
-    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(feedbackButton?.getAttribute("href")).toBe("https://github.com/itkadr-git/myrmidon/issues");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
     expect(feedbackButton?.classList).toContain("text-muted-foreground/50");
     expect(feedbackButton?.classList).not.toContain("text-border");
@@ -200,7 +214,14 @@ describe("SidebarAccountMenu", () => {
 
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
-    expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+    expect(popover?.querySelector('a[href="https://github.com/itkadr-git/myrmidon/issues"]')).toBeNull();
+    const docsLink = popover?.querySelector<HTMLAnchorElement>(
+      'a[href="https://github.com/itkadr-git/myrmidon/tree/main/docs"]',
+    );
+    expect(docsLink).not.toBeNull();
+    expect(docsLink?.getAttribute("target")).toBe("_blank");
+    expect(docsLink?.getAttribute("rel")).toContain("noreferrer");
+    expect(docsLink?.textContent).toContain("Documentation");
 
     await act(async () => root.unmount());
   });
@@ -246,7 +267,7 @@ describe("SidebarAccountMenu", () => {
 
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
-    expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+    expect(popover?.querySelector('a[href="https://github.com/itkadr-git/myrmidon/issues"]')).toBeNull();
 
     // Documentation still appears before the theme toggle.
     const menuText = popover?.textContent ?? "";
@@ -427,4 +448,51 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
+  it("renders interface version toggle with New, Previous and Instance Default options", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="authenticated" />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const toggle = document.body.querySelector('[data-testid="ui-interface-toggle"]');
+    expect(toggle).not.toBeNull();
+    const optNew = document.body.querySelector('[data-testid="ui-switch-option-2"]');
+    const optLegacy = document.body.querySelector('[data-testid="ui-switch-option-1"]');
+    const optInstance = document.body.querySelector('[data-testid="ui-switch-option-instance"]');
+    expect(optNew).not.toBeNull();
+    expect(optLegacy).not.toBeNull();
+    expect(optInstance).not.toBeNull();
+
+    await act(async () => {
+      optNew?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem("myr.ui2.personal")).toBe("2");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

@@ -14,16 +14,44 @@
 // Error discipline: a card naming a host that is not in the map throws — an
 // unknown host must surface as a reconcile error, never fall back to the
 // local driver (a bot would silently run on the wrong machine).
+//
+// Optional methods: the router is typed `Required<BotContainerDriver>`, so every
+// optional method of the interface is answered here whatever the host behind it
+// supports. A service that tests `driver.method` for presence (reconciler,
+// clone-report collector, git-store route, IDLE-STOP) sees a router that always
+// has it; the router therefore keeps each method's "driver without it" answer:
+//   - updateResources: the host's, else `recreate`;
+//   - stopIdle: the host's, else the IDLE-STOP "not supported" error;
+//   - statusWithDrift: the host's, else `status` + `templateDrift` (what the
+//     reconciler does with a driver that lacks the probe);
+//   - listRunning: the host's, else `list` filtered to running;
+//   - readCloneReport / readBotSkills: the host's, else null ("nothing to read").
+// A router that forwarded only the required methods silently turned all of the
+// above off for every bot (IDLE-STOP: "idle-stop route is not supported by this
+// driver" on each sweep).
 
 import { cardFleetHost, fleetSiteKey, type FleetHostConfig } from "./fleetd-hosts.js";
-import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftReport } from "./driver.js";
+import {
+  IDLE_STOP_UNSUPPORTED_MESSAGE,
+  type BotContainerDriver,
+  type BotContainerSpec,
+  type BotContainerStatus,
+  type BotSkillDirectory,
+  type TemplateDriftReport,
+} from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
 export interface FleetRoutingDeps {
   /** The local docker driver (default host). */
   local: BotContainerDriver;
-  /** A fleetd client per configured host name, or a dynamic map provider. */
-  fleet: ReadonlyMap<string, BotContainerDriver> | (() => ReadonlyMap<string, BotContainerDriver>);
+  /**
+   * A fleetd client per configured host name (static env map), or a provider of
+   * the current map. The provider is asked with the company of the bot's card and
+   * returns only that company's clients by bare name; a routed call of a bot
+   * without a companyId fails closed. Called without a company (list) it returns
+   * all clients.
+   */
+  fleet: ReadonlyMap<string, BotContainerDriver> | ((companyId?: string) => ReadonlyMap<string, BotContainerDriver>);
   /**
    * Awaited before every routing decision: lets a dynamic registry reload its
    * clients (hot-reload) so a CRUD change applies without a server restart.
@@ -39,8 +67,8 @@ export interface RoutedBotAgent {
   adapterConfig: { container?: unknown };
 }
 
-function resolveFleetMap(deps: FleetRoutingDeps): ReadonlyMap<string, BotContainerDriver> {
-  return typeof deps.fleet === "function" ? deps.fleet() : deps.fleet;
+function resolveFleetMap(deps: FleetRoutingDeps, companyId?: string): ReadonlyMap<string, BotContainerDriver> {
+  return typeof deps.fleet === "function" ? deps.fleet(companyId) : deps.fleet;
 }
 
 async function awaitReady(deps: FleetRoutingDeps): Promise<void> {
@@ -60,10 +88,14 @@ async function driverFor(
   const agent = await agentOrPromise;
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
-  const fleetMap = resolveFleetMap(deps);
-  // Tenant isolation: a named host resolves only inside the agent's own
-  // company; without a companyId the bare name is used (static env maps).
-  const driver = fleetMap.get(agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
+  // Tenant isolation: a provider is asked for the agent's own company only, and
+  // a call without a companyId is refused (fail-closed). A static env map keeps
+  // the bare name (no company-scoped sites there).
+  if (typeof deps.fleet === "function" && !agent?.companyId) {
+    throw new Error(`container.host "${host}" cannot be routed: the bot's card has no companyId`);
+  }
+  const fleetMap = resolveFleetMap(deps, agent?.companyId);
+  const driver = fleetMap.get(typeof deps.fleet !== "function" && agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
   if (!driver) {
     throw new Error(
       `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)`,
@@ -77,7 +109,9 @@ export function fleetRoutingDriver(
   deps: FleetRoutingDeps,
   agentOf: (botKey: string) => RoutedBotAgent | undefined | Promise<RoutedBotAgent | undefined>,
 ): BotContainerDriver {
-  return {
+  // `Required`: adding an optional method to BotContainerDriver without routing it here is a
+  // compile error, not a feature that quietly stops working behind the router.
+  const routed: Required<BotContainerDriver> = {
     async status(botKey: string): Promise<BotContainerStatus> {
       const driver = await driverFor(deps, agentOf(botKey));
       return driver.status(botKey);
@@ -90,6 +124,29 @@ export function fleetRoutingDriver(
         [deps.local, ...fleetMap.values()].map((driver) => driver.list(botKeys)),
       );
       return results.flat();
+    },
+    async listRunning(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
+      await awaitReady(deps);
+      const fleetMap = resolveFleetMap(deps);
+      // The union of all hosts' running bots; a host without the probe (fleetd) is asked
+      // through `list` and filtered, which is what the caller does with a driver lacking it.
+      const results = await Promise.all(
+        [deps.local, ...fleetMap.values()].map(async (driver) =>
+          driver.listRunning
+            ? driver.listRunning(botKeys)
+            : (await driver.list(botKeys)).filter((bot) => bot.state === "running"),
+        ),
+      );
+      return results.flat();
+    },
+    async statusWithDrift(spec: BotContainerSpec): Promise<{ status: BotContainerStatus; drift: TemplateDriftReport }> {
+      const driver = await driverFor(deps, agentOf(spec.botKey));
+      if (driver.statusWithDrift) return driver.statusWithDrift(spec);
+      // A host without the one-inspect probe (fleetd): the reconciler's own fallback, the
+      // status and then the drift check on that status. No container, no drift to report.
+      const status = await driver.status(spec.botKey);
+      if (status.state === "missing") return { status, drift: { drifted: false, fields: [] } };
+      return { status, drift: await driver.templateDrift(spec, status) };
     },
     async templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
       const driver = await driverFor(deps, agentOf(spec.botKey));
@@ -124,5 +181,19 @@ export function fleetRoutingDriver(
       const driver = await driverFor(deps, agentOf(botKey));
       await driver.stop(botKey);
     },
+    async stopIdle(botKey: string): Promise<void> {
+      const driver = await driverFor(deps, agentOf(botKey));
+      if (!driver.stopIdle) throw new Error(IDLE_STOP_UNSUPPORTED_MESSAGE);
+      await driver.stopIdle(botKey);
+    },
+    async readCloneReport(botKey: string): Promise<string | null> {
+      const driver = await driverFor(deps, agentOf(botKey));
+      return driver.readCloneReport ? driver.readCloneReport(botKey) : null;
+    },
+    async readBotSkills(botKey: string): Promise<BotSkillDirectory[] | null> {
+      const driver = await driverFor(deps, agentOf(botKey));
+      return driver.readBotSkills ? driver.readBotSkills(botKey) : null;
+    },
   };
+  return routed;
 }

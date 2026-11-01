@@ -5,6 +5,20 @@ function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), "utf8");
 }
 
+// myrmidon(OPE-8950): the visible copy of this area lives in the en catalog,
+// not in the component source, so copy assertions read the catalog.
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (value && typeof value === "object")
+    return Object.values(value).flatMap(collectStrings);
+  return [];
+}
+const catalog = collectStrings(
+  JSON.parse(
+    source("../../../i18n/myrmidon-locales/areas/apps-chat-email.en.json"),
+  ),
+).join("\n");
+
 describe("chat connector UI contract", () => {
   it("describes the close command as a conversation control rather than a task status change", () => {
     const setup = source("./ChatEndpointSetup.tsx");
@@ -31,18 +45,32 @@ describe("chat connector UI contract", () => {
     expect(issue).toMatch(
       /agentsApi\.retryFailedRun\(\s*failedRun\.agentId,\s*failedRun\.runId,\s*companyId/,
     );
-    expect(issue).toContain("Retry queued");
+    expect(issue).toContain('"area.issue-threads-runs-2.issue-detail.retryQueued"');
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/issue-threads-runs-2.en.json"),
+        ),
+      ),
+    ).toContain("Retry queued");
     for (const file of ["Inbox.tsx", "LegacyInbox.tsx"]) {
       const page = source(`../../${file}`);
       expect(page).toMatch(
-        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: "Run retry failed"/,
+        /const retryRunMutation = useMutation\(\{[\s\S]*?onError: \(error\) => \{\s*pushToast\(\{\s*title: t\("area\.inbox-status-cards-2\.(?:legacy-)?inbox\.retryRunFailed"\)/,
       );
     }
+    expect(
+      collectStrings(
+        JSON.parse(
+          source("../../../i18n/myrmidon-locales/areas/inbox-status-cards-2.en.json"),
+        ),
+      ),
+    ).toContain("Run retry failed");
   });
   it("keeps the exact dual-purpose choice and immutable searchable agent selection", () => {
     const setup = source("./ChatEndpointSetup.tsx");
-    expect(setup).toContain("Chat with an agent");
-    expect(setup).toContain("Use this connection as an agent tool");
+    expect(catalog).toContain("Chat with an agent");
+    expect(catalog).toContain("Use this connection as an agent tool");
     expect(setup).toContain("<AgentSelect");
     expect(setup).not.toContain("Change agent");
   });
@@ -53,25 +81,26 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("Open {providerNames[provider]}");
-    expect(detail).toContain("Open task");
+    expect(detail).toContain(
+      "chat-endpoint-detail.conversations.openProvider",
+    );
+    expect(catalog).toContain("Open task");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
   it("shows independent Slack callback surfaces and public URL drift", () => {
     const detail = source("./ChatEndpointDetail.tsx");
-    expect(detail).toContain("Slack callback health");
-    expect(detail).toContain("Events API");
+    expect(catalog).toContain("Slack callback health");
+    expect(catalog).toContain("Events API");
     expect(detail).toContain("Interactivity");
-    expect(detail).toContain("Slash command");
+    expect(catalog).toContain("Slash command");
     expect(detail).toContain("callbacksNeedUpdate");
-    expect(detail).toContain("Slack callback URLs need an update");
-    expect(detail).toContain("Not observed");
+    expect(catalog).toContain("Slack callback URLs need an update");
+    expect(catalog).toContain("Not observed");
   });
 
   it("lists every supported provider in the agent channel empty state", () => {
-    const panel = source("../../../components/chat/AgentChannelsPanel.tsx");
-    expect(panel).toContain(
+    expect(catalog).toContain(
       "Connect AgentMail, Slack, GitHub, Discord, Microsoft Teams, or Telegram from",
     );
   });
@@ -79,13 +108,13 @@ describe("chat connector UI contract", () => {
   it("keeps provider capabilities automatic and settings focused on plausible reach", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     const setup = source("./ChatEndpointSetup.tsx");
-    expect(detail).toContain("Allow direct messages");
-    expect(detail).toContain("Allow group chats");
-    expect(detail).toContain("Their tasks run only with an isolated workspace");
-    expect(detail).toContain("otherwise Myrmidon safely refuses the request");
-    expect(setup).toContain("Link the account you’re testing");
-    expect(setup).toContain("Myrmidon does not replay the refused request");
-    expect(setup).toContain("Review identity access");
+    expect(catalog).toContain("Allow direct messages");
+    expect(catalog).toContain("Allow group chats");
+    expect(catalog).toContain("Their tasks run only with an isolated workspace");
+    expect(catalog).toContain("otherwise Myrmidon safely refuses the request");
+    expect(catalog).toContain("Link the account you’re testing");
+    expect(catalog).toContain("Myrmidon does not replay the refused request");
+    expect(catalog).toContain("Review identity access");
     expect(setup).toContain("instanceSettingsApi.getExperimental()");
     expect(setup).toContain("chatEndpointsApi.listPrincipals(endpointId)");
     expect(setup).toContain("queryKeys.chatEndpoints.detail(next.id)");
@@ -97,7 +126,7 @@ describe("chat connector UI contract", () => {
   it("explains Discord's independent per-server direct-message restriction", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     expect(detail).toContain('endpoint.provider === "discord"');
-    expect(detail).toContain(
+    expect(catalog).toContain(
       "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
     );
   });
@@ -110,17 +139,22 @@ describe("chat connector UI contract", () => {
     );
     const activity = detail.slice(detail.indexOf("function Activity"));
     expect(detail).toContain('"pause" | "resume" | "remove"');
-    expect(detail).toContain("Remove this connection?");
+    expect(catalog).toContain("Remove this connection?");
     expect(detail).toContain("purpose=chat&resume=${endpoint.id}");
     expect(detail).toContain('? "" : "&reconnect=1"');
-    expect(detail).toContain("Finish setup");
-    expect(detail).toContain("Continue setup");
+    expect(catalog).toContain("Finish setup");
+    expect(catalog).toContain("Continue setup");
     expect(detail).toContain('endpoint.setup?.step !== "complete"');
-    expect(detail).toContain("Reconnect");
+    expect(catalog).toContain("Reconnect");
     expect(detail).not.toContain("Change agent");
-    for (const label of ["Pause", "Resume", "Reconnect", "Remove connection"]) {
-      expect(activity).toContain(label);
-      expect(settings).not.toContain(label);
+    for (const key of [
+      "activity.pause",
+      "activity.resume",
+      "activity.reconnect",
+      "activity.removeConnection",
+    ]) {
+      expect(activity).toContain(`chat-endpoint-detail.${key}`);
+      expect(settings).not.toContain(`chat-endpoint-detail.${key}`);
     }
   });
 
@@ -135,7 +169,7 @@ describe("chat connector UI contract", () => {
     expect(detail).toContain("chatEndpointsApi.test(endpoint!.id)");
     expect(detail).toContain("finishSetup.isPending");
     expect(detail).toContain("chat_test_round_trip_incomplete");
-    expect(detail).toContain(
+    expect(catalog).toContain(
       "Wait for the agent to reply to the test conversation, then try again.",
     );
     expect(detail).toContain("queryKeys.chatEndpoints.detail(endpointId)");
@@ -144,13 +178,11 @@ describe("chat connector UI contract", () => {
   it("flags a verifying endpoint stuck over 24 hours with live traffic", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     expect(detail).toContain("endpoint.verifyingStale");
-    expect(detail).toContain("Verifying over 24 hours with live traffic");
+    expect(catalog).toContain("Verifying over 24 hours with live traffic");
     expect(detail).toContain("border-amber-500/25 bg-amber-500/10");
   });
 
   it("states the provider boundary for reconnect and removal", () => {
-    const detail = source("./ChatEndpointDetail.tsx");
-    const setup = source("./ChatEndpointSetup.tsx");
     for (const reconnectCopy of [
       "does not reinstall the app or change its workspace or channel membership",
       "does not reinstall the App or change repository access",
@@ -158,8 +190,8 @@ describe("chat connector UI contract", () => {
       "does not upload or reinstall the Teams app",
       "automatically refreshes its Myrmidon webhook and command menu",
     ]) {
-      expect(detail).toContain(reconnectCopy);
-      expect(setup).toContain(reconnectCopy);
+      // The detail page and the setup page each carry this copy in the catalog.
+      expect(catalog.split(reconnectCopy).length - 1).toBeGreaterThanOrEqual(2);
     }
     for (const removalCopy of [
       "It does not uninstall the Slack app",
@@ -170,7 +202,7 @@ describe("chat connector UI contract", () => {
       "After Telegram confirms that cleanup, Myrmidon retires the saved token",
       "BotFather bot and its chat memberships remain",
     ]) {
-      expect(detail).toContain(removalCopy);
+      expect(catalog).toContain(removalCopy);
     }
   });
 
@@ -189,56 +221,54 @@ describe("chat connector UI contract", () => {
       expect(setup).toContain(`\"${credential}\"`);
     }
     expect(setup).toContain("credentials.privateKey");
-    expect(setup).toContain("Bring your own Slack app");
-    expect(setup).toContain("Create or connect a GitHub App");
-    expect(setup).toContain("create a single-tenant app registration");
-    expect(setup).toContain("Create a bot with BotFather");
-    expect(setup).toContain("Create one dedicated Discord application");
-    expect(setup).toContain("enable Message Content Intent");
-    expect(setup).toMatch(/Create\s+Public Threads/);
+    expect(catalog).toContain("Bring your own Slack app");
+    expect(catalog).toContain("Create or connect a GitHub App");
+    expect(catalog).toContain("create a single-tenant app registration");
+    expect(catalog).toContain("Create a bot with BotFather");
+    expect(catalog).toContain("Create one dedicated Discord application");
+    expect(catalog).toContain("enable Message Content Intent");
+    expect(catalog).toMatch(/Create Public Threads/);
     expect(setup).toContain("permissions=309237763136&scope=bot");
     expect(setup).not.toContain("applications.commands");
-    expect(setup).toContain("Generate webhook secret");
-    expect(setup).toContain("will not show it again");
+    expect(catalog).toContain("Generate webhook secret");
+    expect(catalog).toContain("will not show it again");
     expect(setup).toContain('params.get("reconnect") === "1"');
-    expect(setup).toContain(
+    expect(catalog).toContain(
       "Leave the token blank to reuse the saved credential",
     );
-    expect(setup).toContain(
+    expect(catalog).toContain(
       "Leave credentials blank to reuse the saved values",
     );
-    expect(setup).toContain(
+    expect(catalog).toContain(
       "immediately invalidates GitHub webhook signatures",
     );
     expect(setup).toContain("generatingSetupSecret ||\n            pending");
     expect(setup).not.toContain("/setprivacy");
     expect(setup).toContain("/task@bot_username");
-    expect(setup).toContain("registers its command menu automatically");
-    expect(setup).toContain(
-      "ordinary\n          mentions are not delivered to bots",
-    );
-    expect(setup).toContain("Create Azure Bot");
-    expect(setup).toContain("Microsoft 365 work or school organization");
-    expect(setup).toContain("teams.live.com");
-    expect(setup).toContain("commercial cloud tenants only");
-    expect(setup).toContain("GCC High");
-    expect(setup).toContain("operated by 21Vianet");
-    expect(setup).toContain("Client secret value");
-    expect(setup).toContain("Microsoft portal field map");
-    expect(setup).toContain(
+    expect(catalog).toContain("registers its command menu automatically");
+    expect(catalog).toContain("ordinary mentions are not delivered to bots");
+    expect(catalog).toContain("Create Azure Bot");
+    expect(catalog).toContain("Microsoft 365 work or school organization");
+    expect(catalog).toContain("teams.live.com");
+    expect(catalog).toContain("commercial cloud tenants only");
+    expect(catalog).toContain("GCC High");
+    expect(catalog).toContain("operated by 21Vianet");
+    expect(catalog).toContain("Client secret value");
+    expect(catalog).toContain("Microsoft portal field map");
+    expect(catalog).toContain(
       "Accounts in this organizational directory only (Single tenant)",
     );
-    expect(setup).toContain("Use existing app registration");
-    expect(setup).toContain("Settings · Configuration");
-    expect(setup).toContain("Configure · App features · Bot");
-    expect(setup).toContain("Configure · Permissions");
-    expect(setup).toContain("Upload an app · Upload a custom app");
-    expect(setup).toContain("Copy manifest settings");
+    expect(catalog).toContain("Use existing app registration");
+    expect(catalog).toContain("Settings · Configuration");
+    expect(catalog).toContain("Configure · App features · Bot");
+    expect(catalog).toContain("Configure · Permissions");
+    expect(catalog).toContain("Upload an app · Upload a custom app");
+    expect(catalog).toContain("Copy manifest settings");
     expect(setup).toContain("disabled={!credentials.clientId?.trim()}");
-    expect(setup).toContain(
+    expect(catalog).toContain(
       "Enter the Application / Client ID above before copying",
     );
-    expect(setup).toContain("not a complete app package");
+    expect(catalog).toContain("not a complete app package");
     expect(setup).toContain('scopes: ["personal", "team", "groupChat"]');
     expect(setup).toContain('scopes: ["personal", "groupChat"]');
     expect(setup).toContain('title: "/status"');
@@ -248,29 +278,29 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("resourceSpecific");
     expect(setup).toContain("ChannelMessage.Read.Group");
     expect(setup).toContain("ChatMessage.Read.Chat");
-    expect(setup).toContain("not Microsoft Graph permissions in Entra");
-    expect(setup).toContain("does not use Teams single sign-on");
+    expect(catalog).toContain("not Microsoft Graph permissions in Entra");
+    expect(catalog).toContain("does not use Teams single sign-on");
     expect(setup).toContain("webApplicationInfo");
     expect(setup).toContain('resource: "https://paperclip.ing"');
-    expect(setup).toContain("only associates the RSC");
-    expect(setup).toContain("you do not need to register an Entra");
-    expect(setup).toContain("receive every message");
-    expect(setup).toContain("One team install covers its standard");
-    expect(setup).toContain("Private and shared channels require");
+    expect(catalog).toContain("only associates the RSC");
+    expect(catalog).toContain("you do not need to register an Entra");
+    expect(catalog).toContain("receive every message");
+    expect(catalog).toContain("One team install covers its standard");
+    expect(catalog).toContain("Private and shared channels require");
     expect(setup).not.toContain(
       "does not require a <code>webApplicationInfo</code>",
     );
     expect(setup).not.toContain("api://paperclip-chat/");
-    expect(setup).toContain("not private channels");
-    expect(setup).toContain("native file receipt and consent-based sending");
-    expect(setup).toContain("issue_comment");
-    expect(setup).toContain("pull_request");
-    expect(setup).toContain("pull_request_review_comment");
-    expect(setup).toContain("Enable SSL verification");
-    expect(setup).toContain("Only on this account");
+    expect(catalog).toContain("not private channels");
+    expect(catalog).toContain("native file receipt and consent-based sending");
+    expect(catalog).toContain("issue_comment");
+    expect(catalog).toContain("pull_request");
+    expect(catalog).toContain("pull_request_review_comment");
+    expect(catalog).toContain("Enable SSL verification");
+    expect(catalog).toContain("Only on this account");
     expect(setup).toContain('type="password"');
     expect(setup).not.toContain("WebkitTextSecurity");
-    expect(setup).toContain("Start Slack message test");
+    expect(catalog).toContain("Start Slack message test");
     expect(setup).toContain("member_joined_channel");
     expect(setup).toContain("member_left_channel");
     expect(setup).toContain("channel_left");
@@ -279,8 +309,8 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("group_unarchive");
     expect(setup).toContain("group_rename");
     expect(setup).toContain("app_uninstalled");
-    expect(setup).toContain("Myrmidon records Interactivity");
-    expect(setup).toContain("command health only after each signed callback");
+    expect(catalog).toContain("Myrmidon records Interactivity");
+    expect(catalog).toContain("command health only after each signed callback");
     expect(setup).toContain("slackBotNameForAgent");
     expect(setup).not.toContain("- im:write");
     expect(setup).toContain("- reactions:write");
@@ -299,7 +329,7 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("managed Microsoft app");
     expect(setup).toContain("endpoint.providerAccountId && !repairing");
     expect(setup).not.toContain('field("webhookSecret"');
-    expect(setup).not.toContain("@paperclipai/teams-connect");
+    expect(setup).not.toContain("@myrmidon/teams-connect");
     expect(setup).not.toContain("Copy setup command");
     expect(setup).not.toContain("Add {agentName} to Slack");
     expect(setup).not.toContain("Create in GitHub");
@@ -324,15 +354,15 @@ describe("chat connector UI contract", () => {
     const setupData = source(
       "../../../../../doc/plans/chat-adapters/setup-wireframe-data-v8.mjs",
     );
-    expect(setup).toContain("Generate webhook secret");
-    expect(setup).toContain("GitHub App ID");
-    expect(setup).toContain("Private key (PEM)");
-    expect(setup).toContain("Choose .pem file");
-    expect(setup).toContain("Choose GitHub App private key file");
+    expect(catalog).toContain("Generate webhook secret");
+    expect(catalog).toContain("GitHub App ID");
+    expect(catalog).toContain("Private key (PEM)");
+    expect(catalog).toContain("Choose .pem file");
+    expect(catalog).toContain("Choose GitHub App private key file");
     expect(setup).toContain("readGitHubPrivateKeyFile");
     expect(setup).toContain("privateKeyReadGuard.invalidate()");
     expect(setup).toContain("privateKeyFileLoading ||");
-    expect(setup).toContain("Show private key");
+    expect(catalog).toContain("Show private key");
     expect(setup).toContain('type="password"');
     expect(setup).toContain('event.clipboardData.getData("text")');
     expect(setup).not.toContain("WebkitTextSecurity");

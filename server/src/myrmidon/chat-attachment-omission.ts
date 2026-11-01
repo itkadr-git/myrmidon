@@ -1,5 +1,5 @@
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { liveBehaviorSetting, liveBehaviorSettingsView } from "./behavior-settings/live.js";
 
 // myrmidon(P7): tell a Telegram sender which attachments were dropped at import

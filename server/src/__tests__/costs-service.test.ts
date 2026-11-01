@@ -14,7 +14,7 @@ import {
   heartbeatRuns,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
 import {
@@ -68,7 +68,10 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
-  summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  summary: vi.fn().mockResolvedValue({
+    companyId: "company-1", spendCents: 0, budgetCents: 0, utilizationPercent: 0,
+    unpricedEvents: 0, unpricedTokens: 0, forecastCents: null,
+  }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -86,6 +89,7 @@ const mockCostService = vi.hoisted(() => ({
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  byDay: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -244,6 +248,82 @@ describe("cost routes", () => {
       estimatedDebitCents: 0,
       eventCount: 0,
     });
+  });
+
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): GET /api/companies/:companyId/costs/summary
+  it("returns cost summary with unpriced counters and forecast for valid requests", async () => {
+    mockCostService.summary.mockResolvedValueOnce({
+      companyId: "company-1",
+      spendCents: 1000,
+      budgetCents: 50000,
+      utilizationPercent: 2,
+      unpricedEvents: 1,
+      unpricedTokens: 1200,
+      forecastCents: 3100,
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/summary")
+      .query({ from: "2026-10-01T00:00:00.000Z", to: "2026-10-31T23:59:59.999Z" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      companyId: "company-1",
+      spendCents: 1000,
+      budgetCents: 50000,
+      utilizationPercent: 2,
+      unpricedEvents: 1,
+      unpricedTokens: 1200,
+      forecastCents: 3100,
+    });
+    expect(mockCostService.summary).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-10-01T00:00:00.000Z"),
+      to: new Date("2026-10-31T23:59:59.999Z"),
+    });
+  });
+
+
+  it("returns daily cost breakdown for valid requests", async () => {
+    const app = createApp();
+    mockCostService.byDay.mockResolvedValueOnce([
+      { day: "2026-10-01", costCents: 100, inputTokens: 50, cachedInputTokens: 0, outputTokens: 25, unpricedEvents: 0 },
+    ]);
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-day")
+      .query({ from: "2026-10-01T00:00:00.000Z", to: "2026-10-04T23:59:59.999Z" });
+    expect(res.status).toBe(200);
+    expect(mockCostService.byDay).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-10-01T00:00:00.000Z"),
+      to: new Date("2026-10-04T23:59:59.999Z"),
+    });
+    expect(res.body).toEqual([
+      { day: "2026-10-01", costCents: 100, inputTokens: 50, cachedInputTokens: 0, outputTokens: 25, unpricedEvents: 0 },
+    ]);
+  });
+
+  it("rejects costs/by-day when period exceeds 93 days", async () => {
+    const app = createApp();
+    const { badRequest } = await import("../errors.js");
+    mockCostService.byDay.mockRejectedValueOnce(badRequest("date range exceeds maximum of 93 days"));
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-day")
+      .query({ from: "2026-01-01T00:00:00.000Z", to: "2026-04-10T00:00:00.000Z" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/93 days/i);
+  });
+
+  it("rejects costs/by-day for users outside the company", async () => {
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-2"],
+    });
+    const res = await request(app).get("/api/companies/company-1/costs/by-day");
+    expect(res.status).toBe(403);
+    expect(mockCostService.byDay).not.toHaveBeenCalled();
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {
@@ -932,5 +1012,423 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): costs.summary unpriced events fixture and key preservation
+  it("summary returns unpricedEvents=1 and unpricedTokens=1200 for fixture with 2 reported and 1 unpriced event", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      budgetMonthlyCents: 100_000,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Summary Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // 2 reported events, 1 unpriced event with 1200 tokens (800 input + 200 cached + 200 output)
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "reported",
+        model: "gpt-4o",
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 500,
+        occurredAt: new Date("2026-10-05T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "reported",
+        model: "gpt-4o",
+        inputTokens: 200,
+        cachedInputTokens: 50,
+        outputTokens: 100,
+        costCents: 1500,
+        occurredAt: new Date("2026-10-06T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "unpriced",
+        model: "gpt-4o",
+        inputTokens: 800,
+        cachedInputTokens: 200,
+        outputTokens: 200,
+        costCents: 0,
+        occurredAt: new Date("2026-10-07T10:00:00.000Z"),
+      },
+    ]);
+
+    const summary = await costs.summary(companyId);
+
+    // Old fields preserved
+    expect(summary.companyId).toBe(companyId);
+    expect(summary.spendCents).toBe(2000);
+    expect(summary.budgetCents).toBe(100_000);
+    expect(summary.utilizationPercent).toBe(2);
+
+    // New fields
+    expect(summary.unpricedEvents).toBe(1);
+    expect(summary.unpricedTokens).toBe(1200);
+
+    // Full key set check: old keys preserved, new keys added
+    const expectedKeys = [
+      "budgetCents",
+      "companyId",
+      "forecastCents",
+      "spendCents",
+      "unpricedEvents",
+      "unpricedTokens",
+      "utilizationPercent",
+    ].sort();
+    expect(Object.keys(summary).sort()).toEqual(expectedKeys);
+  });
+
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): forecast fixtures: 10th of month, day 1, zero spend
+  it("calculates forecastCents for 10th of month, null for day 1 (first 24h), and null for 0 spend", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      budgetMonthlyCents: 100_000,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Forecast Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Case 1: 0 spend -> forecast is null
+    const day10 = new Date("2026-10-10T12:00:00.000Z");
+    const summaryZeroSpend = await costs.summary(companyId, undefined, day10);
+    expect(summaryZeroSpend.spendCents).toBe(0);
+    expect(summaryZeroSpend.forecastCents).toBeNull();
+
+    // Insert an event in October: costCents = 3000
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "reported",
+        model: "gpt-4o",
+        inputTokens: 1000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+        costCents: 3000,
+        occurredAt: new Date("2026-10-05T10:00:00.000Z"),
+      },
+    ]);
+
+    // Case 2: 10th of October (31 days) -> spend / 10 * 31 = 3000 / 10 * 31 = 9300
+    const summaryDay10 = await costs.summary(companyId, undefined, day10);
+    expect(summaryDay10.spendCents).toBe(3000);
+    expect(summaryDay10.forecastCents).toBe(9300);
+
+    // Also verify another month: 10th of April (30 days) -> spend / 10 * 30
+    const day10April = new Date("2026-04-10T12:00:00.000Z");
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "reported",
+        model: "gpt-4o",
+        inputTokens: 1000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+        costCents: 4000,
+        occurredAt: new Date("2026-04-05T10:00:00.000Z"),
+      },
+    ]);
+    const summaryDay10April = await costs.summary(companyId, undefined, day10April);
+    expect(summaryDay10April.forecastCents).toBe(12000);
+
+    // Case 3: First day of month (первые сутки месяца) -> forecast is null
+    const day1 = new Date("2026-10-01T15:00:00.000Z");
+    const summaryDay1 = await costs.summary(companyId, undefined, day1);
+    expect(summaryDay1.forecastCents).toBeNull();
+  });
+
+  it("aggregates daily costs with zero-filled gaps and matching summary spend", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // 3 days with events: 2026-10-01, 2026-10-02, 2026-10-04 (2026-10-03 is empty)
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "anthropic",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "claude-sonnet-4",
+      inputTokens: 1000,
+      cachedInputTokens: 200,
+      outputTokens: 500,
+      costCents: 150,
+      occurredAt: new Date("2026-10-01T10:00:00.000Z"),
+    });
+
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "anthropic",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "claude-sonnet-4",
+      inputTokens: 2000,
+      cachedInputTokens: 400,
+      outputTokens: 800,
+      costCents: 250,
+      occurredAt: new Date("2026-10-02T14:30:00.000Z"),
+    });
+
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "anthropic",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "claude-sonnet-4",
+      inputTokens: 3000,
+      cachedInputTokens: 600,
+      outputTokens: 1200,
+      costCents: 350,
+      occurredAt: new Date("2026-10-04T18:45:00.000Z"),
+    });
+
+    const range = {
+      from: new Date("2026-10-01T00:00:00.000Z"),
+      to: new Date("2026-10-04T23:59:59.999Z"),
+    };
+
+    const rows = await costs.byDay(companyId, range);
+    const summary = await costs.summary(companyId, range);
+
+    // 4 rows total: 3 with events, 1 empty
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.day)).toEqual([
+      "2026-10-01",
+      "2026-10-02",
+      "2026-10-03",
+      "2026-10-04",
+    ]);
+
+    // Day 3 (empty) has all zero fields
+    expect(rows[2]).toEqual({
+      day: "2026-10-03",
+      costCents: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      unpricedEvents: 0,
+    });
+
+    // Sum of costCents equals costs/summary.spendCents
+    const totalCostCents = rows.reduce((sum, r) => sum + r.costCents, 0);
+    expect(totalCostCents).toBe(summary.spendCents);
+    expect(totalCostCents).toBe(750);
+  });
+
+  it("separates events across UTC midnight boundary into different days", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // 23:59:59 on 2026-10-01
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "gpt-4o",
+      inputTokens: 500,
+      cachedInputTokens: 0,
+      outputTokens: 100,
+      costCents: 120,
+      occurredAt: new Date("2026-10-01T23:59:59.000Z"),
+    });
+
+    // 00:00:00 on 2026-10-02
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "gpt-4o",
+      inputTokens: 600,
+      cachedInputTokens: 0,
+      outputTokens: 150,
+      costCents: 180,
+      occurredAt: new Date("2026-10-02T00:00:00.000Z"),
+    });
+
+    const range = {
+      from: new Date("2026-10-01T00:00:00.000Z"),
+      to: new Date("2026-10-02T23:59:59.999Z"),
+    };
+
+    const rows = await costs.byDay(companyId, range);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.day).toBe("2026-10-01");
+    expect(rows[0]?.costCents).toBe(120);
+    expect(rows[1]?.day).toBe("2026-10-02");
+    expect(rows[1]?.costCents).toBe(180);
+  });
+
+  it("counts unpriced events in unpricedEvents without inflating costCents", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "chatgpt",
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      model: "gpt-5.6-terra",
+      inputTokens: 10_000,
+      cachedInputTokens: 0,
+      outputTokens: 2_000,
+      costCents: 0,
+      occurredAt: new Date("2026-10-05T12:00:00.000Z"),
+    });
+
+    await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "direct",
+      billingType: "metered_api",
+      costStatus: "reported",
+      model: "gpt-4o",
+      inputTokens: 1_000,
+      cachedInputTokens: 0,
+      outputTokens: 200,
+      costCents: 75,
+      occurredAt: new Date("2026-10-05T13:00:00.000Z"),
+    });
+
+    const range = {
+      from: new Date("2026-10-05T00:00:00.000Z"),
+      to: new Date("2026-10-05T23:59:59.999Z"),
+    };
+
+    const rows = await costs.byDay(companyId, range);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.day).toBe("2026-10-05");
+    expect(rows[0]?.costCents).toBe(75);
+    expect(rows[0]?.unpricedEvents).toBe(1);
+    expect(rows[0]?.inputTokens).toBe(11_000);
+  });
+
+  it("rejects periods exceeding 93 days with 400", async () => {
+    const companyId = randomUUID();
+    const from = new Date("2026-01-01T00:00:00.000Z");
+    const to = new Date("2026-04-10T00:00:00.000Z"); // 99 days
+
+    await expect(costs.byDay(companyId, { from, to })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/93 days/i),
+    });
+  });
+
+  it("defaults to 30 days when range is omitted", async () => {
+    const companyId = randomUUID();
+    const rows = await costs.byDay(companyId);
+    expect(rows).toHaveLength(30);
   });
 });

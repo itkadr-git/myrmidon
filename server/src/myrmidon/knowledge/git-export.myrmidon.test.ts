@@ -34,6 +34,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   kind: "wiki",
   folder: "ops",
   tags: ["oncall"],
+  roles: [],
   status: "published",
   approvalRequired: false,
   approverKind: null,

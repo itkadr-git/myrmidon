@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { Tabs, type TabDefinition } from "@paperclipai/paperclip-runner/react";
+import { Tabs, type TabDefinition } from "@myrmidon/paperclip-runner/react";
 import {
   capabilityRunScenario,
   type CapabilityChatSessionArtifact,

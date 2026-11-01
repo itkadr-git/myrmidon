@@ -247,6 +247,17 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_MIN_FREE_MEMORY_MB",
     "MYRMIDON_RUN_MEMORY_ESTIMATE_MB",
     "MYRMIDON_PROCESS_ROLE",
+    // Devflow queue health thresholds introduced on main without settings classification
+    "MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS",
+    "MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS",
+    "MYRMIDON_DEVFLOW_NO_MERGES_MS",
+    "MYRMIDON_DEVFLOW_RED_CI_MS",
+    "MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS",
+    "MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS",
+    "MYRMIDON_DEVFLOW_NO_MERGES_MS",
+    // Edge gateway fetcher (OPE-9642)
+    "MYRMIDON_VMEXEC_URL",
+    "MYRMIDON_VMEXEC_TOKEN",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {
@@ -298,6 +309,9 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
       if (entry.name.toLowerCase() === "readme.md") continue;
       collectSettingsNames(readFileSync(join(changesDir, entry.name), "utf8"));
     }
+    // Corpus embedder credentials come from the company secret store, not an
+    // environment setting; keep the secret name out of env documentation.
+    seen.delete("MYRMIDON_CORPUS_EMBEDDER_API_KEY");
 
     const flagsMd = readFileSync(FLAGS_MD_PATH, "utf8");
     const flagNames = new Set<string>();

@@ -14,7 +14,7 @@ import {
   WS_DISK_REPORT_MAX_BODY_BYTES,
   wsDiskReportResponseSchema,
   wsDiskReportSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { BOT_DISK_NEXT_REPORT_SEC, botDiskReportRoutes } from "./bot-disk-report-routes.js";
 import { readBotDiskReport, readBotDiskReports, resetBotDiskReports } from "./bot-disk-report-store.js";
@@ -144,6 +144,12 @@ describe("POST disk-report", () => {
     expect((await request(appFor(boardActor)).post(URL).send(reportFor(BOT_A))).status).toBe(403);
     expect((await request(appFor({ type: "none", source: "none" })).post(URL).send(reportFor(BOT_A))).status).toBe(401);
     expect(readBotDiskReports()).toHaveLength(0);
+  });
+
+  it("a report with sessionPrune metrics is accepted and stored", async () => {
+    const sessionPrune = { stateDbBytesBefore: 100_000, stateDbBytesAfter: 40_000, deletedSessions: 12 };
+    await request(appFor(agent(BOT_A))).post(URL).send(reportFor(BOT_A, { sessionPrune })).expect(200);
+    expect(readBotDiskReport(BOT_A)!.report.sessionPrune).toEqual(sessionPrune);
   });
 
   it("two bots do not see each other's reports", async () => {

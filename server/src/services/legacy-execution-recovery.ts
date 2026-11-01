@@ -2,7 +2,7 @@ import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@myrmidon/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -15,6 +15,7 @@ import { RUN_STALL_ERROR_CODE } from "../myrmidon/run-stall/constants.js";
 // reassignment) are retried or released, not held -- only for a conversation
 // adapter or one with its own idempotency key, see infra-interrupts.ts
 import { shouldSkipReconciliationForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
+import { looksLikePendingInteractionAddresseeWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -28,11 +29,29 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // Guard stops are terminal for the current run, but must NOT enter
+  // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
+  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
+      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+    return false;
+  }
   // Maintenance interruption explicitly means retry, including after the
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
+  // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
+  if (
+    run.errorCode === "process_lost" &&
+    run.contextSnapshot &&
+    looksLikePendingInteractionAddresseeWake(
+      run.contextSnapshot as Record<string, unknown>,
+    ) &&
+    executionFailureRetryCount(run) < 2
+  ) {
+    return false;
+  }
   // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
   // provider startup is a deliberate wait, not an unknown provider outcome.
   if (
@@ -143,7 +162,18 @@ export async function terminalizeLegacyExecution(input: {
           eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, task.id),
           eq(issueRecoveryActions.status, "resolved"),
-          sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
+          // myrmidon(1.6.6 OPE-8988): the automatic settlement
+          // (execution-recovery-resolution, preserve_without_replay_v1) records
+          // the run under `automaticRecovery.runId`, not `executionReconciliation`;
+          // matching only the latter missed it, so every periodic revisit of the
+          // same terminal run opened a fresh action that settled into one more
+          // replay=blocked hold (prod: 1164 actions for one run on one issue).
+          // The source-scoped fingerprint names the run as well.
+          sql`(
+            ${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}
+            or ${issueRecoveryActions.evidence}->'automaticRecovery'->>'runId' = ${run.id}
+            or ${issueRecoveryActions.fingerprint} = ${`legacy-execution:${run.id}`}
+          )`,
         )).limit(1);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({

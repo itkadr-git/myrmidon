@@ -1,4 +1,4 @@
-import type { ProjectRepository, ProjectWorkspace } from "@paperclipai/shared";
+import type { ProjectRepository, ProjectWorkspace } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
 import { isConnectionGrantAudienceAllowed } from "./tool-gateway.js";
 

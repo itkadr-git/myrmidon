@@ -32,7 +32,7 @@
  * they are — they are input, not prose.
  */
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { loadBridgedCommandContext, type BridgedCommandContext } from "./context.js";
 import { t, resolveBridgeLocale, type BridgeLocale } from "../locales/index.js";
 import { buildHelpText } from "./help.js";
@@ -72,7 +72,7 @@ import { handlePlanCommand, isCompanyOwner } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
 import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
-import { issues } from "@paperclipai/db";
+import { issues } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 
 export interface BridgedCommandInput {

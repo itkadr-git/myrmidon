@@ -1,14 +1,14 @@
-import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
 // myrmidon(B1c): product name in wake-prompt headers; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 // myrmidon(B1c): short alias for template literals below.
-import { PRODUCT_NAME as PN } from "@paperclipai/shared";
+import { PRODUCT_NAME as PN } from "@myrmidon/shared";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@myrmidon/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
@@ -29,7 +29,7 @@ import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function buildRuntimeToolsEnv(
   access: AdapterRuntimeToolAccess | null | undefined,
@@ -809,7 +809,26 @@ type PaperclipWakeRecovery = {
 export type PaperclipExternalChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
-type PaperclipWakePayload = {
+export type PaperclipWakeBufferedEvent = {
+  id: string;
+  agentId: string;
+  issueId: string | null;
+  type: string;
+  priority: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+};
+
+export type PaperclipWakeEventDigest = {
+  agentId: string;
+  issueId: string | null;
+  events: PaperclipWakeBufferedEvent[];
+  eventCount: number;
+  oldestEventAt: string;
+  newestEventAt: string;
+};
+
+export type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
@@ -845,12 +864,16 @@ type PaperclipWakePayload = {
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
+  reviewRecoveryInstruction: string | null;
+  reviewDecisionRetryAttempt: number | null;
+  reviewDecisionMaxRetries: number | null;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
+  eventDigest: PaperclipWakeEventDigest | null;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
 };
@@ -1729,6 +1752,48 @@ function normalizePaperclipExternalChatQuestionResponse(
   };
 }
 
+export function normalizePaperclipWakeEventDigest(
+  value: unknown,
+): PaperclipWakeEventDigest | null {
+  const digest = parseObject(value);
+  const agentId = asString(digest.agentId, "").trim();
+  if (!agentId) return null;
+  const rawEvents = Array.isArray(digest.events) ? digest.events : [];
+  const events: PaperclipWakeBufferedEvent[] = rawEvents
+    .map((raw) => {
+      const e = parseObject(raw);
+      const type = asString(e.type, "").trim();
+      if (!type) return null;
+      const id = asString(e.id, "").trim() || randomUUID();
+      const priority = asString(e.priority, "").trim() || "P4";
+      const timestamp = e.timestamp ? String(e.timestamp) : new Date().toISOString();
+      return {
+        id,
+        agentId: asString(e.agentId, "").trim() || agentId,
+        issueId: asString(e.issueId, "").trim() || null,
+        type,
+        priority,
+        payload: parseObject(e.payload),
+        timestamp,
+      };
+    })
+    .filter((e): e is PaperclipWakeBufferedEvent => e !== null);
+
+  return {
+    agentId,
+    issueId: asString(digest.issueId, "").trim() || null,
+    events,
+    eventCount:
+      typeof digest.eventCount === "number" ? digest.eventCount : events.length,
+    oldestEventAt: digest.oldestEventAt
+      ? String(digest.oldestEventAt)
+      : (events[0]?.timestamp ?? new Date().toISOString()),
+    newestEventAt: digest.newestEventAt
+      ? String(digest.newestEventAt)
+      : (events[events.length - 1]?.timestamp ?? new Date().toISOString()),
+  };
+}
+
 export function normalizePaperclipWakePayload(
   value: unknown,
 ): PaperclipWakePayload | null {
@@ -1752,9 +1817,50 @@ export function normalizePaperclipWakePayload(
         )
         .map((entry) => entry.trim())
     : [];
+  const rawContext = parseObject(payload.context);
+  const rawSnapshot = parseObject(payload.contextSnapshot);
   const executionStage = normalizePaperclipWakeExecutionStage(
-    payload.executionStage,
+    payload.executionStage ??
+      rawContext.executionStage ??
+      rawSnapshot.executionStage,
   );
+  const reviewRecoveryInstruction =
+    asString(payload.reviewRecoveryInstruction, "").trim() ||
+    asString(rawContext.reviewRecoveryInstruction, "").trim() ||
+    asString(rawSnapshot.reviewRecoveryInstruction, "").trim() ||
+    null;
+
+  const rawAttempt =
+    typeof payload.reviewDecisionRetryAttempt === "number"
+      ? payload.reviewDecisionRetryAttempt
+      : typeof rawContext.reviewDecisionRetryAttempt === "number"
+        ? rawContext.reviewDecisionRetryAttempt
+        : typeof rawSnapshot.reviewDecisionRetryAttempt === "number"
+          ? rawSnapshot.reviewDecisionRetryAttempt
+          : typeof payload.retryAttempt === "number"
+            ? payload.retryAttempt
+            : typeof rawContext.retryAttempt === "number"
+              ? rawContext.retryAttempt
+              : typeof rawSnapshot.retryAttempt === "number"
+                ? rawSnapshot.retryAttempt
+                : null;
+  const reviewDecisionRetryAttempt =
+    typeof rawAttempt === "number" && Number.isFinite(rawAttempt) && rawAttempt > 0
+      ? Math.trunc(rawAttempt)
+      : null;
+
+  const rawMaxRetries =
+    typeof payload.reviewDecisionMaxRetries === "number"
+      ? payload.reviewDecisionMaxRetries
+      : typeof rawContext.reviewDecisionMaxRetries === "number"
+        ? rawContext.reviewDecisionMaxRetries
+        : typeof rawSnapshot.reviewDecisionMaxRetries === "number"
+          ? rawSnapshot.reviewDecisionMaxRetries
+          : null;
+  const reviewDecisionMaxRetries =
+    typeof rawMaxRetries === "number" && Number.isFinite(rawMaxRetries) && rawMaxRetries > 0
+      ? Math.trunc(rawMaxRetries)
+      : null;
   const continuationSummary = normalizePaperclipWakeContinuationSummary(
     payload.continuationSummary,
   );
@@ -1832,6 +1938,7 @@ export function normalizePaperclipWakePayload(
   );
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
   const issue = normalizePaperclipWakeIssue(payload.issue);
+  const eventDigest = normalizePaperclipWakeEventDigest(payload.eventDigest);
   const skillTest =
     issue?.workMode === "skill_test" ||
     payload.skillTest === true ||
@@ -1846,6 +1953,7 @@ export function normalizePaperclipWakePayload(
     unresolvedBlockerSummaries.length === 0 &&
     !activeTreeHold &&
     !executionStage &&
+    !reviewRecoveryInstruction &&
     !continuationSummary &&
     !planReviewContext &&
     !documentReviewContext &&
@@ -1856,7 +1964,8 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
-    !issue
+    !issue &&
+    !eventDigest
   ) {
     return null;
   }
@@ -1888,6 +1997,9 @@ export function normalizePaperclipWakePayload(
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
+    reviewRecoveryInstruction,
+    reviewDecisionRetryAttempt,
+    reviewDecisionMaxRetries,
     continuationSummary,
     planReviewContext,
     documentReviewContext,
@@ -1920,6 +2032,7 @@ export function normalizePaperclipWakePayload(
     ),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
+    eventDigest,
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
@@ -2832,6 +2945,16 @@ function renderPaperclipWakePromptBody(
         `- allowed actions: ${executionStage.allowedActions.join(", ")}`,
       );
     }
+    if (normalized.reviewRecoveryInstruction) {
+      const attemptSuffix = normalized.reviewDecisionRetryAttempt
+        ? ` (attempt ${normalized.reviewDecisionRetryAttempt}${normalized.reviewDecisionMaxRetries ? `/${normalized.reviewDecisionMaxRetries}` : ""})`
+        : "";
+      lines.push(
+        "",
+        `Review recovery instruction${attemptSuffix}:`,
+        normalized.reviewRecoveryInstruction,
+      );
+    }
     if (executionStage.reviewRequest) {
       lines.push(
         "",
@@ -2858,6 +2981,16 @@ function renderPaperclipWakePromptBody(
         "",
       );
     }
+  } else if (normalized.reviewRecoveryInstruction) {
+    const attemptSuffix = normalized.reviewDecisionRetryAttempt
+      ? ` (attempt ${normalized.reviewDecisionRetryAttempt}${normalized.reviewDecisionMaxRetries ? `/${normalized.reviewDecisionMaxRetries}` : ""})`
+      : "";
+    lines.push(
+      "",
+      `Review recovery instruction${attemptSuffix}:`,
+      normalized.reviewRecoveryInstruction,
+      "",
+    );
   }
 
   if (normalized.taskWatchdog) {
@@ -3114,16 +3247,15 @@ export function buildPaperclipEnv(agent: {
       return `[${host}]`;
     return host;
   };
-  const vars: Record<string, string> = {
-    PAPERCLIP_AGENT_ID: agent.id,
-    PAPERCLIP_COMPANY_ID: agent.companyId,
-  };
+  const vars: Record<string, string> = {};
+  writeProductEnv(vars, "AGENT_ID", agent.id);
+  writeProductEnv(vars, "COMPANY_ID", agent.companyId);
   const runtimeHost = resolveHostForUrl(
     readProductEnv("LISTEN_HOST") ?? process.env.HOST ?? "localhost",
   );
   const runtimePort =
     readProductEnv("LISTEN_PORT") ?? process.env.PORT ?? "3100";
-  // An explicit PAPERCLIP_API_URL override must win over the URL derived from
+  // An explicit MYRMIDON_API_URL (or legacy PAPERCLIP_API_URL) override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   const apiUrl =

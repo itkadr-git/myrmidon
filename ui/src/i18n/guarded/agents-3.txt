@@ -1,0 +1,11 @@
+# OPE-8950: area agents-3
+components/new-agent/NewAgentSetup.tsx
+pages/AgentDetail.production.tsx
+pages/AgentDetail.tsx
+pages/AgentToolsTab.tsx
+pages/Agents.production.tsx
+pages/Agents.tsx
+pages/Org.tsx
+pages/OrgChart.production.tsx
+pages/OrgChart.tsx
+pages/TeamCatalog.tsx

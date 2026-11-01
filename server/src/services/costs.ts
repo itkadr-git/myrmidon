@@ -1,8 +1,9 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import type { Db } from "@myrmidon/db";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@myrmidon/db";
+import type { CostByDay } from "@myrmidon/shared";
+import { badRequest, notFound, unprocessable } from "../errors.js";
 import { agentPromptStats, type AgentPromptStats } from "../myrmidon/prompt-budget/fleet-prompt-report.js"; // myrmidon(1.6.3 PROMPT-BUDGET D)
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -31,8 +32,9 @@ function currentUtcMonthWindow(now = new Date()) {
 async function getMonthlySpendTotal(
   db: Db,
   scope: { companyId: string; agentId?: string | null },
+  now = new Date(),
 ) {
-  const { start, end } = currentUtcMonthWindow();
+  const { start, end } = currentUtcMonthWindow(now);
   const conditions = [
     eq(costEvents.companyId, scope.companyId),
     gte(costEvents.occurredAt, start),
@@ -103,7 +105,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return event;
     },
 
-    summary: async (companyId: string, range?: CostDateRange) => {
+    // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): add unpricedEvents, unpricedTokens, and forecastCents
+    summary: async (companyId: string, range?: CostDateRange, now = new Date()) => {
       const company = await db
         .select()
         .from(companies)
@@ -116,9 +119,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, unpricedEvents, unpricedTokens }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unpricedEvents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then 1 else 0 end), 0)::integer`,
+          unpricedTokens: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0) + coalesce(${costEvents.outputTokens}, 0) else 0 end), 0)::double precision`,
         })
         .from(costEvents)
         .where(and(...conditions));
@@ -129,11 +134,24 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      let forecastCents: number | null = null;
+      const passedDays = now.getUTCDate();
+      if (passedDays >= 2) {
+        const currentMonthSpend = await getMonthlySpendTotal(db, { companyId }, now);
+        if (currentMonthSpend > 0) {
+          const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+          forecastCents = Math.round((currentMonthSpend / passedDays) * daysInMonth);
+        }
+      }
+
       return {
         companyId,
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unpricedEvents: Number(unpricedEvents ?? 0),
+        unpricedTokens: Number(unpricedTokens ?? 0),
+        forecastCents,
       };
     },
 
@@ -521,6 +539,84 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
+    },
+
+    byDay: async (companyId: string, range?: CostDateRange): Promise<CostByDay[]> => {
+      let from = range?.from;
+      let to = range?.to;
+
+      if (!from && !to) {
+        const now = new Date();
+        const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+        from = new Date(todayUtcMs - 29 * 24 * 60 * 60 * 1000);
+        to = new Date(todayUtcMs + 24 * 60 * 60 * 1000 - 1);
+      } else if (from && !to) {
+        const now = new Date();
+        to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+      } else if (!from && to) {
+        const toUtcMs = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate());
+        from = new Date(toUtcMs - 29 * 24 * 60 * 60 * 1000);
+      }
+
+      if (from!.getTime() > to!.getTime()) {
+        throw badRequest("'from' date cannot be after 'to' date");
+      }
+
+      const diffMs = to!.getTime() - from!.getTime();
+      if (diffMs > 93 * 24 * 60 * 60 * 1000) {
+        throw badRequest("date range exceeds maximum of 93 days");
+      }
+
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      conditions.push(gte(costEvents.occurredAt, from!));
+      conditions.push(lte(costEvents.occurredAt, to!));
+
+      const dayExpr = sql<string>`to_char(${costEvents.occurredAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+
+      const rows = await db
+        .select({
+          day: dayExpr,
+          costCents: sumAsNumber(costEvents.costCents),
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedEvents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then 1 else 0 end), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(dayExpr)
+        .orderBy(dayExpr);
+
+      const dayMap = new Map<string, typeof rows[number]>();
+      for (const row of rows) {
+        dayMap.set(row.day, row);
+      }
+
+      const fromDayStr = from!.toISOString().slice(0, 10);
+      const toDayStr = to!.toISOString().slice(0, 10);
+
+      const [startYear, startMonth, startDayNum] = fromDayStr.split("-").map(Number);
+      const [endYear, endMonth, endDayNum] = toDayStr.split("-").map(Number);
+
+      const cur = new Date(Date.UTC(startYear, startMonth - 1, startDayNum));
+      const end = new Date(Date.UTC(endYear, endMonth - 1, endDayNum));
+
+      const result: CostByDay[] = [];
+      while (cur.getTime() <= end.getTime()) {
+        const day = cur.toISOString().slice(0, 10);
+        const row = dayMap.get(day);
+        result.push({
+          day,
+          costCents: row ? Math.round(Number(row.costCents)) : 0,
+          inputTokens: row ? Math.round(Number(row.inputTokens)) : 0,
+          cachedInputTokens: row ? Math.round(Number(row.cachedInputTokens)) : 0,
+          outputTokens: row ? Math.round(Number(row.outputTokens)) : 0,
+          unpricedEvents: row ? Math.round(Number(row.unpricedEvents)) : 0,
+        });
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+
+      return result;
     },
   };
 }

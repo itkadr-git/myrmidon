@@ -1,7 +1,7 @@
 // myrmidon(REVIEW-ROUTING): entry point — one import and one call site in the
 // server entry (CONVENTIONS.md §12) plus one router in app.ts.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
@@ -50,7 +50,7 @@ export function createReviewRoutingScheduler(input: {
         source: "assignment",
         triggerDetail: "system",
         reason: wake.reason,
-        payload: { issueId: wake.issueId, mutation: wake.mutation, executionStage: wake.executionStage },
+        payload: { issueId: wake.issueId, mutation: wake.mutation, executionStage: wake.executionStage, retryAttempt: wake.retryAttempt },
         requestedByActorType: "system",
         requestedByActorId: null,
         contextSnapshot: {

@@ -25,11 +25,11 @@ import {
   issues,
   labels,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   DEFAULT_PHEROMONE_DYNAMICS,
   orderSwarmQueueCandidates,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -50,7 +50,8 @@ vi.mock("../../middleware/logger.js", () => ({
   httpLogger: vi.fn(),
 }));
 
-import { roleQueueRows } from "./queue.js";
+import { listRoleQueue, roleQueueRows } from "./queue.js";
+import { clearFailedRunsCache } from "./effective-pheromone.js";
 import { listIdleRolePairs } from "./matcher.js";
 import { projectService } from "../../services/projects.js";
 import { issueService } from "../../services/issues.js";
@@ -72,6 +73,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
   }, 60_000);
 
   afterEach(async () => {
+    clearFailedRunsCache();
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueLabels);
@@ -365,25 +367,36 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
       .returning();
 
     const labelIds = new Map<string, string>();
-    for (const name of ["role:qa", "Role: Docs"]) {
+    for (const name of ["role:qa", "Role: Docs", "needs-engineer"]) {
       const [row] = await db.insert(labels).values({ companyId, name, color: "#888888" }).returning();
       labelIds.set(name, row!.id);
     }
-    const fixtures = [
+    const fixtures: Array<{
+      key: string;
+      casteKey: string | null;
+      projectId: string | null;
+      label: string | null;
+      projectDefault: string | null;
+      harnessKind?: string;
+    }> = [
       { key: "t1 bare", casteKey: null, projectId: null, label: null, projectDefault: null },
       { key: "t2 caste beats label", casteKey: "reviewer", projectId: null, label: "role:qa", projectDefault: null },
       { key: "t3 project default", casteKey: null, projectId: qaProject!.id, label: null, projectDefault: "qa" },
       { key: "t4 legacy label", casteKey: null, projectId: null, label: "role:qa", projectDefault: null },
       { key: "t5 legacy spaced label", casteKey: null, projectId: null, label: "Role: Docs", projectDefault: null },
       { key: "t6 project default engineer", casteKey: null, projectId: engProject!.id, label: null, projectDefault: "engineer" },
+      { key: "t6a explicit qa in engineer project", casteKey: "qa", projectId: engProject!.id, label: null, projectDefault: "engineer" },
       { key: "t7 own caste beats label", casteKey: "engineer", projectId: null, label: "role:qa", projectDefault: null },
-    ] as const;
+      { key: "t8 needs-engineer overrides caste", casteKey: "qa", projectId: null, label: "needs-engineer", projectDefault: null },
+      { key: "t9 skill-test overrides caste", casteKey: "qa", projectId: null, label: null, projectDefault: null, harnessKind: "skill_test" },
+    ];
     const ids = new Map<string, string>();
     for (const fixture of fixtures) {
       const id = await seedIssue(companyId, {
         title: fixture.key,
         casteKey: fixture.casteKey,
         projectId: fixture.projectId,
+        ...(fixture.harnessKind ? { harnessKind: fixture.harnessKind } : {}),
       });
       ids.set(fixture.key, id);
       if (fixture.label) {
@@ -392,9 +405,9 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     }
 
     const expected: Record<string, string[]> = {
-      engineer: ["t1 bare", "t6 project default engineer", "t7 own caste beats label"],
+      engineer: ["t1 bare", "t6 project default engineer", "t7 own caste beats label", "t8 needs-engineer overrides caste", "t9 skill-test overrides caste"],
       reviewer: ["t2 caste beats label"],
-      qa: ["t3 project default", "t4 legacy label"],
+      qa: ["t3 project default", "t4 legacy label", "t6a explicit qa in engineer project"],
       docs: ["t5 legacy spaced label"],
     };
     for (const [role, keys] of Object.entries(expected)) {
@@ -497,4 +510,44 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     const explicit = await service.create(companyId, { title: "explicit", priority: "high", pheromoneStrength: 999 } as never);
     expect(explicit.pheromoneStrength).toBe(999);
   }, 30_000);
+
+  it("cached failed runs map is reused across queue reads and respects cache TTL / invalidation", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const finishedAt = new Date(Date.now() - 2 * HOUR);
+    const issueId = await seedIssue(companyId, { pheromoneStrength: 50 });
+    await seedFailedRun(companyId, agentId, issueId, finishedAt);
+
+    // Initial read populates cache: penalty is active (1 failed run)
+    const initialCandidates = await listRoleQueue(db, companyId, "engineer");
+    const initialCandidate = initialCandidates.find((c) => c.issueId === issueId);
+    expect(initialCandidate).toBeDefined();
+    expect(initialCandidate!.failedRunsSinceLastChange).toBe(1);
+
+    // A person comments on the issue (lifts the penalty in DB)
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "Fixed",
+      authorUserId: "board-user",
+      createdAt: new Date(),
+    });
+
+    // While cache is warm (within TTL), cached count is preserved
+    const warmCandidates = await listRoleQueue(db, companyId, "engineer");
+    const warmCandidate = warmCandidates.find((c) => c.issueId === issueId);
+    expect(warmCandidate!.failedRunsSinceLastChange).toBe(1);
+
+    // After TTL expiration (> 60s), the cache re-queries DB and penalty is lifted
+    const expiredCandidates = await listRoleQueue(db, companyId, "engineer", undefined, {
+      now: new Date(Date.now() + 61_000),
+    });
+    const expiredCandidate = expiredCandidates.find((c) => c.issueId === issueId);
+    expect(expiredCandidate!.failedRunsSinceLastChange).toBe(0);
+
+    // Manual invalidation also lifts penalty immediately
+    clearFailedRunsCache(companyId);
+    const refreshedCandidates = await listRoleQueue(db, companyId, "engineer");
+    const refreshedCandidate = refreshedCandidates.find((c) => c.issueId === issueId);
+    expect(refreshedCandidate!.failedRunsSinceLastChange).toBe(0);
+  });
 });

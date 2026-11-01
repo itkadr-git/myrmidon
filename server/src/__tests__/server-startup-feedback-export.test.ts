@@ -269,12 +269,13 @@ vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", async (importOriginal) => ({
+vi.mock("@myrmidon/db", async (importOriginal) => ({
   // Spread the real module: the startup module graph (via wip-limit ->
   // services/issues.js -> documents.ts / execution-projection.ts) reads dozens
   // of table exports at module scope, and a partial mock breaks as soon as the
   // graph gains a new edge. Only the startup-path functions are overridden.
-  ...(await importOriginal<typeof import("@paperclipai/db")>()),
+  ...(await importOriginal<typeof import("@myrmidon/db")>()),
+  ...(await importOriginal<typeof import("@myrmidon/db")>()),
   createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
@@ -465,7 +466,7 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
 }));
 
 // The bot container sweep is off unless enabled and is not under test here; its port wiring
-// pulls the real services graph, which this test replaces with a partial @paperclipai/db mock.
+// pulls the real services graph, which this test replaces with a partial @myrmidon/db mock.
 vi.mock("../myrmidon/bot-containers/startup.js", () => ({
   startBotContainers: vi.fn(),
   stopBotContainers: vi.fn(),
@@ -473,7 +474,7 @@ vi.mock("../myrmidon/bot-containers/startup.js", () => ({
 
 // myrmidon(R5-B): same for the bot image canary wiring — the canary index
 // imports the bot container runtime, which pulls the real services graph and
-// the partial @paperclipai/db mock has no table columns. The canary itself is
+// the partial @myrmidon/db mock has no table columns. The canary itself is
 // a no-op unless MYRMIDON_BOT_CANARY is set and has its own suites.
 vi.mock("../myrmidon/bot-containers/canary-index.js", () => ({
   startBotCanary: vi.fn(),
@@ -506,6 +507,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existingSettingsRows.length = 0;
+    delete process.env.MYRMIDON_PROCESS_ROLE;
     delete process.env.PAPERCLIP_PROCESS_ROLE;
     delete process.env.DATABASE_URL;
     delete process.env.MYRMIDON_DATABASE_URL;
@@ -622,6 +624,51 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("passes a lazy fleet client manager getter to routes during createApp", async () => {
+    const { getActiveFleetClientManager, setActiveFleetClientManager } = await import("../myrmidon/bot-containers/site-registry.js");
+    const { startBotContainers } = await import("../myrmidon/bot-containers/startup.js");
+    const previousBotContainers = process.env.MYRMIDON_BOT_CONTAINERS;
+    const previousProcessRole = process.env.MYRMIDON_PROCESS_ROLE;
+    const manager = { id: "fleet-manager-after-app-build" } as never;
+    setActiveFleetClientManager(null);
+    process.env.MYRMIDON_BOT_CONTAINERS = "true";
+    process.env.PAPERCLIP_PROCESS_ROLE = "all";
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    // Production startup registers the manager from startBotContainers, after
+    // createApp has already built the routes with the lazy getter.
+    (startBotContainers as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      setActiveFleetClientManager(manager);
+    });
+    let getManager: (() => unknown) | undefined;
+    createAppMock.mockImplementationOnce(async (_db, options) => {
+      getManager = (options as { fleetClientManager?: () => unknown }).fleetClientManager;
+      expect(getManager).toEqual(expect.any(Function));
+      expect(getManager?.()).toBe(null);
+      return Object.assign((_: unknown, __: unknown) => {}, {
+        locals: {
+          toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
+          toolActionDeliveries: { sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
+        },
+      }) as never;
+    });
+
+    try {
+      await startServer();
+      expect(createAppMock).toHaveBeenCalledTimes(1);
+      expect(startBotContainers).toHaveBeenCalledTimes(1);
+      // The route getter must resolve the manager registered after createApp.
+      expect(getManager?.()).toBe(manager);
+      expect(getActiveFleetClientManager()).toBe(manager);
+    } finally {
+      (startBotContainers as ReturnType<typeof vi.fn>).mockReset();
+      setActiveFleetClientManager(null);
+      if (previousBotContainers === undefined) delete process.env.MYRMIDON_BOT_CONTAINERS;
+      else process.env.MYRMIDON_BOT_CONTAINERS = previousBotContainers;
+      if (previousProcessRole === undefined) delete process.env.MYRMIDON_PROCESS_ROLE;
+      else process.env.MYRMIDON_PROCESS_ROLE = previousProcessRole;
+    }
   });
 
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {

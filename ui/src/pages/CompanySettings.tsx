@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
@@ -28,6 +28,8 @@ import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 import { ConnectorPanel } from "@/components/myrmidon/ConnectorPanel"; // myrmidon(EXTCASE-PANEL)
 import { GitHubSharedIdentityPanel } from "@/components/myrmidon/GitHubSharedIdentityPanel"; // myrmidon(GITHUB-SHARED-IDENTITY)
 import { FleetConsolePanel } from "../components/myrmidon/FleetConsolePanel"; // myrmidon(SC1)
+import { FleetGuardrailsSettingsPanel } from "@/components/myrmidon/FleetGuardrailsSettingsPanel";
+import { RemoteSitesSection } from "../components/myrmidon/RemoteSitesSection"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { ReferenceTaskEvalsPanel } from "../components/myrmidon/evals/ReferenceTaskEvalsPanel"; // myrmidon(1.6.5 EVALS-JUDGE-FAMILY)
 import { TracingHealthCard } from "../components/myrmidon/tracing-health/TracingHealthCard"; // myrmidon(TRACING-HEALTH)
 import { TeamLivenessHealthCard } from "../components/myrmidon/TeamLivenessHealthCard"; // myrmidon(TEAM-LIVENESS-METRICS)
@@ -450,6 +452,8 @@ export function CompanySettings() {
       />
 
       <FleetConsolePanel /> {/* myrmidon(SC1) */}
+      <FleetGuardrailsSettingsPanel />
+      <RemoteSitesSection /> {/* myrmidon(1.6.6 REMOTE-SITES-T8) */}
 
       {/* Reference-task results with the same-family judge badge
           (myrmidon(1.6.5 EVALS-JUDGE-FAMILY)) */}

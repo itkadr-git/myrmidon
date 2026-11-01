@@ -25,13 +25,13 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   resolveCanonicalWorktreeSeedSource,
   resolveRegisteredWorktreeSeedSource,
-} from "@paperclipai/shared/worktree-seed-source";
+} from "@myrmidon/shared/worktree-seed-source";
 import {
   readWorktreePortRegistry,
   withWorktreePortRegistryLock,
   writeWorktreePortRegistry,
-} from "@paperclipai/shared/worktree-port-registry";
 import { PRODUCT_NAME } from "../myrmidon-product.js";
+} from "@myrmidon/shared/worktree-port-registry";
 import {
   applyPendingMigrations,
   agents,
@@ -66,7 +66,7 @@ import {
   formatEmbeddedPostgresError,
   loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, ensureToolActionSigningSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
 import { expandHomePrefix } from "../config/home.js";
@@ -106,7 +106,7 @@ import {
   type PlannedIssueInsert,
 } from "./worktree-merge-history-lib.js";
 import { detectGitWorkspaceInfo } from "./git-workspace.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type WorktreeInitOptions = {
   name?: string;

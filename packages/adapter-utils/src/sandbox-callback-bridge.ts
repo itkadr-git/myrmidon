@@ -22,7 +22,7 @@ import {
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
@@ -232,6 +232,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "if-match",
   "if-none-match",
   "x-paperclip-github-capability",
+  "x-myrmidon-github-capability",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest extends SandboxCallbackBridgeBody {
@@ -1054,7 +1055,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       let raw: string;
       try {
-        raw = await input.client.readTextFile(requestPath, readLimit);
+        raw = await input.client.readTextFile(requestPath, maxEnvelopeBytes);
       } catch (error) {
         // The gateway deletes a request file when its caller stops waiting
         // (client-side timeout cleanup). A read that fails because the file is
@@ -1064,6 +1065,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
         // keeps its existing handling.
         const remaining = await input.client.listJsonFiles(directories.requestsDir).catch(() => null);
         if (remaining !== null && !remaining.includes(fileName)) {
+          return;
+        }
+        if (error instanceof Error && error.message.includes("Bridge envelope exceeded the configured size limit")) {
+          await finalize({
+            id: fileName.replace(/\.json$/i, ""),
+            status: 413,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ error: "Bridge request envelope exceeded the configured size limit." }),
+            completedAt: new Date().toISOString(),
+          });
           return;
         }
         throw error;
@@ -1160,6 +1171,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             headers: {
               "content-type": "application/json",
               "x-paperclip-bridge-outcome": "indeterminate",
+              "x-myrmidon-bridge-outcome": "indeterminate",
             },
             body: JSON.stringify({
               error: error instanceof Error ? error.message : String(error),
@@ -1224,6 +1236,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             headers: {
               "content-type": "application/json",
               "x-paperclip-bridge-outcome": "indeterminate",
+              "x-myrmidon-bridge-outcome": "indeterminate",
             },
             body: JSON.stringify({ error: message, outcome: "indeterminate", retryable: false }),
             completedAt: new Date().toISOString(),
@@ -2529,7 +2542,7 @@ async function runFileGateway() {
       // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
       // standard retry policy does not repeat the request. The outcome header and
       // body stay, so a caller that reads them still sees the indeterminate result.
-      const bridgeOutcome = responseHeaders["x-paperclip-bridge-outcome"];
+      const bridgeOutcome = responseHeaders["x-myrmidon-bridge-outcome"] ?? responseHeaders["x-paperclip-bridge-outcome"];
       if (bridgeOutcome === "indeterminate") {
         res.statusCode = 409;
       } else {
@@ -2539,13 +2552,20 @@ async function runFileGateway() {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
       }
+      if (bridgeOutcome) {
+        res.setHeader("x-paperclip-bridge-outcome", bridgeOutcome);
+        res.setHeader("x-myrmidon-bridge-outcome", bridgeOutcome);
+      }
       res.end(decodeSandboxBridgeBody(response, maxBodyBytes));
     } catch (error) {
       // Capacity rejection before dispatch is retryable. After a mutation was
       // dispatched, a missing or corrupt receipt cannot prove that it failed.
       const uncertainWrite = dispatched && !["GET", "HEAD", "OPTIONS", "TRACE"].includes(req.method || "GET");
       const status = uncertainWrite ? 409 : error instanceof BridgeProcessCapacityError ? 503 : 502;
-      if (uncertainWrite) res.setHeader("x-paperclip-bridge-outcome", "indeterminate");
+      if (uncertainWrite) {
+        res.setHeader("x-paperclip-bridge-outcome", "indeterminate");
+        res.setHeader("x-myrmidon-bridge-outcome", "indeterminate");
+      }
       writeJsonResponse(res, status, {
         error: error instanceof Error ? error.message : String(error),
         ...(uncertainWrite ? { outcome: "indeterminate", retryable: false } : {}),
@@ -2773,7 +2793,7 @@ function runHttp2Gateway() {
       // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
       // standard retry policy does not repeat the request. The outcome header and
       // body stay, so a caller that reads them still sees the indeterminate result.
-      const bridgeOutcome = (response.headers || {})["x-paperclip-bridge-outcome"];
+      const bridgeOutcome = (response.headers || {})["x-myrmidon-bridge-outcome"] ?? (response.headers || {})["x-paperclip-bridge-outcome"];
       if (bridgeOutcome === "indeterminate") {
         res.statusCode = 409;
       } else {
@@ -2782,6 +2802,10 @@ function runHttp2Gateway() {
       for (const [key, value] of Object.entries(response.headers || {})) {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
+      }
+      if (bridgeOutcome) {
+        res.setHeader("x-paperclip-bridge-outcome", bridgeOutcome);
+        res.setHeader("x-myrmidon-bridge-outcome", bridgeOutcome);
       }
       res.end(response.body);
     } catch (error) {

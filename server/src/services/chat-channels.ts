@@ -8,10 +8,10 @@ import { HEIF_CONTENT_TYPES, photonHeifPreview, validatePhotonImage } from "./ph
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { PhotonAnswerValidationError, nativePhotonInteraction, publishPhotonPrompt, photonResponseCommand, parsePhotonQuestionAnswer, type PhotonPromptReceipt, type PhotonInteractionBinding, type PhotonDraft } from "./photon/interactions.js";
 import { validateNativeQuestionResponseInput } from "./native-runtime/native-question-bridge.js";
-import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@myrmidon/shared";
 import { PhotonCloudClient, PhotonError, photonFailure, photonSharedIdentity, photonSharedScope } from "./photon/cloud.js";
 import { PhotonChatAdapter, photonThreadId, photonReplyReference } from "./photon/adapter.js";
-import { photonChannelConfigurationSchema, type PhotonChannelConfiguration } from "@paperclipai/shared";
+import { photonChannelConfigurationSchema, type PhotonChannelConfiguration } from "@myrmidon/shared";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
 import {
   createHash,
@@ -53,7 +53,7 @@ import {
   readChatControlChronology,
   teamsConversationId,
 } from "./chat-control-chronology.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   createDurableChatWakeupRequest,
   assertDurableChatWakeupReceipt,
@@ -93,7 +93,7 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   ChatAdapterCapabilities,
   ChatEndpointCallbackSurfaces,
@@ -109,7 +109,7 @@ import type {
   SafeChatPublicationPayload,
   ToolCredentialSecretRef,
   UpdateChatEndpointInput,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isAgentStatusInvokable,
   CHAT_PROVIDERS,
@@ -117,7 +117,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   LOW_TRUST_REVIEW_PRESET_VERSION,
   LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   formatAttachmentSize,
   isAllowedContentType,
@@ -185,7 +185,7 @@ import {
   telegramPrivateDraftDestination,
   type TelegramDraftControl,
   type TelegramGenerationStoppedProof,
-} from "./chat-telegram-draft-stop.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-draft-stop.js";
 import {
   telegramStopSubscriptionPlan,
   telegramStopSubscriptionConfirmed,
@@ -293,6 +293,8 @@ import {
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
 import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
+import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -395,6 +397,7 @@ import {
   normalizeMicrosoftTeamsCredentialIds,
   normalizeMicrosoftTeamsExternalPrincipalId,
 } from "./chat-teams-credentials.js";
+import { backgroundInterval } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 import {
   isTeamsInlineImageContentType,
   prepareTeamsInlineImage,
@@ -485,7 +488,7 @@ import {
 import {
   telegramDmStatusEnabled,
   telegramSplitMaxParts,
-} from "../myrmidon/telegram-dm-status-settings.js";
+} from "../myrmidon/channel-connectors/bridge/dm-status-settings.js";
 import type {
   ActionEvent,
   AdapterPostableMessage,
@@ -3507,7 +3510,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   function startDiscordGatewayLeaseRenewal(
     ownership: DiscordGatewayOwnership,
   ): void {
-    ownership.renewTimer = setInterval(
+    ownership.renewTimer = backgroundInterval(
       () => {
         if (ownership.renewal || ownership.stopping) return;
         void refreshDiscordGatewayOwnership(ownership);
@@ -17349,6 +17352,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
         });
       }
+      // myrmidon(1.7-ACTIVE-CHANNEL): an inbound Telegram DM from a linked
+      // owner marks the Telegram channel active for them; the next report
+      // decision reads it. Advisory and fire-and-forget — the delivery path
+      // never waits on it and never fails on it.
+      if (x8Dm.applies && actorUserId) {
+        markOwnerActivityBestEffort(db, { userId: actorUserId, channel: "telegram" });
+      }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
       // queued bridged-command notice or one-time migration notice. Runs
@@ -30295,7 +30305,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     action: "mark_delivered" | "retry_anyway" | "cancel",
     userId: string,
     fileTransfer?: {
-      phase: import("@paperclipai/shared").ChatFileTransferPhase;
+      phase: import("@myrmidon/shared").ChatFileTransferPhase;
       version: number;
     },
   ) {

@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
+import { useTranslation } from "@/i18n";
 import {
   Activity,
   BadgeDollarSign,
@@ -43,24 +45,27 @@ const localIcons = {
   revisions: History,
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
 
-const auditItems = [
-  { section: "activity", label: "Activity", icon: Activity },
-  { section: "runs", label: "Runs", icon: PlayCircle },
-  { section: "costs", label: "Costs", icon: ReceiptText },
-  { section: "budgets", label: "Budgets", icon: BadgeDollarSign },
+// Labels are resolved at render time so a language switch is picked up.
+const auditItems = (t: TFunction) => [
+  { section: "activity", label: t("area.agents-1.agent-contextual-sidebar.audit.activity"), icon: Activity },
+  { section: "runs", label: t("area.agents-1.agent-contextual-sidebar.audit.runs"), icon: PlayCircle },
+  { section: "costs", label: t("area.agents-1.agent-contextual-sidebar.audit.costs"), icon: ReceiptText },
+  { section: "budgets", label: t("area.agents-1.agent-contextual-sidebar.audit.budgets"), icon: BadgeDollarSign },
 ] as const;
 
 export function AgentContextualSidebar({
   agentRef,
   agentId,
   agentName,
-  labels = { secrets: "Secrets & variables" },
+  labels,
 }: {
   agentRef: string;
   agentId?: string;
   agentName?: string;
   labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
+  const { t } = useTranslation();
+  const effectiveLabels: Partial<Record<AgentLocalDetailView, string>> = labels ?? { secrets: t("area.agents-1.agent-contextual-sidebar.secretsLabel") };
   const { selectedCompanyId } = useCompany();
   const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const shouldResolveAgent = !agentId || !agentName;
@@ -70,7 +75,7 @@ export function AgentContextualSidebar({
     enabled: shouldResolveAgent && Boolean(agentRef && selectedCompanyId),
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
-  const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  const resolvedName = agentName ?? resolvedAgent?.name ?? t("area.agents-1.agent-contextual-sidebar.agentFallback");
 
   return (
     <ContextualSidebarFrame
@@ -81,7 +86,7 @@ export function AgentContextualSidebar({
       className="border-r border-border bg-background"
     >
       <nav
-        aria-label={`${resolvedName} navigation`}
+        aria-label={t("area.agents-1.agent-contextual-sidebar.navAria", { name: resolvedName })}
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
@@ -106,7 +111,7 @@ export function AgentContextualSidebar({
                     <SidebarNavItem
                       key={item.value}
                       to={href}
-                      label={labels?.[item.value] ?? item.label}
+                      label={effectiveLabels[item.value] ?? item.label}
                       icon={localIcons[item.value]}
                     />
                   );
@@ -120,10 +125,10 @@ export function AgentContextualSidebar({
             data-slot="contextual-sidebar-section-label"
             className={contextualSidebarStyles.sectionLabel}
           >
-            Audit
+            {t("area.agents-1.agent-contextual-sidebar.audit.title")}
           </p>
           <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-            {resolvedId ? auditItems.map((item) => (
+            {resolvedId ? auditItems(t).map((item) => (
               <SidebarNavItem
                 key={item.section}
                 to={agentScopedAuditHref(resolvedId, item.section)}
@@ -131,7 +136,7 @@ export function AgentContextualSidebar({
                 icon={item.icon}
               />
             )) : (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("area.agents-1.agent-contextual-sidebar.audit.loading")}</p>
             )}
           </div>
         </div>

@@ -14,7 +14,7 @@
 // is already terminal, is never suppressed.
 
 import { eq } from "drizzle-orm";
-import { issueWorkProducts, issues, type Db } from "@paperclipai/db";
+import { issueWorkProducts, issues, type Db } from "@myrmidon/db";
 import { settlePendingForProducts } from "./policy.js";
 
 export async function shouldSuppressRunForIssue(issueId: string, db: Db): Promise<boolean> {
@@ -28,7 +28,7 @@ export async function shouldSuppressRunForIssue(issueId: string, db: Db): Promis
   if (issue.status === "done" || issue.status === "cancelled") return false;
 
   const products = await db
-    .select({ type: issueWorkProducts.type, status: issueWorkProducts.status })
+    .select({ type: issueWorkProducts.type, status: issueWorkProducts.status, metadata: issueWorkProducts.metadata })
     .from(issueWorkProducts)
     .where(eq(issueWorkProducts.issueId, issueId));
 
