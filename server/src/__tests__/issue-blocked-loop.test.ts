@@ -79,6 +79,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(activityLog);
     await db.delete(agents);
     await db.delete(companies);
   });

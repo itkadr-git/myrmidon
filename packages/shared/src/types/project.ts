@@ -5,6 +5,7 @@ import type {
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
 import type { AgentEnvConfig } from "./secrets.js";
+import type { ProjectDevelopmentProcess } from "./project-development-process.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -99,6 +100,7 @@ export interface Project {
    */
   defaultCasteKey?: string | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  developmentProcess: ProjectDevelopmentProcess | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

@@ -10280,6 +10280,7 @@ export function issueService(db: Db) {
         let projectPolicyCached: ReturnType<
           typeof parseProjectExecutionWorkspacePolicy
         > | null = null;
+        let projectDevelopmentProcessCached: Record<string, unknown> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
           if (projectPolicyLoaded) return projectPolicyCached;
@@ -10288,6 +10289,7 @@ export function issueService(db: Db) {
           const projectRow = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              developmentProcess: projects.developmentProcess,
             })
             .from(projects)
             .where(
@@ -10300,9 +10302,25 @@ export function issueService(db: Db) {
           projectPolicyCached = parseProjectExecutionWorkspacePolicy(
             projectRow?.executionWorkspacePolicy,
           );
+          projectDevelopmentProcessCached = projectRow?.developmentProcess ?? null;
           return projectPolicyCached;
         };
 
+        await loadProjectPolicyOnce();
+        const developmentProcess = projectDevelopmentProcessCached as {
+          enabled?: boolean;
+          executionPolicy?: Parameters<typeof normalizeIssueExecutionPolicy>[0];
+        } | null;
+        if (
+          issueData.executionPolicy == null &&
+          developmentProcess &&
+          developmentProcess.enabled === true &&
+          developmentProcess.executionPolicy
+        ) {
+          issueData.executionPolicy = normalizeIssueExecutionPolicy(
+            developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
+          ) as unknown as Record<string, unknown> | null;
+        }
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
