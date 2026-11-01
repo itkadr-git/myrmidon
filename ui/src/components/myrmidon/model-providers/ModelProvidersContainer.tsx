@@ -15,6 +15,9 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { ApiError } from "@/api/client";
+import { accessApi } from "@/api/access";
+import { queryKeys } from "@/lib/queryKeys";
+import { ShieldAlert } from "lucide-react";
 import {
   litellmChannelsQueryKey,
   modelProviderChannelsQueryKey,
@@ -40,6 +43,20 @@ export function ModelProvidersScreen() {
   const queryClient = useQueryClient();
   const companyId = selectedCompanyId ?? "";
 
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+
+  const boardAccessData = boardAccess.data;
+  const membership = boardAccessData?.memberships?.find((m) => m.companyId === companyId);
+  const isAdmin =
+    Boolean(boardAccessData?.isInstanceAdmin) ||
+    boardAccessData?.source === "local_implicit" ||
+    membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin";
+
   useEffect(() => {
     setBreadcrumbs([{ label: t("modelProviders.breadcrumb") }]);
   }, [setBreadcrumbs, t]);
@@ -49,7 +66,7 @@ export function ModelProvidersScreen() {
   const viewQuery = useQuery({
     queryKey,
     queryFn: () => modelProvidersApi.view(companyId),
-    enabled: companyId.length > 0,
+    enabled: companyId.length > 0 && Boolean(isAdmin),
   });
   const view: ModelProvidersView | undefined = viewQuery.data;
 
@@ -105,6 +122,30 @@ export function ModelProvidersScreen() {
       <p className="text-sm text-muted-foreground" data-testid="myrmidon-model-providers-no-company">
         {t("modelProviders.noCompany")}
       </p>
+    );
+  }
+
+  if (boardAccess.isLoading) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="myrmidon-model-providers-loading">
+        {t("modelProviders.loading")}
+      </p>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="mx-auto max-w-xl py-10" data-testid="myrmidon-model-providers-denied">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-6">
+          <div className="flex items-center gap-2 text-foreground">
+            <ShieldAlert className="h-5 w-5 text-muted-foreground" />
+            <h1 className="text-lg font-semibold">Admin access required</h1>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Only company owners and administrators can view or manage model providers.
+          </p>
+        </div>
+      </div>
     );
   }
 

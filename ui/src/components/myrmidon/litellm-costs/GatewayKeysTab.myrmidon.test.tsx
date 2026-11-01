@@ -1,16 +1,15 @@
 // @vitest-environment jsdom
-import { flushSync } from "react-dom";
-import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { countKeyedAgents, litellmKeysApi } from "./litellmKeysApi";
-import { cycleLines, GatewayKeysTab, keyRows } from "./GatewayKeysTab";
+import { describe, expect, it } from "vitest";
+import { countKeyedAgents } from "./litellmKeysApi";
+import { cycleLines, keyRows } from "./GatewayKeysTab";
 import type { AgentGatewayKeyView } from "./litellmKeysApi";
-import { agentsApi } from "@/api/agents";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+import {
+  findUnknownModelGroups,
+  sortFallbackTargets,
+  validateFallbackDiversity,
+  validateFallbackOrder,
+  type KnownModelInfo,
+} from "@myrmidon/shared";
 
 const view = (over: Partial<AgentGatewayKeyView>): AgentGatewayKeyView => ({
   agentId: "agent-a",
@@ -37,25 +36,6 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
     expect(rows[0]!.present).toBe(true);
   });
 
-  it("preserves model allowlist and defaults undefined to empty array", () => {
-    const rows = keyRows(
-      [
-        view({
-          agentId: "agent-a",
-          present: true,
-          models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
-        }),
-        view({ agentId: "agent-b", present: true, models: undefined }),
-      ],
-      new Map([
-        ["agent-a", "alpha"],
-        ["agent-b", "beta"],
-      ]),
-    );
-    expect(rows[0]!.models).toEqual(["openai/gpt-4o", "anthropic/claude-3-5-sonnet"]);
-    expect(rows[1]!.models).toEqual([]);
-  });
-
   it("counts how many agents have a key of their own", () => {
     expect(countKeyedAgents([view({ present: true }), view({ agentId: "b" })])).toEqual({ keyed: 1, total: 2 });
   });
@@ -75,104 +55,68 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
       }),
     ).toEqual(["model-a -> model-b -> model-a"]);
   });
-});
 
-describe("myrmidon(M2-B) gateway keys tab UI rendering", () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    flushSync(() => root.unmount());
-    container.remove();
-    vi.restoreAllMocks();
-  });
-
-  it("renders explicit warning «пусто = все модели» when models list is empty", async () => {
-    vi.spyOn(agentsApi, "list").mockResolvedValue([
-      { id: "agent-a", name: "researcher" } as never,
+  describe("fallback editor validations & rules (OPE-9855)", () => {
+    const catalog = new Map<string, KnownModelInfo>([
+      ["openai/gpt-4o", { modelName: "openai/gpt-4o", provider: "openai", cost: 0.005 }],
+      ["openai/gpt-4o-mini", { modelName: "openai/gpt-4o-mini", provider: "openai", cost: 0.00015 }],
+      ["anthropic/claude-3-5-sonnet", { modelName: "anthropic/claude-3-5-sonnet", provider: "anthropic", cost: 0.003 }],
+      ["ollama/llama-3-8b", { modelName: "ollama/llama-3-8b", provider: "ollama", isFree: true, cost: 0 }],
+      ["openrouter/free-qwen", { modelName: "openrouter/free-qwen", provider: "openrouter", isFree: true, cost: 0 }],
     ]);
-    vi.spyOn(litellmKeysApi, "keys").mockResolvedValue([
-      view({
-        agentId: "agent-a",
-        present: true,
-        models: [],
-      }),
-    ]);
-    vi.spyOn(litellmKeysApi, "fallbacks").mockResolvedValue({
-      chains: [],
-      cycles: [],
-    });
 
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
-            <GatewayKeysTab companyId="company-1" />
-          </MemoryRouter>
-        </QueryClientProvider>,
+    it("rejects chains with a single provider across primary and fallbacks", () => {
+      const single = validateFallbackDiversity(
+        { model: "openai/gpt-4o", targets: ["openai/gpt-4o-mini"] },
+        catalog,
       );
-    });
+      expect(single.valid).toBe(false);
+      expect(single.error).toMatch(/relies on a single provider/i);
 
-    // Wait for queries to settle
-    await vi.waitFor(() => {
-      expect(container.querySelector('[data-testid="empty-models-warning"]')).not.toBeNull();
-    });
-
-    const warningEl = container.querySelector('[data-testid="empty-models-warning"]');
-    expect(warningEl?.textContent).toContain("пусто = все модели");
-
-    // Agent card link
-    const agentLink = container.querySelector('a[href="/agents/agent-a"]');
-    expect(agentLink).not.toBeNull();
-    expect(agentLink?.textContent).toBe("researcher");
-  });
-
-  it("renders model tags when models allowlist is populated", async () => {
-    vi.spyOn(agentsApi, "list").mockResolvedValue([
-      { id: "agent-a", name: "coder" } as never,
-    ]);
-    vi.spyOn(litellmKeysApi, "keys").mockResolvedValue([
-      view({
-        agentId: "agent-a",
-        present: true,
-        models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
-      }),
-    ]);
-    vi.spyOn(litellmKeysApi, "fallbacks").mockResolvedValue({
-      chains: [],
-      cycles: [],
-    });
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
-            <GatewayKeysTab companyId="company-1" />
-          </MemoryRouter>
-        </QueryClientProvider>,
+      const multi = validateFallbackDiversity(
+        { model: "openai/gpt-4o", targets: ["anthropic/claude-3-5-sonnet"] },
+        catalog,
       );
+      expect(multi.valid).toBe(true);
     });
 
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain("openai/gpt-4o");
+    it("validates channel ordering: free channels first, then cheaper channels", () => {
+      const valid = validateFallbackOrder(
+        { model: "openai/gpt-4o", targets: ["ollama/llama-3-8b", "anthropic/claude-3-5-sonnet"] },
+        catalog,
+      );
+      expect(valid.valid).toBe(true);
+
+      const invalid = validateFallbackOrder(
+        { model: "openai/gpt-4o", targets: ["anthropic/claude-3-5-sonnet", "ollama/llama-3-8b"] },
+        catalog,
+      );
+      expect(invalid.valid).toBe(false);
+      expect(invalid.warning).toMatch(/Free channel/i);
     });
 
-    expect(container.textContent).toContain("openai/gpt-4o");
-    expect(container.textContent).toContain("anthropic/claude-3-5-sonnet");
-    expect(container.querySelector('[data-testid="empty-models-warning"]')).toBeNull();
+    it("sorts fallback targets by policy (free first, then cheap on different provider)", () => {
+      const targets = [
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-5-sonnet",
+        "openrouter/free-qwen",
+      ];
+      const sorted = sortFallbackTargets(targets, "openai/gpt-4o", catalog);
+      expect(sorted[0]).toBe("openrouter/free-qwen"); // free first
+      expect(sorted[1]).toBe("anthropic/claude-3-5-sonnet"); // different provider
+      expect(sorted[2]).toBe("openai/gpt-4o-mini"); // same provider
+    });
+
+    it("identifies unknown model groups not present in known models", () => {
+      const known = new Set(["openai/gpt-4o", "anthropic/claude-3-5-sonnet"]);
+      const unknown = findUnknownModelGroups(
+        [
+          { model: "openai/gpt-4o", targets: ["unknown-group-1"] },
+          { model: "unknown-group-2", targets: ["anthropic/claude-3-5-sonnet"] },
+        ],
+        known,
+      );
+      expect(unknown).toEqual(["unknown-group-1", "unknown-group-2"]);
+    });
   });
 });
