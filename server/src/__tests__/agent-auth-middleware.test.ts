@@ -187,6 +187,24 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  it("identifies an unexpanded API key variable separately from an invalid JWT", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db);
+    const unexpanded = await request(app)
+      .get("/actor")
+      .set("Authorization", "Bearer $PAPERCLIP_API_KEY");
+    expect(unexpanded.status).toBe(401);
+    expect(unexpanded.body.code).toBe("agent_token_unexpanded_variable");
+    expect(unexpanded.body.error).toContain("literal $PAPERCLIP_API_KEY");
+
+    const invalidJwt = await request(app)
+      .get("/actor")
+      .set("Authorization", "Bearer not-a-token");
+    expect(invalidJwt.status).toBe(401);
+    expect(invalidJwt.body.code).not.toBe("agent_token_unexpanded_variable");
+    expect(invalidJwt.body.error).toContain("Agent token did not verify");
+  });
+
   it.each([
     ["empty bearer token", "Bearer   ", "Empty bearer token"],
     ["unverified token", "Bearer not-a-token", "Agent token did not verify"],
