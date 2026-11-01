@@ -25,16 +25,37 @@ import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ApiError } from "@/api/client";
 import {
   modelProvidersApi,
   BUILTIN_MODEL_PROVIDER_TYPES,
   MODEL_PROVIDER_TYPES,
   sortModels,
   type AddModelProviderInput,
+  type LitellmChannelsResponse,
   type ModelProviderType,
   type ModelProvidersView,
   type ModelProviderView,
 } from "./modelProvidersApi";
+import { HindsightModelGroupsPanel } from "../hindsight-models/HindsightModelGroupsPanel";
+
+export function sanitizeErrorMessage(message: string): string {
+  if (!message) return "";
+  return message
+    .replace(/(Bearer\s+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/(authorization["':\s=]+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/\b(sk-[A-Za-z0-9_-]{6,})\b/gi, "<redacted>")
+    .replace(/\b(pcp_[A-Za-z0-9_]+)\b/gi, "<redacted>")
+    .replace(/(:\/\/[^:]+:)[^@]+(@)/g, "$1<redacted>$2")
+    .replace(/(api[_-]?key["':\s=]+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/(secrets\/)[A-Za-z0-9_.-]+/gi, "$1<redacted>");
+}
+
+function readable(error: unknown): string {
+  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof Error) return error.message;
+  return "Unexpected error";
+}
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -59,6 +80,10 @@ export function ModelProvidersScreenView({
   companyId,
   modelsQuery,
   channelsQuery,
+  litellmChannelsQuery,
+  litellmChannelsData,
+  litellmChannelsLoading,
+  litellmChannelsError,
   onAdd,
   adding,
   addError,
@@ -76,6 +101,12 @@ export function ModelProvidersScreenView({
   modelsQuery: (providerId: string) => readonly unknown[];
   /** Query key factory for the per-provider channels list. */
   channelsQuery?: (providerId: string) => readonly unknown[];
+  /** Query key factory for the LiteLLM channels list. */
+  litellmChannelsQuery?: (companyId: string) => readonly unknown[];
+  /** Direct channels response for testing / override. */
+  litellmChannelsData?: LitellmChannelsResponse;
+  litellmChannelsLoading?: boolean;
+  litellmChannelsError?: string | null;
   onAdd: (input: AddModelProviderInput) => void;
   adding: boolean;
   addError: string | null;
@@ -96,6 +127,29 @@ export function ModelProvidersScreenView({
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [rotateId, setRotateId] = useState<string | null>(null);
   const [rotateKey, setRotateKey] = useState("");
+
+  const litellmChannelsQueryResult = useQuery({
+    queryKey: litellmChannelsQuery
+      ? litellmChannelsQuery(companyId)
+      : ["myrmidon", "model-providers", companyId, "litellm-channels"],
+    queryFn: () => modelProvidersApi.litellmChannels(companyId),
+    enabled:
+      companyId.length > 0 &&
+      !litellmChannelsData &&
+      litellmChannelsLoading === undefined &&
+      litellmChannelsError === undefined,
+  });
+
+  const channelsData = litellmChannelsData ?? litellmChannelsQueryResult.data;
+  const channelsLoading = litellmChannelsLoading ?? litellmChannelsQueryResult.isLoading;
+  const rawChannelsError =
+    litellmChannelsError ??
+    (litellmChannelsQueryResult.error
+      ? readable(litellmChannelsQueryResult.error)
+      : null) ??
+    channelsData?.error ??
+    null;
+  const channelsError = rawChannelsError ? sanitizeErrorMessage(rawChannelsError) : null;
 
   // The add form resets when the provider list changes after a save: the raw
   // key never survives a successful mutation in this component's state.
@@ -282,7 +336,76 @@ export function ModelProvidersScreenView({
         )}
       </section>
 
-      {/* 3. Change log */}
+      {/* 2.5 LiteLLM Model Groups & Channels */}
+      <section className="space-y-3" data-testid="myrmidon-litellm-channels-section">
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold" data-testid="myrmidon-litellm-channels-title">
+            {t("modelProviders.litellmChannels.title") || "LiteLLM Model Groups & Channels"}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("modelProviders.litellmChannels.description") ||
+              "Model groups and routed provider channels configured in LiteLLM."}
+          </p>
+        </div>
+
+        {channelsLoading ? (
+          <p className="text-xs text-muted-foreground" data-testid="myrmidon-litellm-channels-loading">
+            {t("modelProviders.litellmChannels.loading") || "Loading model groups and channels..."}
+          </p>
+        ) : channelsError ? (
+          <p className="text-xs text-destructive" data-testid="myrmidon-litellm-channels-error">
+            {channelsError}
+          </p>
+        ) : !channelsData?.channels || channelsData.channels.length === 0 ? (
+          <p className="text-xs text-muted-foreground" data-testid="myrmidon-litellm-channels-empty">
+            {t("modelProviders.litellmChannels.empty") || "No LiteLLM model groups or channels found."}
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-left text-xs" data-testid="myrmidon-litellm-channels-table">
+              <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
+                <tr>
+                  <th className="p-2">{t("modelProviders.litellmChannels.group") || "Group"}</th>
+                  <th className="p-2">{t("modelProviders.litellmChannels.provider") || "Provider"}</th>
+                  <th className="p-2">{t("modelProviders.litellmChannels.providerModel") || "Provider Model"}</th>
+                  <th className="p-2 text-right">{t("modelProviders.litellmChannels.order") || "Order"}</th>
+                  <th className="p-2 text-right">{t("modelProviders.litellmChannels.weight") || "Weight"}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {channelsData.channels.map((channel, idx) => {
+                  const keyId = channel.id || `${channel.group}-${channel.providerModel}-${idx}`;
+                  const rowId = channel.id || idx;
+                  return (
+                    <tr key={keyId} data-testid={`myrmidon-litellm-channel-row-${rowId}`}>
+                      <td className="p-2 font-mono" data-testid={`myrmidon-litellm-channel-group-${rowId}`}>
+                        {channel.group}
+                      </td>
+                      <td className="p-2 font-mono" data-testid={`myrmidon-litellm-channel-provider-${rowId}`}>
+                        {channel.provider}
+                      </td>
+                      <td className="p-2 font-mono" data-testid={`myrmidon-litellm-channel-provider-model-${rowId}`}>
+                        {channel.providerModel}
+                      </td>
+                      <td className="p-2 text-right font-mono" data-testid={`myrmidon-litellm-channel-order-${rowId}`}>
+                        {channel.order !== null && channel.order !== undefined ? channel.order : "—"}
+                      </td>
+                      <td className="p-2 text-right font-mono" data-testid={`myrmidon-litellm-channel-weight-${rowId}`}>
+                        {channel.weight !== null && channel.weight !== undefined ? channel.weight : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* 3. Hindsight Memory Models (write, summarize, search) */}
+      <HindsightModelGroupsPanel companyId={companyId} />
+
+      {/* 4. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">
         <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
         {view.changeLog.length === 0 ? (
@@ -366,7 +489,10 @@ function ProviderCard({
   const channelsQueryResult = useQuery({
     queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
     queryFn: () => modelProvidersApi.channels(companyId, provider.id),
-    enabled: provider.type === "chatgpt-pool",
+    enabled:
+      provider.type === "chatgpt-pool" ||
+      provider.type === "antigravity-pool" ||
+      provider.type === "google-ai-pool",
     staleTime: 30_000,
   });
 
@@ -409,8 +535,8 @@ function ProviderCard({
         </div>
       </div>
 
-      {/* ChatGPT Pool: Channels & Limit Windows */}
-      {provider.type === "chatgpt-pool" && (
+      {/* Pool providers: per-account quota windows */}
+      {(provider.type === "chatgpt-pool" || provider.type === "antigravity-pool" || provider.type === "google-ai-pool") && (
         <div className="space-y-3" data-testid={`myrmidon-model-provider-channels-${provider.id}`}>
           {/* Active Role Signals Alert Banner */}
           {channelsQueryResult.data?.signals && channelsQueryResult.data.signals.length > 0 && (
@@ -462,7 +588,23 @@ function ProviderCard({
                 {t("modelProviders.channels.empty") || "No accounts found in pool."}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-md border border-border">
+              <>
+                {channelsQueryResult.data.summary && (
+                  <div className="flex flex-wrap gap-2 text-xs" data-testid="myrmidon-pool-summary">
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.live} live / {channelsQueryResult.data.summary.total} total
+                    </span>
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.exhausted} exhausted
+                    </span>
+                    {channelsQueryResult.data.summary.nextResetAt && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground">
+                        next reset {new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
                     <tr>
@@ -472,6 +614,7 @@ function ProviderCard({
                       <th className="p-2">{t("modelProviders.channels.window5h") || "5h Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.window7d") || "7d Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.lastOk") || "Last OK"}</th>
+                      <th className="p-2">{t("modelProviders.channels.lastError") || "Last error"}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -499,6 +642,11 @@ function ProviderCard({
                             {ch.email && (
                               <div className="text-[10px] text-muted-foreground">{ch.email}</div>
                             )}
+                            {ch.models && ch.models.length > 0 && (
+                              <div className="text-[10px] text-muted-foreground/80 mt-0.5" data-testid={`myrmidon-pool-channel-models-${ch.n}`}>
+                                {ch.models.join(", ")}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             <span
@@ -506,6 +654,12 @@ function ProviderCard({
                             >
                               {ch.stateRu || ch.state}
                             </span>
+                            {ch.limitedUntil && (
+                              <div className="mt-1 text-[10px] text-muted-foreground" data-testid={`myrmidon-pool-channel-reset-${ch.n}`}>
+                                {t("modelProviders.channels.resetIn") || "Resets in"}{" "}
+                                {new Date(ch.limitedUntil * 1000).toLocaleString()}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             {pWin && pWin.usedPct !== null ? (
@@ -577,12 +731,16 @@ function ProviderCard({
                                 })
                               : "—"}
                           </td>
+                          <td className="p-2 text-muted-foreground" title={ch.error || undefined} data-testid={`myrmidon-pool-channel-error-${ch.n}`}>
+                            {ch.error ? ch.error.slice(0, 120) : "—"}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </div>
         </div>

@@ -7,6 +7,7 @@ import {
 } from "../myrmidon/run-dispatch/index.ts";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
+  DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   resolveRunDispatchSettings,
 } from "../myrmidon/run-dispatch/settings.ts";
 
@@ -26,10 +27,12 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({})).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
     expect(resolveRunDispatchSettings(null)).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: 30,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
   });
 
@@ -38,7 +41,7 @@ describe("run dispatch settings", () => {
       resolveRunDispatchSettings({
         processes: { runStartDispatch: "notify", queuedResweepSec: 45 },
       }),
-    ).toEqual({ runStartDispatch: "notify", queuedResweepSec: 45 });
+    ).toMatchObject({ runStartDispatch: "notify", queuedResweepSec: 45, queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC });
   });
 
   it("normalizes the mode and accepts a numeric string interval", () => {
@@ -55,10 +58,11 @@ describe("run dispatch settings", () => {
       resolveRunDispatchSettings({
         processes: { runStartDispatch: "sometimes", queuedResweepSec: "soon" },
       }),
-    ).toEqual({ runStartDispatch: "inline", queuedResweepSec: 30 });
+    ).toMatchObject({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC });
     expect(resolveRunDispatchSettings({ processes: "inline" })).toEqual({
       runStartDispatch: "inline",
       queuedResweepSec: 30,
+      queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
     });
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: true } })).toMatchObject({
       queuedResweepSec: 30,
@@ -72,6 +76,8 @@ describe("run dispatch settings", () => {
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: -30 } })).toMatchObject({
       queuedResweepSec: 5,
     });
+    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 0 } })).toMatchObject({ queuedRunStaleAfterSec: 60 });
+    expect(resolveRunDispatchSettings({ processes: { queuedRunStaleAfterSec: 999999 } })).toMatchObject({ queuedRunStaleAfterSec: 604800 });
     expect(resolveRunDispatchSettings({ processes: { queuedResweepSec: 99_999 } })).toMatchObject({
       queuedResweepSec: 3600,
     });
@@ -158,7 +164,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
     });
 
     expect(await dispatcher.sweepQueuedWithoutRunning()).toMatchObject({ agents: 1, started: 1 });
@@ -171,7 +177,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
       executesRuns: () => true,
       requestRemoteStart,
     });
@@ -189,7 +195,7 @@ describe("queued resweep pass", () => {
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [queued("agent-1")],
       startNextQueuedRunForAgent,
-      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
       executesRuns: () => false,
       requestRemoteStart,
     });
@@ -257,6 +263,55 @@ describe("queued resweep pass", () => {
       failed: 1,
     });
     expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels stale queued runs and wakes the associated agent before resweeping", async () => {
+    const staleRun = { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0) };
+    const listStaleQueuedRuns = vi.fn(async () => [staleRun]);
+    const createCancelStaleQueuedRun = vi.fn(async () => true);
+    const wakeAgent = vi.fn(async () => {});
+    const startNextQueuedRunForAgent = vi.fn(async () => []);
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns,
+      createCancelStaleQueuedRun,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(listStaleQueuedRuns).toHaveBeenCalledWith({ executionCutoff: null, staleAfterMs: 120_000 });
+    expect(createCancelStaleQueuedRun).toHaveBeenCalledWith(staleRun, 120_000);
+    expect(wakeAgent).toHaveBeenCalledWith("agent-stale", "company-1");
+    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
+  });
+
+  it("continues cleanup after a stale cancellation fails", async () => {
+    const error = vi.fn();
+    const wakeAgent = vi.fn(async () => {});
+    const runs = [
+      { id: "run-1", agentId: "agent-1", companyId: "company-1", createdAt: new Date(0) },
+      { id: "run-2", agentId: "agent-2", companyId: "company-1", createdAt: new Date(0) },
+    ];
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 1800 }),
+      listStaleQueuedRuns: async () => runs,
+      createCancelStaleQueuedRun: async (run) => {
+        if (run.id === "run-1") throw new Error("cancel failed");
+        return true;
+      },
+      wakeAgent,
+      log: { error },
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(wakeAgent).toHaveBeenCalledWith("agent-2", "company-1");
   });
 
   it("passes the worktree execution cutoff to the selection", async () => {

@@ -20,8 +20,7 @@ adds no token or credential of its own.
 
 ## What one pass does
 
-A pass runs on the scheduler tick, at most once a minute
-(`MYRMIDON_TASK_PR_SYNC_POLL_SEC`, default 60). One pass inspects up to
+A pass runs on a dedicated process timer, independently of the heartbeat tick, and only the `scheduler` leader performs work. `MYRMIDON_TASK_PR_SYNC_POLL_SEC` sets its interval (default 60 seconds, minimum 15); graceful shutdown stops the timer. A separate daily reconciliation refreshes only still-open PR work products belonging to already-closed tasks, avoiding GitHub requests for products already synced. One pass inspects up to
 `MYRMIDON_TASK_PR_SYNC_BATCH_MAX` candidate tasks (default 50), oldest
 `updatedAt` first, and never runs while the instance is under maintenance.
 For each candidate it resolves every PR through the existing GitHub resolver,
@@ -106,7 +105,7 @@ cannot silently extinguish the fix.
 | Variable | Default | What it does |
 |---|---|---|
 | `MYRMIDON_TASK_PR_SYNC_ENABLED` | `1` (on) | Master switch of the sweep. `0`/`false`/`off`/`no` disables it (tasks stay busy until closed by hand) |
-| `MYRMIDON_TASK_PR_SYNC_POLL_SEC` | `60` | Minimum spacing between two passes; the scheduler queue itself ticks more often |
+| `MYRMIDON_TASK_PR_SYNC_POLL_SEC` | `60` | Dedicated timer interval (independent of heartbeat), minimum 15 seconds; only the scheduler leader runs the pass |
 | `MYRMIDON_TASK_PR_SYNC_BATCH_MAX` | `50` | How many candidate tasks one pass inspects at most |
 | `MYRMIDON_TASK_PR_SYNC_SETTLE_DISABLED` | unset (settling on) | Instance-wide hold: the sweep reads and logs but never flips a task to `done` |
 | `MYRMIDON_TASK_PR_SYNC_WAKE_GUARD_ENABLED` | `1` (on) | Master switch of the wake guard. `0`/`false`/`off`/`no` disables it (wakes dispatch runs as before) |

@@ -31,6 +31,8 @@ export interface PluginDevWatcher {
   unwatch(pluginId: string): void;
   /** Stop all watchers and clean up. */
   close(): void;
+  /** Return IDs of currently watched plugins. */
+  watchedPluginIds(): string[];
 }
 
 export type ResolvePluginPackagePath = (
@@ -170,6 +172,8 @@ export function createPluginDevWatcher(
   );
 
   function watchPlugin(pluginId: string, packagePath: string): void {
+    // Production upgrades own file replacement; hot reload must not observe rsync.
+    if (process.env.NODE_ENV === "production") return;
     // Don't double-watch
     if (watchers.has(pluginId)) return;
 
@@ -347,9 +351,14 @@ export function createPluginDevWatcher(
   lifecycle.on("plugin.disabled", handlePluginDisabled);
   lifecycle.on("plugin.unloaded", handlePluginUnloaded);
 
+  function watchedPluginIds(): string[] {
+    return [...watchers.keys()];
+  }
+
   return {
     watch: watchPlugin,
     unwatch: unwatchPlugin,
     close,
+    watchedPluginIds,
   };
 }

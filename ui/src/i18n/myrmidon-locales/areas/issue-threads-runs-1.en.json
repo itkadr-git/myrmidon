@@ -276,7 +276,8 @@
         "externalObjectStatus": "External object status",
         "visibility": "Visibility",
         "liveRunsOnly": "Live runs only",
-        "hideRoutineRuns": "Hide routine runs"
+        "hideRoutineRuns": "Hide routine runs",
+        "olderThan30Days": "Older than 30 days"
       },
       "issue-link-quicklook": {
         "loadFailed": "Unable to load task preview."

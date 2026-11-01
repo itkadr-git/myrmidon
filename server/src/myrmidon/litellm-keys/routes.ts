@@ -13,7 +13,7 @@
 // the endpoints answer 503 with `enabled: false`, the same shape M2-A's cost
 // endpoints use, so the interface can say why instead of showing a bare error.
 
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
@@ -23,17 +23,21 @@ import {
   defaultAgentGatewayKeyDeps,
   listAgentGatewayKeys,
   readAgentGatewayKey,
+  revokeAgentGatewayKey,
   rotateAgentGatewayKey,
+  updateAgentGatewayKeyAllowlist,
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
-import { readGatewayFallbackTopology } from "./fallback-cycles.js";
+import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
+import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
+import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
   env?: NodeJS.ProcessEnv;
 }
 
-export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
+export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const router = Router();
   const env = input.env ?? process.env;
   const settings = () => readGatewayKeySettings(env);
@@ -72,7 +76,10 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    const created = await createAgentGatewayKey(input.deps, { companyId, agentId });
+    const models = Array.isArray(req.body?.models)
+      ? (req.body.models as unknown[]).map(String)
+      : undefined;
+    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models });
     // The value is answered exactly once, to the board member who asked for it.
     res.status(201).json({ ...created.view, value: created.value });
   });
@@ -89,6 +96,38 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
     res.json(await rotateAgentGatewayKey(input.deps, { companyId, agentId }));
   });
 
+  const handleRevoke = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    res.json(await revokeAgentGatewayKey(input.deps, { companyId, agentId }));
+  };
+  router.delete("/myrmidon/companies/:companyId/litellm/keys/:agentId", handleRevoke);
+  router.post("/myrmidon/companies/:companyId/litellm/keys/:agentId/revoke", handleRevoke);
+
+  const handleUpdateAllowlist = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    const models = Array.isArray(req.body?.models)
+      ? (req.body.models as unknown[]).map(String)
+      : [];
+    res.json(await updateAgentGatewayKeyAllowlist(input.deps, { companyId, agentId, models }));
+  };
+  router.put("/myrmidon/companies/:companyId/litellm/keys/:agentId/models", handleUpdateAllowlist);
+  router.post("/myrmidon/companies/:companyId/litellm/keys/:agentId/models", handleUpdateAllowlist);
+  router.patch("/myrmidon/companies/:companyId/litellm/keys/:agentId", handleUpdateAllowlist);
+
   /**
    * The gateway's fallback topology, with its loops named. Exposed so an
    * operator can see BEFORE a write what a save would reject, and so the
@@ -103,7 +142,63 @@ export function litellmKeysRoutes(_db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    res.json(await readGatewayFallbackTopology(input.deps, { companyId, settings: current }));
+    const report = await readGatewayFallbackTopology({ ...input.deps, db }, { companyId, settings: current });
+    try {
+      const known = await listLitellmModels(db);
+      report.models = known.map((m) => ({
+        modelName: m.modelName,
+        provider: m.provider,
+        inputCostPerToken: m.inputCostPerToken,
+        outputCostPerToken: m.outputCostPerToken,
+        isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+      }));
+    } catch {
+      // models are optional if litellmModels table is unpopulated
+    }
+    res.json(report);
+  });
+
+  /**
+   * Updates the gateway's fallback topology via LiteLLM /config/update.
+   * Enforces that fallbacks are acyclic and do not rely on a single provider.
+   */
+  router.put("/myrmidon/companies/:companyId/litellm/fallbacks", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const current = settings();
+    if (!current.canManageKeys || !current.baseUrl) {
+      disabled(res);
+      return;
+    }
+
+    const chains = (req.body?.chains ?? []) as FallbackChain[];
+    let catalog: Map<string, KnownModelInfo> | undefined;
+    try {
+      const known = await listLitellmModels(db);
+      catalog = new Map(
+        known.map((m) => [
+          m.modelName,
+          {
+            modelName: m.modelName,
+            provider: m.provider,
+            inputCostPerToken: m.inputCostPerToken,
+            outputCostPerToken: m.outputCostPerToken,
+            isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
+          },
+        ]),
+      );
+    } catch {
+      catalog = new Map();
+    }
+
+    const updated = await updateGatewayFallbackTopology({ ...input.deps, db }, {
+      companyId,
+      settings: current,
+      chains,
+      catalog,
+    });
+    res.json(updated);
   });
 
   return router;

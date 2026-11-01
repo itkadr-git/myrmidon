@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Server as HttpServer } from "node:http";
 import { reportReadyToSupervisor, wireSupervisorDrainHandler } from "./child.js";
-import { SUPERVISOR_IPC_DRAIN } from "./supervisor.js";
+import { SUPERVISOR_IPC_DRAIN, SUPERVISOR_IPC_READY } from "./supervisor.js";
 
 function fakeServer() {
   const calls: string[] = [];
@@ -26,10 +26,33 @@ function fakeServer() {
 
 describe("api child IPC (PROCS-1.2)", () => {
   it("reports ready only when the process is a forked api child", () => {
-    const send = vi.fn();
-    // Not a child: no channel, no send.
-    expect(reportReadyToSupervisor()).toBe(false);
-    expect(send).not.toHaveBeenCalled();
+    // myrmidon(OPE-10011): the vitest forks pool runs this file in a forked
+    // process, so `process.send` exists here; the old assertion passed only
+    // because the unbound call threw. Pin both cases explicitly instead.
+    const original = Object.getOwnPropertyDescriptor(process, "send");
+    try {
+      // Not a child: no channel, no send.
+      Object.defineProperty(process, "send", { value: undefined, configurable: true, writable: true });
+      expect(reportReadyToSupervisor()).toBe(false);
+
+      // A forked child: Node's send reads `this.connected`, so the call must
+      // keep `process` as the receiver.
+      const sent: unknown[] = [];
+      Object.defineProperty(process, "send", {
+        value: function send(this: unknown, message: unknown) {
+          if (this !== process) throw new TypeError("Cannot read properties of undefined (reading 'connected')");
+          sent.push(message);
+          return true;
+        },
+        configurable: true,
+        writable: true,
+      });
+      expect(reportReadyToSupervisor()).toBe(true);
+      expect(sent).toEqual([{ type: SUPERVISOR_IPC_READY, pid: process.pid }]);
+    } finally {
+      if (original) Object.defineProperty(process, "send", original);
+      else delete (process as { send?: unknown }).send;
+    }
   });
 
   it("drain closes the server, idles keep-alives, 1012s the ws clients and exits after the grace", async () => {
