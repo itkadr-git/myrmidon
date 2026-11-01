@@ -520,7 +520,7 @@ export const maintenanceWindowScheduleSchema = z.object({
 export const validateMaintenanceWindowCronRequestSchema = z
   .object({
     cron: z.string().trim().min(1, "Cron expression is required"),
-    durationMinutes: z.number().int().min(5).max(1440).optional(),
+    durationMinutes: z.number().int().optional(),
     timezone: z.string().trim().optional(),
   })
   .strict();

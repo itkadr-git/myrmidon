@@ -9,10 +9,15 @@ import type { MaintenanceService } from "./service.js";
 function createApp() {
   const app = express();
   app.use(express.json());
-  // Fake board-member session for assertBoardOrgAccess
+  // Fake board-member actor for assertBoardOrgAccess (same shape as real auth middleware)
   app.use((req, _res, next) => {
-    (req as any).user = { id: "user-1", email: "admin@example.com" };
-    (req as any).boardOrgMember = true;
+    req.actor = {
+      type: "board",
+      userId: "instance-admin-1",
+      source: "local_implicit",
+      companyIds: ["company-1"],
+      isInstanceAdmin: true,
+    } as unknown as Express.Request["actor"];
     next();
   });
   const mockService = {
