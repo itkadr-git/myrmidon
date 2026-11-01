@@ -107,7 +107,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
       const issue = workload.find((row) => row.id === id)!;
       const roleAssignment = id === issueIds[0] ? replacementId : id === issueIds[1] ? returnBackupId : participantBackupId;
       const expectedRole = roleNames.get(roleAssignment)!;
-      const originalTitle = id === issueIds[0] ? "Assignee" : id === issueIds[1] ? "Return" : "Participant";
+      const originalTitle = id === issueIds[0] ? "TR-1" : id === issueIds[1] ? "TR-2" : "TR-3";
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, id));
       expect(comments).toHaveLength(1);
       expect(comments[0]).toMatchObject({
