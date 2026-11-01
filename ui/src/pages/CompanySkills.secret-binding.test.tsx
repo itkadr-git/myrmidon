@@ -177,6 +177,17 @@ async function selectValue(select: HTMLSelectElement, value: string) {
   });
 }
 
+async function waitForElement<T extends Element>(get: () => T | null, label: string): Promise<T> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const element = get();
+    if (element) return element;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
@@ -216,25 +227,32 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
     });
 
     const node = container as ParentNode;
+    await waitForElement(
+      () => node.querySelector('[data-testid="required-env-KIE_API_KEY"]'),
+      "required environment section",
+    );
     expect(node.querySelector('[data-testid="required-env-KIE_API_KEY"]')).not.toBeNull();
 
     // 1. Select the existing secret (never exposes its value).
-    const secretSelect = node.querySelector(
-      '[data-testid="select-secret-KIE_API_KEY"]',
-    ) as HTMLSelectElement;
-    expect(secretSelect).not.toBeNull();
+    const secretSelect = await waitForElement(
+      () => node.querySelector('[data-testid="select-secret-KIE_API_KEY"]') as HTMLSelectElement | null,
+      "secret selector",
+    );
     await selectValue(secretSelect, "sec-kie");
 
     // 2. Open the staged agent picker and pick BBQ Operator (agent-2).
-    const bindTrigger = buttonsNamed(node, "Bind to agents")[0];
-    expect(bindTrigger).toBeDefined();
+    const bindTrigger = await waitForElement(
+      () => buttonsNamed(node, "Bind to agents")[0] ?? null,
+      "bind trigger",
+    );
     await click(bindTrigger);
 
-    const checkboxes = Array.from(node.querySelectorAll('input[type="checkbox"]'));
-    const operatorCheckbox = checkboxes.find((box) =>
-      box.getAttribute("aria-label")?.includes("BBQ Operator"),
-    ) as HTMLInputElement;
-    expect(operatorCheckbox).toBeDefined();
+    const operatorCheckbox = await waitForElement(
+      () => Array.from(node.querySelectorAll('input[type="checkbox"]')).find((box) =>
+        box.getAttribute("aria-label")?.includes("BBQ Operator"),
+      ) as HTMLInputElement | null,
+      "operator checkbox",
+    );
     expect(operatorCheckbox.checked).toBe(false);
     await act(async () => {
       operatorCheckbox.click();
@@ -318,13 +336,17 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
     expect(node.textContent).toContain("Bound to");
 
     // Deselect the bound agent and save.
-    const bindTrigger = buttonsNamed(node, "Bind to agents")[0];
+    const bindTrigger = await waitForElement(
+      () => buttonsNamed(node, "Bind to agents")[0] ?? null,
+      "unbind bind trigger",
+    );
     await click(bindTrigger);
-    const checkboxes = Array.from(node.querySelectorAll('input[type="checkbox"]'));
-    const directorCheckbox = checkboxes.find((box) =>
-      box.getAttribute("aria-label")?.includes("BBQ Director"),
-    ) as HTMLInputElement;
-    expect(directorCheckbox.checked).toBe(true);
+    const directorCheckbox = await waitForElement(
+      () => Array.from(node.querySelectorAll('input[type="checkbox"]')).find((box) =>
+        box.getAttribute("aria-label")?.includes("BBQ Director"),
+      ) as HTMLInputElement | null,
+      "director checkbox",
+    );
     await act(async () => {
       directorCheckbox.click();
     });
