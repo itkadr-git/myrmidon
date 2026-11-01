@@ -775,6 +775,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
   // after its assertions so another case (or shard order) cannot claim them.
   const fixtureCompanies = new Set<string>();
   const fixtureServices = new Set<ChatChannelService>();
+  const fixtureRuntimes = new Map<string, FakeChatSdkRuntime>();
   afterEach(async () => {
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
@@ -789,6 +790,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       }
       fixtureServices.clear();
       fixtureCompanies.clear();
+      fixtureRuntimes.clear();
     }
   });
 
@@ -965,6 +967,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       ...serviceOverrides,
     });
     fixtureServices.add(service);
+    for (const endpointId of runtime.endpoints.keys()) fixtureRuntimes.set(endpointId, runtime);
     return { cancelRun, runtime, service, wakeup };
   }
   async function configuredTelegramEndpoint(
@@ -998,7 +1001,13 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     )?.callbacks;
     if (!callbacks)
       throw new Error("Fake runtime did not receive Telegram callbacks");
+    fixtureRuntimes.set(endpoint.id, context.runtime);
     return { ...context, endpoint, callbacks };
+  }
+  function endpointRuntimeFromContext(endpointId: string, endpoint: { id: string }) {
+    const endpointRuntime = fixtureRuntimes.get(endpointId)?.get(endpointId);
+    if (!endpointRuntime) throw new Error(`Expected fake runtime for endpoint ${endpoint.id}`);
+    return endpointRuntime;
   }
   async function deliverMessage(input: {
     callbacks: CreateChatSdkEndpointRuntimeOptions["callbacks"];
@@ -1428,7 +1437,8 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       /cannot mutate another agent's issue|authorization|cross-issue writes need a run|heartbeat run/i,
     );
 
-    const initialPostsCount = endpoint.runtime.posts.length;
+    const endpointRuntime = endpointRuntimeFromContext(endpoint.id, endpoint);
+    const initialPostsCount = endpointRuntime.posts.length;
 
     // Agent closes its own Telegram-born task status-only via PATCH -> 200 done
     const closeRes = await request(agentApp)
@@ -1441,8 +1451,8 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
 
     // Verify channel delivery: pending publications are processed and reach the fake Telegram runtime
     await endpoint.service.processPendingPublications();
-    expect(endpoint.runtime.posts.length).toBeGreaterThan(initialPostsCount);
-    const deliveredPosts = endpoint.runtime.posts.slice(initialPostsCount);
+    expect(endpointRuntime.posts.length).toBeGreaterThan(initialPostsCount);
+    const deliveredPosts = endpointRuntime.posts.slice(initialPostsCount);
     expect(
       deliveredPosts.some((post) =>
         post.text.includes(secondBoundTask.identifier) ||
