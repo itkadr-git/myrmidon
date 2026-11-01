@@ -67,6 +67,7 @@ const ROLE_GATED_CONTINUATION_WAKE_REASONS = new Set([
   "run_liveness_continuation",
   "max_turn_continuation",
   "max_turns_continuation",
+  "max_turns_continuation_retry",
 ]);
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {

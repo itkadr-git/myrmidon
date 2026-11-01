@@ -24,6 +24,9 @@ import {
   corpusShadowLog,
   heartbeatRuns,
   agentWakeupRequests,
+  knowledgeRevisions,
+  knowledgeSources,
+  issueWorkProducts,
   issueClaims,
   issues,
   litellmCostEvents,
@@ -31,6 +34,7 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { getStaleBlockOldestUnsweptSeconds } from "../../stale-block/index.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
 import { readFeatureAttentionSignals } from "../../features/attention.js";
 import {
@@ -62,6 +66,7 @@ import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
@@ -133,6 +138,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
+  "myrmidon_knowledge_on_change_share",
+  "myrmidon_knowledge_revision_delay_seconds",
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
@@ -173,6 +180,10 @@ export const METRIC_FAMILIES = [
   // often the channel adapter did not answer and the direct path took the call
   // back, per reason (design OPE-6985).
   "myrmidon_adapter_fallback_total",
+
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters by rule
+  // and enforcement mode, process-local like the continuation counters.
+  "myrmidon_guardrail_triggers_total",
 
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
   // by path — the adapter and the vendor path that still reads in parallel
@@ -313,6 +324,12 @@ export interface MetricsSnapshotFields {
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
   /**
+   * myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters of this
+   * process by rule and mode, read from the in-process registry (no DB).
+   * Absent/null renders HELP/TYPE with no samples.
+   */
+  guardrailTriggers?: GuardrailTriggerCounts | null;
+  /**
    * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
    * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
    * present sample renders every route x outcome, zeros included.
@@ -339,6 +356,8 @@ export interface MetricsSnapshotFields {
    * process (in-process, no DB). null renders HELP/TYPE with no samples.
    */
   fleetSites?: FleetSiteMetricsSample | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: number | null;
   blockerRoots?: BlockerRootMetrics | null;
   capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
@@ -352,6 +371,11 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+  /** Share of recently completed tasks with a merged system change that have a task-linked knowledge revision. */
+  knowledgeOnChangeShare?: number | null;
+  /** p50/p95 seconds from merged PR work product to PR-linked revision. */
+  knowledgeRevisionDelaySecondsP50?: number | null;
+  knowledgeRevisionDelaySecondsP95?: number | null;
 
   /** OPE-9476: runs that failed before the model emitted output, per agentId. */
   failedBeforeModel?: Record<string, number> | null;
@@ -440,6 +464,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: (() => number | null) | null;
   /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
   recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 
@@ -598,6 +624,44 @@ async function readCorpusShadowLatencies(
     ragflow: ragflow.length === 0 ? { p50: null, p95: null } : { p50: percentile(ragflow, 0.5), p95: percentile(ragflow, 0.95) },
     module: module.length === 0 ? { p50: null, p95: null } : { p50: percentile(module, 0.5), p95: percentile(module, 0.95) },
   };
+}
+
+/** Knowledge-on-change coverage and revision delay for recently completed work. */
+async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<{ share: number | null; delayP50: number | null; delayP95: number | null }> {
+  const changedRows = await db
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+    .where(and(
+      inArray(issues.status, ["done", "cancelled"]),
+      gte(issues.completedAt, windowStart),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "merged"),
+    ));
+  const changed = Array.from(new Map(changedRows.map((row) => [row.id, row])).values());
+  if (changed.length === 0) return { share: null, delayP50: null, delayP95: null };
+  const identifiers = changed.map((row) => row.identifier).filter((value): value is string => Boolean(value));
+  const coveredRows = identifiers.length === 0 ? [] : await db
+    .select({ ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .where(and(eq(knowledgeSources.kind, "task"), inArray(knowledgeSources.ref, identifiers)));
+  const covered = [...new Set(coveredRows.map((row) => row.ref))];
+  const revisions = await db
+    .select({ createdAt: knowledgeRevisions.createdAt, ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .innerJoin(knowledgeRevisions, eq(knowledgeRevisions.id, knowledgeSources.revisionId))
+    .where(eq(knowledgeSources.kind, "pr"));
+  const prs = await db
+    .select({ mergedAt: issueWorkProducts.updatedAt, externalId: issueWorkProducts.externalId, url: issueWorkProducts.url })
+    .from(issueWorkProducts)
+    .where(and(eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.status, "merged")));
+  const mergeByRef = new Map<string, Date>();
+  for (const pr of prs) for (const key of [pr.externalId, pr.url]) if (key) mergeByRef.set(key, pr.mergedAt);
+  const delays = revisions
+    .map((row) => { const merged = mergeByRef.get(row.ref); return merged ? (row.createdAt.getTime() - merged.getTime()) / 1000 : null; })
+    .filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  return { share: covered.length / changed.length, delayP50: delays.length ? percentile(delays, 0.5) : null, delayP95: delays.length ? percentile(delays, 0.95) : null };
 }
 
 /** Linear-interpolated percentile of an ascending-sorted sample. */
@@ -778,6 +842,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCorpusShadowLatencies(deps.db, latencyWindowStart),
     { ragflow: { p50: null, p95: null }, module: { p50: null, p95: null } },
   );
+  const knowledgeMetrics = await guarded(
+    "myrmidon_knowledge_on_change_share|myrmidon_knowledge_revision_delay_seconds",
+    () => readKnowledgeOnChangeMetrics(deps.db, new Date(now.getTime() - 7 * 24 * 3600 * 1000)),
+    { share: null, delayP50: null, delayP95: null },
+  );
   const roleQueues = await guarded(
     "myrmidon_role_queue_tasks",
     () => readRoleQueues(deps.db),
@@ -869,6 +938,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as ChannelBridgeFallbackSample[] | null,
   );
 
+  const guardrailTriggers = await guarded(
+    "myrmidon_guardrail_triggers_total",
+    () => Promise.resolve().then(() => guardrailTriggerMetrics.read()),
+    null as GuardrailTriggerCounts | null,
+  );
+
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
   // scrape: an in-process counter that cannot throw today, guarded anyway so a
   // future source cannot kill the scrape — it names its family instead.
@@ -890,6 +965,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
     () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
     null as FleetSiteMetricsSample | null,
+  );
+
+  const staleBlockOldestUnsweptSeconds = await guarded(
+    "stale_block_oldest_unswept_seconds",
+    async () => (deps.staleBlockOldestUnsweptSeconds ? deps.staleBlockOldestUnsweptSeconds() : getStaleBlockOldestUnsweptSeconds()),
+    null as number | null,
   );
 
   const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
@@ -945,6 +1026,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
       corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
+      knowledgeOnChangeShare: knowledgeMetrics.share,
+      knowledgeRevisionDelaySecondsP50: knowledgeMetrics.delayP50,
+      knowledgeRevisionDelaySecondsP95: knowledgeMetrics.delayP95,
       roleQueueTasks: roleQueues,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
@@ -962,6 +1046,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       lanes: laneSample,
 
       adapterFallbacks: fallbackSample,
+      guardrailTriggers,
       singletonProxy: singletonProxySample,
 
       chatIngress,
@@ -979,6 +1064,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
           ),
         null as Record<string, number> | null,
       ),
+      staleBlockOldestUnsweptSeconds,
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
@@ -1250,6 +1336,11 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ],
     ),
   );
+  blocks.push(familyBlock("myrmidon_knowledge_on_change_share", "Share of recently closed tasks with a knowledge revision.", "gauge", snapshot.knowledgeOnChangeShare != null ? [`myrmidon_knowledge_on_change_share{${R}} ${formatSampleValue(snapshot.knowledgeOnChangeShare)}`] : []));
+  blocks.push(familyBlock("myrmidon_knowledge_revision_delay_seconds", "Delay from merged pull request to knowledge revision.", "summary", [
+    ...(snapshot.knowledgeRevisionDelaySecondsP50 != null ? [`myrmidon_knowledge_revision_delay_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.knowledgeRevisionDelaySecondsP50)}`] : []),
+    ...(snapshot.knowledgeRevisionDelaySecondsP95 != null ? [`myrmidon_knowledge_revision_delay_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.knowledgeRevisionDelaySecondsP95)}`] : []),
+  ]));
   blocks.push(
     familyBlock(
       "myrmidon_role_queue_tasks",
@@ -1532,6 +1623,28 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
 
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail triggers by rule and
+  // enforcement mode. Every rule x mode renders whenever the counter was read,
+  // zeros included — "every rule is flag-only since boot" is information, and a
+  // missing series would hide an unwired counter. Process-local, like the
+  // continuation counters: a multi-process deployment sums the roles.
+  const guardrailTriggers = snapshot.guardrailTriggers ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_guardrail_triggers_total",
+      "Guardrail triggers per rule and enforcement mode (flag | mask | block), cumulative since boot.",
+      "counter",
+      guardrailTriggers
+        ? GUARDRAIL_METRIC_RULES.flatMap((rule) =>
+            GUARDRAIL_METRIC_MODES.map(
+              (mode) =>
+                `myrmidon_guardrail_triggers_total{${R},rule="${escapeLabelValue(rule)}",mode="${escapeLabelValue(mode)}"} ${formatSampleValue(guardrailTriggers[rule][mode])}`,
+            ),
+          )
+        : [],
+    ),
+  );
+
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors.
   // Both paths render as samples whenever the counter was read, zero included:
   // "all ingress is read by the vendor path because no connector is registered
@@ -1647,5 +1760,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
 
   blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
+  if (snapshot.staleBlockOldestUnsweptSeconds !== null && snapshot.staleBlockOldestUnsweptSeconds !== undefined) {
+    blocks.push(
+      familyBlock(
+        "stale_block_oldest_unswept_seconds",
+        "Age in seconds of the blocked task that has gone the longest without being swept by the stale-block watchdog.",
+        "gauge",
+        [`stale_block_oldest_unswept_seconds{${R}} ${formatSampleValue(snapshot.staleBlockOldestUnsweptSeconds)}`],
+      ),
+    );
+  }
   return `${blocks.join("\n\n")}\n`;
 }

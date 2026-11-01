@@ -2564,6 +2564,34 @@
       "when": 1793323805002,
       "tag": "0432_clean_raider",
       "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1793323806000,
+      "tag": "0433_legacy_blocked_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 434,
+      "version": "7",
+      "when": 1793323806001,
+      "tag": "0434_blocked_tasks_with_open_blockers",
+      "breakpoints": true
+    },
+    {
+      "idx": 435,
+      "version": "7",
+      "when": 1793323806002,
+      "tag": "0435_undated_event_block_due_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1793323806003,
+      "tag": "0436_knowledge_deviations",
+      "breakpoints": true
     }
   ]
 }

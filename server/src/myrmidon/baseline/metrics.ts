@@ -128,6 +128,7 @@ export interface BaselineGroupMetrics {
 export interface BaselineMetrics {
   byProject: BaselineGroupMetrics[];
   byRole: BaselineGroupMetrics[];
+  overall: BaselineGroupMetrics;
 }
 
 /** Statuses that mean "work has started" for the cycle-time start. */
@@ -310,12 +311,12 @@ function aggregateGroup(key: string | null, tasks: TaskMetrics[]): BaselineGroup
     key,
     tasksCompleted: count,
     cycleTimeHours: {
-      mean: round2(cycles.reduce((sum, value) => sum + value, 0) / count),
+      mean: count === 0 ? 0 : round2(cycles.reduce((sum, value) => sum + value, 0) / count),
       median: round2(percentileCont(cycles, 0.5)),
       p90: round2(percentileCont(cycles, 0.9)),
     },
     timeInReviewHours: {
-      mean: round2(reviews.reduce((sum, value) => sum + value, 0) / count),
+      mean: count === 0 ? 0 : round2(reviews.reduce((sum, value) => sum + value, 0) / count),
       median: round2(percentileCont(reviews, 0.5)),
     },
     returnRate: {
@@ -325,16 +326,16 @@ function aggregateGroup(key: string | null, tasks: TaskMetrics[]): BaselineGroup
     },
     blockedHours: {
       total: round2(blockedTotal),
-      mean: round2(blockedTotal / count),
+      mean: count === 0 ? 0 : round2(blockedTotal / count),
       topCauses,
     },
     runsPerTask: {
       total: runsTotal,
-      mean: round2(runsTotal / count),
+      mean: count === 0 ? 0 : round2(runsTotal / count),
     },
     costPerTask: {
       totalCents: costTotal,
-      meanCents: round2(costTotal / count),
+      meanCents: count === 0 ? 0 : round2(costTotal / count),
     },
   };
 }
@@ -395,5 +396,6 @@ export function computeBaselineMetrics(input: BaselineMetricsInput, window: Base
   return {
     byProject: groupTasks(perTask, (task) => task.projectKey),
     byRole: groupTasks(perTask, (task) => task.roleKey),
+    overall: aggregateGroup("overall", perTask),
   };
 }

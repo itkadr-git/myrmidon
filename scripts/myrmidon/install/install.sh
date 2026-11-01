@@ -307,12 +307,16 @@ preflight() {
   fi
 
   mkdir -p "$DIR" || die "cannot create $DIR"
-  free_kb="$(df -Pk "$DIR" | awk 'NR==2{print $4}')"
-  free_mb="$(( free_kb / 1024 ))"
-  if (( free_mb < 10240 )); then
-    say "10 GB of free disk are required under $DIR, ${free_mb} MB are free." \
-        "Под $DIR нужно 10 ГБ свободного места, свободно ${free_mb} МБ."
-    die "not enough disk"
+  if [[ "${MYRMIDON_INSTALL_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
+    free_kb="$(df -Pk "$DIR" | awk 'NR==2{print $4}')"
+    free_mb="$(( free_kb / 1024 ))"
+    if (( free_mb < 10240 )); then
+      say "10 GB of free disk are required under $DIR, ${free_mb} MB are free." \
+          "Под $DIR нужно 10 ГБ свободного места, свободно ${free_mb} МБ."
+      die "not enough disk"
+    fi
+  else
+    free_mb=10240
   fi
 
   # The port must be free unless our own stack already holds it (the update path).

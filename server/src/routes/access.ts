@@ -1089,21 +1089,21 @@ export function normalizeAgentDefaultsForJoin(input: {
         diagnostics.push({
           code: "openclaw_gateway_paperclip_api_url_protocol",
           level: "warn",
-          message: `paperclipApiUrl must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
+          message: `${PRODUCT_NAME} API URL must use http:// or https:// (got ${parsedPaperclipApiUrl.protocol}).`
         });
       } else {
         normalized.paperclipApiUrl = parsedPaperclipApiUrl.toString();
         diagnostics.push({
           code: "openclaw_gateway_paperclip_api_url_configured",
           level: "info",
-          message: `paperclipApiUrl set to ${parsedPaperclipApiUrl.toString()}`
+          message: `${PRODUCT_NAME} API URL set to ${parsedPaperclipApiUrl.toString()}`
         });
       }
     } catch {
       diagnostics.push({
         code: "openclaw_gateway_paperclip_api_url_invalid",
         level: "warn",
-        message: `Invalid paperclipApiUrl: ${rawPaperclipApiUrl}`
+        message: `Invalid ${PRODUCT_NAME} API URL: ${rawPaperclipApiUrl}`
       });
     }
   }
@@ -1970,12 +1970,12 @@ export function buildInviteOnboardingTextDocument(
     - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL ${PRODUCT_NAME} can reach.
     - Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY. This is the Hermes gateway key, not the ${PRODUCT_NAME} key.
     - If you only have the default Hermes dashboard or chat URL, http://127.0.0.1:9119 and http://127.0.0.1:9119/chat are accepted and map to /api automatically.
-    - Watch out: /chat and the dashboard root are browser UI routes. ${PRODUCT_NAME} tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
-    - Set agentDefaultsPayload.paperclipApiUrl to the ${PRODUCT_NAME} base URL Hermes can reach.
-    - Use hermes_local when ${PRODUCT_NAME} should start Hermes on the ${PRODUCT_NAME} host.
-    - Use hermes_gateway when ${PRODUCT_NAME} should call an already-running Hermes API server.
-    - After board approval, claim the ${PRODUCT_NAME} API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a ${PRODUCT_NAME} key manually.
-    - Hermes-originated ${PRODUCT_NAME} API usage means Hermes calls ${PRODUCT_NAME} with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points ${PRODUCT_NAME} to Hermes.
+    - Watch out: /chat and the dashboard root are browser UI routes. Myrmidon tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
+    - Set agentDefaultsPayload.paperclipApiUrl to the Myrmidon base URL Hermes can reach.
+    - Use hermes_local when Myrmidon should start Hermes on the Myrmidon host.
+    - Use hermes_gateway when Myrmidon should call an already-running Hermes API server.
+    - After board approval, claim the Myrmidon API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a Myrmidon key manually.
+    - Hermes-originated Myrmidon API usage means Hermes calls Myrmidon with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Myrmidon to Hermes.
 
     Hermes Gateway payload example:
     {
@@ -1995,7 +1995,7 @@ export function buildInviteOnboardingTextDocument(
     - Local loopback dashboard root or chat URL: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119" or "http://127.0.0.1:9119/chat"; ${PRODUCT_NAME} maps either one to "http://127.0.0.1:9119/api".
     - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
     - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
-    - Docker: if ${PRODUCT_NAME} runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
+    - Docker: if Myrmidon runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
     - Reverse proxy/TLS: use HTTPS origins, for example agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example" and agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example".
 
     Expected response includes:
@@ -2004,7 +2004,7 @@ export function buildInviteOnboardingTextDocument(
     - claimApiKeyPath
 
     ## Step 2: Wait for board approval
-    The board approves the join request in ${PRODUCT_NAME} before key claim is allowed.
+    The board approves the join request in Myrmidon before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -2016,14 +2016,14 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future ${PRODUCT_NAME} API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated ${PRODUCT_NAME} API call. Do not persist displayed previews containing literal ... or [redacted].
+    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Myrmidon API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated Myrmidon API call. Do not persist displayed previews containing literal ... or [redacted].
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install ${PRODUCT_NAME} skill
+    ## Step 4: Install Myrmidon skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 

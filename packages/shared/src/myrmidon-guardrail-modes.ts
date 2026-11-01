@@ -66,6 +66,7 @@ function isGuardrailMode(value: unknown): value is GuardrailMode {
 
 /** The `instance_settings.general` key this feature stores its settings under. */
 export const GUARDRAIL_MODES_SETTINGS_KEY = "guardrailModes";
+export const DEFAULT_INJECTION_SCORE_THRESHOLD = 0.6;
 
 /**
  * The stored settings object: per-rule mode overrides at the company, caste
@@ -81,6 +82,11 @@ export const guardrailModesSettingsSchema = z
     castes: z.record(z.string().min(1), z.record(z.string(), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
     /** Agent overrides: agentId -> rule -> mode. */
     agents: z.record(z.string().uuid(), z.record(z.string(), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
+    /** Company-level prompt-injection detector configuration. */
+    injectionConfig: z.object({
+      enabled: z.boolean().default(false),
+      scoreThreshold: z.number().min(0).max(1).default(DEFAULT_INJECTION_SCORE_THRESHOLD),
+    }).default(() => ({ enabled: false, scoreThreshold: DEFAULT_INJECTION_SCORE_THRESHOLD })),
   })
   .strict();
 
@@ -90,6 +96,7 @@ export const EMPTY_GUARDRAIL_MODES_SETTINGS: GuardrailModesSettings = {
   company: {},
   castes: {},
   agents: {},
+  injectionConfig: { enabled: false, scoreThreshold: DEFAULT_INJECTION_SCORE_THRESHOLD },
 };
 
 /**
@@ -104,13 +111,75 @@ export function normalizeGuardrailModesSettings(raw: unknown): GuardrailModesSet
       company: { ...parsed.data.company },
       castes: JSON.parse(JSON.stringify(parsed.data.castes)),
       agents: JSON.parse(JSON.stringify(parsed.data.agents)),
+      injectionConfig: { ...parsed.data.injectionConfig },
     };
   }
   return {
     company: {},
     castes: {},
     agents: {},
+    injectionConfig: { enabled: false, scoreThreshold: DEFAULT_INJECTION_SCORE_THRESHOLD },
   };
+}
+
+// --- injection detector configuration (1.6.6 OPE-8319) ----------------------
+
+/**
+ * Resolve the effective injection detector configuration.
+ *
+ * Precedence: explicit env override > stored UI settings > shipped default.
+ * The env stays the incident lever it has always been: `false` (or any other
+ * non-truthy value of MYRMIDON_GUARDRAILS_INJECTION_ENABLED) forces the
+ * detector off, `1/true/yes/on` forces it on, regardless of the UI settings.
+ * `MYRMIDON_GUARDRAILS_INJECTION_SCORE` overrides the threshold the same way,
+ * keeping its legacy 0..1 contract; invalid values are ignored in favor of the
+ * UI/default value rather than silently reverting to 0.6.
+ */
+export const GUARDRAILS_INJECTION_ENABLED_ENV = "MYRMIDON_GUARDRAILS_INJECTION_ENABLED";
+export const GUARDRAILS_INJECTION_SCORE_ENV = "MYRMIDON_GUARDRAILS_INJECTION_SCORE";
+
+export type InjectionConfigSource = "env" | "settings" | "default";
+
+export interface ResolvedInjectionConfig {
+  enabled: boolean;
+  scoreThreshold: number;
+  /** Where each effective value came from, shown next to it in the UI. */
+  enabledSource: InjectionConfigSource;
+  scoreSource: InjectionConfigSource;
+}
+
+export type InjectionEnv = Record<string, string | undefined>;
+
+export function resolveInjectionConfig(input: {
+  settings?: Pick<GuardrailModesSettings, "injectionConfig"> | null;
+  env?: InjectionEnv;
+}): ResolvedInjectionConfig {
+  const env = input.env ?? {};
+  // A null/absent settings document means "nothing stored": the shipped
+  // default. A stored injectionConfig (even one equal to the default) is the
+  // operator's explicit choice and reports as "settings".
+  const configured = input.settings?.injectionConfig ?? null;
+
+  const enabledRaw = env[GUARDRAILS_INJECTION_ENABLED_ENV]?.trim().toLowerCase();
+  const envSetsEnabled = enabledRaw !== undefined && enabledRaw !== "";
+  const enabled: boolean = envSetsEnabled
+    ? enabledRaw === "1" || enabledRaw === "true" || enabledRaw === "yes" || enabledRaw === "on"
+    : configured?.enabled ?? false;
+  const enabledSource: InjectionConfigSource = envSetsEnabled
+    ? "env"
+    : configured ? "settings" : "default";
+
+  const scoreRaw = env[GUARDRAILS_INJECTION_SCORE_ENV]?.trim();
+  const scoreValue = scoreRaw ? Number(scoreRaw) : NaN;
+  const envSetsScore = scoreRaw !== undefined && scoreRaw !== "" && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 1;
+  const scoreThreshold: number = envSetsScore
+    ? scoreValue
+    : configured?.scoreThreshold ?? DEFAULT_INJECTION_SCORE_THRESHOLD;
+  const scoreSource: InjectionConfigSource = envSetsScore
+    ? "env"
+    : configured ? "settings" : "default";
+
+  return { enabled, scoreThreshold, enabledSource, scoreSource };
 }
 
 // --- resolution ------------------------------------------------------------

@@ -7,7 +7,6 @@ import type { Db } from "@myrmidon/db";
 import type { DeploymentMode } from "@myrmidon/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { PRODUCT_NAME } from "../myrmidon/product.js";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -88,7 +87,7 @@ export function boardChatRoutes(
     } catch {
       return (
         "You are a board-level assistant helping a human manage their AI-agent " +
-        `company through ${PRODUCT_NAME}. Help them create companies, hire agents, ` +
+        "company through Myrmidon. Help them create companies, hire agents, " +
         "approve tasks, and monitor their organization. Be conversational, " +
         "strategic, and concise."
       );
