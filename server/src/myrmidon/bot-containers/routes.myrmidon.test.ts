@@ -9,7 +9,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 import type { BotApplyJobStatus } from "@myrmidon/db";
 import { forbidden } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
-import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON } from "./agent-config.js";
+import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON, botKeyForAgent } from "./agent-config.js";
 import { APPLIED_LIMIT_PENDING_NOTE, EXTERNAL_GATEWAY_NOTE, GATEWAY_RATE_LIMIT_LOOKBACK_MS } from "./concurrency-sync.js";
 import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
@@ -144,8 +144,8 @@ function fakeApplyJobs() {
   };
 }
 
-function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: BotContainerRouteAgent | null }) {
-  const { agent = card(ENABLED_CARD), ...rest } = deps;
+function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: BotContainerRouteAgent | null; companyAgents?: BotContainerRouteAgent[] }) {
+  const { agent = card(ENABLED_CARD), companyAgents, ...rest } = deps;
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
@@ -156,6 +156,10 @@ function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: B
     "/api",
     botContainerRoutes({
       getAgent: async (id) => (agent && id === agent.id ? agent : null),
+      listCompanyAgents: async (companyId) => {
+        if (companyAgents) return companyAgents.filter((a) => a.companyId === companyId);
+        return agent && agent.companyId === companyId ? [agent] : [];
+      },
       getRuntime: () => null,
       applyNow: applyBotContainerNow,
       applyJobs: fakeApplyJobs(),
@@ -817,4 +821,165 @@ describe("myrmidon(1.6.5) bot container routes: shared git-object store facts", 
       .expect(200);
     expect(notABot.body.note).toBe(GIT_STORE_NOTE_NOT_A_BOT);
   });
+});
+
+describe("myrmidon(UI-2.0 FLEET) bot container company status route", () => {
+  const companyStatusUrl = (companyId = COMPANY_ID) => `/api/myrmidon/companies/${companyId}/bot-containers/status`;
+
+  it("answers 200 with 3 items when 3 agents exist (running, missing, driver error)", async () => {
+    const agent1 = card(ENABLED_CARD, { id: "11111111-1111-4111-8111-111111111111" });
+    const agent2 = card(ENABLED_CARD, { id: "22222222-2222-4222-8222-222222222222" });
+    const agent3 = card(ENABLED_CARD, { id: "33333333-3333-4333-8333-333333333333" });
+
+    const key1 = botKeyForAgent(agent1.id)!;
+    const key2 = botKeyForAgent(agent2.id)!;
+    const key3 = botKeyForAgent(agent3.id)!;
+
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        if (botKey === key1) return { botKey, state: "running", image: "bot-image:1.1.0" };
+        if (botKey === key2) return { botKey, state: "missing" };
+        if (botKey === key3) throw new Error("Docker daemon failure");
+        return { botKey, state: "missing" };
+      },
+    });
+
+    const res = await request(
+      app(member, {
+        companyAgents: [agent1, agent2, agent3],
+        getRuntime: () => runtime(driver),
+      }),
+    )
+      .get(companyStatusUrl())
+      .expect(200);
+
+    expect(res.body.enabled).toBe(true);
+    expect(res.body.runtimeConfigured).toBe(true);
+    expect(res.body.items).toHaveLength(3);
+
+    const item1 = res.body.items.find((it: any) => it.agentId === agent1.id);
+    const item2 = res.body.items.find((it: any) => it.agentId === agent2.id);
+    const item3 = res.body.items.find((it: any) => it.agentId === agent3.id);
+
+    expect(item1.container).toEqual({ state: "running", image: "bot-image:1.1.0" });
+    expect(item1.containerError).toBeNull();
+
+    expect(item2.container).toEqual({ state: "missing", image: null });
+    expect(item2.containerError).toBeNull();
+
+    expect(item3.container).toBeNull();
+    expect(item3.containerError).toBe("The container runtime did not answer.");
+  });
+
+  it("excludes agents of another company and enforces board access rules", async () => {
+    const foreignCompanyId = "44444444-4444-4444-8444-444444444444";
+    const agentMine = card(ENABLED_CARD, { id: "11111111-1111-4111-8111-111111111111", companyId: COMPANY_ID });
+    const agentOther = card(ENABLED_CARD, { id: "22222222-2222-4222-8222-222222222222", companyId: foreignCompanyId });
+
+    const server = app(member, {
+      companyAgents: [agentMine, agentOther],
+    });
+
+    const res = await request(server).get(companyStatusUrl(COMPANY_ID)).expect(200);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].agentId).toBe(agentMine.id);
+
+    // Non-board actor (agent) is refused with 403 like the adjacent route
+    await request(app(agentActor, { companyAgents: [agentMine] }))
+      .get(companyStatusUrl(COMPANY_ID))
+      .expect(403);
+
+    // Outsider board member from another company is refused with 403
+    await request(app(outsider, { companyAgents: [agentMine] }))
+      .get(companyStatusUrl(COMPANY_ID))
+      .expect(403);
+  });
+
+  it("returns item data equivalent to the single agent status route", async () => {
+    const singleAgent = card(ENABLED_CARD, {
+      id: AGENT_ID,
+      companyId: COMPANY_ID,
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 4 } },
+    });
+
+    const driver = fakeDriver({
+      status: async (botKey) => ({
+        botKey,
+        state: "running",
+        image: "bot-image:1.1.0",
+        maxConcurrentRuns: 4,
+      }),
+    });
+
+    const server = app(member, {
+      agent: singleAgent,
+      companyAgents: [singleAgent],
+      getRuntime: () => runtime(driver),
+    });
+
+    const singleRes = await request(server).get(statusUrl).expect(200);
+    const companyRes = await request(server).get(companyStatusUrl()).expect(200);
+
+    expect(companyRes.body.enabled).toBe(singleRes.body.enabled);
+    expect(companyRes.body.runtimeConfigured).toBe(singleRes.body.runtimeConfigured);
+
+    const item = companyRes.body.items.find((it: any) => it.agentId === AGENT_ID);
+    const { enabled, runtimeConfigured, gatewayConcurrency, ...singleFields } = singleRes.body;
+    expect(item).toMatchObject({
+      agentId: AGENT_ID,
+      ...singleFields,
+    });
+    expect(item.gatewayConcurrency).toMatchObject({
+      applied: gatewayConcurrency.applied,
+      board: gatewayConcurrency.board,
+      diverged: gatewayConcurrency.diverged,
+    });
+    expect(item.gatewayConcurrency.checkedAt).toEqual(expect.any(String));
+  });
+
+  it("limits driver status concurrency to 8 and handles driver timeout", async () => {
+    let activeCalls = 0;
+    let maxObservedActiveCalls = 0;
+
+    const agents = Array.from({ length: 12 }, (_, i) => {
+      const hex = i.toString(16).padStart(2, "0");
+      return card(ENABLED_CARD, { id: `a0000000-0000-4000-8000-0000000000${hex}` });
+    });
+
+    const timeoutAgent = agents[agents.length - 1];
+    const timeoutBotKey = botKeyForAgent(timeoutAgent.id)!;
+
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        activeCalls++;
+        if (activeCalls > maxObservedActiveCalls) {
+          maxObservedActiveCalls = activeCalls;
+        }
+        if (botKey === timeoutBotKey) {
+          await new Promise((resolve) => setTimeout(resolve, 3500));
+          activeCalls--;
+          return { botKey, state: "running" };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activeCalls--;
+        return { botKey, state: "running", image: "bot-image:1.1.0" };
+      },
+    });
+
+    const res = await request(
+      app(member, {
+        companyAgents: agents,
+        getRuntime: () => runtime(driver),
+      }),
+    )
+      .get(companyStatusUrl())
+      .expect(200);
+
+    expect(maxObservedActiveCalls).toBeLessThanOrEqual(8);
+    expect(res.body.items).toHaveLength(12);
+
+    const timedOutItem = res.body.items.find((it: any) => it.agentId === timeoutAgent.id);
+    expect(timedOutItem.container).toBeNull();
+    expect(timedOutItem.containerError).toBe("The container runtime did not answer.");
+  }, 10000);
 });

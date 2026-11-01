@@ -62,7 +62,7 @@ import {
   type GitStoreState,
 } from "./clone-hygiene.js";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
-import type { BotContainerState } from "./driver.js";
+import type { BotContainerDriver, BotContainerState, BotContainerStatus } from "./driver.js";
 import { idleStopRuntimeFromStatus } from "../idle-stop-runtime.js";
 
 export interface BotContainerRouteAgent {
@@ -115,15 +115,16 @@ export interface BotContainerRoutesDeps {
    * board runtime.
    */
   profileUpdatePendingSince?(agentId: string): Promise<string | null>;
+  /**
+   * myrmidon(UI-2.0 FLEET): list agents in a company that have container.enabled on a hermes_gateway card.
+   * Optional: without it, company status returns an empty items list.
+   */
+  listCompanyAgents?(companyId: string): Promise<BotContainerRouteAgent[]>;
   /** Read per request; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
 }
 
-export interface BotContainerStatusResponse {
-  /** MYRMIDON_BOT_CONTAINERS is on for this instance. */
-  enabled: boolean;
-  /** The instance has a container runtime wired (driver and profile compiler). */
-  runtimeConfigured: boolean;
+export interface BotContainerItemStatus {
   /** The saved card is an enabled, complete hermes_gateway container config. */
   eligible: boolean;
   /** Why the saved card is not eligible; null when it is. */
@@ -168,6 +169,23 @@ export interface BotContainerStatusResponse {
    *  is pending or no window is open. The card shows "profile update pending
    *  since <date>" from this field. */
   profileUpdatePendingSince: string | null;
+}
+
+export interface BotContainerStatusResponse extends BotContainerItemStatus {
+  /** MYRMIDON_BOT_CONTAINERS is on for this instance. */
+  enabled: boolean;
+  /** The instance has a container runtime wired (driver and profile compiler). */
+  runtimeConfigured: boolean;
+}
+
+export interface CompanyBotContainerStatusItem extends BotContainerItemStatus {
+  agentId: string;
+}
+
+export interface CompanyBotContainersStatusResponse {
+  enabled: boolean;
+  runtimeConfigured: boolean;
+  items: CompanyBotContainerStatusItem[];
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
@@ -239,10 +257,170 @@ export const GIT_STORE_NOTE_NO_STORE_FACTS =
   "The report carries no gitStore facts: the bot runs an image (or a reporter) older than the 1.6.5 shared-objects live check.";
 export const GIT_STORE_NOTE_READ_FAILED = "The container runtime did not answer while reading the clone-hygiene report.";
 
+export const BOT_CONTAINER_DRIVER_STATUS_TIMEOUT_MS = 3_000;
+export const BOT_CONTAINER_STATUS_CONCURRENCY = 8;
+
 const MAX_MESSAGE_CHARS = 500;
 
 function clip(message: string): string {
   return message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message;
+}
+
+async function queryDriverStatusWithTimeout(
+  driver: BotContainerDriver,
+  botKey: string,
+  timeoutMs = BOT_CONTAINER_DRIVER_STATUS_TIMEOUT_MS,
+): Promise<BotContainerStatus> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("The container runtime did not answer within timeout."));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([driver.status(botKey), timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function mapConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const idx = nextIndex++;
+      results[idx] = await fn(items[idx]);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Builds the container status for a single agent card without top-level instance flags.
+ * Shared between GET /myrmidon/agents/:id/bot-container/status and
+ * GET /myrmidon/companies/:companyId/bot-containers/status.
+ */
+export async function buildBotContainerItemStatus(
+  agent: BotContainerRouteAgent,
+  options: {
+    env: NodeJS.ProcessEnv;
+    enabled: boolean;
+    allowlist: string[];
+    runtime: BotContainerRuntimeDeps | null;
+    deps: BotContainerRoutesDeps;
+    driverTimeoutMs?: number;
+  },
+): Promise<BotContainerItemStatus> {
+  const { env, enabled, allowlist, runtime, deps, driverTimeoutMs } = options;
+  const parsed = readBotContainerAgentConfig(agent.adapterType, agent.adapterConfig);
+  const savedImage = (agent.adapterConfig.container as { image?: unknown } | undefined)?.image;
+
+  const item: BotContainerItemStatus = {
+    eligible: parsed.ok,
+    reason: parsed.ok ? null : parsed.reason,
+    imageAllowlist: allowlist,
+    imageAllowed:
+      agent.adapterType === "hermes_gateway" && typeof savedImage === "string" && savedImage.trim().length > 0
+        ? isImageAllowed(savedImage.trim(), allowlist)
+        : null,
+    container: null,
+    containerError: null,
+    imageTracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+    // myrmidon(BOT-ROLLOUT): the verdict reads the card's tracking category and
+    // the agent's status (the same source the rollout script uses) — no docker
+    // query beyond the container status below.
+    imageRollout: resolveBotImageRolloutStatus({
+      tracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+      agentStatus: agent.status ?? null,
+      hasReleaseImage: hasReleaseBotImage(env),
+    }),
+    boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
+    gatewayConcurrency: null,
+    gatewayConcurrencyNote: null,
+    gatewayConcurrencyWarning: null,
+    idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
+    idleStopRuntime: null,
+    profileUpdatePendingSince: null,
+  };
+
+  const botKey = botKeyForAgent(agent.id);
+  // Asked even when the card says "disabled": a container may still be running from before.
+  if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
+    try {
+      const status = await queryDriverStatusWithTimeout(runtime.driver, botKey, driverTimeoutMs);
+      item.container = {
+        state: status.state,
+        image: status.image ?? null,
+        ...(status.idleStopped ? { idleStopped: true } : {}),
+      };
+      const idleRuntime = idleStopRuntimeFromStatus(status);
+      item.idleStopRuntime = {
+        idleStopped: idleRuntime.idleStopped,
+        lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
+        lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
+      };
+      // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
+      // marker. Only a container that exists can carry one.
+      if (status.state !== "missing") {
+        item.gatewayConcurrency = compareGatewayConcurrency({
+          board: item.boardMaxConcurrentRuns,
+          applied: status.maxConcurrentRuns ?? null,
+          checkedAt: new Date().toISOString(),
+        });
+        if (status.maxConcurrentRuns === undefined) item.gatewayConcurrencyNote = APPLIED_LIMIT_PENDING_NOTE;
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: agent.id }, "bot container status query failed");
+      item.containerError = "The container runtime did not answer.";
+    }
+  }
+
+  // The board's own value against the gateway's — or why there is nothing to compare.
+  // Applies to hermes_gateway agents only: no other adapter has this gateway limit.
+  if (agent.adapterType === "hermes_gateway" && item.containerError === null && item.gatewayConcurrency === null) {
+    if (!parsed.ok) {
+      // No container is managed here: the gateway runs outside the board, which can
+      // neither read nor apply its limit. The only outward sign is the runs the
+      // gateway itself refused with 429 (see concurrency-sync.ts).
+      item.gatewayConcurrencyNote = EXTERNAL_GATEWAY_NOTE;
+      if (item.boardMaxConcurrentRuns > 1 && deps.recentGatewayRateLimit) {
+        const sinceIso = new Date(Date.now() - GATEWAY_RATE_LIMIT_LOOKBACK_MS).toISOString();
+        item.gatewayConcurrencyWarning = externalGatewayRateLimitWarning({
+          board: item.boardMaxConcurrentRuns,
+          rateLimitedAt: await deps.recentGatewayRateLimit(agent, { sinceIso }),
+        });
+      }
+    } else {
+      // Eligible card, no container yet (first apply pending, or the instance has no
+      // runtime / the flag is off): nothing has been applied, so nothing to compare.
+      item.gatewayConcurrencyNote = NO_APPLIED_STATE_NOTE;
+    }
+  }
+
+  // myrmidon(L6-PROFILE-UPDATE-STARVATION): a pending profile update holds
+  // the agent under a maintenance window until it drains; the card shows
+  // how long that wait has been. The reconciler only opens an agent window
+  // for a change that needs one, so an open window IS the pending change.
+  if (enabled && parsed.ok && agent.adapterType === "hermes_gateway" && botKey && deps.profileUpdatePendingSince) {
+    try {
+      item.profileUpdatePendingSince = await deps.profileUpdatePendingSince(agent.id);
+    } catch (err) {
+      // Read-only visibility: a failed window lookup must not fail the status.
+      logger.warn({ err, agentId: agent.id }, "bot container profile pending window lookup failed");
+    }
+  }
+
+  return item;
 }
 
 export function botContainerRoutes(deps: BotContainerRoutesDeps) {
@@ -265,106 +443,85 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     const enabled = isBotContainersEnabled(env);
     const savedAllowlist = runtimeEnv ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
     const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
-    const parsed = readBotContainerAgentConfig(agent.adapterType, agent.adapterConfig);
-    const savedImage = (agent.adapterConfig.container as { image?: unknown } | undefined)?.image;
     const runtime = deps.getRuntime();
+
+    const item = await buildBotContainerItemStatus(agent, {
+      env,
+      enabled,
+      allowlist,
+      runtime,
+      deps,
+    });
 
     const body: BotContainerStatusResponse = {
       enabled,
       runtimeConfigured: runtime !== null,
-      eligible: parsed.ok,
-      reason: parsed.ok ? null : parsed.reason,
-      imageAllowlist: allowlist,
-      imageAllowed:
-        agent.adapterType === "hermes_gateway" && typeof savedImage === "string" && savedImage.trim().length > 0
-          ? isImageAllowed(savedImage.trim(), allowlist)
-          : null,
-      container: null,
-      containerError: null,
-      imageTracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
-      // myrmidon(BOT-ROLLOUT): the verdict reads the card's tracking category and
-      // the agent's status (the same source the rollout script uses) — no docker
-      // query beyond the container status below.
-      imageRollout: resolveBotImageRolloutStatus({
-        tracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
-        agentStatus: agent.status ?? null,
-        hasReleaseImage: hasReleaseBotImage(env),
-      }),
-      boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
-      gatewayConcurrency: null,
-      gatewayConcurrencyNote: null,
-      gatewayConcurrencyWarning: null,
-      idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
-      idleStopRuntime: null,
-      profileUpdatePendingSince: null,
+      ...item,
     };
 
-    const botKey = botKeyForAgent(agent.id);
-    // Asked even when the card says "disabled": a container may still be running from before.
-    if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
-      try {
-        const status = await runtime.driver.status(botKey);
-        body.container = {
-          state: status.state,
-          image: status.image ?? null,
-          ...(status.idleStopped ? { idleStopped: true } : {}),
-        };
-        const idleRuntime = idleStopRuntimeFromStatus(status);
-        body.idleStopRuntime = {
-          idleStopped: idleRuntime.idleStopped,
-          lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
-          lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
-        };
-        // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
-        // marker. Only a container that exists can carry one.
-        if (status.state !== "missing") {
-          body.gatewayConcurrency = compareGatewayConcurrency({
-            board: body.boardMaxConcurrentRuns,
-            applied: status.maxConcurrentRuns ?? null,
-            checkedAt: new Date().toISOString(),
-          });
-          if (status.maxConcurrentRuns === undefined) body.gatewayConcurrencyNote = APPLIED_LIMIT_PENDING_NOTE;
-        }
-      } catch (err) {
-        logger.warn({ err, agentId: agent.id }, "bot container status query failed");
-        body.containerError = "The container runtime did not answer.";
-      }
-    }
+    res.json(body);
+  });
 
-    // The board's own value against the gateway's — or why there is nothing to compare.
-    // Applies to hermes_gateway agents only: no other adapter has this gateway limit.
-    if (agent.adapterType === "hermes_gateway" && body.containerError === null && body.gatewayConcurrency === null) {
-      if (!parsed.ok) {
-        // No container is managed here: the gateway runs outside the board, which can
-        // neither read nor apply its limit. The only outward sign is the runs the
-        // gateway itself refused with 429 (see concurrency-sync.ts).
-        body.gatewayConcurrencyNote = EXTERNAL_GATEWAY_NOTE;
-        if (body.boardMaxConcurrentRuns > 1 && deps.recentGatewayRateLimit) {
-          const sinceIso = new Date(Date.now() - GATEWAY_RATE_LIMIT_LOOKBACK_MS).toISOString();
-          body.gatewayConcurrencyWarning = externalGatewayRateLimitWarning({
-            board: body.boardMaxConcurrentRuns,
-            rateLimitedAt: await deps.recentGatewayRateLimit(agent, { sinceIso }),
-          });
-        }
-      } else {
-        // Eligible card, no container yet (first apply pending, or the instance has no
-        // runtime / the flag is off): nothing has been applied, so nothing to compare.
-        body.gatewayConcurrencyNote = NO_APPLIED_STATE_NOTE;
-      }
-    }
+  router.get("/myrmidon/companies/:companyId/bot-containers/status", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
 
-    // myrmidon(L6-PROFILE-UPDATE-STARVATION): a pending profile update holds
-    // the agent under a maintenance window until it drains; the card shows
-    // how long that wait has been. The reconciler only opens an agent window
-    // for a change that needs one, so an open window IS the pending change.
-    if (enabled && parsed.ok && agent.adapterType === "hermes_gateway" && botKey && deps.profileUpdatePendingSince) {
-      try {
-        body.profileUpdatePendingSince = await deps.profileUpdatePendingSince(agent.id);
-      } catch (err) {
-        // Read-only visibility: a failed window lookup must not fail the status.
-        logger.warn({ err, agentId: agent.id }, "bot container profile pending window lookup failed");
-      }
-    }
+    const env = envNow();
+    const runtimeEnv = deps.env === undefined;
+    const enabled = isBotContainersEnabled(env);
+    const savedAllowlist = runtimeEnv ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
+    const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+    const runtime = deps.getRuntime();
+
+    const companyAgents = deps.listCompanyAgents ? await deps.listCompanyAgents(companyId) : [];
+    const safeAgents = companyAgents.filter((a) => a.companyId === companyId);
+
+    const items = await mapConcurrent(
+      safeAgents,
+      BOT_CONTAINER_STATUS_CONCURRENCY,
+      async (agent): Promise<CompanyBotContainerStatusItem> => {
+        try {
+          const itemStatus = await buildBotContainerItemStatus(agent, {
+            env,
+            enabled,
+            allowlist,
+            runtime,
+            deps,
+          });
+          return {
+            agentId: agent.id,
+            ...itemStatus,
+          };
+        } catch (err) {
+          logger.warn({ err, agentId: agent.id }, "building bot container item status failed");
+          return {
+            agentId: agent.id,
+            eligible: false,
+            reason: "Status query failed",
+            imageAllowlist: allowlist,
+            imageAllowed: null,
+            container: null,
+            containerError: "The container runtime did not answer.",
+            imageTracking: { category: "not_applicable", image: null, reason: "Status query failed" },
+            imageRollout: { onReleaseImage: false, targetImage: null, reason: "Status query failed" },
+            boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
+            gatewayConcurrency: null,
+            gatewayConcurrencyNote: null,
+            gatewayConcurrencyWarning: null,
+            idleStopMode: "on_demand",
+            idleStopRuntime: null,
+            profileUpdatePendingSince: null,
+          };
+        }
+      },
+    );
+
+    const body: CompanyBotContainersStatusResponse = {
+      enabled,
+      runtimeConfigured: runtime !== null,
+      items,
+    };
 
     res.json(body);
   });
