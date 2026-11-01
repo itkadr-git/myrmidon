@@ -563,12 +563,9 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import os, sys; real = os.path.realpath
 
 # /health needs no auth (unlike /v1/capabilities, which is Bearer-gated) —
 # see docker/bot-runtime/README.md and gateway/platforms/api_server.py.
-# start-period covers the session maintenance that runs before the gateway
-# (entrypoint, MYRMIDON_BOT_SESSION_MAINTENANCE_TIMEOUT_SEC, default 240 s) plus
-# gateway init: with 45 s, bots with a large state.db were marked unhealthy
-# before their gateway started and the rollout put them back on the old image.
-# A container still becomes healthy as soon as /health answers.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
+# The gateway starts before session retention. Keep this window for image and
+# process startup only; state.db size must not affect health.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${API_SERVER_PORT}/health" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bot-runtime-entrypoint"]
