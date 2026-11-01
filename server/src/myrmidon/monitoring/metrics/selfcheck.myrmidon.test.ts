@@ -48,7 +48,7 @@ describe("metrics self-check probe", () => {
     // Five legacy-blocked families are safe on pre-migration databases too.
     // OPE-9476: failed_before_model counter is in-process state too (+1 = 31),
     // and the three recovery event counters are in-process port state as well.
-    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1 + 3 + 5);
+    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1 + 3 + 6);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
