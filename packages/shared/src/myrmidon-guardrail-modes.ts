@@ -140,7 +140,7 @@ export interface ResolvedGuardrailMode {
 export function resolveGuardrailMode(input: {
   settings: GuardrailModesSettings;
   rule: GuardrailRule;
-  agentId: string;
+  agentId?: string | null;
   /** The agent's role (caste) label; null when the agent has no role. */
   agentRole: string | null;
   /** The forced env override: only a valid mode string forces; null/undefined = no force. */
@@ -153,7 +153,7 @@ export function resolveGuardrailMode(input: {
   if (isGuardrailMode(input.forced)) {
     return { rule, mode: input.forced, source: "env", caste: null };
   }
-  const agentRules = input.settings.agents[input.agentId];
+  const agentRules = input.agentId ? input.settings.agents[input.agentId] : undefined;
   const agentMode = agentRules ? agentRules[rule] : undefined;
   if (isGuardrailMode(agentMode)) {
     return { rule, mode: agentMode, source: "agent", caste: null };
