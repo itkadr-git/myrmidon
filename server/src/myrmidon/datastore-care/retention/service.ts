@@ -41,11 +41,15 @@ import {
   resolveBackupFilePrefix,
 } from "./backup-gate.js";
 import { compactContextPass } from "./compact.js";
+import { datastoreRetentionMetrics } from "./metrics.js";
 import {
   readRetentionLastRun,
   readRetentionSettings,
   writeRetentionLastRun,
 } from "./settings.js";
+
+/** Alarm threshold for consecutive passes that timed out without progress (OPE-9967). */
+export const CONTEXT_RETENTION_TIMEOUT_ALARM_THRESHOLD = 3;
 
 /** The "waiting for backup" activity line is written at most once per this window. */
 export const DATASTORE_RETENTION_WAITING_LOG_INTERVAL_MS = 60 * 60 * 1000;
@@ -195,8 +199,40 @@ export function createDatastoreCareRetentionRuntime(
       // settings block (instance setting > env > default 10), read fresh
       // every pass so a PATCH applies without a restart.
       { db, maxBatches: resolved.contextCompactMaxBatches },
-      { companyIds, cutoff, compactedAt: checkedAt.toISOString() },
+      {
+        companyIds,
+        cutoff,
+        compactedAt: checkedAt.toISOString(),
+        cursors: previous.cursors,
+      },
     );
+
+    const isTimeoutWithoutProgress = result.timedOut && result.compacted === 0;
+    const consecutiveTimeoutCount = isTimeoutWithoutProgress
+      ? (previous.consecutiveTimeoutCount ?? 0) + 1
+      : 0;
+
+    if (isTimeoutWithoutProgress) {
+      datastoreRetentionMetrics.recordTimeout(consecutiveTimeoutCount);
+      if (consecutiveTimeoutCount >= CONTEXT_RETENTION_TIMEOUT_ALARM_THRESHOLD) {
+        logger.error(
+          {
+            consecutiveTimeoutCount,
+            threshold: CONTEXT_RETENTION_TIMEOUT_ALARM_THRESHOLD,
+            lastCompacted: result.compacted,
+            cutoff,
+          },
+          "datastore care: context retention compaction consecutive timeouts without progress alarm",
+        );
+      } else {
+        logger.warn(
+          { consecutiveTimeoutCount, cutoff },
+          "datastore care: context retention compaction pass timed out without progress",
+        );
+      }
+    } else {
+      datastoreRetentionMetrics.recordSuccess();
+    }
 
     const lastRun: DatastoreCareRetentionLastRun = {
       lastRunAt: checkedAt.toISOString(),
@@ -207,6 +243,8 @@ export function createDatastoreCareRetentionRuntime(
       lastFreedBytes: result.freedBytes,
       compactedTotal: previous.compactedTotal + result.compacted,
       freedBytesTotal: previous.freedBytesTotal + result.freedBytes,
+      cursors: result.cursors,
+      consecutiveTimeoutCount,
     };
     await writeRetentionLastRun(settings, lastRun);
 

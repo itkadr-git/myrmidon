@@ -63,13 +63,21 @@ export const CONTEXT_COMPACT_LIVE_STATUSES = HEARTBEAT_RUN_STATUSES.filter(
   (status) => status === "queued" || status === "scheduled_retry" || status === "running",
 );
 
+export interface CompactCursor {
+  createdAt: string;
+  id: string;
+}
+
 export interface CompactBatchResult {
   compacted: number;
   freedBytes: number;
+  lastRow?: CompactCursor | null;
 }
 
-export interface CompanyCompactResult extends CompactBatchResult {
+export interface CompanyCompactResult {
   companyId: string;
+  compacted: number;
+  freedBytes: number;
 }
 
 /**
@@ -120,19 +128,31 @@ const holdsKeySql = sql.join(
  * bytes (pg_column_size before minus after — an exact figure for the
  * snapshot values themselves).
  */
+export interface CompactCompanyBatchInput {
+  companyId: string;
+  cutoff: string;
+  compactedAt: string;
+  cursor?: CompactCursor | null;
+}
+
 export async function compactCompanyBatch(
   tx: Db,
-  input: { companyId: string; cutoff: string; compactedAt: string },
+  input: CompactCompanyBatchInput,
 ): Promise<CompactBatchResult> {
+  const cursorFilter = input.cursor
+    ? sql`AND (created_at > ${input.cursor.createdAt}::timestamptz OR (created_at = ${input.cursor.createdAt}::timestamptz AND id > ${input.cursor.id}::uuid))`
+    : sql``;
+
   const rows = (await tx.execute(sql`
     WITH picked AS (
-      SELECT id, pg_column_size(context_snapshot) AS size_before
+      SELECT id, created_at, pg_column_size(context_snapshot) AS size_before
       FROM heartbeat_runs
       WHERE company_id = ${input.companyId}
         AND created_at < ${input.cutoff}::timestamptz
+        ${cursorFilter}
         AND status NOT IN (${liveStatusesSql})
         AND (${holdsKeySql})
-      ORDER BY created_at
+      ORDER BY created_at, id
       LIMIT ${CONTEXT_COMPACT_BATCH_SIZE}
     ),
     compacted AS (
@@ -142,16 +162,35 @@ export async function compactCompanyBatch(
           || jsonb_build_object(${CONTEXT_COMPACTED_AT_KEY}::text, ${input.compactedAt}::text)
       FROM picked p
       WHERE hr.id = p.id
-      RETURNING (p.size_before - pg_column_size(hr.context_snapshot)) AS saved_bytes
+      RETURNING p.id, p.created_at, (p.size_before - pg_column_size(hr.context_snapshot)) AS saved_bytes
     )
     SELECT count(*)::int AS compacted,
-           coalesce(sum(greatest(saved_bytes, 0)), 0)::bigint AS freed_bytes
+           coalesce(sum(greatest(saved_bytes, 0)), 0)::bigint AS freed_bytes,
+           (SELECT id::text FROM compacted ORDER BY created_at DESC, id DESC LIMIT 1) AS last_id,
+           (SELECT created_at FROM compacted ORDER BY created_at DESC, id DESC LIMIT 1) AS last_created_at
     FROM compacted
-  `)) as unknown as Array<{ compacted: number | string; freed_bytes: number | string }>;
-  const row = rows[0] ?? { compacted: 0, freed_bytes: 0 };
+  `)) as unknown as Array<{
+    compacted: number | string;
+    freed_bytes: number | string;
+    last_id?: string | null;
+    last_created_at?: string | Date | null;
+  }>;
+  const row = rows[0] ?? { compacted: 0, freed_bytes: 0, last_id: null, last_created_at: null };
+  const compacted = Number(row.compacted) || 0;
+  const lastRow =
+    compacted > 0 && row.last_id && row.last_created_at
+      ? {
+          id: String(row.last_id),
+          createdAt:
+            row.last_created_at instanceof Date
+              ? row.last_created_at.toISOString()
+              : new Date(row.last_created_at).toISOString(),
+        }
+      : null;
   return {
-    compacted: Number(row.compacted) || 0,
+    compacted,
     freedBytes: Number(row.freed_bytes) || 0,
+    lastRow,
   };
 }
 
@@ -162,6 +201,13 @@ export interface CompactPassDeps {
   maxBatches?: number;
 }
 
+export interface CompactPassInput {
+  companyIds: string[];
+  cutoff: string;
+  compactedAt: string;
+  cursors?: Record<string, CompactCursor> | null;
+}
+
 export interface CompactPassResult {
   compacted: number;
   freedBytes: number;
@@ -169,6 +215,8 @@ export interface CompactPassResult {
   timedOut: boolean;
   /** Per-company totals; companies without work are omitted. */
   perCompany: CompanyCompactResult[];
+  /** Updated cursor per company for keyset traversal across passes (OPE-9967). */
+  cursors: Record<string, CompactCursor>;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -183,7 +231,7 @@ function defaultSleep(ms: number): Promise<void> {
  */
 export async function compactContextPass(
   deps: CompactPassDeps,
-  input: { companyIds: string[]; cutoff: string; compactedAt: string },
+  input: CompactPassInput,
 ): Promise<CompactPassResult> {
   const sleep = deps.sleep ?? defaultSleep;
   const maxBatches = deps.maxBatches ?? DEFAULT_CONTEXT_COMPACT_MAX_BATCHES;
@@ -191,9 +239,17 @@ export async function compactContextPass(
   let freedBytes = 0;
   let timedOut = false;
   const perCompany: CompanyCompactResult[] = [];
+  const nextCursors: Record<string, CompactCursor> = { ...(input.cursors ?? {}) };
+
   for (const companyId of input.companyIds) {
     let companyCompacted = 0;
     let companyFreedBytes = 0;
+    let cursor: CompactCursor | null = nextCursors[companyId] ?? null;
+
+    if (cursor && new Date(cursor.createdAt).getTime() >= new Date(input.cutoff).getTime()) {
+      cursor = null;
+    }
+
     for (let batch = 0; batch < maxBatches; batch++) {
       let result: CompactBatchResult;
       try {
@@ -206,6 +262,7 @@ export async function compactContextPass(
             companyId,
             cutoff: input.cutoff,
             compactedAt: input.compactedAt,
+            cursor,
           });
         });
       } catch (err) {
@@ -217,14 +274,22 @@ export async function compactContextPass(
       }
       companyCompacted += result.compacted;
       companyFreedBytes += result.freedBytes;
+      if (result.lastRow) {
+        cursor = result.lastRow;
+        nextCursors[companyId] = cursor;
+      }
       if (result.compacted < CONTEXT_COMPACT_BATCH_SIZE) break;
       await sleep(CONTEXT_COMPACT_PAUSE_MS);
     }
     if (companyCompacted > 0) {
-      perCompany.push({ companyId, compacted: companyCompacted, freedBytes: companyFreedBytes });
+      perCompany.push({
+        companyId,
+        compacted: companyCompacted,
+        freedBytes: companyFreedBytes,
+      });
     }
     compacted += companyCompacted;
     freedBytes += companyFreedBytes;
   }
-  return { compacted, freedBytes, timedOut, perCompany };
+  return { compacted, freedBytes, timedOut, perCompany, cursors: nextCursors };
 }
