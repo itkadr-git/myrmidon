@@ -84,6 +84,7 @@ export * from "../myrmidon-successful-run-handoff-notices.js";
 export * from "../myrmidon-swarm-claim.js";
 export * from "../myrmidon-swarm-wake.js";
 export * from "../myrmidon-swarm.js";
+export * from "../myrmidon-task-session-and-reviewer-isolation.js";
 export * from "../myrmidon-team-liveness.js";
 export * from "../myrmidon-telegram-dm-progress.js";
 export * from "../myrmidon-telegram-notify.js";
