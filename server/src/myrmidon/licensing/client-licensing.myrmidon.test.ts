@@ -475,7 +475,7 @@ describe("licensing routes: client side", () => {
   it("falls back to every known module in the request when none is installed", async () => {
     const res = await request(app(admin, envFor(), [])).get("/api/licensing/status");
     const payload = JSON.parse(Buffer.from(res.body.request.split(".")[1], "base64url").toString("ascii"));
-    expect(payload.modules).toEqual(["antigravity", "chatgpt-pool", "google-ai"]);
+    expect(payload.modules).toEqual(["alibaba-image", "antigravity", "chatgpt-pool", "google-ai"]);
     expect(res.body.attention).toBe(false);
   });
 
