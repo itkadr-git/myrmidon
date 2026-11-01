@@ -31313,9 +31313,9 @@ export function heartbeatService(
               ? []
               : await tx
                   .select({
-                finishedAt: heartbeatRuns.finishedAt,
-                contextSnapshot: heartbeatRuns.contextSnapshot,
-              })
+                    finishedAt: heartbeatRuns.finishedAt,
+                    contextSnapshot: heartbeatRuns.contextSnapshot,
+                  })
                   .from(heartbeatRuns)
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
@@ -31588,6 +31588,7 @@ export function heartbeatService(
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
                 finishedAt: heartbeatRuns.finishedAt,
+                contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
                 stderrExcerpt: heartbeatRuns.stderrExcerpt,
                 responsibleUserId: heartbeatRuns.responsibleUserId,
@@ -31945,9 +31946,9 @@ export function heartbeatService(
               ? []
               : await tx
                   .select({
-                finishedAt: heartbeatRuns.finishedAt,
-                contextSnapshot: heartbeatRuns.contextSnapshot,
-              })
+                    finishedAt: heartbeatRuns.finishedAt,
+                    contextSnapshot: heartbeatRuns.contextSnapshot,
+                  })
                   .from(heartbeatRuns)
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
