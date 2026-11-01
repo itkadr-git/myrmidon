@@ -208,6 +208,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 90,
       activityLogDays: 90,
       accessAuditDays: 180,
+      litellmCostEventsDays: 30,
     });
     // another PATCH leaves the mode alone
     const next = await request(scoped).patch(URL).send({ accessAuditDays: 30 });

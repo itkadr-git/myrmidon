@@ -721,9 +721,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const { sweep } = makeSweep({ freshBackup: true });
     const result = await sweep.sweep();
 
-    // the audit trail outlives the runs: nothing is deleted at the default
-    // 0 (keep forever); the doomed run's own row survives with a cleared
-    // run_id (null_run_activity in sweep.ts) instead of going with the run
+    // The expired activity row on the deleted run is removed with the 90-day
+    // policy; rows tied to the surviving run are kept to preserve its audit
+    // trail, and old orphan activity is eligible for retention deletion.
     expect(result.perTable.activity.deleted).toBe(2);
     // the seeded access rows are 100 days old — inside the 180d default
     // access-audit retention, so nothing is deleted
@@ -731,15 +731,11 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     const remainingActivity = await db
       .select({ action: activityLog.action, runId: activityLog.runId })
       .from(activityLog);
-    expect(remainingActivity.map((row) => row.action).sort()).toEqual([
-      "test.old_gone_run",
-      "test.old_kept_run",
-      "test.old_orphan",
-      "test.young",
-    ]);
-    // the doomed run's row kept its action but lost the run reference
-    const goneRow = remainingActivity.find((row) => row.action === "test.old_gone_run");
-    expect(goneRow?.runId).toBeNull();
+    const remainingActions = remainingActivity.map((row) => row.action).sort();
+    expect(remainingActions).toEqual(["test.old_kept_run", "test.young"]);
+    // Activity linked to the deleted run is not exempt from the configured
+    // retention window: it is removed rather than retained with a null run_id.
+    expect(remainingActivity.some((row) => row.action === "test.old_gone_run")).toBe(false);
     expect(await db.select({ id: toolAccessAuditEvents.id }).from(toolAccessAuditEvents)).toHaveLength(2);
     expect(await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)).toHaveLength(2);
   });
