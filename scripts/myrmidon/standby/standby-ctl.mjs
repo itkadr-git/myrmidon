@@ -506,7 +506,8 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       }
       fsOps.writeFileSync(
         hostPassfilePath,
-        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`
+        `${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`,
+        { mode: 0o600 }
       );
       if (fsOps.chmodSync) {
         fsOps.chmodSync(hostPassfilePath, 0o600);
@@ -523,6 +524,35 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       success: false,
       target,
       error: `Replication credentials missing: passfile not found at '${hostPassfilePath}' and no replication password provided (set PG_REPLICATOR_PASSWORD or pass credentialPath)`,
+    };
+  }
+
+  // 2. Validate bounded WAL retention and ensure the physical replication slot exists
+  // before pg_basebackup --slot. An unbounded slot can fill the primary filesystem
+  // while the standby or tunnel is down.
+  const walPolicyRes = queryPostgres(
+    "SELECT (current_setting('max_slot_wal_keep_size', true) IS NOT NULL AND current_setting('max_slot_wal_keep_size', true) <> '-1')::text;",
+    { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+    runner
+  );
+  const walPolicyOk = (walPolicyRes.stdout || "").trim().split("|")[0] === "t";
+  if (walPolicyRes.exitCode !== 0 || !walPolicyOk) {
+    return {
+      success: false,
+      target,
+      error: "Primary max_slot_wal_keep_size must be configured to a finite non-negative value before enabling standby replication",
+    };
+  }
+  const slotRes = queryPostgres(
+    "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '" + (isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot) + "') THEN 't' WHEN pg_create_physical_replication_slot('" + (isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot) + "', true) IS NOT NULL THEN 't' ELSE 'f' END;",
+    { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+    runner
+  );
+  if (slotRes.exitCode !== 0 || (slotRes.stdout || "").trim().split("|")[0] !== "t") {
+    return {
+      success: false,
+      target,
+      error: `Failed to create or verify physical replication slot '${isBoard ? DEFAULT_CONFIG.boardReplSlot : DEFAULT_CONFIG.hindsightReplSlot}' on primary: ${slotRes.stderr || slotRes.stdout}`,
     };
   }
 
@@ -575,16 +605,26 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 4. Start standby container
-  runner("docker", ["compose", "-f", composeFile, "up", "-d", composeService]);
+  // 3. Start standby container
+  const startRes = runner("docker", ["compose", "-f", composeFile, "up", "-d", composeService]);
+  if (startRes.exitCode !== 0) {
+    return { success: false, target, error: `Failed to start standby container: ${startRes.stderr || startRes.stdout}` };
+  }
+
+  // 4. Wait for PostgreSQL readiness before checking replication. A large base
+  // backup can leave the container alive but not accepting connections yet.
+  const readinessAttempts = options.readinessAttempts || 12;
+  let verifyRes = { exitCode: 1, stdout: "", stderr: "standby not ready" };
+  for (let attempt = 0; attempt < readinessAttempts; attempt++) {
+    verifyRes = queryPostgres(
+      "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver WHERE status = 'streaming';",
+      { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
+      runner
+    );
+    if (verifyRes.exitCode === 0 && verifyRes.stdout?.trim()) break;
+  }
 
   // 5. Verify standby recovery and streaming receiver
-  const verifyRes = queryPostgres(
-    "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver WHERE status = 'streaming';",
-    { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
-    runner
-  );
-
   const statusParts = (verifyRes.stdout || "").trim().split("\n")[0].split("|");
   const inRecovery = statusParts[0] === "t" || statusParts[0] === "true";
   const walReceivers = parseInt(statusParts[1] || "0", 10);
@@ -744,6 +784,71 @@ export function checkLag(target = "all", options = {}, deps = {}) {
     primaryLsn = pRes.stdout.trim().split("\n")[0].trim();
   }
 
+  let slotInfo = {};
+
+  // Slot retention check: a physical slot that stops consuming WAL (dead tunnel,
+  // stopped standby) retains WAL on the primary until the disk fills. Surface the
+  // retained bytes and fail closed on lost/missing slot retention.
+  if (!options.skipSlotCheck && !options.offline) {
+    const replSlot = isBoard
+      ? options.boardReplSlot || DEFAULT_CONFIG.boardReplSlot
+      : options.hindsightReplSlot || DEFAULT_CONFIG.hindsightReplSlot;
+    const slotRes = queryPostgres(
+      `SELECT COALESCE(s.wal_status, 'missing'), COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)::bigint::text, ''), COALESCE(current_setting('max_slot_wal_keep_size'), '-1') FROM pg_replication_slots s WHERE s.slot_name = '${replSlot}';`,
+      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+      runner
+    );
+    if (slotRes.exitCode === 0 && (slotRes.stdout || "").trim()) {
+      const parts = slotRes.stdout.trim().split("\n")[0].split("|");
+      const slotWalStatus = (parts[0] || "").trim();
+      const retainedBytes = Number.parseInt(parts[1] || "", 10);
+      const maxSettingMb = Number.parseInt((parts[2] || "").trim(), 10);
+      // max_slot_wal_keep_size is in MB; pg_wal_lsn_diff returns bytes.
+      const maxSlotWalBytes =
+        Number.isFinite(maxSettingMb) && maxSettingMb > 0 ? maxSettingMb * 1024 * 1024 : null;
+
+      if (slotWalStatus === "missing" || slotWalStatus === "lost") {
+        return {
+          target,
+          success: false,
+          rpoOk: false,
+          role: "standby",
+          inRecovery: true,
+          rpoStatus: slotWalStatus === "missing" ? "slot_missing" : "slot_wal_lost",
+          error: `Replication slot '${replSlot}' is ${slotWalStatus}: standby cannot keep up and retention is unsafe`,
+          byteLag: null,
+          timeLagSeconds: null,
+        };
+      }
+
+      if (
+        Number.isFinite(retainedBytes) &&
+        maxSlotWalBytes !== null &&
+        retainedBytes > maxSlotWalBytes
+      ) {
+        return {
+          target,
+          success: false,
+          rpoOk: false,
+          role: "standby",
+          inRecovery: true,
+          rpoStatus: "slot_retention_exceeded",
+          error: `Replication slot '${replSlot}' retains ${retainedBytes} bytes, exceeding max_slot_wal_keep_size (${maxSettingMb} MB)`,
+          byteLag: null,
+          timeLagSeconds: null,
+        };
+      }
+
+      slotInfo = {
+        ...(Number.isFinite(retainedBytes) ? { slotRetainedBytes: retainedBytes } : {}),
+        ...(slotWalStatus ? { slotWalStatus } : {}),
+        ...(maxSlotWalBytes !== null && Number.isFinite(retainedBytes)
+          ? { slotRetentionWarn: retainedBytes > 0.8 * maxSlotWalBytes }
+          : {}),
+      };
+    }
+  }
+
   const lagInfo = calculateLag({
     primaryLsn,
     receiveLsn: parsed.receiveLsn,
@@ -759,6 +864,7 @@ export function checkLag(target = "all", options = {}, deps = {}) {
     success: true,
     role: "standby",
     inRecovery: true,
+    ...slotInfo,
     ...lagInfo,
   };
 }
@@ -788,6 +894,31 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
   const dbName = isBoard
     ? options.boardDbName || DEFAULT_CONFIG.boardDbName
     : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  // 0. Fail-closed: refuse promotion while the original primary still accepts writes
+  // (prevents accidental split-brain). Bypass only with explicit --accept-split-brain.
+  if (!options.acceptSplitBrain) {
+    const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+    const primaryPort = resolvePrimaryPort(options, target);
+    const priRes = queryPostgres(
+      "SELECT pg_is_in_recovery()::text;",
+      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+      runner
+    );
+    const primaryReachable = priRes.exitCode === 0;
+    const primaryInRecovery = primaryReachable && (priRes.stdout || "").trim() === "t";
+    if (primaryReachable && !primaryInRecovery) {
+      return {
+        success: false,
+        target,
+        promoted: false,
+        error:
+          `Refusing failover: original primary at ${primaryHost}:${primaryPort} is reachable and accepts writes ` +
+          "(pg_is_in_recovery=f). Failover must only run when the primary is down or in recovery; " +
+          "pass --accept-split-brain to override after verifying with the runbook.",
+      };
+    }
+  }
 
   // 1. Promote standby
   const promoteRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
@@ -896,6 +1027,26 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
       success: false,
       target,
       error: "Original primary is not an active primary (in recovery or unreachable)",
+    };
+  }
+
+  // 1b. Verify standby is still in recovery. After a failover the standby is the
+  // ACTIVE WRITER; re-cloning it from the recovered-but-stale primary would
+  // silently discard every write accepted after promotion (split brain data loss).
+  // Only --discard-promoted-standby explicitly acknowledges that loss.
+  const standbyHost = options.standbyHost || DEFAULT_CONFIG.standbyHost;
+  const standbyPort = resolveStandbyPort(options, target);
+  const sRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: standbyHost, port: standbyPort, user: dbUser, db: dbName }, runner);
+  const standbyInRecovery = sRes.exitCode === 0 && (sRes.stdout || "").trim() === "t";
+  if (!standbyInRecovery && !options.discardPromotedStandby) {
+    return {
+      success: false,
+      target,
+      error:
+        `Refusing switchback: standby at ${standbyHost}:${standbyPort} is NOT in recovery ` +
+        `(pg_is_in_recovery=${(sRes.stdout || "").trim() || "unreachable"}). ` +
+        "It is likely the promoted active writer; re-cloning from the recovered primary would discard all writes accepted after failover. " +
+        "Follow runbook §6 order (rewind/re-clone the OLD primary, not the promoted standby) or pass --discard-promoted-standby to explicitly accept the data loss.",
     };
   }
 
@@ -1106,6 +1257,9 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   if (flags.force !== undefined) {
     flags.force = true;
   }
+  if (flags["discard-promoted-standby"] !== undefined || flags["drop-standby-diverged"] !== undefined) {
+    flags.discardPromotedStandby = true;
+  }
   if (flags["dry-run"] !== undefined) {
     flags.dryRun = true;
   }
@@ -1205,6 +1359,7 @@ Commands:
 Options:
   --dry-run                        Print operational plans without executing commands
   --force                          Allow cleaning non-empty data directory during setup/switchback
+  --discard-promoted-standby       Switchback: explicitly accept discarding writes on a promoted (non-recovery) standby
   --rpo=<sec>                      Maximum acceptable lag in seconds (alias for --rpo-max-seconds)
   --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
   --offline                        Measure standby without querying primary

@@ -128,6 +128,108 @@ test("parseReplicationStatus parses standard and error psql outputs", () => {
   assert.equal(empty.role, "unknown");
 });
 
+test("setupStandby fails closed when primary max_slot_wal_keep_size is unbounded", () => {
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => [],
+    readFileSync: () => "",
+    chmodSync: () => {},
+    rmSync: () => {},
+  };
+
+  // current_setting('max_slot_wal_keep_size') returns '-1' -> unbounded retention
+  const unboundedMock = (cmd) => {
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "f\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", { replicatorPassword: "pw" }, { runner: unboundedMock, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.match(res.error, /max_slot_wal_keep_size/);
+});
+
+test("setupStandby creates physical replication slot before basebackup", () => {
+  const executedCmds = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => [],
+    readFileSync: () => "",
+    chmodSync: () => {},
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("max_slot_wal_keep_size")) return { exitCode: 0, stdout: "t\n", stderr: "" };
+      if (sql.includes("pg_replication_slots")) return { exitCode: 0, stdout: "t\n", stderr: "" };
+      if (sql.includes("pg_stat_wal_receiver") || sql.includes("pg_is_in_recovery")) {
+        return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = setupStandby("board", { replicatorPassword: "pw" }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+  assert.ok(
+    executedCmds.some((c) => c.cmd === "psql" && c.args.some((a) => a.includes("pg_create_physical_replication_slot"))),
+    "Slot creation SQL executed"
+  );
+  const slotQueryIdx = executedCmds.findIndex((c) => c.cmd === "psql" && c.args.some((a) => a.includes("pg_create_physical_replication_slot")));
+  const basebackupIdx = executedCmds.findIndex((c) => c.cmd === "pg_basebackup");
+  assert.ok(slotQueryIdx >= 0 && basebackupIdx > slotQueryIdx, "Slot creation happens before pg_basebackup");
+});
+
+test("checkLag reports slot retention and fails closed on lost slot WAL", () => {
+  // Slot WAL lost -> fail closed
+  const lostSlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "lost|1000|1024\n", stderr: "" };
+      }
+      if (sql.includes("pg_current_wal_lsn")) {
+        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const lostRes = checkLag("board", {}, { runner: lostSlotMock });
+  assert.equal(lostRes.success, false);
+  assert.equal(lostRes.rpoStatus, "slot_wal_lost");
+  assert.match(lostRes.error, /standby_board_slot/);
+
+  // Healthy slot retention -> success with slot info surfaced
+  const healthySlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "streaming|1048576|2048\n", stderr: "" };
+      }
+      if (sql.includes("pg_current_wal_lsn")) {
+        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const okRes = checkLag("board", {}, { runner: healthySlotMock });
+  assert.equal(okRes.success, true);
+  assert.equal(okRes.slotWalStatus, "streaming");
+  assert.equal(okRes.slotRetainedBytes, 1048576);
+  assert.equal(okRes.slotRetentionWarn, false);
+});
+
 test("generateStandbyConfig includes required streaming parameters and credentials via passfile", () => {
   const cfg = generateStandbyConfig("board");
   assert.match(cfg, /primary_conninfo = 'host=(?:10\.10\.100\.1|primary\.internal)/);
@@ -348,7 +450,10 @@ test("executeSwitchback resynchronizes standby from active primary", () => {
         return { exitCode: 0, stdout: "t|1\n", stderr: "" };
       }
       if (sql.includes("pg_is_in_recovery")) {
-        // Primary check returns 'f' (primary is active)
+        // Host/port decide the role: primary on 5432 answers 'f', standby on 5433 answers 't'
+        const portIdx = args.indexOf("-p");
+        const port = portIdx !== -1 ? args[portIdx + 1] : "";
+        if (port === "5433") return { exitCode: 0, stdout: "t\n", stderr: "" };
         return { exitCode: 0, stdout: "f\n", stderr: "" };
       }
     }
@@ -371,6 +476,44 @@ test("executeSwitchback resynchronizes standby from active primary", () => {
   assert.equal(res.streamingActive, true);
 });
 
+test("executeSwitchback refuses to discard writes on a promoted (non-recovery) standby", () => {
+  const executedCmds = [];
+  let rmCalled = false;
+  const mockRunner = (cmd, args) => {
+    executedCmds.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1];
+      if (sql.includes("pg_is_in_recovery")) {
+        // BOTH primary and standby answer 'f': standby was promoted and is the active writer
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+    }
+    return { exitCode: 0, stdout: "t|1\n", stderr: "" };
+  };
+
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readdirSync: () => ["existing_pg_file"],
+    readFileSync: () => "",
+    rmSync: () => {
+      rmCalled = true;
+    },
+  };
+
+  // Even with --force the promoted standby must be protected without the explicit discard flag
+  const res = executeSwitchback("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, false);
+  assert.match(res.error, /NOT in recovery/);
+  assert.match(res.error, /--discard-promoted-standby/);
+  assert.equal(rmCalled, false);
+  const stopCmd = executedCmds.find((c) => c.cmd === "docker" && c.args.includes("stop"));
+  assert.equal(stopCmd, undefined);
+  const backupCmd = executedCmds.find((c) => c.cmd === "pg_basebackup");
+  assert.equal(backupCmd, undefined);
+});
+
 test("executeSwitchback fails closed without explicit force flag", () => {
   const executedCmds = [];
   let rmCalled = false;
@@ -379,6 +522,9 @@ test("executeSwitchback fails closed without explicit force flag", () => {
     if (cmd === "psql") {
       const sql = args[args.indexOf("-c") + 1];
       if (sql.includes("pg_is_in_recovery")) {
+        const portIdx = args.indexOf("-p");
+        const port = portIdx !== -1 ? args[portIdx + 1] : "";
+        if (port === "5433") return { exitCode: 0, stdout: "t\n", stderr: "" };
         return { exitCode: 0, stdout: "f\n", stderr: "" };
       }
     }
@@ -460,6 +606,10 @@ test("runCli commands output structured JSON and return correct exit codes", () 
     if (sql.includes("pg_is_in_recovery")) {
       if (failoverPromoted) {
         return { exitCode: 0, stdout: "f\n", stderr: "" };
+      }
+      if (args.includes("primary.internal")) {
+        // The primary is unreachable (simulates the failover condition).
+        return { exitCode: 2, stdout: "", stderr: "connection refused" };
       }
       return { exitCode: 0, stdout: `t|1/1000|1/1000|${new Date(Date.now() - 5000).toISOString()}\n`, stderr: "" };
     }
