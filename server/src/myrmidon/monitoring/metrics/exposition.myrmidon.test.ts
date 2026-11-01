@@ -24,6 +24,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     runsActive: 2,
     runsQueued: 5,
     runsQueuedOver30m: 1,
+    deferredIssueExecutionOver30m: 0,
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     runDurationSecondsP50: 42.5,
@@ -35,6 +36,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     ],
     reviewTasksWithoutReviewer: 0,
     blockedTasksWithoutAssignee: 0,
+    codeTasksOnNoncodingRoles: 0,
     swarmClaimsActive: 4,
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
@@ -178,6 +180,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_runs_active gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued_over_30m gauge");
+    expect(text).toContain("# TYPE myrmidon_deferred_issue_execution_over_30m gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_total gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_window gauge");
     expect(text).toContain("# TYPE myrmidon_run_duration_seconds summary");
@@ -189,7 +192,13 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
     expect(text).toContain("# TYPE myrmidon_review_tasks_without_reviewer gauge");
     expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
+    expect(text).toContain("# TYPE myrmidon_code_tasks_on_noncoding_roles gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
+  });
+
+  it("renders deferred issue-execution backlog gauge", () => {
+    const text = renderMetricsText(snapshot({ deferredIssueExecutionOver30m: 2 }));
+    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 2');
   });
 
   it("renders one sample line per family and per role/status pair", () => {
@@ -200,8 +209,11 @@ describe("prometheus exposition format", () => {
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
-    // plus queued >30m gauge = 30.
-    expect(sampleLines).toHaveLength(30);
+    // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
+    // plus legacy-blocked remaining-age gauge = 32, plus failed_before_model = 33.
+    // Recovery families are declared but have no samples without recovery rows.
+    expect(sampleLines).toHaveLength(33);
+    expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -209,6 +221,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
     expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
+    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 0');
   });
 
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
@@ -463,8 +476,8 @@ describe("prometheus exposition format", () => {
       const help = /^# HELP (\S+) .+$/.exec(lines[0]);
       expect(help, `block must start with HELP: ${lines[0]}`).not.toBeNull();
       const name = help![1];
-      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary)$`));
-      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `))).toBe(true);
+      expect(lines[1]).toMatch(new RegExp(`^# TYPE ${name} (counter|gauge|summary|histogram)$`));
+      expect(lines.slice(2).every((line) => line.startsWith(`${name}{`) || line.startsWith(`${name} `) || line.startsWith(`${name}_`))).toBe(true);
       return name;
     });
     expect(names.sort()).toEqual([...METRIC_FAMILIES].sort());

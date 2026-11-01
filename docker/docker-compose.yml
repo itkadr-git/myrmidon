@@ -50,8 +50,12 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      MYRMIDON_MEDIA_BOTS_FILE: /config/bots.json
     volumes:
       - paperclip-data:/paperclip
+      - media-acl-config:/config
+      - ${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}:${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}
     depends_on:
       db:
         condition: service_healthy
@@ -59,3 +63,4 @@ services:
 volumes:
   pgdata:
   paperclip-data:
+  media-acl-config:

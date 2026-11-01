@@ -93,6 +93,7 @@ function makeIssue(
 describe("blockedInbox", () => {
   it("maps every reason to a known variant and label", () => {
     const reasons: IssueBlockedInboxReason[] = [
+      "unassigned_blocked_issue_overdue",
       "pending_board_decision",
       "pending_user_decision",
       "missing_successful_run_disposition",

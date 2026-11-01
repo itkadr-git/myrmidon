@@ -36,6 +36,8 @@ export const MODEL_PROVIDER_TYPES = [
   "google",
   "openai-compatible",
   "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
