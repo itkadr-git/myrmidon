@@ -61,7 +61,7 @@ run("production corpus adapters", () => {
       enabled: true,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "hindsight-embed-bge-m3",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -127,7 +127,7 @@ run("production corpus adapters", () => {
       enabled: false,
       parserBaseUrl: "http://parser.invalid",
       parserTimeoutMs: 1000,
-      embedderModel: "hindsight-embed-bge-m3",
+      embedderModel: "corpus-embed-pplx-0.6b",
       embedderDimensions: 3,
       embedderBaseUrl: null,
       maxDocumentBytes: 1024,
@@ -224,15 +224,15 @@ run("production corpus adapters", () => {
     await db.$client.end();
   });
 
-  it("indexes document chunks by calling the embeddings endpoint with hindsight-embed-bge-m3", async () => {
-    let capturedBody: { model?: string; input?: string[]; dimensions?: number } | null = null;
+  it("indexes document chunks by calling the embeddings endpoint with corpus-embed-pplx-0.6b", async () => {
+    const captured: { body: { model?: string; input?: string[]; dimensions?: number } | null } = { body: null };
     const server = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/embeddings") {
         let raw = "";
         req.on("data", (c) => { raw += c; });
         req.on("end", () => {
-          capturedBody = JSON.parse(raw);
-          const input = capturedBody?.input ?? [];
+          captured.body = JSON.parse(raw);
+          const input = captured.body?.input ?? [];
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify({
             data: input.map((_, index) => ({
@@ -259,7 +259,7 @@ run("production corpus adapters", () => {
         enabled: true,
         parserBaseUrl: "http://parser.invalid",
         parserTimeoutMs: 1000,
-        embedderModel: "hindsight-embed-bge-m3",
+        embedderModel: "corpus-embed-pplx-0.6b",
         embedderDimensions: 1024,
         embedderBaseUrl: baseUrl,
         maxDocumentBytes: 1024,
@@ -292,10 +292,10 @@ run("production corpus adapters", () => {
       });
 
       expect(indexedCount).toBe(1);
-      expect(capturedBody).not.toBeNull();
-      expect(capturedBody?.model).toBe("hindsight-embed-bge-m3");
-      expect(capturedBody?.input).toEqual(["hello bge-m3 world"]);
-      expect(capturedBody?.dimensions).toBe(1024);
+      expect(captured.body).not.toBeNull();
+      expect(captured.body?.model).toBe("corpus-embed-pplx-0.6b");
+      expect(captured.body?.input).toEqual(["hello bge-m3 world"]);
+      expect(captured.body?.dimensions).toBe(1024);
 
       await dbInstance.$client.end();
     } finally {

@@ -8,7 +8,6 @@ import {
   DEFAULT_OCR_TIMEOUT_SEC,
   ocrSettingsProblem,
   readOcrSettings,
-  DEFAULT_OCR_MODEL,
 } from "./settings.js";
 import type { OcrJournalEntry } from "./service.js";
 
@@ -29,12 +28,11 @@ describe("readOcrSettings", () => {
       backend: "ragflow",
       baseUrl: null,
       keySecret: null,
+      model: null,
       maxBytes: DEFAULT_OCR_MAX_BYTES,
       maxPages: DEFAULT_OCR_MAX_PAGES,
       timeoutMs: DEFAULT_OCR_TIMEOUT_SEC * 1000,
     });
-    expect(closed.model).toBe("chatgpt-pool/gpt-6-luna");
-    expect(closed.model).toBe(DEFAULT_OCR_MODEL);
     const open = readOcrSettings({
       MYRMIDON_OCR_BASE_URL: "http://ocr.example.com/mcp",
       MYRMIDON_OCR_KEY_SECRET: "ocr-key",

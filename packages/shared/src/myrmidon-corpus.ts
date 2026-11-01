@@ -101,7 +101,7 @@ export const DEFAULT_CORPUS_SETTINGS: CorpusSettings = {
   enabled: false,
   parserBaseUrl: null,
   parserTimeoutMs: 60_000,
-  embedderModel: "hindsight-embed-bge-m3",
+  embedderModel: "corpus-embed-pplx-0.6b",
   embedderDimensions: 1024,
   embedderBaseUrl: null,
   maxDocumentBytes: 25 * 1024 * 1024,

@@ -4,7 +4,7 @@ import { assertEmbeddingVector, isL2Normalized, l2Normalize } from "../search/ve
 export const DEFAULT_RAGFLOW_PAGE_SIZE = 500;
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
 export const DEFAULT_EMBEDDING_CONCURRENCY = 4;
-export const DEFAULT_EMBEDDING_MODEL = "hindsight-embed-bge-m3";
+export const DEFAULT_EMBEDDING_MODEL = "corpus-embed-pplx-0.6b";
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1024;
 
 export type RagflowDataset = {

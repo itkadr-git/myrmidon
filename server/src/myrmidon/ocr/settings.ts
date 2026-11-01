@@ -85,7 +85,7 @@ export function readOcrSettings(env: NodeJS.ProcessEnv = process.env): OcrSettin
     backend,
     baseUrl,
     keySecret,
-    model: env[OCR_MODEL_ENV]?.trim() || (live("ocrModel") as string | undefined) || DEFAULT_OCR_MODEL,
+    model: env[OCR_MODEL_ENV]?.trim() || (live("ocrModel") as string | undefined) || null,
     maxBytes: readPositiveInt(env[OCR_MAX_BYTES_ENV] ?? (live("ocrMaxBytes") as number | undefined)?.toString(), DEFAULT_OCR_MAX_BYTES, Number.MAX_SAFE_INTEGER),
     maxPages: readPositiveInt(env[OCR_MAX_PAGES_ENV] ?? (live("ocrMaxPages") as number | undefined)?.toString(), DEFAULT_OCR_MAX_PAGES, Number.MAX_SAFE_INTEGER),
     maxChars: readPositiveInt(env[OCR_MAX_CHARS_ENV] ?? (live("ocrMaxChars") as number | undefined)?.toString(), DEFAULT_OCR_MAX_CHARS, Number.MAX_SAFE_INTEGER),

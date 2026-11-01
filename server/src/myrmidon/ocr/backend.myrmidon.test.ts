@@ -45,9 +45,8 @@ async function failure(promise: Promise<unknown>): Promise<OcrError> {
 }
 
 describe("litellm backend", () => {
-  it("defaults OCR to the replacement vision model", () => {
+  it("defaults OCR target model to the replacement vision model", () => {
     expect(DEFAULT_OCR_MODEL).toBe("chatgpt-pool/gpt-6-luna");
-    expect(readOcrSettings({} as NodeJS.ProcessEnv).model).toBe(DEFAULT_OCR_MODEL);
   });
 
   it("sends the document as a file content part to the chat endpoint", async () => {
@@ -164,11 +163,6 @@ describe("ragflow backend", () => {
 });
 
 describe("createOcrBackend", () => {
-  it("defaults the OCR model to the replacement vision model", () => {
-    expect(readOcrSettings({} as NodeJS.ProcessEnv).model).toBe(DEFAULT_OCR_MODEL);
-    expect(DEFAULT_OCR_MODEL).toBe("chatgpt-pool/gpt-6-luna");
-  });
-
   it("builds the backend the settings name", () => {
     const fetchImpl = vi.fn<FetchImpl>();
     expect(

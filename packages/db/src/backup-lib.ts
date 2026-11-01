@@ -91,7 +91,8 @@ const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
-const BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
+const BACKUP_MIN_FREE_BYTES =
+  Number(process.env.MYRMIDON_BACKUP_MIN_FREE_BYTES) || 6 * 1024 * 1024 * 1024;
 
 // myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
 // with its own completion marker. The JavaScript logical dump ends its
@@ -1086,12 +1087,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
+        formatted_type: string | null;
       }[]>`
-        SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
-        FROM information_schema.columns
-        WHERE table_schema = ${schema_name} AND table_name = ${tablename}
-        ORDER BY ordinal_position
+        SELECT c.column_name, c.data_type, c.udt_schema, c.udt_name, c.is_nullable, c.column_default,
+               c.character_maximum_length, c.numeric_precision, c.numeric_scale,
+               format_type(a.atttypid, a.atttypmod) AS formatted_type
+        FROM information_schema.columns c
+        LEFT JOIN pg_namespace n ON n.nspname = c.table_schema
+        LEFT JOIN pg_class t ON t.relname = c.table_name AND t.relnamespace = n.oid
+        LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE c.table_schema = ${schema_name} AND c.table_name = ${tablename}
+        ORDER BY c.ordinal_position
       `;
 
       emit(`-- Table: ${schema_name}.${tablename}`);
@@ -1101,7 +1107,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for (const col of columns) {
         let typeStr: string;
         if (col.data_type === "USER-DEFINED") {
-          typeStr = quoteQualifiedName(col.udt_schema, col.udt_name);
+          const dimMatch = col.formatted_type?.match(/\(([^)]+)\)/);
+          typeStr = dimMatch
+            ? `${quoteQualifiedName(col.udt_schema, col.udt_name)}(${dimMatch[1]})`
+            : quoteQualifiedName(col.udt_schema, col.udt_name);
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
           typeStr = col.udt_schema === "pg_catalog"
