@@ -328,7 +328,7 @@ async function ensureShimOnPath(options: InstallOptions): Promise<void> {
   const manualInstruction = `export PATH="$HOME/.local/bin:$PATH"`;
   const rcPath = shellRcPath();
   if (!process.stdin.isTTY || !process.stdout.isTTY || !rcPath) {
-    console.log(pc.yellow(`Add Paperclip to PATH for this shell:\n  ${manualInstruction}`));
+    console.log(pc.yellow(`Add Myrmidon to PATH for this shell:\n  ${manualInstruction}`));
     return;
   }
   const confirmed = options.yes === true ? true : await p.confirm({ message: `Add ~/.local/bin to PATH in ${rcPath}?`, initialValue: true });

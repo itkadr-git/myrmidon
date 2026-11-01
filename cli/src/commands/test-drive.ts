@@ -91,7 +91,7 @@ const NON_PAPERCLIP_ISOLATED_ENV_KEYS = [
 
 function requiredApiResult<T>(value: T | null, action: string): T {
   if (value === null) {
-    throw new Error(`Paperclip returned no result while ${action}.`);
+    throw new Error(`Myrmidon returned no result while ${action}.`);
   }
   return value;
 }
@@ -425,7 +425,7 @@ export async function testDriveCommand(
   ];
 
   p.log.message(pc.dim(`Data directory: ${dataDir}`));
-  p.log.message(pc.dim("The data directory is retained when Paperclip exits."));
+  p.log.message(pc.dim("The data directory is retained when Myrmidon exits."));
   if (options.apiKey !== undefined) {
     p.log.warn("A key passed with --api-key may be visible in process arguments and shell history.");
   }
@@ -464,14 +464,14 @@ export async function testDriveCommand(
 
         const url = dashboardUrl(server);
         if (options.browser === false) {
-          p.log.success(`Paperclip is ready at ${pc.cyan(url)}.`);
+          p.log.success(`Myrmidon is ready at ${pc.cyan(url)}.`);
           return;
         }
         const opened = await dependencies.openBrowser(url);
         if (opened) {
-          p.log.success(`Paperclip is ready and opened at ${pc.cyan(url)}.`);
+          p.log.success(`Myrmidon is ready and opened at ${pc.cyan(url)}.`);
         } else {
-          p.log.warn(`Paperclip is ready, but the browser could not be opened. Visit ${url}.`);
+          p.log.warn(`Myrmidon is ready, but the browser could not be opened. Visit ${url}.`);
         }
       },
     });

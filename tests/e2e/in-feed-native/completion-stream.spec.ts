@@ -43,8 +43,8 @@ test('a completion tool does not cut off a delayed final answer', async ({ page 
     { cwd: root, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout!.on('data', (chunk) => { logs += chunk.toString(); });
     child.stderr!.on('data', (chunk) => { logs += chunk.toString(); });
-    await expect.poll(() => logs.match(/Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/)?.[1], { timeout: 100_000 }).toBeTruthy();
-    const base = logs.match(/Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/)![1]!;
+    await expect.poll(() => logs.match(/(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/)?.[1], { timeout: 100_000 }).toBeTruthy();
+    const base = logs.match(/(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/)![1]!;
     const api = async (path: string) => {
       const response = await page.request.get(`${base}/api${path}`);
       expect(response.ok(), await response.text()).toBeTruthy();

@@ -144,13 +144,13 @@ for (const journey of [
         .poll(
           () =>
             logs.match(
-              /Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/,
+              /(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/,
             )?.[1],
           { timeout: 100_000 },
         )
         .toBeTruthy();
       let base = logs.match(
-        /Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/,
+        /(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/,
       )![1]!;
       const api = async (path: string, method = "GET", data?: unknown) => {
         const response = await page.request.fetch(`${base}/api${path}`, {
@@ -470,14 +470,14 @@ for (const journey of [
               logs
                 .slice(startOffset)
                 .match(
-                  /Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/,
+                  /(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/,
                 )?.[1],
             { timeout: 100_000 },
           )
           .toBeTruthy();
         base = logs
           .slice(startOffset)
-          .match(/Paperclip is ready at (http:\/\/127\.0\.0\.1:\d+)/)![1]!;
+          .match(/(?:Paperclip|Myrmidon) is ready at (http:\/\/127\.0\.0\.1:\d+)/)![1]!;
         expect((await api("/health")).serverInfo.git.branchName).toBe(
           health.serverInfo.git.branchName,
         );
