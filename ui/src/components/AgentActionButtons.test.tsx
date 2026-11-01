@@ -166,7 +166,7 @@ describe("AgentActionButtons", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "runtime-state", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "task-sessions", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1", "", "", "", "", ""] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["live-runs", "company-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["heartbeats", "company-1", "agent-1"] });
   });
@@ -228,7 +228,7 @@ describe("AgentActionButtons", () => {
     }));
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1", "", "", "", "", ""] });
   });
 
   it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
