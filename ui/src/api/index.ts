@@ -17,6 +17,7 @@ export { swarmSupervisorApi } from "./swarmSupervisor"; // myrmidon(1.6-SWARM-CL
 export { foragingApi } from "./foraging"; // myrmidon(1.6-FORAGE)
 export { activityApi } from "./activity";
 export { dashboardApi } from "./dashboard";
+export { statusStripApi } from "./statusStrip";
 export { heartbeatsApi } from "./heartbeats";
 export { instanceSettingsApi } from "./instanceSettings";
 export { sidebarBadgesApi } from "./sidebarBadges";
