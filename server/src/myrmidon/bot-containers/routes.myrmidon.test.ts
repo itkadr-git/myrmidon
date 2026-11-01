@@ -924,11 +924,17 @@ describe("myrmidon(UI-2.0 FLEET) bot container company status route", () => {
     expect(companyRes.body.runtimeConfigured).toBe(singleRes.body.runtimeConfigured);
 
     const item = companyRes.body.items.find((it: any) => it.agentId === AGENT_ID);
-    const { enabled, runtimeConfigured, ...singleFields } = singleRes.body;
-    expect(item).toEqual({
+    const { enabled, runtimeConfigured, gatewayConcurrency, ...singleFields } = singleRes.body;
+    expect(item).toMatchObject({
       agentId: AGENT_ID,
       ...singleFields,
     });
+    expect(item.gatewayConcurrency).toMatchObject({
+      applied: gatewayConcurrency.applied,
+      board: gatewayConcurrency.board,
+      diverged: gatewayConcurrency.diverged,
+    });
+    expect(item.gatewayConcurrency.checkedAt).toEqual(expect.any(String));
   });
 
   it("limits driver status concurrency to 8 and handles driver timeout", async () => {
