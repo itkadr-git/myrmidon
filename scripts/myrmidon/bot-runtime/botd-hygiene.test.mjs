@@ -112,7 +112,7 @@ describe("botd hygiene: cache cleanup by mtime", () => {
       for (const file of [staleCacache, staleNpx, staleUv, staleTerm]) fs.utimesSync(file, old, old);
       fs.utimesSync(cacacheDir, old, old);
       fs.utimesSync(npxDir, old, old);
-      const freshCacache = path.join(hermesHome, ".npm", "_cacache", "content-v2", "12", "56", "fresh.bin");
+      const freshCacache = path.join(hermesHome, ".npm", "_cacache", "content-v2", "34", "56", "fresh.bin");
       fs.mkdirSync(path.dirname(freshCacache), { recursive: true });
       fs.writeFileSync(freshCacache, "fresh");
       const fresh = new Date(now - 2 * HOUR);

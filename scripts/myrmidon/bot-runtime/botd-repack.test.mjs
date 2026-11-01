@@ -169,10 +169,13 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     assert.equal(res.packsBefore, 3);
     assert.equal(res.packsAfter, 1);
     assert.equal(commands.length, 2);
-    assert.deepEqual(commands[0].args, ["-C", dir, "repack", "-A", "-d"]);
+    assert.equal(commands[0].bin, "nice");
+    assert.deepEqual(commands[0].args, ["-n", "19", "ionice", "-c", "3", "git", "-c", "pack.threads=1", "repack", "-A", "-d"]);
+    assert.equal(commands[0].opts.cwd, dir);
     assert.equal(commands[0].opts.uid, st.uid);
     assert.equal(commands[0].opts.gid, st.gid);
-    assert.deepEqual(commands[1].args, ["-C", dir, "prune", "--expire=2.weeks"]);
+    assert.equal(commands[1].bin, "nice");
+    assert.deepEqual(commands[1].args, ["-n", "19", "ionice", "-c", "3", "git", "prune", "--expire=2.weeks"]);
     assert.equal(commands[1].opts.uid, st.uid);
     assert.equal(commands[1].opts.gid, st.gid);
     assert.ok(fs.existsSync(path.join(dir, MARKER_FILE)));

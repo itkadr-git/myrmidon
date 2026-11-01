@@ -262,7 +262,7 @@ export async function cleanCaches(options = {}) {
     const ttlMs = t.name === "npm-cacache" || t.name === "npm-cacache-index" || t.name === "npm-npx"
       ? limits.npmCacheTtlMs
       : limits.terminalOutputTtlMs;
-    const res = t.mode === "entry" ? cleanEntryCache(t.dir, ttlMs, nowMs, openPaths) : cleanTargetDir(t.dir, ttlMs, nowMs, openPaths);
+    const res = t.mode === "walk" ? cleanTargetDir(t.dir, ttlMs, nowMs, openPaths) : cleanEntryCache(t.dir, ttlMs, nowMs, openPaths);
     targetResults[t.name] = res;
     totalFiles += res.cleanedFiles;
     totalBytes += res.cleanedBytes;

@@ -91,6 +91,7 @@ export function createLoop(deps) {
   // the board's nextReportSec after the first accepted report; null until then
   let nextReportSec = null;
   let lastPressure = "none";
+  let lastPressurePassAt = 0;
   let lastDelayMs = clamp(intervalMs);
 
   const emptyGather = { inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: {} };
@@ -225,6 +226,12 @@ export function createLoop(deps) {
         held = Array.isArray(planned?.held) ? planned.held : [];
         plannedOut = { actions, held, pressure: planned?.pressure ?? "none" };
         lastPressure = plannedOut.pressure ?? desired?.state?.pressure?.level ?? "none";
+        // Out-of-turn LOCAL hygiene on disk pressure (BOT-DISK contract): the
+        // scheduled pass itself invokes the pressure pass; no extra timer and no
+        // board polling — cadence/backoff stay governed by computeDelayMs().
+        if (lastPressure === "soft" || lastPressure === "hard") {
+          void onPressure(lastPressure).catch(() => {});
+        }
       } catch (err) {
         log(`botd loop: rules failed: ${errMessage(err)}`);
         results.push({
@@ -265,7 +272,7 @@ export function createLoop(deps) {
         }
         if (typeof deps.repack === "function") {
           try {
-            await deps.repack({ startedAt });
+            await deps.repack({ startedAt, pressure: plannedOut?.pressure ?? desired.state?.pressure?.level ?? "none" });
           } catch (err) {
             log(`botd loop: git-base repack failed: ${errMessage(err)}`);
           }
@@ -403,6 +410,15 @@ export function createLoop(deps) {
   async function onPressure(level) {
     if (level !== "soft" && level !== "hard") return;
     lastPressure = level;
+    // Production caller path (ADM review 01.11): the scheduled pass observes
+    // the pressure level and fires the out-of-turn LOCAL hygiene pass, floored
+    // at PRESSURE_MIN_DELAY_MS since the previous pressure pass.
+    const sinceLastPassMs = Date.now() - lastPressurePassAt;
+    if (sinceLastPassMs < PRESSURE_MIN_DELAY_MS) {
+      log(`botd loop: disk pressure (${level}), pressure pass still within the ${PRESSURE_MIN_DELAY_MS / 1000}s floor`);
+      return { cleanedBytes: 0, reason: "floor" };
+    }
+    lastPressurePassAt = Date.now();
     log(`botd loop: disk pressure (${level}), running local-only hygiene pass`);
     try {
       const result = await pressurePass(level);
