@@ -1869,6 +1869,46 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/health/replication",
+  tags: ["health"],
+  summary: "Check PostgreSQL replication health and lag",
+  request: {
+    query: z.object({
+      maxLagSeconds: z.coerce.number().nonnegative().optional(),
+      warnLagSeconds: z.coerce.number().nonnegative().optional(),
+      role: z.enum(["primary", "standby", "any"]).optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(
+      z.object({
+        status: z.enum(["ok", "warning", "critical", "unknown"]),
+        role: z.enum(["primary", "standby"]),
+        inRecovery: z.boolean(),
+        connectedStandbys: z.number().int().nonnegative(),
+        standbys: z.array(z.record(z.string(), z.unknown())).optional(),
+        receiver: z.record(z.string(), z.unknown()).nullable().optional(),
+        lag: z.object({
+          seconds: z.number().nullable(),
+          bytes: z.number().nullable(),
+          lastReplayTimestamp: z.string().datetime().nullable(),
+          currentWalLsn: z.string().nullable(),
+          lastReceiveLsn: z.string().nullable(),
+          lastReplayLsn: z.string().nullable(),
+        }),
+        warnings: z.array(z.object({ code: z.string(), message: z.string() })),
+        checkedAt: z.string().datetime(),
+      }),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/openapi.json",
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
