@@ -35,5 +35,6 @@ export * from "./import/ragflow.js";
 export * from "./import/ragflow-dry-run.js";
 export {
   installPgvectorIntoEmbeddedCluster,
+  cleanupPgvectorFromEmbeddedCluster,
   type PgvectorInstall,
 } from "./test-pgvector.js";
