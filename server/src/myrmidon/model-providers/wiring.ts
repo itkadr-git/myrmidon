@@ -44,7 +44,7 @@ export async function recordModelProviderActivity(
   }
   await logActivity(db, {
     companyId: entry.companyId,
-    actorType: entry.actor?.type ?? "user",
+    actorType: entry.actor?.type === "agent" ? "agent" : "user",
     actorId: entry.actor?.id ?? "board",
     action: entry.action,
     entityType: "model_provider",

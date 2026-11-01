@@ -74,7 +74,9 @@ export function createLiteLlmAuditService(db: Db): LiteLlmAuditService {
 
       const created = await logActivity(db, {
         companyId: input.companyId,
-        actorType: input.actor.type,
+        // Activity-log actor types intentionally exclude the UI's board alias;
+        // board authorization is represented by the authenticated user actor.
+        actorType: input.actor.type === "agent" ? "agent" : "user",
         actorId: input.actor.id,
         action: input.action,
         entityType: "litellm_audit",
@@ -85,14 +87,14 @@ export function createLiteLlmAuditService(db: Db): LiteLlmAuditService {
       return migrateAuditRecord(
         {
           id: created.id,
-          companyId: created.companyId,
-          actorType: created.actorType,
-          actorId: created.actorId,
-          action: created.action,
-          entityType: created.entityType,
-          entityId: created.entityId,
-          details: created.details,
-          createdAt: created.createdAt,
+          companyId: input.companyId,
+          actorType: input.actor.type,
+          actorId: input.actor.id,
+          action: input.action,
+          entityType: "litellm_audit",
+          entityId: input.entityId,
+          details,
+          createdAt: new Date(),
         },
         input.companyId,
       );

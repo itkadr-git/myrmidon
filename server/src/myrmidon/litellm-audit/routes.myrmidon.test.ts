@@ -24,7 +24,7 @@ describe("LiteLLM audit routes (OPE-9857)", () => {
       };
       next();
     });
-    app.use(litellmAuditRoutes(service as LiteLlmAuditService));
+    app.use(litellmAuditRoutes({ service: service as LiteLlmAuditService }));
     return app;
   }
 
