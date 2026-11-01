@@ -2542,6 +2542,10 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
