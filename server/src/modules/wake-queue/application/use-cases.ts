@@ -56,6 +56,18 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+/**
+ * OPE-10383: the OPE-9178 role gate applies to continuations only — a wake an
+ * agent gets to keep going on its own work. A stage request, a comment, an
+ * interaction, a recovery or an operator wake is addressed to the agent and is
+ * never role-gated.
+ */
+const ROLE_GATED_CONTINUATION_WAKE_REASONS = new Set([
+  "issue_continuation_needed",
+  "run_liveness_continuation",
+  "max_turn_continuation",
+  "max_turns_continuation",
+]);
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -82,6 +94,13 @@ function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | nu
   if (!participant || participant.type !== "agent") return null;
   const agentId = readNonEmptyString(participant.agentId);
   return agentId ? { agentId } : null;
+}
+
+/** A continuation of an agent that is neither the assignee nor the current stage participant (OPE-10383). */
+function isRoleGatedContinuation(issue: IssueSnapshot, candidate: DeferredWakeCandidate): boolean {
+  if (!ROLE_GATED_CONTINUATION_WAKE_REASONS.has(candidate.wakeReason ?? candidate.reason ?? "")) return false;
+  if (candidate.agentId === issue.assigneeAgentId) return false;
+  return currentAgentParticipant(issue)?.agentId !== candidate.agentId;
 }
 
 /**
@@ -354,7 +373,10 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
-    if (shouldSkipContinuation({ agentRole: deferredAgent.role, issueRole: issue.issueRole })) {
+    if (
+      isRoleGatedContinuation(issue, workingCandidate)
+      && shouldSkipContinuation({ agentRole: deferredAgent.role, issueRole: issue.issueRole })
+    ) {
       await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: workingCandidate.id,
