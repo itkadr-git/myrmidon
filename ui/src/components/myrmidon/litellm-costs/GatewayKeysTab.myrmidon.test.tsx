@@ -56,6 +56,21 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
     expect(rows[1]!.models).toEqual([]);
   });
 
+  it("projects an agent key budget into the display row", () => {
+    const budget = {
+      amountUsd: 9.5,
+      periodHours: 24,
+      mode: "block" as const,
+      effectiveMode: "soft" as const,
+      caste: "engineer",
+    };
+    const [row] = keyRows(
+      [view({ agentId: "agent-a", budget, role: "engineer" })],
+      new Map([["agent-a", "alpha"]]),
+    );
+    expect(row?.budget).toEqual(budget);
+  });
+
   it("counts how many agents have a key of their own", () => {
     expect(countKeyedAgents([view({ present: true }), view({ agentId: "b" })])).toEqual({ keyed: 1, total: 2 });
   });
