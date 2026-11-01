@@ -24,7 +24,7 @@ const TEMPLATE = `<!doctype html>
 describe("icon URL versioning", () => {
   const TEMPLATE_WITH_OUTSIDE = TEMPLATE.replace(
     "</head>",
-    '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />\n<link rel="manifest" href="/site.webmanifest" />\n<link rel="stylesheet" href="/assets/app.css" />\n</head>',
+    '<meta property="og:image" content="/android-chrome-512x512.png" />\n<link rel="apple-touch-icon" href="/apple-touch-icon.png" />\n<link rel="manifest" href="/site.webmanifest" />\n<link rel="stylesheet" href="/assets/app.css" />\n</head>',
   );
 
   it("adds the build version to icon and manifest links", () => {
@@ -34,7 +34,21 @@ describe("icon URL versioning", () => {
     expect(html).toContain('href="/favicon-32x32.png?v=1.2.2"');
     expect(html).toContain('href="/apple-touch-icon.png?v=1.2.2"');
     expect(html).toContain('href="/site.webmanifest?v=1.2.2"');
+    expect(html).toContain('content="/android-chrome-512x512.png?v=1.2.2"');
     expect(html).toContain('href="/assets/app.css"');
+  });
+
+  it("versions image metadata without changing textual metadata", () => {
+    const html = applyUiBranding(
+      TEMPLATE.replace(
+        "</head>",
+        '<meta name="description" content="A stable product description" />\n<meta property="og:title" content="Myrmidon" />\n<meta property="og:image" content="/android-chrome-512x512.png" />\n</head>',
+      ),
+      { PAPERCLIP_BUILD_VERSION: "1.2.2" },
+    );
+    expect(html).toContain('content="A stable product description"');
+    expect(html).toContain('content="Myrmidon"');
+    expect(html).toContain('content="/android-chrome-512x512.png?v=1.2.2"');
   });
 
   it("changes the URLs when the version changes", () => {

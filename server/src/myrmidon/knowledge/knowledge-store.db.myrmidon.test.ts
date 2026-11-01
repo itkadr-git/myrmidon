@@ -1033,6 +1033,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     // REST (routes.ts) and MCP (mcp.ts) surfaces. New files must be listed
     // here deliberately.
     expect(sources).toEqual([
+      "deviations.ts",
       "domain.ts",
       "git-export-git.ts",
       "git-export-job.ts",
