@@ -35,7 +35,6 @@ const mockInteractionService = vi.hoisted(() => ({
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
-  expireRequestConfirmationsSupersededByComment: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   expirePendingInteractionsForTerminalIssue: vi.fn(),
   answerQuestions: vi.fn(),
@@ -367,7 +366,6 @@ describe.sequential("issue thread interaction routes", () => {
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockInteractionService.listForIssue.mockResolvedValue([]);
-    mockInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
     mockInteractionService.getForIssue.mockResolvedValue({
@@ -696,57 +694,6 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-addressed",
         }),
         contextSnapshot: expect.objectContaining({ wakeReason: "interaction_pending" }),
-      }),
-    );
-  });
-
-  it("wakes the issue assignee when a board user creates an unaddressed interaction", async () => {
-    mockInteractionService.create.mockResolvedValueOnce({
-      id: "interaction-unaddressed",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "ask_user_questions",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      addresseeAgentId: null,
-      addresseeUserId: null,
-      requestedResolverPolicy: "anyone",
-      effectiveResolverPolicy: "anyone",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: null,
-      payload: { version: 1, questions: [] },
-      result: null,
-      createdAt: "2026-07-25T12:00:00.000Z",
-      updatedAt: "2026-07-25T12:00:00.000Z",
-    });
-    const app = await createApp();
-
-    const res = await request(app)
-      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
-      .send({
-        kind: "ask_user_questions",
-        payload: {
-          version: 1,
-          questions: [{
-            id: "scope",
-            prompt: "Which scope?",
-            selectionMode: "single",
-            options: [{ id: "phase-1", label: "Phase 1" }],
-          }],
-        },
-      });
-
-    expect(res.status).toBe(201);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({
-        reason: "interaction_pending",
-        idempotencyKey: "interaction-pending:interaction-unaddressed",
-        payload: expect.objectContaining({
-          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          interactionId: "interaction-unaddressed",
-        }),
       }),
     );
   });

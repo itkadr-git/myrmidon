@@ -42,7 +42,9 @@ import {
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
-// myrmidon(OPE-10045): a final review approval given before the PR is merged.
+// myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
+import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -3715,6 +3717,7 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   } = {},
 ) {
   const router = Router();
@@ -14533,6 +14536,19 @@ export function issueRoutes(
           );
         }
       }
+      if (transition.decision?.outcome === "changes_requested") {
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+          companyId: existing.companyId,
+          issueId: existing.id,
+        });
+        if (ci.state === "pending" || ci.state === "unknown") {
+          throw unprocessable(
+            ci.state === "pending"
+              ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+          );
+        }
+      }
       if (transition.recoveryInteraction) {
         const targetAgentId =
           existing.responsibleAgentId &&
@@ -15573,6 +15589,19 @@ export function issueRoutes(
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
             if (lockedTransition.decision?.outcome === "changes_requested") {
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                companyId: lockedExisting.companyId,
+                issueId: lockedExisting.id,
+              });
+              if (ci.state === "pending" || ci.state === "unknown") {
+                throw unprocessable(
+                  ci.state === "pending"
+                    ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                );
+              }
+            }
+            if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
               const openBlockers = await tx
                 .select({ id: issueRelations.issueId })
@@ -16510,18 +16539,6 @@ export function issueRoutes(
         attachmentComment;
       let goalCommentSteered = false;
       let lostReviewPathRef: string | null = null;
-      // myrmidon(OPE-2793): interactions expired by a superseding comment and
-      // the wakes they request must outlive the `handoffCommentBody` branch so
-      // the merged wakeup enqueue below can still observe them.
-      const supersededWakes: Array<{
-        agentId: string;
-        options: WakeupOptions;
-      }> = [];
-      let expiredInteractions: Awaited<
-        ReturnType<
-          ReturnType<typeof issueThreadInteractionService>["expireRequestConfirmationsSupersededByComment"]
-        >
-      > = [];
       // myrmidon(HANDOFF-CAS): the handoff reason is recorded in the thread
       // like an ordinary update comment; without one the caller's own
       // commentBody still applies.
@@ -16663,19 +16680,12 @@ export function issueRoutes(
           },
         });
 
-        const expiredByComment = await issueThreadInteractionService(
+        const expiredInteractions = await issueThreadInteractionService(
           db,
-          {
-            wakeup: (agentId, options) => {
-              supersededWakes.push({ agentId, options });
-              return Promise.resolve();
-            },
-          },
         ).expireRequestConfirmationsSupersededByComment(issue, comment, {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         });
-        expiredInteractions = expiredByComment;
         await logExpiredRequestConfirmations({
           issue,
           interactions: expiredInteractions,
@@ -16853,15 +16863,8 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
-          const key = `${agentId}:${wakeIssueId}`;
-          if (wakeups.has(key)) return;
-          wakeups.set(key, { agentId, wakeup });
+          wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
         };
-        // Interactions superseded by this comment wake their assignee/author
-        // through the same merged enqueue as every other wake on this update.
-        for (const { agentId, options } of supersededWakes) {
-          addWakeup(agentId, options);
-        }
         const addDependencyResolvedWakeup = async (input: {
           agentId: string;
           dependentIssueId: string;
@@ -17017,7 +17020,6 @@ export function issueRoutes(
           // A completed prior run may explicitly resume, but the run that still
           // owns this issue is already executing the comment's work.
           const shouldWakeAssigneeForComment =
-            expiredInteractions.length > 0 ||
             shouldWakeAssigneeForIssueComment({
               selfComment,
               resumeRequested: resumeRequested === true,
@@ -18445,49 +18447,6 @@ export function issueRoutes(
                 agentId: interaction.addresseeAgentId,
               },
               "failed to wake addressee on issue interaction creation",
-            ),
-          );
-      } else if (
-        !interaction.addresseeAgentId &&
-        issue.assigneeAgentId &&
-        actor.actorType === "user"
-      ) {
-        void heartbeat
-          .wakeup(issue.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "interaction_pending",
-            payload: {
-              issueId: issue.id,
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              sourceCommentId: interaction.sourceCommentId ?? null,
-              sourceRunId: interaction.sourceRunId ?? null,
-              mutation: "interaction",
-            },
-            idempotencyKey: `interaction-pending:${interaction.id}`,
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: issue.id,
-              taskId: issue.id,
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              sourceCommentId: interaction.sourceCommentId ?? null,
-              sourceRunId: interaction.sourceRunId ?? null,
-              wakeReason: "interaction_pending",
-              source: "issue.interaction.created",
-            },
-          })
-          .catch((err) =>
-            logger.warn(
-              {
-                err,
-                issueId: issue.id,
-                interactionId: interaction.id,
-                agentId: issue.assigneeAgentId,
-              },
-              "failed to wake assignee on issue interaction creation",
             ),
           );
       }
@@ -20574,18 +20533,8 @@ export function issueRoutes(
         },
       });
 
-      const supersededWakes: Array<{
-        agentId: string;
-        options: WakeupOptions;
-      }> = [];
       const expiredInteractions = await issueThreadInteractionService(
         db,
-        {
-          wakeup: (agentId, options) => {
-            supersededWakes.push({ agentId, options });
-            return Promise.resolve();
-          },
-        },
       ).expireRequestConfirmationsSupersededByComment(currentIssue, comment, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -20679,11 +20628,6 @@ export function issueRoutes(
           if (wakeups.has(key)) return;
           wakeups.set(key, { agentId, wakeup });
         };
-        // Interactions superseded by this comment wake their assignee/author
-        // through the same merged enqueue as every other wake on this comment.
-        for (const { agentId, options } of supersededWakes) {
-          addWakeup(agentId, options);
-        }
         const addDependencyResolvedWakeup = async (input: {
           agentId: string;
           dependentIssueId: string;
@@ -20767,9 +20711,7 @@ export function issueRoutes(
         // to the returnAssignee for an already-completed issue.
         // An explicit resume from the run that still owns this issue is redundant;
         // explicit resume from a completed prior run remains a valid new turn.
-        const shouldWakeAssigneeForComment =
-          expiredInteractions.length > 0 ||
-          shouldWakeAssigneeForIssueComment({
+        const shouldWakeAssigneeForComment = shouldWakeAssigneeForIssueComment({
           selfComment,
           resumeRequested: resumeRequested === true,
           commentCreatedByRunId: comment.createdByRunId,

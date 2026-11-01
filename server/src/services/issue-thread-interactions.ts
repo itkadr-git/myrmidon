@@ -3399,23 +3399,7 @@ export function issueThreadInteractionService(
         );
       }
 
-      const [issueRoutingRow] = await db
-        .select({
-          conversationAgentId: issues.conversationAgentId,
-          originKind: issues.originKind,
-        })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.id, issue.id),
-            eq(issues.companyId, issue.companyId),
-          ),
-        );
-      const isConversationIssue = Boolean(issueRoutingRow?.conversationAgentId);
-      const isChatOriginatedIssue =
-        isConversationIssue || issueRoutingRow?.originKind === "chat_channel";
-
-      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId && !isChatOriginatedIssue) {
+      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
@@ -3481,51 +3465,6 @@ export function issueThreadInteractionService(
               }
             }
           }
-        }
-      }
-
-      if (
-        !normalizedData.addresseeAgentId &&
-        !normalizedData.addresseeUserId &&
-        actor.agentId &&
-        data.kind === "request_confirmation"
-      ) {
-        let issueOwnerUserId: string | null = null;
-        let issueHasAssignedAgent = Boolean(
-          (issue as { assigneeAgentId?: string | null }).assigneeAgentId,
-        );
-        if (!isChatOriginatedIssue) {
-          const [issueRow] = await db
-            .select({
-              responsibleUserId: issues.responsibleUserId,
-              createdByUserId: issues.createdByUserId,
-              assigneeUserId: issues.assigneeUserId,
-              assigneeAgentId: issues.assigneeAgentId,
-              conversationAgentId: issues.conversationAgentId,
-              originKind: issues.originKind,
-            })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.id, issue.id),
-                eq(issues.companyId, issue.companyId),
-              ),
-            );
-          // Chat-originated issues are excluded by the outer gate above; the
-          // owner fallback here only applies to ordinary board issues.
-          const candidateOwner =
-            issueRow?.responsibleUserId ?? issueRow?.createdByUserId ?? issueRow?.assigneeUserId ?? null;
-          issueOwnerUserId = candidateOwner;
-          issueHasAssignedAgent =
-            issueHasAssignedAgent || Boolean(issueRow?.assigneeAgentId);
-        }
-
-        if (issueOwnerUserId) {
-          normalizedData.addresseeUserId = issueOwnerUserId;
-        } else if (!isChatOriginatedIssue && !issueHasAssignedAgent) {
-          throw unprocessable(
-            "An issue-thread interaction must specify an addressee (addresseeAgentId or addresseeUserId) or have an issue owner",
-          );
         }
       }
 
@@ -4421,62 +4360,6 @@ export function issueThreadInteractionService(
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
         await emitResolvedInteractionsTelemetry(db, expired);
-
-        if (opts.wakeup) {
-          let targetAgentId =
-            (issue as { assigneeAgentId?: string | null }).assigneeAgentId;
-          let issueStatus = (issue as { status?: string }).status;
-          if (targetAgentId === undefined || issueStatus === undefined) {
-            const [issueRow] = await db
-              .select({
-                assigneeAgentId: issues.assigneeAgentId,
-                status: issues.status,
-              })
-              .from(issues)
-              .where(
-                and(
-                  eq(issues.companyId, issue.companyId),
-                  eq(issues.id, issue.id),
-                ),
-              );
-            targetAgentId = targetAgentId ?? issueRow?.assigneeAgentId ?? null;
-            issueStatus = issueStatus ?? issueRow?.status;
-          }
-
-          const wakeAgentId =
-            targetAgentId ?? expired[0]?.createdByAgentId ?? null;
-          if (wakeAgentId && (!issueStatus || !isTerminalIssueStatus(issueStatus))) {
-            for (const exp of expired) {
-              await opts.wakeup(wakeAgentId, {
-                source: "automation",
-                triggerDetail: "system",
-                reason: "issue_commented",
-                payload: {
-                  issueId: issue.id,
-                  commentId: comment.id,
-                  interactionId: exp.id,
-                  interactionKind: exp.kind,
-                  interactionStatus: exp.status,
-                  mutation: "interaction",
-                  resolutionSource: "superseded_by_comment",
-                },
-                idempotencyKey: `interaction-superseded:${exp.id}:${comment.id}`,
-                requestedByActorType: "system",
-                requestedByActorId: `comment:${comment.id}`,
-                contextSnapshot: {
-                  issueId: issue.id,
-                  taskId: issue.id,
-                  commentId: comment.id,
-                  interactionId: exp.id,
-                  interactionKind: exp.kind,
-                  interactionStatus: exp.status,
-                  wakeReason: "issue_commented",
-                  source: "issue.interaction.superseded_by_comment",
-                },
-              });
-            }
-          }
-        }
       }
       return expired;
     },

@@ -151,6 +151,10 @@ export async function terminalizeLegacyExecution(input: {
       review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
     if (
       task &&
+      // A board-restored task may deliberately return to the unassigned ready
+      // queue. A later stranded-run sweep must not recreate a board-owned
+      // reconciliation hold for that task (OPE-10434/OPE-10219).
+      (task.assigneeAgentId !== null || isCurrentReviewer) &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)

@@ -140,6 +140,7 @@ import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
 import { installIdProviderFor } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
 import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
+import { startDenyListPuller } from "./myrmidon/licensing/denylist-pull.js"; // myrmidon(OPE-9084)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
@@ -222,6 +223,7 @@ import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/
 import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
+import { localeUploadRoutes } from "./myrmidon/locale-upload/routes.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187)
 import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
 import {
   myrmidonAgentMemoryRoutes,
@@ -1303,6 +1305,7 @@ export async function createApp(
   api.use(myrmidonScentRoutes(db)); // myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent refresh + swarm scent status
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
+  api.use(localeUploadRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure validator
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));
@@ -1684,6 +1687,9 @@ export async function createApp(
     jobCoordinator.start();
     scheduler.start();
   }
+  // myrmidon(OPE-9084): the client installation pulls the issuer's signed
+  // deny-list itself. API-only processes do not own periodic work.
+  const denyListPuller = backgroundWorkEnabled ? startDenyListPuller() : null;
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -1930,6 +1936,7 @@ export async function createApp(
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;
       }
+      denyListPuller?.stop();
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);

@@ -34,6 +34,34 @@ describe("myrmidon-agent-memory (OPE-9858)", () => {
     expect(normalized.searchModel).toBe("bge-m3");
   });
 
+  it("preserves access policy fields while normalizing stored settings", () => {
+    expect(
+      normalizeAgentMemorySettings({
+        accessMode: "selected",
+        enabledRoles: [" engineer ", "", 42],
+        enabledAgentIds: [" agent-1 ", "agent-2"],
+      }),
+    ).toEqual({
+      accessMode: "selected",
+      enabledRoles: ["engineer"],
+      enabledAgentIds: ["agent-1", "agent-2"],
+    });
+  });
+
+  it("applies access policy fields in a patch and clears them with null", () => {
+    const patched = applyAgentMemoryPatch(
+      { accessMode: "all", enabledRoles: ["lead"], enabledAgentIds: ["agent-1"] },
+      { accessMode: "roles", enabledRoles: ["engineer"], enabledAgentIds: ["agent-2"] },
+    );
+    expect(patched).toMatchObject({
+      accessMode: "roles",
+      enabledRoles: ["engineer"],
+      enabledAgentIds: ["agent-2"],
+    });
+    expect(
+      applyAgentMemoryPatch(patched, { accessMode: null, enabledRoles: null, enabledAgentIds: null }),
+    ).toEqual({});
+  });
   it("handles legacy/direct writeModel, summarizeModel, searchModel fields", () => {
     const raw = {
       writeModel: "qwen-plus",

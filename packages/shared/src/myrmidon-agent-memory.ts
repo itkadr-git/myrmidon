@@ -258,6 +258,17 @@ export function normalizeAgentMemorySettings(raw: unknown): AgentMemorySettings 
   if (apiUrl.success) out.apiUrl = apiUrl.data;
   const key = z.string().trim().min(1).max(256).safeParse(value.keySecretName);
   if (key.success) out.keySecretName = key.data;
+  if (value.accessMode === "all" || value.accessMode === "roles" || value.accessMode === "selected") {
+    out.accessMode = value.accessMode;
+  }
+  if (Array.isArray(value.enabledRoles)) {
+    const roles = value.enabledRoles.filter((role): role is string => typeof role === "string" && role.trim().length > 0);
+    out.enabledRoles = roles.map((role) => role.trim());
+  }
+  if (Array.isArray(value.enabledAgentIds)) {
+    const ids = value.enabledAgentIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    out.enabledAgentIds = ids.map((id) => id.trim());
+  }
 
   const rawModels =
     value.hindsightModels !== null && typeof value.hindsightModels === "object" && !Array.isArray(value.hindsightModels)
@@ -295,7 +306,7 @@ export function applyAgentMemoryPatch(
   patch: PatchAgentMemorySettings,
 ): AgentMemorySettings {
   const next: Record<string, unknown> = { ...stored };
-  for (const key of ["enabled", "apiUrl", "keySecretName"] as const) {
+  for (const key of ["enabled", "apiUrl", "keySecretName", "accessMode", "enabledRoles", "enabledAgentIds"] as const) {
     if (patch[key] === undefined) continue;
     if (patch[key] === null) delete next[key];
     else next[key] = patch[key];

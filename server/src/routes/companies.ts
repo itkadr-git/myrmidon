@@ -35,6 +35,7 @@ import {
   type CompanyImportTransferStatus,
 } from "@myrmidon/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -1193,7 +1194,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.post("/", (req, _res, next) => {
     assertBoard(req);
     if (isCloudManagedInstance()) {
-      throw forbidden("Company creation is managed by Paperclip Cloud", {
+      // myrmidon(B1e): user-facing API error names our product; the machine-readable code is unchanged.
+      throw forbidden(`${PRODUCT_NAME} Cloud manages company creation on this instance`, {
         code: "cloud_managed",
       });
     }

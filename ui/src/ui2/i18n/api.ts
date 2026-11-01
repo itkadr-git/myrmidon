@@ -12,7 +12,11 @@
 // lives behind its own route (GET/PATCH /api/myrmidon/bridge-language); reading
 // it is open to the board, changing it is instance-admin only.
 import { api } from "@/api/client";
-import type { Ui2Language, Ui2LanguagePreference } from "@myrmidon/shared";
+import type {
+  LocaleValidationResult,
+  Ui2Language,
+  Ui2LanguagePreference,
+} from "@myrmidon/shared";
 
 /**
  * myrmidon(1.7-TG-LOCALE): the SOURCE of the language the bridged Telegram DM
@@ -58,6 +62,16 @@ export const bridgeLanguageApi = {
   get: () => api.get<BridgeLanguageWire>("/myrmidon/bridge-language"),
   patch: (language: Ui2Language) =>
     api.patch<BridgeLanguageWire>("/myrmidon/bridge-language", { language }),
+};
+
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): client API for catalog validation
+export const localeUploadApi = {
+  validate: (payload: {
+    locale: string;
+    catalog?: Record<string, unknown>;
+    content?: string;
+    strict?: boolean;
+  }) => api.post<LocaleValidationResult>("/myrmidon/locales/validate", payload),
 };
 
 export function fromWire(preference: Ui2LanguagePreferenceWire): Ui2LanguagePreference {

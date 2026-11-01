@@ -11,6 +11,7 @@
 import { api } from "@/api/client";
 import type {
   GuardrailModesSettings,
+  ResolvedInjectionConfig,
   GuardrailRule,
   ResolvedGuardrailMode,
 } from "@myrmidon/shared";
@@ -32,6 +33,15 @@ export interface GuardrailEventFilters {
   limit?: number;
 }
 
+/** myrmidon(1.6.6 OPE-8319): the stored document plus the server-resolved effective detector config. */
+export interface GuardrailsSettingsEnvelope {
+  company: GuardrailModesSettings["company"];
+  castes: GuardrailModesSettings["castes"];
+  agents: GuardrailModesSettings["agents"];
+  injectionConfig: GuardrailModesSettings["injectionConfig"];
+  injectionConfigResolved: ResolvedInjectionConfig;
+}
+
 export interface GuardrailEventRow {
   id: string;
   companyId: string;
@@ -46,9 +56,9 @@ export interface GuardrailEventRow {
 
 export const guardrailsApi = {
   getSettings: (companyId: string) =>
-    api.get<GuardrailModesSettings>(`${base(companyId)}/settings`),
+    api.get<GuardrailsSettingsEnvelope>(`${base(companyId)}/settings`),
   putSettings: (companyId: string, settings: GuardrailModesSettings) =>
-    api.put<GuardrailModesSettings>(`${base(companyId)}/settings`, settings),
+    api.put<GuardrailsSettingsEnvelope>(`${base(companyId)}/settings`, settings),
   resolveForAgent: (companyId: string, agentId: string) =>
     api.get<{ agentRole: string | null; forced: string | null; rules: ResolvedGuardrailMode[] }>(
       `${base(companyId)}/resolve?agentId=${encodeURIComponent(agentId)}`,
