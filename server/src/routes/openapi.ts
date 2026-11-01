@@ -5446,6 +5446,50 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// ─── Admin assistant ─────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/cluster-health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ path: z.string().optional(), diskPath: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/cluster-health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      path: z.string().optional(),
+      diskPath: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics (alias)",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      path: z.string().optional(),
+      diskPath: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({
