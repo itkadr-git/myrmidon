@@ -16,6 +16,21 @@ import { validateCatalog, type ValidateCatalogOptions } from "./validator.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function canonicalizeJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeJson(item)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalizeJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 let cachedBaseCatalog: Record<string, unknown> | null = null;
 
 export function resetBaseCatalogCache(): void {
@@ -162,7 +177,7 @@ export function createLocaleUploadService(
         });
       }
 
-      const normalizedJson = JSON.stringify(params.catalog, Object.keys(params.catalog).sort());
+      const normalizedJson = canonicalizeJson(params.catalog);
       const checksum = crypto.createHash("sha256").update(normalizedJson).digest("hex");
       const uploadedAt = new Date().toISOString();
 

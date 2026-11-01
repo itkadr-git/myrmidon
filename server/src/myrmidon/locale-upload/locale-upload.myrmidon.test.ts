@@ -196,6 +196,29 @@ describe("base English catalog loader", () => {
 });
 
 describe("stateful service persistence logic", () => {
+  it("changes the checksum when a nested catalog value changes", async () => {
+    const db = createStatefulMockDb();
+    const service = createLocaleUploadService(db as Db, { baseCatalog: sampleBaseCatalog });
+    const first = {
+      app: { title: "Titel", welcome: "Willkommen bei {{company}}!", description: "Text" },
+      common: { save: "Speichern", cancel: "Abbrechen", confirm_action: "Löschen {item}?" },
+      settings: { language: "Sprache", profile: { name: "Name", email: "E-Mail" } },
+    };
+    const changedNestedValue = {
+      ...first,
+      settings: { ...first.settings, profile: { ...first.settings.profile, email: "Adresse" } },
+    };
+
+    const firstResult = await service.uploadLocale({ locale: "de", catalog: first, dryRun: true });
+    const changedResult = await service.uploadLocale({
+      locale: "de",
+      catalog: changedNestedValue,
+      dryRun: true,
+    });
+
+    expect(firstResult.checksum).not.toBe(changedResult.checksum);
+  });
+
   it("persists uploaded locales, increments versions, and provides summaries", async () => {
     const store: Record<string, unknown> = {
       instanceSettings: {
