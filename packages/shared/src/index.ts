@@ -2827,6 +2827,7 @@ export * from "./notification-prefs.js";
 // add them to packages/shared/src/myrmidon/index.ts (or regenerate via
 // `pnpm generate:shared`) to prevent parallel PR merge conflicts.
 export * from "./myrmidon/index.js";
+export * from "./myrmidon-guardrail-modes.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
