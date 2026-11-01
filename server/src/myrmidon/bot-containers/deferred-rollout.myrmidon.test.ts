@@ -285,7 +285,8 @@ describeEmbeddedPostgres("myrmidon(BOT-ROLLOUT) deferred bot rollout", () => {
     expect(after.records).toHaveLength(1);
     expect(after.records[0].attempts).toBe(1);
     expect(after.records[0].lastReason).toContain("chat");
-    expect(activity.some((e) => e.level === "error")).toBe(false);
+    // Soft timeout logs an operator activity error event
+    expect(activity.some((e) => e.level === "error" && e.message.includes("exceeded its configured wait"))).toBe(true);
   });
 
   // (c2) Under the max wait the busy gate holds: a busy bot is NOT retried.

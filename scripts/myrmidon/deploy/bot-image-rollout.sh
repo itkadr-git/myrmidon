@@ -144,15 +144,6 @@ require_cmd docker curl jq
 
 # --- settings (see deploy.env.example) ---------------------------------------
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
-MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
-# BOT-ROLLOUT-SKIP-BUSY: how long after the tail-pass deadline the
-# still-deferred bots are applied WITHOUT the status gate. The reconciler
-# drains only 300 s, then the maintenance interrupts a longer run, so the
-# stage is OFF by default (0) and runs only when an operator sets a number of
-# seconds explicitly.
-MYR_BOT_FORCE_DEFERRED_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC:-0}"
-[[ "$MYR_BOT_FORCE_DEFERRED_SEC" =~ ^[0-9]+$ ]] \
-  || die "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC must be a non-negative integer (got '$MYR_BOT_FORCE_DEFERRED_SEC')"
 # 1.6.5 async "Apply now": how long to wait for ONE apply job (202 + applyId)
 # to reach succeeded|failed, and how often the job is read.
 MYR_BOT_APPLY_WAIT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC:-300}"
