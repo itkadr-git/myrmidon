@@ -1,0 +1,7 @@
+{
+  "endpoint": "/site.webmanifest",
+  "method": "GET",
+  "status": 200,
+  "contentType": "application/manifest+json",
+  "body": "{\n  \"id\": \"/\",\n  \"name\": \"Myrmidon\",\n  \"short_name\": \"Myrmidon\",\n  \"description\": \"AI-powered project management and agent coordination platform\",\n  \"start_url\": \"/\",\n  \"scope\": \"/\",\n  \"display\": \"browser\",\n  \"orientation\": \"any\",\n  \"theme_color\": \"#13294B\",\n  \"background_color\": \"#FFFFFF\",\n  \"icons\": [\n    {\n      \"src\": \"/android-chrome-192x192.png\",\n      \"sizes\": \"192x192\",\n      \"type\": \"image/png\"\n    },\n    {\n      \"src\": \"/android-chrome-512x512.png\",\n      \"sizes\": \"512x512\",\n      \"type\": \"image/png\"\n    },\n    {\n      \"src\": \"/android-chrome-512x512.png\",\n      \"sizes\": \"512x512\",\n      \"type\": \"image/png\",\n      \"purpose\": \"maskable\"\n    }\n  ]\n}\n"
+}

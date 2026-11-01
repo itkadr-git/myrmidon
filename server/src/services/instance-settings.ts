@@ -68,8 +68,6 @@ import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/se
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
-// myrmidon(1.7-GRD-MODES): keep the stored guardrail modes across vendor writes of `general`
-import { preserveGuardrailModesGeneralKey } from "../myrmidon/guardrails/modes-settings.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
@@ -100,6 +98,8 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
+import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -352,8 +352,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(F16): the stored issue-list agent-defaults toggle survives
       // every general write (it is a rollback switch, not a settings page).
       ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
-      // myrmidon(1.7-GRD-MODES): the stored guardrail modes survive every general write
-      ...(parsed.data.guardrailModes ? { guardrailModes: parsed.data.guardrailModes } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -454,6 +452,12 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(1.7-REBRAND-F): the stored vendor-name gate setting survives
+      // every general write (it is edited on its own block of the instance page).
+      ...(parsed.data.vendorNameCheck ? { vendorNameCheck: parsed.data.vendorNameCheck } : {}),
+      // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
+      // survives every general write (edited on its own settings block).
+      ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
     };
   }
   return {
@@ -805,7 +809,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       // cannot deadlock on the singleton insert (the on-conflict upsert still
       // runs under our own lock); `FOR UPDATE` serializes concurrent PATCHes
       // on the row, so each one re-reads the committed state of the previous.
-      const [updatedGeneral] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
         await tx
           .select({ id: instanceSettings.id })
           .from(instanceSettings)
@@ -911,6 +915,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               // The preserve line above restores the stored value: a patch that
               // carries the key must win, the same rule as ownerDelivery.
               ...(patch.datastoreCare !== undefined ? { datastoreCare: nextGeneral.datastoreCare } : {}), // myrmidon(1.6.5-DBC1)
+              ...preserveOwnerActiveChannelGeneralKey(current.general), // myrmidon(1.7-ACTIVE-CHANNEL)
+              // The preserve line above restores the stored value: a patch that carries the key wins.
+              ...(patch.ownerActiveChannel !== undefined
+                ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
+                : {}),
             },
             updatedAt: now,
           })
@@ -920,7 +929,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // row lock) — mirror the previous fallback and return the read row.
         return rows.length > 0 ? rows : [current];
       });
-      return toInstanceSettings(updatedGeneral);
+      return toInstanceSettings(updated);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {

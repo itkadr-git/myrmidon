@@ -61,8 +61,6 @@ import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
 // behaviour).
 import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
-// myrmidon(1.7-GRD-MODES): guardrail mode overrides under instance general settings
-import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -79,6 +77,9 @@ import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
 // general settings row (the sweep reads them through this schema).
 import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate settings stored in the same
+// general settings row (mode + ratchet baseline).
+import { vendorNameCheckSettingsSchema } from "../myrmidon-vendor-name.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -101,6 +102,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
 import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
@@ -150,6 +153,17 @@ export const backupRetentionPolicySchema = z.object({
 // (api, worker, and anything a later part adds). Every field has a default
 // and the defaults are the single-process board: nothing changes until an
 // operator explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z
+  .object({
+    mode: z.enum(["single", "split"]).default("single"),
+    apiCount: z.number().int().min(1).max(4).default(1),
+    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+    liveEventsBus: z.enum(["local", "pg"]).default("local"),
+    admissionStore: z.enum(["memory", "db"]).default("memory"),
+    singletonProxy: z.boolean().default(true),
+  })
+  .passthrough();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -271,10 +285,6 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
-  // myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides per company,
-  // caste and agent, changed from /api/myrmidon/companies/:id/guardrails/settings;
-  // absent means every rule is flag-only (the 1.6.1 behavior).
-  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
@@ -348,6 +358,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bridge-language; absent means "use the environment force,
   // then English".
   bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
@@ -421,6 +432,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+  // (ratchet / strict) and the ratchet baseline, changed from the instance
+  // settings page and GET/PATCH /api/myrmidon/vendor-name-check; absent means
+  // the module defaults (ratchet against the count the instance records).
+  vendorNameCheck: vendorNameCheckSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
