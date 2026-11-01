@@ -97,8 +97,20 @@ export const DEFAULT_RUN_PRIORITY_PHEROMONE_WEIGHT = 1;
  */
 export const RUN_PRIORITY_PHEROMONE_MAX_POINTS = 100;
 export const DEFAULT_RUN_PRIORITY_AGING_MAX_BONUS = 50;
+// 90 minutes preserves the historical priority balance and remains below the
+// 240-minute queued-run expiry, so starvation escape precedes cancellation.
 export const DEFAULT_RUN_PRIORITY_STARVATION_LIMIT_MINUTES = 90;
+/** Queued runs are cancelled after this age by the dispatcher safety sweep. */
+export const QUEUED_RUN_EXPIRY_MINUTES = 240;
 export const DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT = 10_000;
+
+export function assertRunPriorityQueueInvariant(settings: Pick<RunPrioritySettings, "starvationLimitMinutes">): void {
+  if (settings.starvationLimitMinutes >= QUEUED_RUN_EXPIRY_MINUTES) {
+    throw new RangeError(
+      `starvationLimitMinutes must be less than queued run expiry (${QUEUED_RUN_EXPIRY_MINUTES} minutes)`,
+    );
+  }
+}
 
 /** The full settings shape. */
 export interface RunPrioritySettings {
