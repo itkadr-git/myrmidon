@@ -2198,7 +2198,6 @@ export function recoveryService(
           ),
         );
       if (
-        input.reason !== "issue_continuation_needed" &&
         predecessor &&
         ["failed", "timed_out", "interrupted", "cancelled"].includes(
           predecessor.status,
