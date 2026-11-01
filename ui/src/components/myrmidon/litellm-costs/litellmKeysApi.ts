@@ -1,6 +1,7 @@
 // myrmidon(M2-B): per-agent LLM gateway keys and the gateway's fallback
 // topology. GET/POST /api/myrmidon/companies/:id/litellm/keys/*.
 import { api } from "@/api/client";
+import type { FallbackChain } from "@myrmidon/shared";
 
 export interface AgentGatewayKeyView {
   agentId: string;
