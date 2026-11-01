@@ -419,7 +419,9 @@
       "state": "State",
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
-      "lastOk": "Last OK"
+      "lastOk": "Last OK",
+      "lastError": "Last error",
+      "resetIn": "Resets in"
     },
     "litellmChannels": {
       "title": "LiteLLM Model Groups & Channels",
