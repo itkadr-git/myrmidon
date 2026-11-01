@@ -86,7 +86,7 @@ d("backup-lib: vector(1024) and hnsw index", () => {
 
       const backupGz = await readFile(backupResult.backupFile);
       const backupSql = zlib.gunzipSync(backupGz).toString("utf8");
-      expect(backupSql).toContain("vector(1024)");
+      expect(backupSql).toMatch(/"vector"\(1024\)/);
       expect(backupSql).not.toMatch(/"embedding"\s+"public"\."vector"\s*[,)]/);
 
       await targetSql.unsafe(`
