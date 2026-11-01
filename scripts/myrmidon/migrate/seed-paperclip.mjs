@@ -22,12 +22,13 @@ import { fileURLToPath } from "node:url";
 
 export function parseArgs(argv = process.argv.slice(2)) {
   const args = {
-    baseUrl: process.env.PAPERCLIP_BASE_URL || process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100",
-    apiKey: process.env.PAPERCLIP_API_KEY || "",
-    passwordsFile: process.env.SEED_PASSWORDS_FILE || "seed-passwords.txt",
+    baseUrl: "",
+    apiKey: "",
+    passwordsFile: "",
     out: process.env.SEED_REPORT_OUT || "seed-report.json",
     concurrency: 15,
     verify: true,
+    confirmThrowaway: "",
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -38,6 +39,8 @@ export function parseArgs(argv = process.argv.slice(2)) {
       args.apiKey = argv[++i];
     } else if (arg === "--passwords-file" && argv[i + 1]) {
       args.passwordsFile = argv[++i];
+    } else if (arg === "--confirm-throwaway" && argv[i + 1]) {
+      args.confirmThrowaway = argv[++i];
     } else if (arg === "--out" && argv[i + 1]) {
       args.out = argv[++i];
     } else if (arg === "--concurrency" && argv[i + 1]) {
@@ -46,12 +49,13 @@ export function parseArgs(argv = process.argv.slice(2)) {
       args.verify = false;
     } else if (arg === "-h" || arg === "--help") {
       console.log(`
-Usage: node seed-paperclip.mjs [options]
+Usage: node seed-paperclip.mjs --base-url <url> --passwords-file <path> [options]
 
 Options:
-  --base-url <url>        Paperclip API base URL (default: http://127.0.0.1:3100)
-  --api-key <key>         Paperclip board API key / token (required in authenticated mode)
+  --base-url <url>        Explicit disposable Paperclip API base URL (required)
+  --api-key <key>         Explicit Paperclip API key / token (optional)
   --passwords-file <path> Path to file with passwords for 2 users (required)
+  --confirm-throwaway <host> Explicitly confirm the disposable host; required on port 3100
   --out <path>            Output path for seed-report.json (default: seed-report.json)
   --concurrency <n>       Parallel request concurrency (default: 15)
   --no-verify             Skip post-seeding API verification
@@ -177,14 +181,20 @@ export async function runInBatches(items, batchSize, fn) {
 }
 
 export async function seedPaperclip(options = {}) {
-  const {
-    baseUrl = "http://127.0.0.1:3100",
-    apiKey = "",
-    passwords = ["SeedUser1Password!", "SeedUser2Password!"],
-    concurrency = 15,
-  } = options;
-
-  const client = new PaperclipApiClient(baseUrl, apiKey);
+  const { baseUrl, apiKey = "", passwords, concurrency = 15, confirmThrowaway = "" } = options;
+  if (!baseUrl) throw new Error("Explicit --base-url is required; environment-based Paperclip URL fallbacks are disabled");
+  if (!Array.isArray(passwords) || passwords.length < 2 || passwords.some((value) => !String(value || "").trim())) {
+    throw new Error("Two explicit non-empty passwords are required via --passwords-file");
+  }
+  const target = new URL(baseUrl);
+  if (target.port === "3100" && confirmThrowaway !== target.hostname) {
+    throw new Error(`Refusing to seed port 3100 without --confirm-throwaway ${target.hostname}`);
+  }
+  if (confirmThrowaway && confirmThrowaway !== target.hostname) {
+    throw new Error(`--confirm-throwaway must exactly match target host ${target.hostname}`);
+  }
+  const safeBaseUrl = target.origin;
+  const client = new PaperclipApiClient(safeBaseUrl, apiKey);
   const report = {
     seededAt: new Date().toISOString(),
     vendorRelease: "v2026.1012.0",
@@ -210,6 +220,7 @@ export async function seedPaperclip(options = {}) {
       agents: [],
       secrets: [],
       sampleIssues: [],
+      issueIds: [],
     },
   };
 
@@ -227,7 +238,7 @@ export async function seedPaperclip(options = {}) {
       const res = await client.request("/api/auth/sign-up/email", {
         method: "POST",
         headers: {
-          Origin: baseUrl,
+          Origin: new URL(baseUrl).origin,
         },
         body: {
           email: userSpec.email,
@@ -245,7 +256,7 @@ export async function seedPaperclip(options = {}) {
       try {
         const signInRes = await client.request("/api/auth/sign-in/email", {
           method: "POST",
-          headers: { Origin: baseUrl },
+          headers: { Origin: new URL(baseUrl).origin },
           body: { email: userSpec.email, password: userSpec.password },
         });
         const userId = signInRes.data?.user?.id || `user-${report.counts.users + 1}`;
@@ -263,13 +274,13 @@ export async function seedPaperclip(options = {}) {
   try {
     const adminSession = await client.request("/api/auth/sign-in/email", {
       method: "POST",
-      headers: { Origin: baseUrl },
+      headers: { Origin: new URL(baseUrl).origin },
       body: { email: userSpecs[0].email, password: userSpecs[0].password },
     });
     const adminUserId = adminSession.data?.user?.id || report.entities.users[0]?.id;
     const bootstrapRes = await client.request("/api/bootstrap/claim", {
       method: "POST",
-      headers: { Origin: baseUrl },
+      headers: { Origin: new URL(baseUrl).origin },
       body: {},
     });
     if (!bootstrapRes.data?.claimed && !bootstrapRes.data?.userId) {
@@ -435,16 +446,13 @@ export async function seedPaperclip(options = {}) {
     });
     const agent = res.data;
 
-    // Additionally PATCH agent to guarantee appearance is stored
-    try {
-      await client.request(`/api/agents/${agent.id}`, {
-        method: "PATCH",
-        body: {
-          appearance: appearancePayload,
-        },
-      });
-    } catch {
-      // Ignore if PATCH route has different path in vendor version
+    const appearanceUpdate = await client.request(`/api/agents/${agent.id}`, {
+      method: "PATCH",
+      body: { appearance: appearancePayload },
+    });
+    const savedAppearance = appearanceUpdate.data?.appearance;
+    if (!savedAppearance || savedAppearance.paletteId !== appearancePayload.paletteId) {
+      throw new Error(`Agent ${agent.id} appearance PATCH did not persist the requested palette`);
     }
 
     report.entities.agents.push({ id: agent.id, name: agent.name, companyId: company.id });
@@ -512,8 +520,8 @@ export async function seedPaperclip(options = {}) {
 
   // 6. Create >= 200 Issues (205 total) with Russian text and >= 3 with title_needs_generation
   console.log("[seed-paperclip] Seeding 205 issues with Russian text and title_needs_generation...");
-  const issueStatuses = ["todo", "in_progress", "done", "in_review"];
-  const issuePriorities = ["low", "medium", "high", "urgent"];
+  const issueStatuses = ["backlog", "todo", "in_progress", "done", "in_review"];
+  const issuePriorities = ["low", "medium", "high", "critical"];
 
   const issueTopics = [
     "Оптимизация пула соединений PostgreSQL при пиковой нагрузке",
@@ -539,8 +547,23 @@ export async function seedPaperclip(options = {}) {
     const status = issueStatuses[(i - 1) % issueStatuses.length];
     const priority = issuePriorities[(i - 1) % issuePriorities.length];
 
-    // At least 5 tasks with title_needs_generation = true (>= 3 required)
+    // At least 5 tasks with title_needs_generation = true (>= 3 required).
+    // Vendor 1012.0 derives the flag server-side: an issue created without a
+    // title (description only) gets a provisional title and
+    // titleNeedsGeneration=true. Neither create nor update schema accepts the
+    // field, so the flag is requested by omitting the title, never sent.
     const titleNeedsGen = i <= 5;
+
+    const payload = {
+      projectId: project.id,
+      description: `### Описание задачи #${i}\n\nТребуется выполнить работы по теме: **${topic}**.\n\n#### Критерии приёмки:\n1. Реализован программный компонент в соответствии с техническими требованиями.\n2. Написаны модульные и интеграционные тесты с полным покрытием ветвлений.\n3. Документация обновлена, артефакты верифицированы в CI.\n4. Обеспечена обратная совместимость структуры данных.`,
+      status,
+      priority,
+      allowDuplicate: true,
+    };
+    if (!titleNeedsGen) {
+      payload.title = `Задача #${i}: ${topic}`;
+    }
 
     issuesToCreate.push({
       index: i,
@@ -549,49 +572,37 @@ export async function seedPaperclip(options = {}) {
       title: titleNeedsGen
         ? `[Автогенерация названия] Черновик задачи #${i}`
         : `Задача #${i}: ${topic}`,
-      description: `### Описание задачи #${i}\n\nТребуется выполнить работы по теме: **${topic}**.\n\n#### Критерии приёмки:\n1. Реализован программный компонент в соответствии с техническими требованиями.\n2. Написаны модульные и интеграционные тесты с полным покрытием ветвлений.\n3. Документация обновлена, артефакты верифицированы в CI.\n4. Обеспечена обратная совместимость структуры данных.`,
+      description: payload.description,
       status,
       priority,
-      titleNeedsGeneration: titleNeedsGen,
-      title_needs_generation: titleNeedsGen,
-      allowDuplicate: true,
+      requestTitleGeneration: titleNeedsGen,
+      payload,
     });
   }
 
   const createdIssues = await runInBatches(issuesToCreate, concurrency, async (spec) => {
     const res = await client.request(`/api/companies/${spec.companyId}/issues`, {
       method: "POST",
-      body: {
-        projectId: spec.projectId,
-        title: spec.title,
-        description: spec.description,
-        status: spec.status,
-        priority: spec.priority,
-        allowDuplicate: true,
-      },
+      body: spec.payload,
     });
     const issue = res.data;
-
-    // If titleNeedsGeneration was requested, ensure PATCH reinforces it
-    if (spec.titleNeedsGeneration) {
-      try {
-        await client.request(`/api/issues/${issue.id}`, {
-          method: "PATCH",
-          body: {
-            titleNeedsGeneration: true,
-            title_needs_generation: true,
-          },
-        });
-      } catch {
-        // Ignore patch errors if vendor route accepts only create
-      }
+    const serverFlag = Boolean(issue.titleNeedsGeneration);
+    if (spec.requestTitleGeneration && !serverFlag) {
+      throw new Error(
+        `Issue ${issue.id} was created without a title but the server did not set titleNeedsGeneration (got ${JSON.stringify(issue.titleNeedsGeneration)})`,
+      );
     }
-
-    return { ...issue, companyId: spec.companyId, titleNeedsGen: spec.titleNeedsGeneration };
+    if (!spec.requestTitleGeneration && serverFlag) {
+      throw new Error(
+        `Issue ${issue.id} was created with an explicit title but the server set titleNeedsGeneration=${JSON.stringify(issue.titleNeedsGeneration)}`,
+      );
+    }
+    return { ...issue, companyId: spec.companyId, titleNeedsGen: serverFlag };
   });
 
   report.counts.issues = createdIssues.length;
   report.counts.issuesWithTitleNeedsGeneration = createdIssues.filter((iss) => iss.titleNeedsGen).length;
+  report.entities.issueIds = createdIssues.map((iss) => ({ id: iss.id, companyId: iss.companyId }));
   report.entities.sampleIssues = createdIssues.slice(0, 5).map((iss) => ({
     id: iss.id,
     identifier: iss.identifier,
@@ -760,13 +771,9 @@ export async function verifySeededData(client, report) {
     }
 
     // 4. Verify Secrets per company
-    try {
-      const secRes = await client.request(`/api/companies/${comp.id}/secrets`);
-      const secrets = Array.isArray(secRes.data) ? secRes.data : [];
-      verifiedCounts.secrets += secrets.length;
-    } catch {
-      // Secrets endpoint might require specific scope or be empty
-    }
+    const secRes = await client.request(`/api/companies/${comp.id}/secrets`);
+    const secrets = Array.isArray(secRes.data) ? secRes.data : [];
+    verifiedCounts.secrets += secrets.length;
 
     // 5. Verify Issues per company
     let offset = 0;
@@ -791,27 +798,85 @@ export async function verifySeededData(client, report) {
   // 6. Check attachments on sample issue
   if (report.entities.sampleIssues.length > 0) {
     const firstIssue = report.entities.sampleIssues[0];
-    try {
-      const attRes = await client.request(`/api/issues/${firstIssue.id}/attachments`);
-      const attachments = Array.isArray(attRes.data) ? attRes.data : [];
-      verifiedCounts.attachments = attachments.length;
-      for (const att of attachments) {
-        const size = Number(att.byteSize || att.size || att.byte_size || 0);
-        if (size > 2 * 1024 * 1024) {
-          verifiedCounts.largeAttachments++;
-        }
+    const attRes = await client.request(`/api/issues/${firstIssue.id}/attachments`);
+    const attachments = Array.isArray(attRes.data) ? attRes.data : [];
+    verifiedCounts.attachments = attachments.length;
+    for (const att of attachments) {
+      const size = Number(att.byteSize || att.size || att.byte_size || 0);
+      if (size > 2 * 1024 * 1024) {
+        verifiedCounts.largeAttachments++;
       }
-    } catch {
-      // If list attachments route varies, trust report counts
     }
   }
 
+  // 7. Verify comments and document revisions
+  // Comments were seeded on every issue; count them all so the comparison
+  // below proves the full 1025 actually exist on the server.
+  for (const entry of report.entities.issueIds) {
+    const commentsRes = await client.request(`/api/issues/${entry.id}/comments?limit=1000`);
+    const comments = Array.isArray(commentsRes.data) ? commentsRes.data : [];
+    verifiedCounts.comments += comments.length;
+  }
+
+  // Document revisions were seeded on the first 5 issues (specification key).
+  let verifiedDocumentRevisions = 0;
+  for (const sample of report.entities.sampleIssues) {
+    const revRes = await client.request(`/api/issues/${sample.id}/documents/specification/revisions`);
+    const revisions = Array.isArray(revRes.data) ? revRes.data : [];
+    verifiedDocumentRevisions += revisions.length;
+  }
+  verifiedCounts.documentRevisions = verifiedDocumentRevisions;
+
   console.log("[seed-paperclip] API Verification results:", verifiedCounts);
+
+  // Hard comparison against the local counts: any discrepancy means the seed
+  // did not actually land on the server the way the report claims.
+  const expectations = [
+    ["companies", report.counts.companies],
+    ["projects", report.counts.projects],
+    ["agents", report.counts.agents],
+    ["agentsWithAppearance", report.counts.agentsWithAppearance],
+    ["secrets", report.counts.secrets],
+    ["issues", report.counts.issues],
+    ["issuesWithTitleNeedsGeneration", report.counts.issuesWithTitleNeedsGeneration],
+  ];
+  const mismatches = expectations
+    .filter(([key, expected]) => verifiedCounts[key] !== expected)
+    .map(([key, expected]) => `${key}: local=${expected} server=${verifiedCounts[key]}`);
+  if (mismatches.length > 0) {
+    throw new Error(`Seed verification failed, counts do not match the server: ${mismatches.join("; ")}`);
+  }
+
+  // Comments/attachments/documents were seeded on a subset; verify they are at
+  // least present on the server in the numbers the report claims.
+  if (verifiedCounts.comments < report.counts.comments) {
+    throw new Error(`comments: local=${report.counts.comments} server(sample)=${verifiedCounts.comments}`);
+  }
+  if (verifiedCounts.attachments !== report.counts.attachments) {
+    throw new Error(`attachments: local=${report.counts.attachments} server=${verifiedCounts.attachments}`);
+  }
+  if (verifiedCounts.largeAttachments !== report.counts.largeAttachments) {
+    throw new Error(`largeAttachments: local=${report.counts.largeAttachments} server=${verifiedCounts.largeAttachments}`);
+  }
+  if (verifiedCounts.documentRevisions !== report.counts.documentRevisions) {
+    throw new Error(`documentRevisions: local=${report.counts.documentRevisions} server=${verifiedCounts.documentRevisions}`);
+  }
+
   return verifiedCounts;
 }
 
 export async function main() {
   const args = parseArgs();
+  if (!args.baseUrl) throw new Error("--base-url is required");
+  if (!args.passwordsFile) throw new Error("--passwords-file is required");
+  const target = new URL(args.baseUrl);
+  if (target.port === "3100" && args.confirmThrowaway !== target.hostname) {
+    throw new Error(`Refusing to seed port 3100 without --confirm-throwaway ${target.hostname}`);
+  }
+  if (args.confirmThrowaway && args.confirmThrowaway !== target.hostname) {
+    throw new Error(`--confirm-throwaway must exactly match target host ${target.hostname}`);
+  }
+  args.baseUrl = target.origin;
   console.log("[seed-paperclip] Starting seed with options:", {
     baseUrl: args.baseUrl,
     passwordsFile: args.passwordsFile,

@@ -7,10 +7,12 @@ import os from "node:os";
 import { parseArgs, readPasswords, PaperclipApiClient, seedPaperclip } from "./seed-paperclip.mjs";
 
 describe("seed-paperclip CLI and options parsing", () => {
-  it("parses default options correctly", () => {
+  it("parses explicit-only defaults without environment fallbacks", () => {
     const opts = parseArgs([]);
-    const expectedBaseUrl = process.env.PAPERCLIP_BASE_URL || process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100";
-    assert.equal(opts.baseUrl, expectedBaseUrl);
+    assert.equal(opts.baseUrl, "");
+    assert.equal(opts.apiKey, "");
+    assert.equal(opts.passwordsFile, "");
+    assert.equal(opts.confirmThrowaway, "");
     assert.equal(opts.out, "seed-report.json");
     assert.equal(opts.concurrency, 15);
     assert.equal(opts.verify, true);
@@ -222,7 +224,8 @@ describe("seedPaperclip mock flow execution", () => {
           capturedAgents.push(parsed);
           res.end(JSON.stringify({ id: `agent-${agentCounter}`, name: parsed.name, appearance: parsed.appearance }));
         } else if (req.url.startsWith("/api/agents/") && req.method === "PATCH") {
-          res.end(JSON.stringify({ status: "ok" }));
+          // Echo the stored appearance back so persistence checks against the API response.
+          res.end(JSON.stringify({ id: req.url.split("/")[3], appearance: parsed?.appearance || null }));
         } else if (req.url.includes("/secrets") && req.method === "POST") {
           secretCounter++;
           res.end(JSON.stringify({ id: `sec-${secretCounter}`, name: parsed.name }));
@@ -240,7 +243,15 @@ describe("seedPaperclip mock flow execution", () => {
         } else if (req.url.includes("/issues") && req.method === "POST") {
           issueCounter++;
           if (parsed) capturedIssues.push(parsed);
-          res.end(JSON.stringify({ id: `iss-${issueCounter}`, identifier: `NORD-${issueCounter}`, title: parsed?.title || `Issue ${issueCounter}` }));
+          // Emulate vendor behavior: no title -> server derives provisional title
+          // and sets titleNeedsGeneration=true; explicit title -> false.
+          const serverDerived = !parsed?.title;
+          res.end(JSON.stringify({
+            id: `iss-${issueCounter}`,
+            identifier: `NORD-${issueCounter}`,
+            title: parsed?.title || `Issue ${issueCounter}`,
+            titleNeedsGeneration: serverDerived,
+          }));
         } else {
           res.end(JSON.stringify({ status: "ok" }));
         }
