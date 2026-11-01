@@ -101,7 +101,7 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 }
 
 export function parseCatalogJson(
-  content: string | Buffer,
+  content: string | Uint8Array,
   maxBytes = DEFAULT_MAX_BYTE_SIZE,
 ): { catalog: Record<string, unknown> | null; error?: string } {
   const byteLength = typeof content === "string" ? new TextEncoder().encode(content).byteLength : content.byteLength;

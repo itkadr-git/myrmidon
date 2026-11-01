@@ -125,7 +125,7 @@ export function localeUploadRoutes(_db?: Db) {
     }
 
     const validation: LocaleValidationResult = validateUploadedCatalog(candidateObject, {
-      targetLocale: locale.trim(),
+      targetLocale: localeInput.data.locale,
       strict,
     });
 
