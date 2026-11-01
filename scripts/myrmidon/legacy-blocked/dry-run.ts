@@ -91,9 +91,12 @@ async function extractIssueFacts(
 
   return {
     taskStatus: issue.status,
-    latestComments: comments
-      .map((c: { body: unknown }) => (typeof c.body === "string" ? c.body : ""))
-      .filter((b: string) => b.length > 0),
+    latestComments: [
+      ...(typeof issue.description === "string" && issue.description.trim() ? [issue.description.trim()] : []),
+      ...comments
+        .map((c: { body: unknown }) => (typeof c.body === "string" ? c.body : ""))
+        .filter((b: string) => b.length > 0),
+    ],
     links,
   };
 }
