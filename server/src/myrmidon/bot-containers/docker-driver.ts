@@ -135,7 +135,9 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
+// Not shorter than the bot image's HEALTHCHECK window (start-period 300 s + 3 x 30 s):
+// the entrypoint runs session maintenance before the gateway starts.
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 420_000;
 // Developer images run slow cache/devbuild diagnostics during container init.
 const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
