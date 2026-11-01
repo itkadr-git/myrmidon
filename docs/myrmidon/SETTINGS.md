@@ -15,6 +15,16 @@ Our production values live in the private `myrmidon-deploy`, not here.
 
 A track writes only into its own section. A row is added in the same PR as the setting.
 
+## Self-registration
+
+Self-registration is disabled by default: without an explicit setting, signing up
+without an invitation is rejected. To explicitly disable it, set
+`MYRMIDON_AUTH_DISABLE_SIGN_UP=true`; to allow public credential sign-up, set it to
+`false`. The `MYRMIDON_*` variable takes precedence over its legacy
+`PAPERCLIP_AUTH_DISABLE_SIGN_UP` alias. The default is closed when neither variable is
+set (or set `auth.disableSignUp` to `true` in the config file). Restart the server after
+changing this environment variable or file setting.
+
 **Columns:**
 
 - **Variable** — the name.
