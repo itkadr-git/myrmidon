@@ -18,7 +18,7 @@ import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto
 export const CONTRACT_REV = 1;
 export const KEY_PREFIX = "MYR1";
 export const CORE_FEATURE = "core";
-export const KNOWN_MODULES = ["google-ai", "antigravity", "chatgpt-pool", "alibaba-image"] as const;
+export const KNOWN_MODULES = ["google-ai", "antigravity", "chatgpt-pool", "alibaba-image", "client-1"] as const;
 export type KnownModule = (typeof KNOWN_MODULES)[number];
 
 export const REQUEST_PREFIX = "MYRQ1";

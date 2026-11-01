@@ -338,6 +338,18 @@ describe("license state per module", () => {
     expect(states("MYR1.garbage").antigravity).toBe("invalid");
   });
 
+  it("enforces the client-1 module scope", () => {
+    const pair = generateKeyPairSync("ed25519");
+    const license = issueLicense(pair.privateKey, {
+      instanceId: INSTALL_ID,
+      modules: ["client-1"],
+      features: ["core"],
+      expires: null,
+      watermark: null,
+    }).license;
+    expect(verifyLicense(license, INSTALL_ID, NOW_S, [pair.publicKey], { requiredModule: "client-1" }).reason).toBe("ok");
+    expect(verifyLicense(license, INSTALL_ID, NOW_S, [pair.publicKey], { requiredModule: "google-ai" }).reason).toBe("module_not_granted");
+  });
   it("reports a license that ends within 14 days as expiring", () => {
     const pair = generateKeyPairSync("ed25519");
     const soon = issueLicense(pair.privateKey, {
