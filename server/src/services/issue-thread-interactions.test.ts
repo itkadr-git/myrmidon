@@ -19,11 +19,13 @@ function createSelectChain(rows: SelectRow[]) {
           return query;
         },
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return query;
+        },
+        orderBy() {
+          return query;
+        },
+        then(callback: (rows: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(rows));
         },
       };
       return query;
