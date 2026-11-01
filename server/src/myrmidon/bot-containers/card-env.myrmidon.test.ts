@@ -2,13 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 
 import {
-  FORBIDDEN_CARD_ENV_KEYS,
+  FORBIDDEN_ADAPTER_ENV_KEYS,
   GITHUB_ENV_ALLOWLIST_ENV,
   MANAGED_GITHUB_CARD_ENV_KEYS,
+  MEDIA_TOOLS_ENV_ALLOWLIST_ENV,
   createCardEnvResolver,
   parseGithubEnvAllowlist,
+  parseMediaToolsEnvAllowlist,
   type CardEnvBindingContext,
   type CardEnvPorts,
 } from "./card-env.js";
@@ -72,7 +75,12 @@ const plain = (value: string) => ({ type: "plain", value });
 const card = (env: Record<string, unknown>) => ({ ...AGENT, adapterConfig: { env } });
 
 describe("myrmidon(W2a) card env — what a card may bind", () => {
-  it.each([...FORBIDDEN_CARD_ENV_KEYS])("drops %s with a warning and never asks the secrets service for it", async (name) => {
+  it("parses only explicitly configured agent names for media rollout", () => {
+    expect([...parseMediaToolsEnvAllowlist("adm, adm-dev-eng-8,,")]).toEqual(["adm", "adm-dev-eng-8"]);
+    expect(parseMediaToolsEnvAllowlist(undefined).size).toBe(0);
+  });
+
+  it.each([...FORBIDDEN_ADAPTER_ENV_KEYS])("drops %s with a warning and never asks the secrets service for it", async (name) => {
     const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-value-0001" } });
     const resolve = createCardEnvResolver(ports);
     const result = await resolve(card({ [name]: ref("s1"), KEEP_ME: plain("kept") }));
@@ -178,6 +186,15 @@ describe("myrmidon(W2a) card env — what a card may bind", () => {
     expect(Object.keys(state.resolveCalls[0]!.bindings)).toEqual(["KEEP_ME"]);
   });
 
+  it("drops MEDIA_TOOLS_TOKEN when a card attempts to bind it", async () => {
+    const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-media-token" } });
+    const result = await createCardEnvResolver(ports)(card({ MEDIA_TOOLS_TOKEN: ref("s1"), KEEP_ME: plain("ok") }));
+    expect(result.env.MEDIA_TOOLS_TOKEN).toBeUndefined();
+    expect(result.env.KEEP_ME).toEqual({ value: "ok", secret: false });
+    expect(result.warnings).toEqual([expect.stringContaining("MEDIA_TOOLS_TOKEN")]);
+    expect(state.resolveCalls[0]?.bindings).not.toHaveProperty("MEDIA_TOOLS_TOKEN");
+  });
+
   it("keeps the forbidden-variable list identical to the board's own", () => {
     const heartbeat = fs.readFileSync(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../services/heartbeat.ts"),
@@ -187,7 +204,7 @@ describe("myrmidon(W2a) card env — what a card may bind", () => {
     expect(block, "FORBIDDEN_ENV_BINDING_KEYS not found in services/heartbeat.ts").not.toBeNull();
     const boardKeys = [...block![1]!.matchAll(/"([A-Z0-9_]+)"/g)].map((match) => match[1]!);
     expect(boardKeys.length).toBeGreaterThan(0);
-    expect([...FORBIDDEN_CARD_ENV_KEYS].sort()).toEqual([...boardKeys].sort());
+    expect([...FORBIDDEN_ADAPTER_ENV_KEYS].sort()).toEqual([...boardKeys].sort());
   });
 
   it("keeps the managed GitHub token list identical to the board's own", () => {
@@ -204,6 +221,37 @@ describe("myrmidon(W2a) card env — what a card may bind", () => {
 });
 
 describe("myrmidon(W2a) card env — resolved under a binding context", () => {
+  it("reads the live GitHub env allowlist for production agent names", async () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_container_github_env_allowlist: ["dev-vmexec"] }, sources: { bot_container_github_env_allowlist: "ui" } });
+    try {
+      const { ports, state } = fakePorts();
+      const result = await createCardEnvResolver(ports)(
+        { ...DEV_AGENT, adapterConfig: { env: { GITHUB_TOKEN: plain("managed-value") } } },
+      );
+      expect(result.env.GITHUB_TOKEN).toEqual({ value: "managed-value", secret: false });
+      expect(state.resolveCalls).toHaveLength(1);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
+  it("invalidates cached profiles when the live allowlist changes", async () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_container_github_env_allowlist: [] }, sources: { bot_container_github_env_allowlist: "ui" } });
+    try {
+      const { ports, state } = fakePorts();
+      const resolve = createCardEnvResolver(ports);
+      const agent = { ...DEV_AGENT, adapterConfig: { env: { GITHUB_TOKEN: plain("managed-value") } } };
+      expect((await resolve(agent)).env.GITHUB_TOKEN).toBeUndefined();
+      applyLiveBehaviorSettings({ settings: { bot_container_github_env_allowlist: ["dev-vmexec"] }, sources: { bot_container_github_env_allowlist: "ui" } });
+      expect((await resolve(agent)).env.GITHUB_TOKEN).toEqual({ value: "managed-value", secret: false });
+      expect(state.resolveCalls).toHaveLength(1);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
   it("asks for the values as the agent's own consumer, with a system actor, so the binding is checked", async () => {
     const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-value-0001" } });
     await createCardEnvResolver(ports)(card({ TOKEN: ref("s1") }));
@@ -332,6 +380,48 @@ describe("myrmidon(W2a) card env — resolved again only when something it depen
     await resolve(card({ TOKEN: ref("s1") }));
     state.secrets.delete("s1");
     await expect(resolve(card({ TOKEN: ref("s1") }))).rejects.toThrow("Secret not found");
+  });
+});
+
+describe("myrmidon(MEDIA-ACL 1.6.6) card env — operator-allowlisted media token", () => {
+  const MEDIA_AGENT = { id: "agent-media", companyId: COMPANY, name: "adm", adapterConfig: {} };
+
+  it("keeps MEDIA_TOOLS_TOKEN for an allowlisted agent, resolved as a secret", async () => {
+    const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-media-token" } });
+    const resolve = createCardEnvResolver(ports, {
+      mediaToolsEnvAllowlist: new Set(["adm"]),
+      env: { [MEDIA_TOOLS_ENV_ALLOWLIST_ENV]: "" },
+    });
+    const result = await resolve({ ...MEDIA_AGENT, adapterConfig: { env: { MEDIA_TOOLS_TOKEN: ref("s1") } } });
+    expect(result.env.MEDIA_TOOLS_TOKEN).toEqual({ value: "fake-media-token", secret: true });
+    expect(result.warnings).toEqual([]);
+    expect(state.resolveCalls).toEqual([
+      {
+        companyId: COMPANY,
+        bindings: { MEDIA_TOOLS_TOKEN: ref("s1") },
+        context: { consumerType: "agent", consumerId: "agent-media", actorType: "system" },
+      },
+    ]);
+  });
+
+  it("drops MEDIA_TOOLS_TOKEN for every other agent with a warning, and never resolves it", async () => {
+    const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-media-token" } });
+    const resolve = createCardEnvResolver(ports, {
+      mediaToolsEnvAllowlist: new Set(["adm"]),
+      env: { [MEDIA_TOOLS_ENV_ALLOWLIST_ENV]: "" },
+    });
+    const result = await resolve(card({ MEDIA_TOOLS_TOKEN: ref("s1"), KEEP_ME: plain("ok") }));
+    expect(result.env.MEDIA_TOOLS_TOKEN).toBeUndefined();
+    expect(result.env.KEEP_ME).toEqual({ value: "ok", secret: false });
+    expect(result.warnings).toEqual([expect.stringContaining("MEDIA_TOOLS_TOKEN")]);
+    expect(Object.keys(state.resolveCalls[0]!.bindings)).toEqual(["KEEP_ME"]);
+  });
+
+  it("reads the allowlist from the env variable when no explicit list is given", async () => {
+    const { ports } = fakePorts({ s1: { stamp: "1:active", value: "fake-media-token" } });
+    const resolve = createCardEnvResolver(ports, { env: { [MEDIA_TOOLS_ENV_ALLOWLIST_ENV]: "adm" } });
+    const result = await resolve({ ...MEDIA_AGENT, adapterConfig: { env: { MEDIA_TOOLS_TOKEN: ref("s1") } } });
+    expect(result.env.MEDIA_TOOLS_TOKEN).toEqual({ value: "fake-media-token", secret: true });
   });
 });
 

@@ -52,7 +52,7 @@ import {
   ensureBotBoardGateway,
 } from "./board-gateway.js";
 import { createBotCardSync, type BotCardSyncPorts, type BotCardSyncResult } from "./card-sync.js";
-import { createCardEnvResolver } from "./card-env.js";
+import { createCardEnvResolver, MEDIA_TOOLS_ENV_ALLOWLIST_ENV, parseMediaToolsEnvAllowlist } from "./card-env.js";
 import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
@@ -210,7 +210,7 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     },
     // myrmidon(FLEETD-VMEXEC): the allowlist is re-read per resolve (per tick),
     // like the other per-tick bot settings; the env source is process.env.
-    { env: process.env },
+    { env: process.env, mediaToolsEnvAllowlist: parseMediaToolsEnvAllowlist(process.env[MEDIA_TOOLS_ENV_ALLOWLIST_ENV]) },
   );
   // myrmidon(PERF-DIET-G): the skills port, bound to the company services. The
   // pass it receives (a sweep's, profile-pass.ts) shares the catalogue reads and
@@ -585,7 +585,7 @@ export function botProfileWiring(
    *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
    *  resolver — so its per-agent cache and secret-stamp validation are the
    *  profile compiler's, not a second set. */
-  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;

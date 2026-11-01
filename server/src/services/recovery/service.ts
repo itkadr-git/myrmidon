@@ -54,6 +54,7 @@ import {
   activityLog,
   chatConversations,
   companies,
+  externalObjects,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -157,6 +158,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -192,6 +194,7 @@ import {
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
+  isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
@@ -533,8 +536,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -2214,8 +2225,12 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
         return null;
       }
     }
@@ -4480,6 +4495,7 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
+    hasPendingCi?: boolean;
   }) {
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
@@ -4503,8 +4519,14 @@ export function recoveryService(
     // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
     // transitions to in_review at the current assignee (review in parallel with CI),
     // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
     if (
       openPrProduct &&
+      isProductiveContinuationRecovery &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
     ) {
       const prCi = await resolvePrCiState(
@@ -4702,6 +4724,30 @@ export function recoveryService(
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
 
+      let hasPendingCi = input.hasPendingCi ?? false;
+      if (!hasPendingCi && openPrProduct) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, input.issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPrProduct.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, input.issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPrProduct.externalId),
+              ),
+            })
+          : null;
+        hasPendingCi = isPendingCiForOpenPr({
+          openPr: openPrProduct,
+          lastComment,
+          contextSnapshot: latestRun?.contextSnapshot,
+          externalPrObject,
+        });
+      }
+
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
@@ -4713,11 +4759,65 @@ export function recoveryService(
           ...input.issue,
           hasOpenPullRequest: Boolean(openPrProduct),
         }),
+        hasPendingCi,
         successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
-      if (autoPolicyDecision.kind === "retry") {
+      if (autoPolicyDecision.kind === "monitor_external_service") {
+        const nextCheckAt = autoPolicyDecision.nextCheckAt
+          ? new Date(autoPolicyDecision.nextCheckAt)
+          : new Date(Date.now() + 10 * 60 * 1000);
+        const previousPolicy = (input.issue.executionPolicy ?? null) as any;
+        const policy = {
+          ...(previousPolicy ?? {
+            mode: "normal" as const,
+            commentRequired: true,
+            stages: [],
+          }),
+          monitor: {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: autoPolicyDecision.notes,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: autoPolicyDecision.serviceName,
+            externalRef: openPrProduct?.url ?? null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          },
+        };
+        const transition = applyIssueMonitorPolicyTransition({
+          issue: input.issue,
+          policy,
+          previousPolicy,
+          requestedStatus: input.issue.status,
+          requestedAssigneePatch: {},
+          actor: { agentId: null, userId: null },
+          monitorExplicitlyUpdated: true,
+        });
+        const updated = await issuesSvc.update(input.issue.id, {
+          ...transition.patch,
+          executionPolicy: policy,
+        });
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: latestRun.id,
+          action: "issue.stranded_autopolicy_monitor_external_service",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier,
+            recoveryCause,
+            serviceName: autoPolicyDecision.serviceName,
+            nextCheckAt: nextCheckAt.toISOString(),
+          },
+        });
+        return updated;
+      } else if (autoPolicyDecision.kind === "retry") {
         // myrmidon(L4): `enqueueWakeup` *throws* (not a falsy return) when the
         // assignee turns out not to be invokable or is over its invocation
         // budget (heartbeat.ts's `conflict(...)` on both checks) — exactly
@@ -6745,6 +6845,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;

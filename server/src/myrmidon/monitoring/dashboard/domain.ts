@@ -65,6 +65,15 @@ export interface VpsReading {
   diskPercent: number | null;
 }
 
+export interface OomFleetSummary {
+  windowStartedAt: string;
+  total24h: number;
+  previous24h: number;
+  increaseAlert: boolean;
+  byAgent: Array<{ agentId: string; agentName: string; role: string | null; count: number }>;
+  byRole: Array<{ role: string; count: number }>;
+}
+
 export interface DashboardView {
   ok: boolean;
   generatedAt: string;

@@ -78,6 +78,9 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
       spendCents: 157_400,
       budgetCents: 220_000,
       utilizationPercent: 71.5,
+      unpricedEvents: 3,
+      unpricedTokens: 1200,
+      forecastCents: 275_000,
     });
     mockCostsApi.byAgent.mockResolvedValue([
       {
@@ -207,6 +210,9 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(tileValues.some((value) => value?.includes("1,574"))).toBe(true);
     // Utilization 71.5% rounds to 72%.
     expect(tileValues.some((value) => value?.includes("72%"))).toBe(true);
+    expect(container.textContent).toContain("Unpriced");
+    expect(container.textContent).toContain("3 events without a price");
+    expect(container.textContent).toContain("Forecast through month-end: $2,750.00");
     // The incident tile counts 1 active incident from the overview.
     expect(tileValues.some((value) => value === "1")).toBe(true);
   });
@@ -237,6 +243,9 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
       spendCents: 0,
       budgetCents: 0,
       utilizationPercent: 0,
+      unpricedEvents: 0,
+      unpricedTokens: 0,
+      forecastCents: null,
     });
     mockCostsApi.byAgent.mockResolvedValue([]);
     await renderScreen();
@@ -246,6 +255,8 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     );
     expect(budgetTile?.querySelector(".ui2-tile-value")?.textContent).toContain("$0.00");
     expect(budgetTile?.querySelector(".ui2-tile-hint")).toBeNull();
+    expect(container.textContent).not.toContain("Unpriced");
+    expect(container.textContent).not.toContain("Forecast through month-end");
   });
 
   it("renders the per-agent table from the mocked by-agent data", async () => {

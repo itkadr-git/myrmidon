@@ -27,6 +27,10 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): unpriced counters and current-month forecast
+  unpricedEvents: number;
+  unpricedTokens: number;
+  forecastCents: number | null;
 }
 
 export interface IssueCostSummary {
