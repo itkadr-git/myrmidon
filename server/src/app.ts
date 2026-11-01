@@ -38,6 +38,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { haRoutes } from "./routes/ha.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { cloudRoutes } from "./routes/cloud.js";
@@ -1022,6 +1023,7 @@ export async function createApp(
   // guard below is load the board really served, so it is measured too.
   api.use(boardLoadRequestMiddleware());
   api.use(boardMutationGuard());
+  api.use("/ha", haRoutes());
   api.use(
     "/health",
     healthRoutes(db, {

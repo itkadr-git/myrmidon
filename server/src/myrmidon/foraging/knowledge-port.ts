@@ -26,6 +26,7 @@ import type { Db } from "@myrmidon/db";
 import { corpusDatasets, corpusDocuments } from "@myrmidon/db";
 import type { KnowledgeModule } from "../knowledge/service.js";
 import type { ForagingCandidateInput, ForagingCandidatePort } from "./domain.js";
+import { scanForInjection } from "../guardrails/injection.js";
 
 /** The fixed quarantine dataset name (§4.5); unique per company by schema. */
 export const FORAGING_INBOX_DATASET = "foraging-inbox";
@@ -168,6 +169,23 @@ export function createForagingKnowledgePort(deps: ForagingKnowledgePortDeps): Fo
           markdown: buildQuarantineMarkdown(input, input.diff.added),
           metadata: { role: input.role, skillKey: input.skillKey, sourceId: input.sourceId },
         });
+
+        // Scan all untrusted finding text after quarantine but before proposal creation.
+        const scanText = [
+          input.url,
+          input.role,
+          input.skillKey,
+          input.summary,
+          ...input.diff.added,
+          ...input.diff.removed,
+        ].join("\\n");
+        if (scanForInjection(scanText).flagged) {
+          log.warn(
+            { companyId: input.companyId, sourceId: input.sourceId, skillKey: input.skillKey },
+            "foraging: prompt injection detected; finding retained in quarantine",
+          );
+          return null;
+        }
 
         // 2. The proposal: OUR retelling, url cited, trust=external, pending.
         const suggestion = await deps.knowledge(input.companyId).suggest(
