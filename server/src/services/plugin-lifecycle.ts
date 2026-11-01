@@ -488,16 +488,24 @@ export function pluginLifecycleManager(
     options?: { markErrorOnFailure?: boolean },
   ): Promise<void> {
     const plugin = await requirePlugin(pluginId);
-    const companyIds = typeof registry.listConfigs === "function"
-      ? (await registry.listConfigs(pluginId)).map((config: { companyId: string }) => config.companyId)
-      : [];
+    let companyIds: string[] = [];
+    try {
+      companyIds = typeof registry.listConfigs === "function"
+        ? (await registry.listConfigs(pluginId)).map((config: { companyId: string }) => config.companyId)
+        : [];
+    } catch (err) {
+      log.warn({ pluginId, err }, "plugin lifecycle: failed to list configs for provider model activation");
+    }
     const supportsRuntimeActivation =
       typeof pluginLoaderInstance.hasRuntimeServices === "function"
       && typeof pluginLoaderInstance.loadSingle === "function";
     if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
-      const models = listPluginProviderModels([plugin]);
+      // The plugin record still carries its pre-activation status (e.g. "disabled").
+      // Treat it as ready so declared models are published to the in-process registry.
+      const readyPlugin = { ...plugin, status: "ready" } as PluginRecord;
+      const models = listPluginProviderModels([readyPlugin]);
       for (const companyId of companyIds) {
-        await syncProviderModels(companyId, plugin);
+        await syncProviderModels(companyId, readyPlugin);
         if (models.length > 0) replacePluginProviderModels(companyId, pluginId, models);
         else removePluginProviderModels(companyId, pluginId);
       }
@@ -517,7 +525,21 @@ export function pluginLifecycleManager(
     const loadedPlugin = (loadResult.plugin as PluginRecord) ?? plugin;
     const models = listPluginProviderModels([loadedPlugin]);
     for (const companyId of companyIds) {
-      await syncProviderModels(companyId, loadedPlugin);
+      try {
+        await syncProviderModels(companyId, loadedPlugin);
+      } catch (syncErr) {
+        // Fail closed: gateway rejected the sync — do not publish models.
+        removePluginProviderModels(companyId, pluginId);
+        try {
+          await providerModelSync?.remove(companyId, loadedPlugin);
+        } catch (removeErr) {
+          log.warn(
+            { pluginId, companyId, err: removeErr instanceof Error ? removeErr.message : String(removeErr) },
+            "plugin lifecycle: provider model gateway cleanup failed after sync error",
+          );
+        }
+        throw syncErr;
+      }
       if (models.length > 0) replacePluginProviderModels(companyId, pluginId, models);
       else removePluginProviderModels(companyId, pluginId);
     }
@@ -609,7 +631,13 @@ export function pluginLifecycleManager(
     async load(pluginId: string): Promise<PluginRecord> {
       return withPluginLock(pluginId, async () => {
         const result = await transition(pluginId, "ready");
-        await activateReadyPlugin(pluginId);
+        try {
+          await activateReadyPlugin(pluginId);
+        } catch (activateErr) {
+          const message = activateErr instanceof Error ? activateErr.message : String(activateErr);
+          await transition(pluginId, "error", message, result);
+          throw activateErr;
+        }
 
         emitDomain("plugin.loaded", {
           pluginId,
@@ -646,7 +674,13 @@ export function pluginLifecycleManager(
         }
 
         const result = await transition(pluginId, "ready", null, plugin);
-        await activateReadyPlugin(pluginId);
+        try {
+          await activateReadyPlugin(pluginId);
+        } catch (activateErr) {
+          const message = activateErr instanceof Error ? activateErr.message : String(activateErr);
+          await transition(pluginId, "error", message, result);
+          throw activateErr;
+        }
         emitDomain("plugin.enabled", {
           pluginId,
           pluginKey: result.pluginKey,
