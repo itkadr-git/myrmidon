@@ -73,6 +73,8 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 import type { IdleStopSettings } from "../myrmidon-idle-stop.js";
+// myrmidon(1.7-REBRAND-F): the stored shape of the vendor-name gate setting.
+import type { StoredVendorNameCheckSettings } from "../myrmidon-vendor-name.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -507,6 +509,15 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementPublicKey?: string;
+  /**
+   * myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+   * (ratchet / strict) and the ratchet baseline, changed from the instance
+   * settings page and `GET`/`PATCH /api/myrmidon/vendor-name-check`. Absent
+   * means "use the environment override, then the default (ratchet against the
+   * count the instance records)". Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  vendorNameCheck?: StoredVendorNameCheckSettings;
   /** Owner active-channel inactivity threshold. */
   ownerActiveChannel?: OwnerActiveChannelSettings;
 }

@@ -7,6 +7,7 @@ import { logger } from "../middleware/logger.js";
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -100,12 +101,7 @@ const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reass
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_INTERVAL_SEC_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  return Math.max(MIN_IDLE_PICKUP_INTERVAL_SEC, value);
+  return liveIdlePickupSettings(env).intervalSec;
 }
 
 /**
@@ -113,8 +109,7 @@ export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env):
  * unrecognized value keeps it on. Only an explicit off value disables it.
  */
 export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[IDLE_PICKUP_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveIdlePickupSettings(env).enabled;
 }
 
 /**
@@ -128,12 +123,7 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  return value;
+  return liveIdlePickupSettings(env).recentSuccessWindowMs;
 }
 
 /** Bounded non-negative integer reader shared by the two budget knobs. */
@@ -165,21 +155,7 @@ export interface IdleWakeBudgetSettings {
  * spend the whole window in one pass.
  */
 export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
-  const perMinute = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  const batch = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BATCH_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  return { perMinute, batch: Math.min(perMinute, batch) };
+  return liveIdleWakeBudget(env);
 }
 
 /**
@@ -893,20 +869,8 @@ async function hasCoveringWake(
         ]),
         sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
         wakeNotParkedOnExecutionHold(),
-        // myrmidon(1.6.6 OPE-8988): a queued/claimed request covers the issue
-        // only while it is real work in flight — a live run carries it, or it
-        // is a just-queued request whose run is still being created. On prod
-        // 147 queued and 438 claimed requests had no live run at all (the
-        // oldest from August): each one covered its issue forever, so idle
-        // pickup counted the agent "already active" and never woke it.
         sql`(
           (
-            -- myrmidon(1.6.6 OPE-8988): a deferred wake waits for the issue's
-            -- execution lock to clear; it covers the issue only while that lock
-            -- is still held, or briefly while the promotion after release is in
-            -- flight. A deferred wake whose lock is long gone was never promoted
-            -- (OPE-8268) and covered its issue forever (prod 24.10: 10 such, the
-            -- oldest a day old). Parked holds (executionWait) are excluded above.
             ${agentWakeupRequests.status} = 'deferred_issue_execution'
             and (
               exists (
@@ -914,7 +878,10 @@ async function hasCoveringWake(
                 where li.id::text = ${agentWakeupRequests.payload} ->> 'issueId'
                   and (li.execution_run_id is not null or li.checkout_run_id is not null)
               )
-              or ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+              or (
+                ${agentWakeupRequests.createdAt} > now() - make_interval(secs => ${ORPHAN_WAKE_GRACE_SEC})
+                and ${agentWakeupRequests.requestedAt} > now() - interval '30 minutes'
+              )
             )
           )
           or exists (
@@ -1064,9 +1031,10 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
       // the environment; the reader already resolved that precedence per key.
       // Without a reader this module keeps reading the environment itself.
       const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const idleSettings = liveness ? null : liveIdlePickupSettings(env);
       const intervalMs =
-        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
-      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+        (liveness ? liveness.idlePickupIntervalSec : idleSettings!.intervalSec) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : idleSettings!.enabled;
       if (!enabled) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
@@ -1074,11 +1042,11 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
-      const envWake = readIdleWakeBudgetSettings(env);
+      const envWake = liveness ? null : liveIdleWakeBudget(env);
       // A pass never spends more of the minute than the minute holds, whichever
       // layer set the two numbers.
-      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
-      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake!.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake!.batch, perMinute);
       // The release path spends the same budget object; handing it the resolved
       // pair keeps both paths on the numbers the operator saved.
       deps.budget?.configure({ perMinute, batch });

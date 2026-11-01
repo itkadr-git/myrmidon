@@ -24,6 +24,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     runsActive: 2,
     runsQueued: 5,
     runsQueuedOver30m: 1,
+    deferredIssueExecutionOver30m: 0,
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     runDurationSecondsP50: 42.5,
@@ -179,6 +180,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_runs_active gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued gauge");
     expect(text).toContain("# TYPE myrmidon_runs_queued_over_30m gauge");
+    expect(text).toContain("# TYPE myrmidon_deferred_issue_execution_over_30m gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_total gauge");
     expect(text).toContain("# TYPE myrmidon_runs_failed_window gauge");
     expect(text).toContain("# TYPE myrmidon_run_duration_seconds summary");
@@ -194,6 +196,11 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
+  it("renders deferred issue-execution backlog gauge", () => {
+    const text = renderMetricsText(snapshot({ deferredIssueExecutionOver30m: 2 }));
+    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 2');
+  });
+
   it("renders one sample line per family and per role/status pair", () => {
     const text = renderMetricsText(snapshot());
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_") && !line.startsWith("# "));
@@ -203,8 +210,10 @@ describe("prometheus exposition format", () => {
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
     // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
-    // plus the legacy-blocked remaining-age gauge = 32.
-    expect(sampleLines).toHaveLength(32);
+    // plus legacy-blocked remaining-age gauge = 32, plus failed_before_model = 33,
+    // plus the five recovery families = 38, plus deferredIssueExecutionOver30m = 39.
+    expect(sampleLines).toHaveLength(39);
+    expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
@@ -212,6 +221,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
     expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
+    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 0');
   });
 
   // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
