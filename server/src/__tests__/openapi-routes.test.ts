@@ -104,9 +104,9 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   "GET /api/admin-assistant/cluster-health",
   "GET /api/admin-assistant/health",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
-  // This endpoint is authenticated by the provider signature rather than by a
-  // Paperclip board/agent credential. It intentionally stays out of the public
-  // board API document, while this exact exclusion keeps route coverage honest.
+  // These webhook handlers are mounted outside the scanner's route-file map.
+  // Their provider signatures intentionally keep them out of the public board
+  // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
