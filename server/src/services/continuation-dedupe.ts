@@ -18,6 +18,19 @@ export async function tryClaimContinuationKeyInTransaction(
   input: { companyId: string; key: string; issueId: string; ttl: number },
 ): Promise<ContinuationDedupeOutcome> {
   const now = new Date();
+  // Reclaim this exact key only when its lease has expired. This keeps the
+  // public claim contract (expired keys can be retried directly) without
+  // turning an active concurrent claim into an upsert/refresh race.
+  await tx
+    .delete(issueContinuationKeys)
+    .where(
+      and(
+        eq(issueContinuationKeys.companyId, input.companyId),
+        eq(issueContinuationKeys.key, input.key),
+        lt(issueContinuationKeys.expiresAt, now),
+      ),
+    );
+
   let inserted: { key: string }[];
   try {
     inserted = await tx
@@ -28,26 +41,30 @@ export async function tryClaimContinuationKeyInTransaction(
         issueId: input.issueId,
         expiresAt: new Date(now.getTime() + input.ttl),
       })
-      .onConflictDoUpdate({
+      // A continuation claim is a one-shot admission token.  Do not refresh
+      // an existing row on conflict: concurrent callers must observe one
+      // creator and all other deliveries must be deduped. Expired rows are
+      // removed by clearExpiredContinuationKeys before a new admission.
+      .onConflictDoNothing({
         target: [issueContinuationKeys.companyId, issueContinuationKeys.key],
-        set: {
-          expiresAt: new Date(now.getTime() + input.ttl),
-          issueId: input.issueId,
-          createdAt: now,
-        },
-        where: lt(issueContinuationKeys.expiresAt, now),
       })
       .returning({ key: issueContinuationKeys.key });
   } catch (err) {
-    if (isUniqueViolation(err, "issue_continuation_keys_company_key_uq") || isUniqueViolation(err)) {
+    if (
+      isUniqueViolation(err, "issue_continuation_keys_company_key_uq") ||
+      isUniqueViolation(err)
+    ) {
       inserted = [];
     } else {
       throw err;
     }
   }
 
-  const outcome: ContinuationDedupeOutcome = inserted.length ? "created" : "deduped";
-  if (outcome === "created") continuationDedupeMetrics.metrics.onContinuationCreated(input.key);
+  const outcome: ContinuationDedupeOutcome = inserted.length
+    ? "created"
+    : "deduped";
+  if (outcome === "created")
+    continuationDedupeMetrics.metrics.onContinuationCreated(input.key);
   else continuationDedupeMetrics.metrics.onContinuationDeduped(input.key);
   return outcome;
 }
