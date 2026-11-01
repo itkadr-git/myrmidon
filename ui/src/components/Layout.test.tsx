@@ -216,16 +216,21 @@ vi.mock("../context/PanelContext", () => ({
   }),
 }));
 
-vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({
+vi.mock("../context/CompanyContext", () => {
+  const companyValue = () => ({
     companies: mockCompanyState.companies,
     loading: false,
     selectedCompany: mockCompanyState.selectedCompany,
     selectedCompanyId: mockCompanyState.selectedCompanyId,
     selectionSource: "manual",
     setSelectedCompanyId: mockSetSelectedCompanyId,
-  }),
-}));
+  });
+  return {
+    useCompany: companyValue,
+    // CompanySettingsNav reads the optional hook since #1979 (model-providers tab gate).
+    useOptionalCompany: companyValue,
+  };
+});
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
