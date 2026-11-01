@@ -1,4 +1,4 @@
-import { and, count, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, isNull, lt } from "drizzle-orm";
 import { knowledgeDeviations, type NewKnowledgeDeviation } from "@myrmidon/db";
 
 /** Record a mismatch between documented knowledge and observed reality. */
@@ -56,7 +56,7 @@ export async function findStaleUnassignedDeviations(db: any, nestId: string, now
 export async function resolveKnowledgeDeviation(db: any, nestId: string, id: string) {
   const [row] = await db
     .update(knowledgeDeviations)
-    .set({ status: "resolved", updatedAt: sql`now()` })
+    .set({ status: "resolved", updatedAt: new Date() })
     .where(and(eq(knowledgeDeviations.nestId, nestId), eq(knowledgeDeviations.id, id)))
     .returning();
   return row ?? null;
