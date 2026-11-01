@@ -3629,7 +3629,8 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           }
         } else if (
-          normalizedData.kind === "ask_user_questions" &&
+          (normalizedData.kind === "ask_user_questions" ||
+            normalizedData.kind === "request_confirmation") &&
           actor.agentId &&
           actor.agentId === issueContextRow?.assigneeAgentId
         ) {
