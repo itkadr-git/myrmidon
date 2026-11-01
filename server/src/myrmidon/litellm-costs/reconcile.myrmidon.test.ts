@@ -290,24 +290,30 @@ describeEmbeddedPostgres("myrmidon(HERMES-USAGE-COST) reconcileUnpricedCostEvent
 
   it("refreshes agent and company monthly spend counters after filling rows", async () => {
     const { company, agent } = await seedCompany();
-    const run = await seedRun({
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const runStartedAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000);
+    const runFinishedAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000 + 40 * 60 * 1000);
+    const spendOccurredAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000 + 10 * 60 * 1000);
+    const { id: runId } = await seedRun({
       companyId: company.id,
       agentId: agent.id,
-      startedAt: new Date("2026-10-01T09:00:00Z"),
-      finishedAt: new Date("2026-10-01T09:40:00Z"),
+      startedAt: runStartedAt,
+      finishedAt: runFinishedAt,
     });
     await seedUnpricedCostEvent({
       companyId: company.id,
       agentId: agent.id,
-      runId: run.id,
-      occurredAt: new Date("2026-10-01T09:40:00Z"),
+      runId,
+      occurredAt: runFinishedAt,
     });
     await seedLitellmSpend({
       companyId: company.id,
       agentId: agent.id,
-      runId: run.id,
+      runId,
       costCents: 515,
-      occurredAt: new Date("2026-10-01T09:10:00Z"),
+      occurredAt: spendOccurredAt,
     });
 
     await reconcileUnpricedCostEventsDetailed(db, company.id);
