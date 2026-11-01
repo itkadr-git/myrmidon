@@ -105,6 +105,8 @@ describe("parseRefForLevel", () => {
 
     expect(parseRefForLevel("issue", ISSUE_ID)).toEqual({ ok: true, ref: ISSUE_ID });
     expect(parseRefForLevel("issue", "task-1")).toEqual({ ok: false, messageKey: "budgetLimits.refErrorIssue" });
+    expect(parseRefForLevel("issue", "")).toEqual({ ok: false, messageKey: "budgetLimits.refErrorLength" });
+    expect(parseRefForLevel("caste", "")).toEqual({ ok: false, messageKey: "budgetLimits.refErrorLength" });
   });
 
   it("trims and refuses an over-long ref", () => {

@@ -13,7 +13,7 @@
 // - Reads are company-scoped by construction.
 
 import { and, desc, eq } from "drizzle-orm";
-import { budgetLimitChanges, budgetLimits, issues, projects, type Db } from "@myrmidon/db";
+import { agentCastes, agents, budgetLimitChanges, budgetLimits, issues, projects, type Db } from "@myrmidon/db";
 import {
   BUDGET_LIMIT_FORAGING_REF,
   BUDGET_LIMIT_NEST_COMPANY_REF,
@@ -136,6 +136,18 @@ export async function validateBudgetLimitScope(
       .from(projects)
       .where(and(eq(projects.id, ref), eq(projects.companyId, companyId)));
     return project ? null : "nest ref must identify a project in this company";
+  }
+  if (level === "caste") {
+    const [caste] = await db
+      .select({ key: agentCastes.key })
+      .from(agentCastes)
+      .where(and(eq(agentCastes.key, ref), eq(agentCastes.companyId, companyId)));
+    if (caste) return null;
+    const [agent] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.role, ref), eq(agents.companyId, companyId)));
+    return agent ? null : "caste ref must identify a caste or agent role in this company";
   }
   if (level === "issue") {
     const [issue] = await db
