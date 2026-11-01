@@ -195,6 +195,31 @@ jobs:
           [ "$version" = "$EXPECTED_VERSION" ] || { echo "::error::version $version, expected $EXPECTED_VERSION"; exit 1; }
           [ "$commit" = "$EXPECTED_COMMIT" ] || { echo "::error::commit $commit, expected $EXPECTED_COMMIT"; exit 1; }
 
+      - name: Smoke test diagnostic env masking through docker exec
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          REF: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # Exercise the exact target-container path required by OPE-3100.
+          # Use synthetic secrets only; never print their values.
+          docker rm -f paperclip-server-1 >/dev/null 2>&1 || true
+          docker run -d --name paperclip-server-1 --entrypoint /bin/sh \
+            -e 'DATABASE_URL=postgres://paperclip_app:ci_raw_database_password@db.prod.internal:5432/paperclip' \
+            -e 'POSTGRES_PASSWORD=ci_raw_postgres_password' \
+            -e 'PGHOST=db.prod.internal' \
+            "$REF" -c 'while :; do sleep 3600; done' >/dev/null
+          trap 'docker rm -f paperclip-server-1 >/dev/null 2>&1 || true' EXIT
+          output="$(docker exec paperclip-server-1 env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/')"
+          printf '%s\n' "$output"
+          ! grep -Fq 'ci_raw_database_password' <<<"$output"
+          ! grep -Fq 'ci_raw_postgres_password' <<<"$output"
+          grep -Fq 'DATABASE_URL=***' <<<"$output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$output"
+          raw_count="$(grep -Ec 'ci_raw_database_password|ci_raw_postgres_password' <<<"$output" || true)"
+          [ "$raw_count" -eq 0 ]
+          echo "diagnostic raw-secret count: $raw_count"
+
       - name: Tag the tested digest
         if: ${{ github.event_name != 'pull_request' }}
         env:
