@@ -323,6 +323,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
       return;
     }
+    if (/^(?:\$|PAPERCLIP_API_KEY$)/.test(token)) {
+      next(unauthorized(
+        "Authorization contains the literal $PAPERCLIP_API_KEY; the environment variable was not expanded (possibly due to single quotes). Read the value from the environment using double quotes or os.environ.",
+        { code: "agent_token_unexpanded_variable" },
+      ));
+      return;
+    }
 
     const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
