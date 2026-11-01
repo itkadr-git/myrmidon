@@ -1,5 +1,8 @@
 export {
   haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
+  type HaStandbyStatus,
 } from "./ha.js";
 
 export {
