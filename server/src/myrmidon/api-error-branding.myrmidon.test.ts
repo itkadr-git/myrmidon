@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "../../../../");
+const REPO_ROOT = path.resolve(__dirname, "../../../");
 
 // Keep this list focused on user-facing prose. Compatibility identifiers such
 // as PAPERCLIP_API_URL, paperclipApiUrl, X-Paperclip-Run-Id, legacy route paths,
