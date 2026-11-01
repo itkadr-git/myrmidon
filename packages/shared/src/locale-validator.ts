@@ -128,7 +128,7 @@ export function parseCatalogJson(
   } catch (err) {
     return {
       catalog: null,
-      error: `Invalid JSON syntax: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Malformed JSON: Invalid JSON syntax: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
