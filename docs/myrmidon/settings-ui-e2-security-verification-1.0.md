@@ -1,7 +1,7 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.5 (source review and full CI verification)
-Reviewed base: origin/main `4e00ba9a384d0c237055b4298d71078834863c37` (2026-11-01); branch synchronized with current main in merge commit `83ba1e018`
+Version: 1.6 (source review and full CI verification)
+Reviewed base: origin/main `3c4dcaf4268350a8ee1a918db6712465d17f7523` (2026-11-01); branch synchronized with current main in merge commit `REPLACE_AFTER_COMMIT`
 Scope: repository source and automated CI test execution only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
@@ -12,9 +12,11 @@ Relevant resolver tests: `server/src/myrmidon/secret-settings/resolver.myrmidon.
 Automated CI execution:
 PR #2184 label `full-ci` triggered the complete GitHub Actions matrix.
 - Passing evidence: run `41249196886` on HEAD `ca92bc4b4`; all server, serialized, workspace, migration, typecheck/build, and checks lanes passed.
-- Later full run `41286731155` on HEAD `8384b08ad` passed checks, go tools, migration guard, typecheck/build, server shards 2-6, workspace shards, serialized shard 2, and other/runner. It failed server shard 1 on `continuation-dedupe.test.ts > expired key can be claimed again` and serialized shard 1 on the unrelated `agent-memory/settings-routes.myrmidon.test.ts` contract mismatch.
+- Later full run `41286731155` on HEAD `8384b08ad` passed most lanes but exposed unrelated upstream failures in continuation-dedupe and agent-memory settings.
+- Exact-head run `41288698880` on HEAD `4d497edd3` passed checks, go tools, migration guard, typecheck/build, all server shards, workspace shard 2, serialized shard 2, and other/runner. It failed only workspace shard 1 on `ui/src/components/Layout.test.tsx > renders a mobile company settings selector on company settings routes` and serialized shard 1 on the unrelated `agent-memory/settings-routes.myrmidon.test.ts` contract mismatch.
 - The agent-memory failure is upstream: the test expects `accessMode`/`enabledRoles`, while shared `applyAgentMemoryPatch` handles only `enabled`, `apiUrl`, `keySecretName`, and model fields. Do not weaken that test or expand the unrelated product contract in this PR.
-- The continuation-dedupe failure is also outside this PR's files and is being tracked against current main. The branch is synchronized with current main at `4e00ba9a384d0c237055b4298d71078834863c37`; no SETTINGS-UI source regression was identified.
+- The Layout failure is also outside this PR's files and is tracked against current main. The branch is synchronized with current main at `3c4dcaf4268350a8ee1a918db6712465d17f7523`; no SETTINGS-UI source regression was identified.
+
 
 CI must be green on the final pushed head before review handoff.
 
