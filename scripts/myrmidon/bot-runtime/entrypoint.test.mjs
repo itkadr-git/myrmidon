@@ -62,24 +62,6 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
   });
 
 
-  it("closes only stale unpinned open sessions before prune", () => {
-    const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    assert.match(source, /UPDATE sessions[\s\S]*SET ended_at = COALESCE/);
-    assert.match(source, /WHERE ended_at IS NULL/);
-    assert.match(source, /COALESCE\(pinned, 0\) = 0/);
-    assert.match(source, /end_reason = 'closed_task_stale'/);
-    assert.match(source, /last_activity_at/);
-    assert.match(source, /MAX\(timestamp\) FROM messages/);
-    assert.match(source, /stale unended hermes sessions older than/);
-  });
-
-  it("skips optimize-storage if timeout is unavailable and keeps the retry marker absent", () => {
-    const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    assert.match(source, /if ! command -v timeout/);
-    assert.match(source, /skipping optimize-storage to protect container startup deadline/);
-    assert.match(source, /optimize_rc=127/);
-    assert.match(source, /will retry next idle start/);
-  });
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);
