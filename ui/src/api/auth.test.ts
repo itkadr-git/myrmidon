@@ -11,7 +11,6 @@ import { authApi } from "./auth";
 
 afterEach(() => {
   authSessionRecovery.reset();
-  tenantSessionRecovery.reset();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
