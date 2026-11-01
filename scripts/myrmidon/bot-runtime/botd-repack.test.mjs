@@ -228,6 +228,7 @@ describe("botd repack: git-base optimization (OPE-10039)", () => {
     const logs = [];
     const results = await repackAllBases(baseDir, {
       runCmd,
+      lockPathOverride: path.join(baseDir, ".fleet-repack.lock"),
       log: (l) => logs.push(l),
     });
 
