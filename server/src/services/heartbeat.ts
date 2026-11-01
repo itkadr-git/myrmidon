@@ -31267,6 +31267,55 @@ export function heartbeatService(
             }
           }
 
+          // Claim continuation identity before active-run coalescing. A duplicate
+          // wake must be rejected by the durable claim, not merged into the
+          // already queued run (which would make every delivery look admitted).
+          if (
+            reason === "issue_continuation_needed" &&
+            issueId === issue.id &&
+            !readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) &&
+            !readNonEmptyString(payload?.continuationClaimKey)
+          ) {
+            const [latestContinuationEvent] = await tx
+              .select({ id: activityLog.id })
+              .from(activityLog)
+              .where(and(
+                eq(activityLog.companyId, agent.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, issue.id),
+                inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+              ))
+              .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+              .limit(1);
+            if (latestContinuationEvent) {
+              const continuationRevision = latestContinuationEvent.id;
+              const continuationClaimKey = buildContinuationKey({
+                issueId: issue.id,
+                event: `${reason}:${agentId}`,
+                head: continuationRevision,
+              });
+              const claimOutcome = await tryClaimContinuationKey(tx as unknown as Db, {
+                companyId: agent.companyId,
+                key: continuationClaimKey,
+                issueId: issue.id,
+                ttl: 365 * 24 * 60 * 60 * 1000,
+              });
+              if (claimOutcome === "deduped") {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields,
+                  companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                  payload: { ...(payload ?? {}), issueId, continuationEventRevision: continuationRevision, duplicateContinuation: true },
+                  status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
+              enrichedContextSnapshot.continuationClaimKey = continuationClaimKey;
+              payload = { ...(payload ?? {}), continuationClaimKey };
+            }
+          }
+
           if (activeExecutionRun) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
