@@ -1,13 +1,12 @@
 diff --git a/hermes_state_common.py b/hermes_state_common.py
 --- a/hermes_state_common.py
 +++ b/hermes_state_common.py
-@@ -270,6 +270,10 @@
+@@ -270,6 +270,9 @@
  # integrity checker and the trigger 'delete'/'update' commands in agreement
  # with the stored index forever.
  FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
 +
-+# Long board wake envelopes are retained for transcript replay but excluded from
-+# full-text indexes; session search targets conversational content.
++# myrmidon(G1): Large wake envelopes remain in the transcript, not the FTS indexes.
 +FTS_USER_CONTENT_MAX_CHARS = 2_048
 
 
