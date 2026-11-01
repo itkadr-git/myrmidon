@@ -70,7 +70,6 @@ import type {
 } from "../application/ports.js";
 import type { RunSummary } from "../application/types.js";
 
-const ISSUE_EXECUTION_LOCK_TIMEOUT = "5s";
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -1142,7 +1141,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // A contended issue lock must fail quickly. Keeping a pool connection
         // waiting for the role-level statement_timeout can starve the holder
         // and turn concurrent idle-pickup attempts into a pool deadlock.
-        await tx.execute(sql`set local lock_timeout = ${ISSUE_EXECUTION_LOCK_TIMEOUT}`);
+        await tx.execute(sql`set local lock_timeout = '5s'`);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
