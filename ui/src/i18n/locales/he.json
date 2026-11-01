@@ -117,6 +117,7 @@
       "status": "Owner · Web"
     },
     "screens": {
+      "commander": "Command Center",
       "decisions": "Decisions",
       "costs": "Costs",
       "agentOverview": "Agent overview",
