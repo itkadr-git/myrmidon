@@ -1228,7 +1228,7 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     fs.writeFileSync(agentsPath, JSON.stringify(
       JSON.parse(fs.readFileSync(agentsPath, "utf8")).map((a) => ({ ...a, status: "idle" }))));
     const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
-    assert.equal(code, 0, out);
+    assert.equal(code, 1, out);
     assert.ok(dockergateConfig(sb).images.includes(DEV_OLD), "old image stays: the retry does not see the whole fleet");
     assert.match(out, /left untouched/);
   });

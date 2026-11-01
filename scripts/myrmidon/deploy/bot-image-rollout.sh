@@ -38,24 +38,10 @@
 #      agents list carries no adapterConfig — PERF-DIET-G).
 #   5. Switch the bot cards to the release image, one bot at a time (canary
 #      first when --canary names one): PATCH the card's
-#      adapterConfig.container.image, then POST the card's "apply" so the
-#      board's own reconciler drains that agent alone and recreates the
-#      container. A bot with running work answers `deferred`: the rollout does
-#      NOT hold the batch for it — it moves to a tail list (deferred_tail) and
-#      the batch ends as soon as its other bots are done, so the next batch
-#      starts at once (the rc.3/rc.5 lesson: one busy bot made every batch wait
-#      MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC). After the last batch the
-#      tail pass retries the deferred bots until that same deadline, and past
-#      it the optional force stage
-#      (MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC, default 0 = OFF; set
-#      it to a number of seconds to opt in) applies them without the status
-#      gate. The reconciler then opens a maintenance window and drains for
-#      300 s; a longer run is interrupted by the maintenance, so the stage is
-#      an explicit operator choice, never the default. A run is never
-#      interrupted by this rollout, and a deferred bot keeps its old card
-#      image until a later retry or the periodic sweep. A failed apply never
-#      leaves a card switched while the container stays on the old image: the
-#      card goes back to its previous container block.
+#      adapterConfig.container.image. A bot with running work is deferred after
+#      its desired-state card is updated; the server reconciler owns the scoped
+#      R3 pause, drain, and container replacement. The rollout never waits for
+#      or force-applies a busy bot.
 #   5b. F-04 verification (1.6.5): after the batches, compare FACT for every
 #      tracking bot — the card's image (adapterConfig.container.image from
 #      the board API) against the running container's image
@@ -64,11 +50,10 @@
 #      host, so no new docker transport is introduced here). Print a
 #      per-bot table and the summary switched / deferred(running) / mismatch
 #      / failed. DEGRADED (exit 1) only when mismatch > 0 or failed > 0; a
-#      deferred bot is not a failure — it prints a WARNING with the
-#      --retry-deferred command to re-run when the bot goes quiet.
+#      deferred bot is not a failure — the reconciler applies it in R3.
 #   5c. --retry-deferred [--wait-sec N]: compatibility mode for a prior
-#       rollout summary; the card is already desired state and reconciliation
-#       owns the safe R3 apply. It does not perform a periodic retry sweep.
+#       rollout summary; it rechecks desired cards and leaves application to
+#       the server reconciler. It does not perform a retry sweep.
 #   6. After every bot runs a release image, remove the superseded bot image
 #      refs from `images` (only refs of our three bot repositories, never a
 #      pinned one) and SIGHUP again. Deferred bots keep the old refs listed.
@@ -111,13 +96,12 @@
 # of our bot repositories (hermes, hermes-dev, hermes-node) that is not the
 # release's image of that repository; it moves to the release image of the SAME
 # repository. Any other card image (another repository, a tag, none) is PINNED
-# and left alone. Cards switch in batches of at most 5, and a bot is switched
-# only while its agent is paused or idle; every batch and every failure is
-# reported (log lines, the journal and $STATE_DIR/bot-image-rollout-summary.json).
+# Cards switch in batches of at most 5; a running bot's desired card is updated
+# immediately and its container is left to the server reconciler's R3 window.
 #
 # Exit codes: 0 = rolled out (or dry run; deferred bots alone exit 0 with the
-# WARNING and the --retry-deferred command above); 1 = DEGRADED failure —
-# failed > 0 or a card/container mismatch (see the verification table above).
+# desired card updated), 1 = DEGRADED failure — failed > 0 or a card/container
+# mismatch (see the verification table above).
 set -euo pipefail
 unset BASH_ENV ENV
 # shellcheck source=lib.sh source-path=SCRIPTDIR
@@ -582,7 +566,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     # The standard re-run pass: only the deferred bots of the previous rollout.
     # A missing summary fails the pass here (die): never a silent empty retry.
     deferred_list="$(read_deferred_bots)"
-    bot_log "dry run: --retry-deferred would re-switch exactly the deferred bots listed in $MYR_BOT_SUMMARY (${MYR_BOT_RETRY_WAIT_SEC}s wait per bot), then verify card vs container again:"
+    bot_log "dry run: --retry-deferred would recheck exactly the deferred cards listed in $MYR_BOT_SUMMARY (${MYR_BOT_RETRY_WAIT_SEC}s compatibility wait per bot); the server reconciler owns R3 application:"
     while IFS=$'\t' read -r id orig tgt; do
       [[ -n "$id" ]] && bot_log "    $id (pre-rollout image ${orig:--}, target ${tgt:--})"
     done <<<"$deferred_list"
@@ -593,7 +577,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   bot_log "  2. pull each image on the local host${MYR_BOT_FLEET_HOSTS:+ and fleet hosts $MYR_BOT_FLEET_HOSTS}"
   bot_log "  3. add the new digests to images of $MYR_BOT_DOCKERGATE_CONFIG (old bot images stay until the fleet moved); check-config; SIGHUP"
   bot_log "  4. enroll every hermes_gateway bot of company $BOARD_COMPANY_ID in bots of the dockergate config"
-  bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}, through PATCH + apply; deferred bots retry up to ${MYR_BOT_TIMEOUT_SEC}s; no run is interrupted"
+  bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}; busy cards are handed to the server reconciler for R3 application"
   bot_log "  6. remove the superseded bot images from images; SIGHUP"
   bot_log "  6b. DEPLOY-HYGIENE: remove the local bot/component images older than MYRMIDON_DEPLOY_IMAGE_KEEP=${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) (images used by a container are kept)"
   bot_log "  7. journal: $MYR_BOT_ROLLOUT_LOG"
@@ -778,8 +762,8 @@ switch_one_bot() {
   # it to the release image now; the server reconciler owns the safe R3 apply
   # and will wait for the agent's current work to drain. Keeping the card on
   # the old image made a busy bot invisible to reconciliation forever.
-  # $2 ("force") is retained for compatibility with the tail-pass caller; it
-  # no longer controls whether the card is patched.
+  # $2 is retained for compatibility with the old caller interface; busy bots
+  # are never force-applied by this rollout.
   local apply_attempt=1
   while :; do
     if is_release_ref "$current" || [[ -n "$prev_block" ]]; then
@@ -1127,12 +1111,20 @@ if ((total > 0)); then
   wait_for_maintenance_leaving || true
 fi
 if ((RETRY_DEFERRED)); then
-  # One deliberate pass over the deferred bots: wait per bot, re-apply, never
-  # interrupt a run; the verdict belongs to the verification below.
+  # Busy agents already have the desired image in their card. The server
+  # reconciler owns the next R3 apply; this compatibility path only verifies
+  # the recorded cards and must not perform another apply.
   for id in "${TRACKING_BOTS[@]}"; do
     ((MYR_BOT_RETRY_WAIT_SEC > 0)) && sleep "$MYR_BOT_RETRY_WAIT_SEC"
     rc=0
-    switch_bot_recorded "$id" || rc=$?
+    if is_release_ref "$(card_image "$id" || true)"; then
+      BOT_STATE["$id"]="deferred"
+      DEFERRED_REASON="compatibility retry: server reconciler owns R3 application"
+      rc=2
+    else
+      DEFERRED_REASON="compatibility retry: desired card is not on the release image"
+      rc=2
+    fi
     case "$rc" in
       0) switched=$((switched + 1)) ;;
       2) stayed_deferred=$((stayed_deferred + 1)) ;;
@@ -1174,40 +1166,8 @@ if ((${#deferred_tail[@]} > 0)); then
   bot_log "deferred ${#deferred_tail[@]} bot(s) to the server reconciler; no rollout retry pass"
 fi
 
-# --- force stage: apply still-deferred bots without the status gate ----------
-if ((${#deferred_tail[@]} > 0)) && ((MYR_BOT_FORCE_DEFERRED_SEC > 0)); then
-  force_deadline=$((SECONDS + MYR_BOT_FORCE_DEFERRED_SEC))
-  bot_log "force stage: ${#deferred_tail[@]} deferred bot(s), applying without status gate for ${MYR_BOT_FORCE_DEFERRED_SEC}s"
-  pending=("${deferred_tail[@]}")
-  while ((${#pending[@]} > 0)); do
-    retry=()
-    for id in "${pending[@]}"; do
-      rc=0
-      DEFERRED_REASON=""
-      switch_bot_recorded "$id" force || rc=$?
-      case "$rc" in
-        0) switched=$((switched + 1)) ;;
-        2)
-          retry+=("$id")
-          deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
-          ;;
-        *) failed=$((failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
-      esac
-    done
-    pending=("${retry[@]}")
-    ((${#pending[@]} > 0)) || break
-    if ((SECONDS >= force_deadline)); then
-      break
-    fi
-    sleep "$POLL_INTERVAL_SEC"
-  done
-  deferred_tail=("${pending[@]}")
-  if ((${#deferred_tail[@]} > 0)); then
-    bot_log "force stage done: ${#deferred_tail[@]} bot(s) still deferred"
-  else
-    bot_log "force stage done: all deferred bots switched"
-  fi
-fi
+# The server reconciler owns the R3 window; a busy bot is intentionally not
+# retried or force-applied by this script.
 
 stayed_deferred=${#deferred_tail[@]}
 if ((${#deferred_tail[@]} > 0)); then
