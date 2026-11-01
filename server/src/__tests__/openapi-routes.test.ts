@@ -99,11 +99,6 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "admin-assistant.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
-  // Mounted directly by app.ts; the scanner only inspects route files under
-  // routes/ and therefore cannot observe these documented operations.
-  "GET /api/admin-assistant/cluster-health",
-  "GET /api/admin-assistant/health",
-  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
   // These webhook handlers are mounted outside the scanner's route-file map.
   // Their provider signatures intentionally keep them out of the public board
   // API document, so retain exact exclusions for both sides of the comparison.
