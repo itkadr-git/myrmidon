@@ -129,7 +129,9 @@ export function buildBudgetLimitTree({
     const usageRow = usageByKey.get(key) ?? null;
     const spentCents = limit ? (usageRow?.spentCents ?? 0) : null;
     const warningThreshold = limit
-      ? (usageRow?.warningThreshold ?? warningThresholdFromUsage(spentCents, limit.amountCents))
+      ? (usageRow !== null && usageRow !== undefined
+          ? (usageRow.warningThreshold ?? null)
+          : (limit.isActive ? warningThresholdFromUsage(spentCents, limit.amountCents) : null))
       : null;
     return node(level, ref, limit, {
       depth,

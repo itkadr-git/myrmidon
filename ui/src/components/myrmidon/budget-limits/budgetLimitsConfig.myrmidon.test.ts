@@ -189,6 +189,16 @@ describe("buildBudgetLimitTree", () => {
     expect(tree.nest[1].warningThreshold).toBeNull();
   });
 
+  it("does not show a warning for an inactive limit at 90% usage", () => {
+    const inactiveLimit = limit({ level: "nest", ref: "inactive", amountCents: 1000, isActive: false });
+    const result = buildBudgetLimitTree({
+      limits: [inactiveLimit],
+      usage: [{ ...inactiveLimit, spentCents: 900, events: 1, overLimit: false, warningThreshold: null }],
+      projects: [],
+    });
+    expect(result.nest.find((row) => row.ref === "inactive")?.warningThreshold).toBeNull();
+  });
+
   it("reads a stored row without a usage row as zero spend, not as no limit", () => {
     const project = tree.nest[1];
     const noUsageTree = buildBudgetLimitTree({ limits: [projectLimit], usage: [], projects: [] });
