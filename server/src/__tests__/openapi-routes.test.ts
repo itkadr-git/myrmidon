@@ -99,6 +99,11 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "admin-assistant.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // Mounted directly by app.ts; the scanner only inspects route files under
+  // routes/ and therefore cannot observe these documented operations.
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/health",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
