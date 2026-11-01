@@ -58,6 +58,8 @@ describeEmbeddedPostgres("agent service clearError", () => {
     const replacementId = randomUUID();
     const otherEngineerId = randomUUID();
     const qaId = randomUUID();
+    const returnBackupId = randomUUID();
+    const participantBackupId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Termination reassignment", issuePrefix: `TR${companyId.slice(0, 6).toUpperCase()}` });
     const agentValues = (id: string, name: string, role: string) => ({
       id, companyId, name, role, status: "active" as const, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
@@ -67,10 +69,6 @@ describeEmbeddedPostgres("agent service clearError", () => {
       agentValues(replacementId, "Replacement Engineer", "engineer"),
       agentValues(otherEngineerId, "Busy Engineer", "engineer"),
       agentValues(qaId, "QA Agent", "qa"),
-    ]);
-    const returnBackupId = randomUUID();
-    const participantBackupId = randomUUID();
-    await db.insert(agents).values([
       agentValues(returnBackupId, "Return Backup", "engineer"),
       agentValues(participantBackupId, "Participant Backup", "engineer"),
     ]);
@@ -89,6 +87,13 @@ describeEmbeddedPostgres("agent service clearError", () => {
       { id: issueIds[5], companyId, identifier: "TR-6", title: "Other engineer load", status: "in_progress", assigneeAgentId: otherEngineerId },
       { companyId, identifier: "TR-7", title: "Other engineer load", status: "in_progress", assigneeAgentId: otherEngineerId },
     ]);
+
+    const initialWorkload = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const initialAgentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const initialLiveEngineers = initialAgentRows.filter((agent) => agent.role === "engineer" && agent.status !== "terminated" && agent.status !== "retired");
+    const initialLoad = (agentId: string) => initialWorkload.filter((row) => row.assigneeAgentId === agentId && row.status !== "done" && row.status !== "cancelled").length;
+    const leastLoadedBeforeTermination = initialLiveEngineers.reduce((best, agent) => initialLoad(agent.id) < initialLoad(best.id) || (initialLoad(agent.id) === initialLoad(best.id) && agent.id.localeCompare(best.id) < 0) ? agent : best);
+    expect(leastLoadedBeforeTermination.id).toBe(replacementId);
 
     await agentService(db).terminate(terminatedId);
 
