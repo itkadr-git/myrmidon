@@ -887,14 +887,23 @@ describeEmbeddedPostgres(
 
       it("keeps an operational card (no human addressee) board-only", async () => {
         const fixture = await seedFixture();
-        for (const resolverPolicy of ["anyone", "not_creator"] as const) {
-          const interaction = await createCard(fixture, { resolverPolicy });
-          const publications = await publicationsForInteraction(
-            fixture.companyId,
-            interaction.id,
-          );
-          expect(publications).toEqual([]);
-        }
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        });
+        // Operational request with a human-only effective resolver policy:
+        // governance explicitly requires an owner decision, so delivery is valid.
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "human_only",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.payload).not.toHaveProperty("card");
+        expect((publications[0]!.payload as { text: string }).text).toContain(
+          "Proceed with the deploy?",
+        );
       });
 
       it('mode "all" publishes operational cards as text without actions', async () => {
