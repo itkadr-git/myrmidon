@@ -354,6 +354,8 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", 
     const getRes = await request(server).get(base).expect(200);
     expect(getRes.body.availableTypes).toBeDefined();
     expect(getRes.body.availableTypes).not.toContain("chatgpt-pool");
+    expect(getRes.body.availableTypes).not.toContain("antigravity-pool");
+    expect(getRes.body.availableTypes).not.toContain("google-ai-pool");
     expect(getRes.body.availableTypes).toContain("openai");
     expect(getRes.body.availableTypes).toContain("dashscope");
 
