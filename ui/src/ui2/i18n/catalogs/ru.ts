@@ -418,6 +418,25 @@ export const ru: Ui2Catalog = {
           metrics: "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
           states: { running: "Работает", stopped: "Остановлен", unknown: "Неизвестно" },
         },
+        more: {
+          title: "Ещё",
+          subtitle: "Дополнительные разделы и настройки.",
+          sections: {
+            navigation: "Навигация",
+            appearance: "Внешний вид",
+          },
+          theme: "Тема",
+          themeLight: "Светлая",
+          themeDark: "Тёмная",
+          themeSystem: "Системная",
+          links: {
+            swarm: "Рой",
+            costs: "Расходы",
+            quality: "Качество",
+            settings: "Настройки",
+            agentCard: "Карточка агента",
+          },
+        },
       },
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — free-text planning
