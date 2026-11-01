@@ -469,7 +469,8 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
 
     const env = envNow();
     const enabled = isBotContainersEnabled(env);
-    const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+    const savedAllowlist = runtimeEnv ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
+    const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
     const runtime = deps.getRuntime();
 
     const companyAgents = deps.listCompanyAgents ? await deps.listCompanyAgents(companyId) : [];
