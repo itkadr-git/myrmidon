@@ -357,7 +357,7 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
-  /** Share of recently closed tasks with a task-linked knowledge revision. */
+  /** Share of recently completed tasks with a merged system change that have a task-linked knowledge revision. */
   knowledgeOnChangeShare?: number | null;
   /** p50/p95 seconds from merged PR work product to PR-linked revision. */
   knowledgeRevisionDelaySecondsP50?: number | null;
