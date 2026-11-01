@@ -825,6 +825,7 @@ export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntime
 export interface BotDiskMechanics {
   graceClosingMinutes: number;
   scratchTtlHours: number;
+  sessionRetentionDays: number;
   partitionThresholdPercent: number;
   partitionRefuseOpenPercent: number;
   partitionCriticalPercent: number;
