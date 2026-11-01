@@ -6,7 +6,7 @@ index a05dcd3945..6773051f35 100644
      # myrmidon(G1): staging and binding the run's launcher goes through the same
      # per-run context (NONCONTAINER-GITHUB-LAUNCHER).
      from tools.github_launcher_context import set_github_launcher_vars
-+    # myrmidon(OPE-10494): bind THIS run's id for the whole turn so tool
++    # myrmidon(G1): bind THIS run's id for the whole turn so tool
 +    # children see it as $PAPERCLIP_RUN_ID/$MYRMIDON_RUN_ID — the container's
 +    # os.environ copy belongs to whichever run started the container and is
 +    # stale for every later run (409 run-ownership on board mutations).
@@ -18,7 +18,7 @@ index a05dcd3945..6773051f35 100644
              # root, or a run without a broker capability leaves the run untouched.
              if run.github_launcher:
                  resets.append(set_github_launcher_vars(run.github_launcher, run.run_id))
-+            # myrmidon(OPE-10494): every run carries its own id — bind it
++            # myrmidon(G1): every run carries its own id — bind it
 +            # unconditionally (contextvars, reset in the finally block) so the
 +            # child-env bridge in tools/environments/local.py overrides the
 +            # stale container-level value for this run's spawns.
@@ -34,7 +34,7 @@ index 899c4378b1..b0757df085 100644
          env.update(launcher_env)
      elif strip_github_launcher_env is not None:
          strip_github_launcher_env(env)
-+    # myrmidon(OPE-10494): bridge THIS run's id into every child spawn, always
++    # myrmidon(G1): bridge THIS run's id into every child spawn, always
 +    # overriding the container-level os.environ copy (which belongs to whatever
 +    # run started the long-lived gateway container and is stale for every later
 +    # run — a stale $PAPERCLIP_RUN_ID on an X-Paperclip-Run-Id board mutation
@@ -56,7 +56,7 @@ index 0000000000..f170a39b49
 --- /dev/null
 +++ b/tools/run_id_context.py
 @@ -0,0 +1,77 @@
-+"""Run-scoped Paperclip run-id context (myrmidon OPE-10494).
++"""Run-scoped Paperclip run-id context (myrmidon G1).
 +
 +The board's ``hermes_gateway`` adapter POSTs each run with the attempt's own
 +run id (the ``Idempotency-Key``/body identity the board's checkout guard
