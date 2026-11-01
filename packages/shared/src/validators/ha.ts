@@ -1,23 +1,17 @@
-export const haStandbyStatusSchema = {
-  $id: "ha-standby-status",
-  type: "object",
-  required: ["status", "checkedAt", "checks"],
-  additionalProperties: false,
-  properties: {
-    status: { enum: ["ready", "unhealthy", "not_configured"] },
-    checkedAt: { type: "string", format: "date-time" },
-    checks: {
-      type: "array",
-      items: {
-        type: "object",
-        required: ["name", "status", "checkedAt"],
-        additionalProperties: false,
-        properties: {
-          name: { type: "string" },
-          status: { enum: ["ready", "unhealthy", "not_configured"] },
-          checkedAt: { type: "string", format: "date-time" },
-        },
-      },
-    },
-  },
-} as const;
+import { z } from "zod";
+
+export const haStandbyCheckStatusSchema = z.enum(["ready", "unhealthy", "not_configured"]);
+
+export const haStandbyCheckSchema = z.object({
+  name: z.string().min(1),
+  status: haStandbyCheckStatusSchema,
+  checkedAt: z.iso.datetime(),
+}).strict();
+
+export const haStandbyStatusSchema = z.object({
+  status: haStandbyCheckStatusSchema,
+  checkedAt: z.iso.datetime(),
+  checks: z.array(haStandbyCheckSchema),
+}).strict();
+
+export type HaStandbyStatus = z.infer<typeof haStandbyStatusSchema>;
