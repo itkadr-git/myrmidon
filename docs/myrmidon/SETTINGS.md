@@ -2537,8 +2537,3 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
-
-### 1.7 LOCALE-UPLOAD: Custom Localization Catalogs (`customLocales`)
-- **Key**: `instance_settings.general.customLocales`
-- **Source**: API `POST /api/myrmidon/locales/upload` (and `DELETE /api/myrmidon/locales/custom/:locale`)
-- **Description**: Stored custom localization catalogs uploaded by board members, keyed by locale identifier (`{ [locale]: StoredCustomLocale }`). Preserved across instance settings updates without restarting the server.

@@ -133,8 +133,7 @@ export function localeUploadRoutes(
       assertBoard(req);
 
       const payload = await parseUploadPayload(req);
-      const user = req.user as { id?: string } | undefined;
-      const uploadedBy = user?.id || null;
+      const uploadedBy = req.actor.userId ?? null;
 
       const result = await service.uploadLocale({
         locale: payload.locale,

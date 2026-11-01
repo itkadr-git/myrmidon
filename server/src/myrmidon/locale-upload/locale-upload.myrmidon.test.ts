@@ -78,7 +78,7 @@ describe("validator unit tests", () => {
     expect(flattened.get("app.title")).toBe("Myrmidon");
     expect(flattened.get("app.welcome")).toBe("Welcome to {{company}}!");
     expect(flattened.get("settings.profile.name")).toBe("Name");
-    expect(flattened.size).toBe(7);
+    expect(flattened.size).toBe(9);
   });
 
   it("parses catalog JSON strings and buffers", () => {
@@ -118,12 +118,17 @@ describe("validator unit tests", () => {
 
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
-    expect(result.report.totalBaseKeys).toBe(7);
+    expect(result.report.totalBaseKeys).toBe(9);
     expect(result.report.totalCandidateKeys).toBe(6);
     expect(result.report.matchedCount).toBe(5);
-    expect(result.report.missingCount).toBe(2);
+    expect(result.report.missingCount).toBe(4);
     expect(result.report.extraCount).toBe(1);
-    expect(result.report.missingKeys).toEqual(["app.description", "settings.language"]);
+    expect(result.report.missingKeys).toEqual([
+      "app.description",
+      "settings.language",
+      "settings.profile.name",
+      "settings.profile.email",
+    ]);
     expect(result.report.extraKeys).toEqual(["custom_feature.label"]);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
@@ -305,14 +310,14 @@ describe("stateful service persistence logic", () => {
 
 describe("locale upload HTTP routes", () => {
   function createTestApp(options: {
-    actor?: { id: string; type: "board" | "agent" | "system" };
+    actor?: { type: "board" | "agent" | "none"; userId?: string; agentId?: string };
     service?: LocaleUploadService;
   } = {}) {
     const app = express();
     app.use(express.json({ limit: "10mb" }));
 
     app.use((req, _res, next) => {
-      req.user = options.actor ?? { id: "user-admin", type: "board" };
+      req.actor = options.actor ?? { type: "board", userId: "user-admin" };
       next();
     });
 
@@ -374,7 +379,7 @@ describe("locale upload HTTP routes", () => {
     expect(res.body.locale).toBe("fr");
     expect(res.body.version).toBe(1);
     expect(res.body.validation.valid).toBe(true);
-    expect(res.body.validation.report.matchedCount).toBe(7);
+    expect(res.body.validation.report.matchedCount).toBe(9);
     expect(res.body.validation.report.coveragePercent).toBe(100);
   });
 
@@ -415,7 +420,7 @@ describe("locale upload HTTP routes", () => {
 
   it("rejects non-board actors with 403 Forbidden", async () => {
     const app = createTestApp({
-      actor: { id: "agent-123", type: "agent" },
+      actor: { type: "agent", agentId: "agent-123" },
     });
 
     await request(app)
@@ -459,7 +464,7 @@ describe("locale upload HTTP routes", () => {
       .expect(200);
 
     expect(res.body.valid).toBe(true);
-    expect(res.body.report.matchedCount).toBe(7);
+    expect(res.body.report.matchedCount).toBe(9);
 
     // Broken candidate with placeholder mismatch
     const brokenCandidate = {
