@@ -1,8 +1,8 @@
-import fs from \"node:fs\";
-import net from \"node:net\";
-import { execFile } from \"node:child_process\";
-import * as p from \"@clack/prompts\";
-import pc from \"picocolors\";
+import fs from "node:fs";
+import net from "node:net";
+import { execFile } from "node:child_process";
+import * as p from "@clack/prompts";
+import pc from "picocolors";
 import {
   buildGeoCheckReport,
   evaluateDockerReadiness,
@@ -16,14 +16,14 @@ import {
   type GeoCheckItem,
   type GeoCheckOptions,
   type GeoCheckReport,
-} from \"@myrmidon/shared\";
-import { loadPaperclipEnvFile } from \"../config/env.js\";
-import { resolveConfigPath } from \"../config/store.js\";
-import { printMyrmidonCliBanner } from \"../utils/banner.js\";
+} from "@myrmidon/shared";
+import { loadPaperclipEnvFile } from "../config/env.js";
+import { resolveConfigPath } from "../config/store.js";
+import { printMyrmidonCliBanner } from "../utils/banner.js";
 
 const STATUS_ICON = {
-  pass: pc.green(\"✓\"),
-  fail: pc.red(\"✗\"),
+  pass: pc.green("✓"),
+  fail: pc.red("✗"),
 } as const;
 
 export interface GeoCheckDependencies {
@@ -40,7 +40,7 @@ export function defaultExecCmd(
   timeoutMs = 5000,
 ): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, encoding: \"utf-8\" }, (err, stdout) => {
+    execFile(file, args, { timeout: timeoutMs, encoding: "utf-8" }, (err, stdout) => {
       if (err) resolve(null);
       else resolve(stdout);
     });
@@ -64,15 +64,15 @@ export function defaultProbePort(
     };
 
     socket.setTimeout(timeoutMs);
-    socket.once(\"connect\", () => {
+    socket.once("connect", () => {
       cleanup();
       resolve(true);
     });
-    socket.once(\"timeout\", () => {
+    socket.once("timeout", () => {
       cleanup();
       resolve(false);
     });
-    socket.once(\"error\", () => {
+    socket.once("error", () => {
       cleanup();
       resolve(false);
     });
@@ -88,8 +88,8 @@ export function defaultProbePort(
 
 export function defaultReadOsRelease(): string | null {
   try {
-    if (fs.existsSync(\"/etc/os-release\")) {
-      return fs.readFileSync(\"/etc/os-release\", \"utf-8\");
+    if (fs.existsSync("/etc/os-release")) {
+      return fs.readFileSync("/etc/os-release", "utf-8");
     }
   } catch {
     // ignore
@@ -100,7 +100,7 @@ export function defaultReadOsRelease(): string | null {
 export function defaultReadMirrorConfig(path: string): string | null {
   try {
     if (fs.existsSync(path)) {
-      return fs.readFileSync(path, \"utf-8\");
+      return fs.readFileSync(path, "utf-8");
     }
   } catch {
     // ignore
@@ -126,24 +126,24 @@ export async function executeGeoCheck(
   checks.push(evaluateOsReadiness(osInfo, options.minOsMajor));
 
   // 2. Docker version check
-  const dockerRaw = await exec(\"docker\", [\"version\", \"--format\", \"{{.Server.Version}}\"], 5000);
+  const dockerRaw = await exec("docker", ["version", "--format", "{{.Server.Version}}"], 5000);
   checks.push(evaluateDockerReadiness(dockerRaw, options.minDockerMajor));
 
   // 3. PostgreSQL client check
-  const psqlRaw = await exec(\"psql\", [\"--version\"], 5000);
+  const psqlRaw = await exec("psql", ["--version"], 5000);
   checks.push(evaluatePgClientReadiness(psqlRaw, options.minPgMajor));
 
   // 4. PostgreSQL port reachability
   const pgReachable = await probe(options.pgHost, options.pgPort, options.timeoutMs);
-  checks.push(evaluatePortReadiness(\"PostgreSQL\", options.pgHost, options.pgPort, pgReachable));
+  checks.push(evaluatePortReadiness("PostgreSQL", options.pgHost, options.pgPort, pgReachable));
 
   // 5. LiteLLM port reachability
   const litellmReachable = await probe(options.litellmHost, options.litellmPort, options.timeoutMs);
-  checks.push(evaluatePortReadiness(\"LiteLLM\", options.litellmHost, options.litellmPort, litellmReachable));
+  checks.push(evaluatePortReadiness("LiteLLM", options.litellmHost, options.litellmPort, litellmReachable));
 
   // 6. Secret quorum
   const secretNames = options.secrets
-    .split(\",\")
+    .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   checks.push(evaluateSecretsReadiness(secretNames, env));
@@ -159,7 +159,7 @@ export async function geoCheckCommand(
   rawOpts: Record<string, unknown>,
   deps: GeoCheckDependencies = {},
 ): Promise<GeoCheckReport> {
-  const configPath = resolveConfigPath(typeof rawOpts.config === \"string\" ? rawOpts.config : undefined);
+  const configPath = resolveConfigPath(typeof rawOpts.config === "string" ? rawOpts.config : undefined);
   loadPaperclipEnvFile(configPath);
 
   const env = deps.env ?? process.env;
@@ -180,7 +180,7 @@ export async function geoCheckCommand(
 
   const parsed = geoCheckOptionsSchema.safeParse(rawInput);
   if (!parsed.success) {
-    const errorMsg = `Invalid geo-check options: ${parsed.error.errors.map((e) => `${e.path.join(\".\")}: ${e.message}`).join(\", \")}`;
+    const errorMsg = `Invalid geo-check options: ${parsed.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`;
     if (rawOpts.json) {
       console.error(JSON.stringify({ error: errorMsg, details: parsed.error.format() }));
     } else {
@@ -194,7 +194,7 @@ export async function geoCheckCommand(
 
   if (!options.json) {
     printMyrmidonCliBanner();
-    p.intro(pc.bgCyan(pc.black(\" myrmidon geo-check \")));
+    p.intro(pc.bgCyan(pc.black(" myrmidon geo-check ")));
   }
 
   const report = await executeGeoCheck(options, { ...deps, env });
@@ -204,7 +204,7 @@ export async function geoCheckCommand(
   } else {
     for (const check of report.checks) {
       const icon = STATUS_ICON[check.status];
-      const tag = check.status === \"pass\" ? pc.green(\"[PASS]\") : pc.red(\"[FAIL]\");
+      const tag = check.status === "pass" ? pc.green("[PASS]") : pc.red("[FAIL]");
       p.log.message(`${icon} ${tag} ${pc.bold(check.name)}: ${check.detail}`);
     }
 
@@ -213,12 +213,12 @@ export async function geoCheckCommand(
     if (report.failedChecks > 0) {
       summaryParts.push(pc.red(`${report.failedChecks} failed`));
     }
-    p.note(summaryParts.join(\", \"), \"Summary\");
+    p.note(summaryParts.join(", "), "Summary");
 
     if (report.passed) {
-      p.outro(pc.green(\"Standby readiness: PASS\"));
+      p.outro(pc.green("Standby readiness: PASS"));
     } else {
-      p.outro(pc.red(`Standby readiness: FAIL (${report.failedChecks} ${report.failedChecks === 1 ? \"check\" : \"checks\"})`));
+      p.outro(pc.red(`Standby readiness: FAIL (${report.failedChecks} ${report.failedChecks === 1 ? "check" : "checks"})`));
     }
   }
 

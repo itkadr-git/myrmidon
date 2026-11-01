@@ -1,11 +1,11 @@
-import { z } from \"zod\";
+import { z } from "zod";
 
 export const geoCheckOptionsSchema = z.object({
-  pgHost: z.string().min(1).default(\"127.0.0.1\"),
+  pgHost: z.string().min(1).default("127.0.0.1"),
   pgPort: z.coerce.number().int().min(1).max(65535).default(5432),
-  litellmHost: z.string().min(1).default(\"127.0.0.1\"),
+  litellmHost: z.string().min(1).default("127.0.0.1"),
   litellmPort: z.coerce.number().int().min(1).max(65535).default(4000),
-  secrets: z.string().default(\"DATABASE_URL,LITELLM_MASTER_KEY,LITELLM_API_KEY\"),
+  secrets: z.string().default("DATABASE_URL,LITELLM_MASTER_KEY,LITELLM_API_KEY"),
   mirrorConfig: z.string().optional(),
   minOsMajor: z.coerce.number().int().min(1).default(22),
   minDockerMajor: z.coerce.number().int().min(1).default(24),
@@ -20,7 +20,7 @@ export const geoCheckOptionsSchema = z.object({
 export type GeoCheckOptions = z.infer<typeof geoCheckOptionsSchema>;
 export type GeoCheckInput = z.input<typeof geoCheckOptionsSchema>;
 
-export const geoCheckItemStatusSchema = z.enum([\"pass\", \"fail\"]);
+export const geoCheckItemStatusSchema = z.enum(["pass", "fail"]);
 export type GeoCheckItemStatus = z.infer<typeof geoCheckItemStatusSchema>;
 
 export const geoCheckItemSchema = z.object({
