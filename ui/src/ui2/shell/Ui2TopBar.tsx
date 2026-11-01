@@ -1,7 +1,7 @@
 // myrmidon(UI-0a): UI-2.0 top bar — nest switcher ("All nests" = project
 // scope today, screen-map §5 q1), status chips (colony / fleet / forecast),
 // the "Tell the Commander" entry (opens the commander palette stub) and the
-// decisions badge. Until STATUS-STRIP exists the chips read the composed
+// decisions badge. Status chips read the single server-provided
 // strip (useUi2Status). Every visual value comes from --myr-* tokens.
 import { useState } from "react";
 import { CircleAlert, ChevronDown, MessagesSquare, Server, Users, Wallet } from "lucide-react";
