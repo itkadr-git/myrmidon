@@ -46,6 +46,10 @@ import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js"
 import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+} from "../myrmidon/review-stage-recovery/policy.js";
+import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
   isApprovalRequestingDone,
@@ -15824,16 +15828,47 @@ export function issueRoutes(
                 reenteringReview: existing.status !== "in_review",
               });
               if (stageWake?.agentId) {
-                const admission = await insertReviewAdmissionWakeup(
-                  stageWake.agentId,
-                  stageWake.wakeup,
-                  tx as unknown as Db,
-                  updated.companyId,
-                );
-                if (admission && admission.created === false && !admission.skippedMissingAgent) {
-                  throw new Error(
-                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                let admitReviewer = true;
+                if (stageWake.wakeup.reason === "execution_review_requested") {
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                    companyId: updated.companyId,
+                    issueId: updated.id,
+                  });
+                  if (ci.state === "pending" || ci.state === "unknown") {
+                    admitReviewer = false;
+                    const previousPolicy = normalizeIssueExecutionPolicy(
+                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    );
+                    const monitor = {
+                      nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
+                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      scheduledBy: "assignee" as const,
+                      kind: "external_service" as const,
+                      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+                      externalRef: ci.pullRequestUrl ?? updated.id,
+                      timeoutAt: null,
+                      maxAttempts: null,
+                      recoveryPolicy: "wake_owner" as const,
+                    };
+                    updateFields.executionPolicy = {
+                      ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+                      monitor,
+                    } as any;
+                    issueUpdateData.executionPolicy = updateFields.executionPolicy;
+                  }
+                }
+                if (admitReviewer) {
+                  const admission = await insertReviewAdmissionWakeup(
+                    stageWake.agentId,
+                    stageWake.wakeup,
+                    tx as unknown as Db,
+                    updated.companyId,
                   );
+                  if (admission && admission.created === false && !admission.skippedMissingAgent) {
+                    throw new Error(
+                      `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                    );
+                  }
                 }
               }
               if (

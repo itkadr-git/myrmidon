@@ -12142,6 +12142,49 @@ export function heartbeatService(
             throw conflict(scheduled.reason);
         }
       } else {
+        // Review admission is gated by the exact PR-head CI, not by the stale
+        // activeCi projection used by ordinary monitors. Keep the reviewer
+        // asleep until the final check is terminal; the next monitor tick is
+        // the single transition wake.
+        if (isReviewCiWaitMonitor) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const ci = await createReviewPullRequestCiResolver({ db })({
+            companyId: claimed.companyId,
+            issueId: claimed.id,
+          });
+          if (ci.state === "pending" || ci.state === "unknown") {
+            const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
+            const nextCheckAt = new Date(input.now.getTime() + backoffMs);
+            await db.update(issues).set({
+              monitorNextCheckAt: nextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: "review_ci_pending",
+                ciState: ci.state,
+                ciReason: ci.reason ?? null,
+                headSha: ci.headSha,
+                nextCheckAt: nextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+              },
+            });
+            return { outcome: "skipped" as const, reason: "review_ci_pending" };
+          }
+        }
         const prProducts = await db.select().from(issueWorkProducts)
           .where(and(
             eq(issueWorkProducts.companyId, claimed.companyId),
