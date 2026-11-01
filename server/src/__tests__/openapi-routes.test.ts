@@ -93,14 +93,16 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>([
+const explicitOpenApiCoverageExclusions = new Set<string>();
+
+const explicitOpenApiOperationCoverageExclusions = new Set([
   // Guardrails rules are a legacy board endpoint mounted outside the
   // contract-first OpenAPI inventory. Keep the route scanner honest without
   // treating this pre-existing endpoint as a documented API contract.
-  "guardrails.ts",
-]);
-
-const explicitOpenApiOperationCoverageExclusions = new Set([
+  "GET /api/companies/{companyId}/guardrails/rules",
+  "GET /api/companies/{companyId}/guardrails",
+  "GET /api/guardrails/rules",
+  "GET /api/guardrails",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
