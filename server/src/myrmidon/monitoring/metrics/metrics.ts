@@ -612,8 +612,8 @@ async function readCorpusShadowLatencies(
 
 /** Knowledge-on-change coverage and revision delay for recently completed work. */
 async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<{ share: number | null; delayP50: number | null; delayP95: number | null }> {
-  const changed = await db
-    .selectDistinct({ id: issues.id, identifier: issues.identifier })
+  const changedRows = await db
+    .select({ id: issues.id, identifier: issues.identifier })
     .from(issues)
     .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
     .where(and(
@@ -622,12 +622,14 @@ async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<
       eq(issueWorkProducts.type, "pull_request"),
       eq(issueWorkProducts.status, "merged"),
     ));
+  const changed = Array.from(new Map(changedRows.map((row) => [row.id, row])).values());
   if (changed.length === 0) return { share: null, delayP50: null, delayP95: null };
   const identifiers = changed.map((row) => row.identifier).filter((value): value is string => Boolean(value));
-  const covered = identifiers.length === 0 ? [] : await db
-    .selectDistinct({ ref: knowledgeSources.ref })
+  const coveredRows = identifiers.length === 0 ? [] : await db
+    .select({ ref: knowledgeSources.ref })
     .from(knowledgeSources)
     .where(and(eq(knowledgeSources.kind, "task"), inArray(knowledgeSources.ref, identifiers)));
+  const covered = [...new Set(coveredRows.map((row) => row.ref))];
   const revisions = await db
     .select({ createdAt: knowledgeRevisions.createdAt, ref: knowledgeSources.ref })
     .from(knowledgeSources)
