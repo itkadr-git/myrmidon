@@ -347,8 +347,6 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
           execArgv: [
             ...execArgv,
             "--import",
-            "data:text/javascript,if(typeof%20process.send==='function')process.send=process.send.bind(process);",
-            "--import",
             pathToFileURL(tsxLoader).href,
             "--max-old-space-size=1024",
           ],

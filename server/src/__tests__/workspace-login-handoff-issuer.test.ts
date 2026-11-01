@@ -198,8 +198,10 @@ describe("issueWorkspaceLoginHandoff", () => {
     delete process.env.PAPERCLIP_WORKSPACE_HANDOFF_SECRET;
     const previousAuthSecret = process.env.BETTER_AUTH_SECRET;
     const previousJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousMyrmidonJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
     delete process.env.BETTER_AUTH_SECRET;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.MYRMIDON_AGENT_JWT_SECRET;
     try {
       const cwd = createWorkspaceCwd(INSTANCE_ID);
       const result = await issueWorkspaceLoginHandoff({
@@ -213,6 +215,7 @@ describe("issueWorkspaceLoginHandoff", () => {
     } finally {
       if (previousAuthSecret !== undefined) process.env.BETTER_AUTH_SECRET = previousAuthSecret;
       if (previousJwtSecret !== undefined) process.env.PAPERCLIP_AGENT_JWT_SECRET = previousJwtSecret;
+      if (previousMyrmidonJwtSecret !== undefined) process.env.MYRMIDON_AGENT_JWT_SECRET = previousMyrmidonJwtSecret;
     }
   });
 

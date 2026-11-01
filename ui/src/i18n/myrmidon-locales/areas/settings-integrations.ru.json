@@ -138,7 +138,17 @@
         "saving": "Сохранение...",
         "save": "Сохранить настройки каналов",
         "saveError": "Не удалось сохранить настройки каналов.",
-        "loadError": "Не удалось загрузить настройки каналов."
+        "loadError": "Не удалось загрузить настройки каналов.",
+        "telegramPoolBridgesTitle": "Мосты Telegram-пулов (ChatGPT и Gemini)",
+        "telegramPoolChatGptBridge": "Мост пула ChatGPT",
+        "telegramPoolGeminiBridge": "Мост пула Gemini",
+        "telegramPoolAllowedChatId": "Разрешённый Chat ID",
+        "telegramPoolAllowedChatIdPlaceholder": "например, 123456789",
+        "telegramPoolModel": "Модель",
+        "telegramPoolChatGptModelPlaceholder": "balanced",
+        "telegramPoolGeminiModelPlaceholder": "gemini-2.0-flash",
+        "telegramPoolBotToken": "Токен бота / Ссылка на секрет",
+        "telegramPoolBotTokenPlaceholder": "Токен бота или secret:name"
       },
       "clouds-settings-page": {
         "requestFailed": "Запрос не выполнен: {{status}}",

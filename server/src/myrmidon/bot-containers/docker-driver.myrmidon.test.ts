@@ -77,7 +77,7 @@ function testProfile(
       plainFile("hermes/config.yaml", "model:\n  default: example-model\n"),
       { path: "hermes/.env", content: opts.dotenv ?? TEST_DOTENV, mode: 0o600, secret: true },
       plainFile("hermes/hindsight/config.json", "{}\n"),
-      ...skills.map((name) => plainFile(`hermes/skills-board/${name}/SKILL.md`, `# ${name}\n`)),
+      ...skills.map((name) => plainFile(`hermes/skills/paperclip-managed/${name}/SKILL.md`, `# ${name}\n`)),
       plainFile("workspace/AGENTS.md", "instructions\n"),
       ...(opts.extra ?? []),
     ],
@@ -537,6 +537,7 @@ describe("buildProfileArchives", () => {
 
   it("stages the compiler-owned skills directory even when the profile has no skills (that is what empties it)", () => {
     const hermes = archives[0].entries;
+    expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills/paperclip-managed`)).toBe(true);
     expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills-board`)).toBe(true);
   });
 
@@ -1152,7 +1153,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     // files in place, secrets 0600, nothing left in staging
     expect(read(path.join(volumes.hermes, "config.yaml"))).toContain("example-model");
     expect(fs.statSync(path.join(volumes.hermes, ".env")).mode & 0o777).toBe(0o600);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(read(path.join(volumes.workspace, "AGENTS.md"))).toBe("instructions\n");
     expect(leftovers()).toEqual([]);
 
@@ -1263,18 +1264,18 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     fs.mkdirSync(path.join(volumes.hermes, "sessions"));
     fs.writeFileSync(path.join(volumes.hermes, "sessions/s1.json"), "{}"); // written by the bot itself
     fs.writeFileSync(path.join(volumes.workspace, "notes.txt"), "mine");
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b/SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b/SKILL.md"))).toBe(true);
 
     await driver.writeProfile("agent-a", testProfile({ skills: ["skill-a"], restartHash: "restart-2" }));
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b"))).toBe(false);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b"))).toBe(false);
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(fs.existsSync(path.join(volumes.workspace, "OLD.md"))).toBe(false);
     expect(read(path.join(volumes.hermes, "sessions/s1.json"))).toBe("{}");
     expect(read(path.join(volumes.workspace, "notes.txt"))).toBe("mine");
     expect(leftovers()).toEqual([]);
 
     await driver.writeProfile("agent-a", testProfile({ skills: [], restartHash: "restart-3" }));
-    expect(fs.readdirSync(path.join(volumes.hermes, "skills-board"))).toEqual([]); // emptied, not left stale
+    expect(fs.readdirSync(path.join(volumes.hermes, "skills/paperclip-managed"))).toEqual([]); // emptied, not left stale
   });
 
   it("never moves the staging of an interrupted earlier apply into place", async () => {
@@ -1316,13 +1317,13 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
   it("treats profile paths as data: shell metacharacters in file names are written and removed literally", async () => {
     await driver.create(spec());
     const odd = '$(touch PWNED) `touch PWNED` "q" *.md';
-    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills-board/x/${odd}`, "odd\n")];
+    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills/paperclip-managed/x/${odd}`, "odd\n")];
     await driver.writeProfile("agent-a", testProfile({ extra }));
     expect(read(path.join(volumes.workspace, odd))).toBe("odd\n");
-    expect(read(path.join(volumes.hermes, "skills-board/x", odd))).toBe("odd\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/x", odd))).toBe("odd\n");
     await driver.writeProfile("agent-a", testProfile({ restartHash: "restart-2" })); // both dropped again
     expect(fs.existsSync(path.join(volumes.workspace, odd))).toBe(false);
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/x"))).toBe(false);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/x"))).toBe(false);
     expect(findNamed(tmp, "PWNED")).toEqual([]);
     expect(findNamed(process.cwd(), "PWNED", 1)).toEqual([]);
   });

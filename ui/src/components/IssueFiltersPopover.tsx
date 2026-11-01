@@ -557,6 +557,13 @@ export function IssueFiltersPopover({
                   />
                   <span className="text-sm">{t("area.issue-threads-runs-1.issue-filters-popover.liveRunsOnly")}</span>
                 </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.olderThan30Days === true}
+                    onCheckedChange={(checked) => onChange({ olderThan30Days: checked === true })}
+                  />
+                  <span className="text-sm">{t("area.issue-threads-runs-1.issue-filters-popover.olderThan30Days")}</span>
+                </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox

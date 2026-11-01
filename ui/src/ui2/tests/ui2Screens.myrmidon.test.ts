@@ -39,6 +39,59 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(routedPaths.has("/company/settings/not-a-real-page")).toBe(false);
   });
 
+  it("routes every desktop rail navigation item to a unique, non-empty, and valid route", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
+    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+    expect(routeBlock).toBeDefined();
+
+    const appPaths = new Set(
+      [...routeBlock!.matchAll(/path="([^"]+)"/g)].map(([, path]) => `/${path}`),
+    );
+    const ui2Paths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
+    const routedPaths = new Set([...appPaths, ...ui2Paths]);
+
+    const railItems = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    const railPaths = railItems.map((item) => item.to);
+
+    // 1. None are empty
+    for (const item of railItems) {
+      expect(item.to).toBeTruthy();
+      expect(item.to.startsWith("/")).toBe(true);
+      expect(item.labelKey).toBeTruthy();
+      expect(item.icon).toBeDefined();
+    }
+
+    // 2. No duplicates across rail navigation
+    expect(new Set(railPaths).size).toBe(railPaths.length);
+
+    // 3. Every destination resolves in board routes or UI2 route table
+    for (const to of railPaths) {
+      expect(routedPaths.has(to), `rail route ${to} resolves`).toBe(true);
+    }
+  });
+
+  it("traverses the complete nav model verifying no empty or duplicate destinations across groups", () => {
+    expect(UI2_NAV_GROUPS.length).toBeGreaterThan(0);
+    const visitedTos = new Set<string>();
+
+    for (const group of UI2_NAV_GROUPS) {
+      expect(group.items.length).toBeGreaterThan(0);
+      for (const item of group.items) {
+        expect(item.to).toBeTruthy();
+        expect(visitedTos.has(item.to), `duplicate destination ${item.to}`).toBe(false);
+        visitedTos.add(item.to);
+      }
+    }
+
+    // Settings sections also have no duplicate or empty destinations
+    const settingsPaths = UI2_SETTINGS_SECTIONS.map((s) => s.path);
+    expect(new Set(settingsPaths).size).toBe(settingsPaths.length);
+    for (const path of settingsPaths) {
+      expect(path).toBeTruthy();
+      expect(path.startsWith("/company/settings")).toBe(true);
+    }
+  });
+
   it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
@@ -49,11 +102,23 @@ describe("myrmidon(UI2) route table integration", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "more",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
     ]);
+  });
+
+  it("preserves full Secrets screen under UI2 without shadowing by a placeholder route", () => {
+    // Under UI2, the secrets section must NOT be shadowed by UI2_ROUTE_TABLE placeholders,
+    // allowing boardRoutes to serve the full Secrets screen with both instance secret references
+    // and standard secret management tabs.
+    const secretsUi2Route = UI2_ROUTE_TABLE.find((entry) => entry.path === "company/settings/secrets");
+    expect(secretsUi2Route).toBeUndefined();
+
+    const secretsSection = UI2_SETTINGS_SECTIONS.find((section) => section.key === "secrets");
+    expect(secretsSection?.path).toBe("/company/settings/secrets");
   });
 
   it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
@@ -75,7 +140,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/fleet")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/fleet")).toHaveLength(1);
-    expect(UI2_PHONE_TABS.some((item) => item.to === "/agents/all")).toBe(true);
+    expect(UI2_PHONE_TABS.some((item) => item.to === "/more")).toBe(true);
   });
 
 
@@ -92,6 +157,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("agent-overview")?.path).toBe("agents/:agentId/overview");
     expect(byKey.get("fleet")?.path).toBe("fleet");
     expect(byKey.get("agents-fleet")?.path).toBe("agents");
+    expect(byKey.get("more")?.path).toBe("more");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
     expect(byKey.get("settings-language")?.path).toBe("company/settings/language");
@@ -99,6 +165,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
+    expect(byKey.get("more")?.legacyPath).toBe("/agents/all");
   });
 
   it("activates exactly one tab at /agents in the six-tab phone grid", () => {
@@ -107,9 +174,14 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
   });
 
-  it("activates only More at /agents/all in the six-tab phone grid", () => {
+  it("activates only More at /more in the six-tab phone grid", () => {
     expect(UI2_PHONE_TABS).toHaveLength(6);
-    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents/all"));
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/more"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
+  });
+
+  it("activates only More at /{P}/more in the six-tab phone grid", () => {
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/ACME/more"));
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
   });
 
