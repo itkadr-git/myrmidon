@@ -7,7 +7,7 @@ import {
   clearAllDmProgressRuntimeSteps,
   clearDmProgressRuntimeSteps,
   recordDmProgressRuntimeStatus,
-} from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+} from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 
 export const HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS = 90_000;
 export const MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS = 180;

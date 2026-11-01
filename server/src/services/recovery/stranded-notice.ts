@@ -148,9 +148,11 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
 export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
-      productSaid("retried the pending execution-review participant once, but the review stage still has no ") +
+      // myrmidon(OPE-10045): the reviewer is now asked twice (CI waits not counted), and the stage is kept.
+      productSaid("retried the pending execution-review participant twice, but the review stage still has no ") +
       "completed decision or live reviewer run. Moving it to `blocked` so the board can inspect the evidence, repair the " +
-      "reviewer runtime, restore the review stage, or record an intentional manual resolution.",
+      "reviewer runtime, or record an intentional manual resolution. The review stage, its participant and return " +
+      "assignee are kept: after the block is lifted the participant can decide without a new submission.",
     title: "Review recovery stalled",
     tone: "danger",
   };

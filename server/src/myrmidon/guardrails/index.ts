@@ -24,3 +24,17 @@ export {
   type GuardrailSubtype,
 } from "./detect.js";
 export { guardrailsOnRunOutput } from "./run-output.js";
+// myrmidon(1.7-GRD-MODES): per-agent mode resolution and enforcement helpers
+export {
+  guardrailBlockRefusal,
+  loadGuardrailModes,
+  maskGuardrailSpans,
+  resolveGuardrailModeForAgent,
+  type GuardrailModeEnforcement,
+} from "./modes.js";
+// myrmidon(1.7-GRD-MODES): the settings storage half
+export {
+  preserveGuardrailModesGeneralKey,
+  readGuardrailModesSettings,
+  writeGuardrailModesSettings,
+} from "./modes-settings.js";

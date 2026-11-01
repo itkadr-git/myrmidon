@@ -136,6 +136,30 @@ parse_digest_arg() {
   fi
 }
 
+# Runs git in a clone as the clone's owner. deploy.sh is normally invoked
+# through sudo, but the clone belongs to the operator. Git writes refs and
+# objects during fetch; running it as root leaves those files unwritable by the
+# operator on the next release. A missing .git is kept as a plain git call so
+# the existing diagnostics for an invalid clone remain useful.
+git_in_clone_as_owner() {
+  local clone="$1"
+  shift
+  local owner_uid
+  if [[ "${EUID:-$(id -u)}" != 0 ]] || ! owner_uid="$(stat -c '%u' "$clone/.git" 2>/dev/null)" || [[ "$owner_uid" == 0 ]]; then
+    with_timeout git -C "$clone" "$@"
+    return
+  fi
+  command -v sudo >/dev/null 2>&1 || {
+    CI_CHECK_REASON="cannot check commit: the scripts clone is owned by uid $owner_uid, but sudo is not installed"
+    return 1
+  }
+  if command -v timeout >/dev/null 2>&1; then
+    sudo -u "#$owner_uid" -- timeout "$MYR_NET_TIMEOUT_SEC" git -C "$clone" "$@"
+  else
+    sudo -u "#$owner_uid" -- git -C "$clone" "$@"
+  fi
+}
+
 # Checks that a commit is on origin/main or carries a release tag
 # myr-v<x>.<y>.<z> (RC-VERSIONS: or the candidate myr-v<x>.<y>.<z>-rc.<n>),
 # using the git clone that holds these scripts. Sets CI_CHECK_REASON and
@@ -147,22 +171,22 @@ commit_is_reviewed() {
     CI_CHECK_REASON="git is not installed, so commit ${rev:0:12} cannot be checked against main; run the script from a git clone of itkadr-git/myrmidon"
     return 1
   fi
-  if ! clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$clone" ]]; then
+  if ! clone="$(git_in_clone_as_owner "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$clone" ]]; then
     CI_CHECK_REASON="the deploy scripts are not inside a git clone, so commit ${rev:0:12} cannot be checked against main; run them from a clone of itkadr-git/myrmidon"
     return 1
   fi
-  if ! url="$(git -C "$clone" remote get-url origin 2>/dev/null)" || [[ ! "$url" =~ $MYR_CI_ORIGIN_RE ]]; then
+  if ! url="$(git_in_clone_as_owner "$clone" remote get-url origin 2>/dev/null)" || [[ ! "$url" =~ $MYR_CI_ORIGIN_RE ]]; then
     CI_CHECK_REASON="remote 'origin' of the clone does not point to github.com/itkadr-git/myrmidon, so main cannot be trusted"
     return 1
   fi
-  if ! GIT_TERMINAL_PROMPT=0 with_timeout git -C "$clone" fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main' >/dev/null 2>&1; then
+  if ! GIT_TERMINAL_PROMPT=0 git_in_clone_as_owner "$clone" fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main' >/dev/null 2>&1; then
     CI_CHECK_REASON="git fetch origin main failed (no network or no access?), so commit ${rev:0:12} cannot be checked against main"
     return 1
   fi
-  if git -C "$clone" merge-base --is-ancestor "$rev" refs/remotes/origin/main >/dev/null 2>&1; then
+  if git_in_clone_as_owner "$clone" merge-base --is-ancestor "$rev" refs/remotes/origin/main >/dev/null 2>&1; then
     return 0
   fi
-  if ! tags="$(GIT_TERMINAL_PROMPT=0 with_timeout git -C "$clone" ls-remote --tags origin 'refs/tags/myr-v*' 2>/dev/null)"; then
+  if ! tags="$(GIT_TERMINAL_PROMPT=0 git_in_clone_as_owner "$clone" ls-remote --tags origin 'refs/tags/myr-v*' 2>/dev/null)"; then
     CI_CHECK_REASON="commit ${rev:0:12} is not on origin/main and the release tags of origin could not be read"
     return 1
   fi

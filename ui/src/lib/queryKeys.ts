@@ -114,8 +114,20 @@ export const queryKeys = {
       ] as const,
   },
   audit: {
-    runs: (companyId: string, agentId?: string | null) =>
-      ["audit", companyId, "runs", agentId ?? "__all"] as const,
+    runs: (
+      companyId: string,
+      agentId?: string | null,
+      wakeReason?: string | null,
+      hasResult?: boolean | null,
+    ) =>
+      [
+        "audit",
+        companyId,
+        "runs",
+        agentId ?? "__all",
+        wakeReason ?? "__all",
+        hasResult ? "with-result" : "all",
+      ] as const,
     agentActions: (
       companyId: string,
       filters: {
@@ -217,7 +229,23 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
-    list: (companyId: string) => ["agents", companyId] as const,
+    list: (
+      companyId: string,
+      filters?: {
+        q?: string;
+        status?: string | string[];
+        role?: string;
+        reportsTo?: string;
+      },
+    ) =>
+      [
+        "agents",
+        companyId,
+        filters?.q ?? "",
+        Array.isArray(filters?.status) ? filters.status.join(",") : filters?.status ?? "",
+        filters?.role ?? "",
+        filters?.reportsTo ?? "",
+      ] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
     // myrmidon(PERF-DIET-G): the configuration read an agent-row consumer falls
     // back to once the company list stopped shipping adapterConfig.
@@ -627,6 +655,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    taskDrain: ["instance", "task-drain"] as const,
   },
   health: ["health"] as const,
   cloud: {

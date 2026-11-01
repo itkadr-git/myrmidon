@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -310,7 +310,14 @@ describeEmbeddedPostgres("myrmidon(HERMES-USAGE-COST) reconcileUnpricedCostEvent
       occurredAt: new Date("2026-10-01T09:10:00Z"),
     });
 
-    await reconcileUnpricedCostEventsDetailed(db, company.id);
+    // The monthly counters cover the current UTC month; the seeded rows are in October 2026,
+    // so pin "now" inside that month (the test broke at 2026-11-01T00:00Z otherwise).
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-15T12:00:00Z") });
+    try {
+      await reconcileUnpricedCostEventsDetailed(db, company.id);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const [agentRow] = await db.select().from(agents).where(eq(agents.id, agent.id));
     expect(agentRow.spentMonthlyCents).toBe(515);

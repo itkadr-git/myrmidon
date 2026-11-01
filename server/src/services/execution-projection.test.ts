@@ -244,7 +244,7 @@ describe("execution truth projection", () => {
     ).toMatchObject({
       phase: "working",
       label: "Working",
-      permittedActions: ["inspect_run"],
+      operatorActions: ["inspect_run"],
     });
 
     // 2. Gateway-прогон без событий 10 мин → reconnecting
@@ -263,7 +263,7 @@ describe("execution truth projection", () => {
     ).toMatchObject({
       phase: "reconnecting",
       label: "Confirming execution",
-      permittedActions: ["inspect_run"],
+      operatorActions: ["inspect_run"],
     });
 
     // Gateway-прогон без событий вообще (null) и без недавнего обновления → reconnecting
@@ -359,7 +359,7 @@ describe("execution truth projection", () => {
     const projection = projectExecution(reviewerRun, undefined, [], undefined, now);
     expect(projection.phase).toBe("working");
     expect(projection.label).toBe("Working");
-    expect(projection.permittedActions).toEqual(["inspect_run"]);
+    expect(projection.operatorActions).toEqual(["inspect_run"]);
     expect(projection.phase).not.toBe("reconnecting");
   });
 });

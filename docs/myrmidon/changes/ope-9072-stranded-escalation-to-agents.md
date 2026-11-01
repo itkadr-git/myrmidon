@@ -21,7 +21,7 @@ divergence-section: Трек 1 — платформа
   wake with an idempotency key tied to the source run.
 - A paused assignee is handled as before. The retry wake and the direct-manager handoff are
   unchanged.
-- Not included: the "open PR with CI pending -> external_service monitor" case is a separate step.
+- Open PR with pending CI: transitions to a standard `external_service` monitor on CI (`serviceName: "CI"`, `scheduledBy: "assignee"`) with `nextCheckAt`, preserving `in_progress` and keeping the assignee. The check verifies the exact PR head matching the comment/run and validates that GitHub checks are not already completed.
 - Data fix for issues already stuck: `scripts/myrmidon/escalate-stranded-disposition.mjs`
   (dry-run by default, `--apply` to write; it does not wake owners).
 
@@ -44,6 +44,6 @@ divergence-section: Трек 1 — платформа
   побудку с ключом идемпотентности по исходному прогону.
 - Исполнитель на паузе обрабатывается как раньше. Повторная побудка и передача прямому
   руководителю не менялись.
-- Не вошло: случай «открытый PR, CI pending -> монитор external_service» — отдельный шаг.
+- Открытый PR с pending CI: переходит в штатный монитор `external_service` на CI (`serviceName: "CI"`, `scheduledBy: "assignee"`) с `nextCheckAt`, сохраняя `in_progress` и текущего исполнителя. Проверка верифицирует точное совпадение головы PR с указанной в комментарии/прогоне и факт незавершённости GitHub checks.
 - Исправление данных для уже стоящих задач: `scripts/myrmidon/escalate-stranded-disposition.mjs`
   (по умолчанию dry-run, `--apply` пишет; владельцев не будит).

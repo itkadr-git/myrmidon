@@ -281,6 +281,13 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     }
   }
 
+  /**
+   * Fetches model groups and routed channels from LiteLLM.
+   */
+  async function listChannels() {
+    return deps.litellm.listChannels();
+  }
+
   return {
     syncModel,
     syncProviderModels,
@@ -288,6 +295,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     reconcileWithLitellm,
     handleProviderCredentialRotation,
     unregisterModels,
+    listChannels,
   };
 }
 

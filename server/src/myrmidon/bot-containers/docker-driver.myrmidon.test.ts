@@ -4,9 +4,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   APPLIED_MARKER_CONTAINER_PATH,
   BOT_CONTAINER_UID,
+  BOT_YOLO_ENV,
   BOT_STOP_TIMEOUT_SEC,
   botStateFromInspect,
   buildApplyScript,
@@ -20,6 +22,8 @@ import {
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
   dockerBotContainerDriver,
+  readDockerDriverConfig,
+  BOT_VOLUME_ROOT_ENV,
   parseAppliedMarker,
   serializeAppliedMarker,
   templateDriftFields,
@@ -77,7 +81,7 @@ function testProfile(
       plainFile("hermes/config.yaml", "model:\n  default: example-model\n"),
       { path: "hermes/.env", content: opts.dotenv ?? TEST_DOTENV, mode: 0o600, secret: true },
       plainFile("hermes/hindsight/config.json", "{}\n"),
-      ...skills.map((name) => plainFile(`hermes/skills-board/${name}/SKILL.md`, `# ${name}\n`)),
+      ...skills.map((name) => plainFile(`hermes/skills/paperclip-managed/${name}/SKILL.md`, `# ${name}\n`)),
       plainFile("workspace/AGENTS.md", "instructions\n"),
       ...(opts.extra ?? []),
     ],
@@ -87,6 +91,32 @@ function testProfile(
 }
 
 const NONCE = "00112233aabbccdd";
+
+describe("readDockerDriverConfig YOLO setting", () => {
+  it("prefers a value saved from the UI to the process environment, and ignores it for an explicit env", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorRoot = process.env[BOT_VOLUME_ROOT_ENV];
+    const priorYolo = process.env[BOT_YOLO_ENV];
+    try {
+      process.env[BOT_VOLUME_ROOT_ENV] = "/var/lib/myrmidon/bots";
+      process.env[BOT_YOLO_ENV] = "true";
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      expect(readDockerDriverConfig().yolo).toBe(false);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} });
+      expect(readDockerDriverConfig().yolo).toBe(true);
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      const explicit = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      expect(readDockerDriverConfig(explicit).yolo).toBeUndefined();
+      expect(readDockerDriverConfig({ ...explicit, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
+    } finally {
+      if (priorRoot === undefined) delete process.env[BOT_VOLUME_ROOT_ENV];
+      else process.env[BOT_VOLUME_ROOT_ENV] = priorRoot;
+      if (priorYolo === undefined) delete process.env[BOT_YOLO_ENV];
+      else process.env[BOT_YOLO_ENV] = priorYolo;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+});
 
 describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
@@ -103,8 +133,14 @@ describe("buildCreateContainerRequestBody", () => {
     ]);
     const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
     expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
-    // A mirror without a cache path has nowhere to live: no bind.
     expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
+  it("adds the operator-selected YOLO mode as a driver-owned runtime env", () => {
+    const enabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: true });
+    expect(enabled.Env).toContain(`${BOT_YOLO_ENV}=1`);
+    const disabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: false });
+    expect(disabled.Env).toContain(`${BOT_YOLO_ENV}=0`);
   });
 
   it("builds the fixed template body for an allowed image and the configured network", () => {
@@ -537,6 +573,7 @@ describe("buildProfileArchives", () => {
 
   it("stages the compiler-owned skills directory even when the profile has no skills (that is what empties it)", () => {
     const hermes = archives[0].entries;
+    expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills/paperclip-managed`)).toBe(true);
     expect(hermes.some((e) => e.type === "directory" && e.path === `.myrmidon-next-${NONCE}/skills-board`)).toBe(true);
   });
 
@@ -1152,7 +1189,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     // files in place, secrets 0600, nothing left in staging
     expect(read(path.join(volumes.hermes, "config.yaml"))).toContain("example-model");
     expect(fs.statSync(path.join(volumes.hermes, ".env")).mode & 0o777).toBe(0o600);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(read(path.join(volumes.workspace, "AGENTS.md"))).toBe("instructions\n");
     expect(leftovers()).toEqual([]);
 
@@ -1263,18 +1300,18 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     fs.mkdirSync(path.join(volumes.hermes, "sessions"));
     fs.writeFileSync(path.join(volumes.hermes, "sessions/s1.json"), "{}"); // written by the bot itself
     fs.writeFileSync(path.join(volumes.workspace, "notes.txt"), "mine");
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b/SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b/SKILL.md"))).toBe(true);
 
     await driver.writeProfile("agent-a", testProfile({ skills: ["skill-a"], restartHash: "restart-2" }));
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/skill-b"))).toBe(false);
-    expect(read(path.join(volumes.hermes, "skills-board/skill-a/SKILL.md"))).toBe("# skill-a\n");
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/skill-b"))).toBe(false);
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/skill-a/SKILL.md"))).toBe("# skill-a\n");
     expect(fs.existsSync(path.join(volumes.workspace, "OLD.md"))).toBe(false);
     expect(read(path.join(volumes.hermes, "sessions/s1.json"))).toBe("{}");
     expect(read(path.join(volumes.workspace, "notes.txt"))).toBe("mine");
     expect(leftovers()).toEqual([]);
 
     await driver.writeProfile("agent-a", testProfile({ skills: [], restartHash: "restart-3" }));
-    expect(fs.readdirSync(path.join(volumes.hermes, "skills-board"))).toEqual([]); // emptied, not left stale
+    expect(fs.readdirSync(path.join(volumes.hermes, "skills/paperclip-managed"))).toEqual([]); // emptied, not left stale
   });
 
   it("never moves the staging of an interrupted earlier apply into place", async () => {
@@ -1316,13 +1353,13 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
   it("treats profile paths as data: shell metacharacters in file names are written and removed literally", async () => {
     await driver.create(spec());
     const odd = '$(touch PWNED) `touch PWNED` "q" *.md';
-    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills-board/x/${odd}`, "odd\n")];
+    const extra = [plainFile(`workspace/${odd}`, "odd\n"), plainFile(`hermes/skills/paperclip-managed/x/${odd}`, "odd\n")];
     await driver.writeProfile("agent-a", testProfile({ extra }));
     expect(read(path.join(volumes.workspace, odd))).toBe("odd\n");
-    expect(read(path.join(volumes.hermes, "skills-board/x", odd))).toBe("odd\n");
+    expect(read(path.join(volumes.hermes, "skills/paperclip-managed/x", odd))).toBe("odd\n");
     await driver.writeProfile("agent-a", testProfile({ restartHash: "restart-2" })); // both dropped again
     expect(fs.existsSync(path.join(volumes.workspace, odd))).toBe(false);
-    expect(fs.existsSync(path.join(volumes.hermes, "skills-board/x"))).toBe(false);
+    expect(fs.existsSync(path.join(volumes.hermes, "skills/paperclip-managed/x"))).toBe(false);
     expect(findNamed(tmp, "PWNED")).toEqual([]);
     expect(findNamed(process.cwd(), "PWNED", 1)).toEqual([]);
   });

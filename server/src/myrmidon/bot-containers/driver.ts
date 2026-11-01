@@ -12,6 +12,7 @@
 // and only then `start` it. A gateway therefore never boots without its profile.
 
 import type { CompiledProfile } from "./types.js";
+import type { DriverOomEvent } from "./container-oom.js";
 
 /** One extra read-only mount a bot gets from the instance-level allowlist
  *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
@@ -106,6 +107,9 @@ export interface BotContainerStatus {
    */
   inspect?: unknown;
   idleStopped?: boolean;
+  memoryMb?: number;
+  cpus?: number;
+  pidsLimit?: number;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -132,6 +136,15 @@ export interface TemplateDriftReport {
   fields: TemplateDriftField[];
 }
 
+/** The error message of an IDLE-STOP stop on a driver that has no `stopIdle` (idle-stop.ts, fleetd-routing.ts). */
+export const IDLE_STOP_UNSUPPORTED_MESSAGE = "idle-stop route is not supported by this driver";
+
+/**
+ * Optional methods: a driver may leave them out, and the caller then takes the fallback named
+ * on each. fleetRoutingDriver (fleetd-routing.ts) is typed `Required<BotContainerDriver>`, so
+ * a method added here without a routed implementation fails the build instead of being
+ * silently dropped for every bot behind the router.
+ */
 export interface BotContainerDriver {
   /** Throws when the container runtime itself cannot be asked (socket error,
    *  unexpected API error) — never guesses a state. */
@@ -204,6 +217,14 @@ export interface BotContainerDriver {
    *  already written to disk. Resolves once healthy again; throws otherwise. */
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
+  /**
+   * myrmidon(IDLE-STOP): stops an idle bot's container and records that the stop was
+   * IDLE-STOP's (`BotContainerStatus.idleStopped`), so the wake path and the reconciler
+   * can tell it from an operator's stop. Optional: a driver that cannot (fleetd) leaves
+   * it out, and IDLE-STOP then fails the stop with IDLE_STOP_UNSUPPORTED_MESSAGE.
+   * fleetRoutingDriver must forward it (a router without it made every IDLE-STOP stop
+   * fail on the board).
+   */
   stopIdle?(botKey: string): Promise<void>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the text of the bot's clone-hygiene report
@@ -217,7 +238,7 @@ export interface BotContainerDriver {
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's OWN skills —
    * the directories under hermes/skills/ (the container's ~/.hermes/skills),
    * where a bot keeps the skills it created at runtime — as (directory name,
-   * files). The board's own delivery (hermes/skills-board/, the profile's
+   * files). The board's own delivery (hermes/skills/paperclip-managed/, the profile's
    * managed directory) is NOT part of the result. The reconcile pass feeds
    * this to the back-importer (skill-backimport.ts), so a skill the bot made
    * lands in the company catalog and survives a volume recreation through
@@ -228,6 +249,10 @@ export interface BotContainerDriver {
    * leaves it out and its bots keep no back-import.
    */
   readBotSkills?(botKey: string): Promise<BotSkillDirectory[] | null>;
+  /**
+   * myrmidon(OPE-9934): transports OOM events (docker events oom / cgroup memory.events oom_kill).
+   */
+  getOomEvents?(sinceNano?: number): Promise<DriverOomEvent[]>;
 }
 
 /** One skill directory of a bot container: its directory name under

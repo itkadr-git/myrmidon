@@ -19,6 +19,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  issueWorkProducts,
   projects,
 } from "@myrmidon/db";
 import {
@@ -745,19 +746,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .select()
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-      expect(action).toMatchObject({
-        ownerType: "board",
-        ownerAgentId: null,
-        previousOwnerAgentId: coderId,
-        returnOwnerAgentId: coderId,
-        evidence: expect.objectContaining({
-          routingPolicy: "board_escalation_no_takeover_v1",
-        }),
-        wakePolicy: expect.objectContaining({
-          type: "board_escalation",
-          preservesSourceAssignee: true,
-        }),
-      });
+      if (errorCode === "adapter_failed" && explicitCause === "successful_run_missing_state") {
+        expect(action).toBeUndefined();
+        expect(sourceIssue.status).toBe("in_progress");
+      } else {
+        expect(action).toMatchObject({
+          ownerType: "board",
+          ownerAgentId: null,
+          previousOwnerAgentId: coderId,
+          returnOwnerAgentId: coderId,
+          evidence: expect.objectContaining({
+            routingPolicy: "board_escalation_no_takeover_v1",
+          }),
+          wakePolicy: expect.objectContaining({
+            type: "board_escalation",
+            preservesSourceAssignee: true,
+          }),
+        });
+      }
       // myrmidon(L4): a succeeded run with `successful_run_missing_state` is
       // the auto-policy's scope (stranded-autopolicy.ts). With the seeded
       // coder having zero prior attempts today, it first tries one more
@@ -1342,6 +1348,183 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(enqueueWakeup).toHaveBeenCalledTimes(1);
       expect(enqueueWakeup.mock.calls[0]?.[0]).toBe(admId);
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(0);
+    });
+
+    it("OPE-9072: open PR with pending CI schedules an external_service monitor on CI, preserving in_progress and assignee", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        type: "pull_request",
+        provider: "github",
+        title: "PR #123",
+        url: "https://github.com/itkadr-git/myrmidon/pull/123",
+        status: "open",
+        metadata: {
+          headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+        },
+      });
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        authorType: "agent",
+        authorAgentId: coderId,
+        body: "PR #123 / 6671885048806cfc3de989f14c3ebc9434afcec6 / CI pending",
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "stranded_assigned_issue",
+      });
+
+      expect(updated?.status).toBe("in_progress");
+      expect(updated?.assigneeAgentId).toBe(coderId);
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(persisted?.executionPolicy).toMatchObject({
+        monitor: expect.objectContaining({
+          kind: "external_service",
+          serviceName: "CI",
+          scheduledBy: "assignee",
+        }),
+      });
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("OPE-9072: open PR does not schedule CI monitor if comment has pending text without matching SHA at known PR head", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        type: "pull_request",
+        provider: "github",
+        title: "PR #123",
+        url: "https://github.com/itkadr-git/myrmidon/pull/123",
+        status: "open",
+        metadata: {
+          headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+        },
+      });
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        authorType: "agent",
+        authorAgentId: coderId,
+        body: "PR #123 CI pending, monitor in continuation",
+      });
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "stranded_assigned_issue",
+      });
+
+      // Should not set external_service monitor because the comment lacks matching SHA!
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.executionPolicy).toBeNull();
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("OPE-9072: open PR does not schedule CI monitor if comment refers to an outdated/mismatched head", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        type: "pull_request",
+        provider: "github",
+        title: "PR #123",
+        url: "https://github.com/itkadr-git/myrmidon/pull/123",
+        status: "open",
+        metadata: {
+          headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+        },
+      });
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        authorType: "agent",
+        authorAgentId: coderId,
+        body: "PR #123 HEAD: 7a6d6a0b0d7adf2189c8b16b8b7380c8a500c4a3 - CI pending",
+      });
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "stranded_assigned_issue",
+      });
+
+      // Should not set external_service monitor because the head is mismatched!
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.executionPolicy).toBeNull();
+      // Regular retry-first policy applies: remains in_progress with wakeup to assignee
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    });
+
+    it("OPE-9072: open PR does not schedule CI monitor if checks are already completed", async () => {
+      const { companyId, coderId, sourceIssue } = await seedCompany();
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        type: "pull_request",
+        provider: "github",
+        title: "PR #123",
+        url: "https://github.com/itkadr-git/myrmidon/pull/123",
+        status: "open",
+        metadata: {
+          headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          checks: "completed",
+        },
+      });
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId,
+        issueId: sourceIssue.id,
+        authorType: "agent",
+        authorAgentId: coderId,
+        body: "PR opened, CI pending on current head",
+      });
+      const enqueueWakeup = fakeRetryWakeEnqueue({ companyId });
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = await succeededRun({ companyId, agentId: coderId });
+
+      const updated = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        recoveryCause: "stranded_assigned_issue",
+      });
+
+      // Should not set external_service monitor because checks are completed!
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(persisted?.executionPolicy).toBeNull();
+      expect(persisted?.status).toBe("in_progress");
+      expect(persisted?.assigneeAgentId).toBe(coderId);
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     });
 
     it("does not apply the L4 auto-policy to a todo-status escalation with a succeeded last run", async () => {
@@ -3989,5 +4172,125 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("resolves recovery action when source status is in_review after changes_requested preserving returnAssignee and creating reviewer continuation", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "idle",
+      reportsTo: managerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const stageId = randomUUID();
+    const executionPolicy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerId }],
+        },
+      ],
+    };
+    const executionState = {
+      status: "changes_requested",
+      currentStageId: stageId,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      returnAssignee: { type: "agent", agentId: coderId },
+      reviewRequest: null,
+      lastDecisionOutcome: "changes_requested",
+      completedStageIds: [],
+    };
+
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      executionPolicy,
+      executionState,
+    }).where(eq(issues.id, sourceIssueId));
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      returnOwnerAgentId: coderId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:resubmit-after-changes-requested",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Confirm whether the issue is actually stranded.",
+      wakePolicy: { type: "manual" },
+    });
+
+    const resubmitRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: resubmitRunId,
+      issueId: sourceIssueId,
+      status: "running",
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: resubmitRunId,
+      source: "agent_jwt",
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Resubmitting after addressing changes.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.issue.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerId },
+      returnAssignee: { type: "agent", agentId: coderId },
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+
+    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedSource?.status).toBe("in_review");
+    expect(updatedSource?.assigneeAgentId).toBe(reviewerId);
+    expect((updatedSource?.executionState as any)?.returnAssignee).toMatchObject({
+      type: "agent",
+      agentId: coderId,
+    });
+    expect((updatedSource?.executionState as any)?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerId,
+    });
+
+    const activeActions = await recoveryActionSvc.listActiveForIssues(companyId, [sourceIssueId]);
+    expect(activeActions.get(sourceIssueId)).toBeUndefined();
   });
 });
