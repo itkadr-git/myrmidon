@@ -131,6 +131,16 @@ describe("decideApproveLabel", () => {
     assert.equal(decision.autoMerge, true);
   });
 
+  it("does not label or merge when CI result is skipped", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: open,
+      headCommittedAt: null,
+      ci: "skipped",
+      autoMerge: true,
+    });
+    assert.deepEqual(decision, { action: "skip", reason: "ci-skipped" });
+  });
   it("is a no-op when already labeled and autoMerge is already enabled", () => {
     const decision = decideApproveLabel({
       verdict: approve,

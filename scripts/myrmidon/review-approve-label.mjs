@@ -200,6 +200,8 @@ export function decideApproveLabel({
   } else if (!headCommittedAt || headCommittedAt.getTime() > verdict.at.getTime()) {
     return { action: "needs-rereview", reason: "head-newer-than-verdict" };
   }
+  // Every approved PR must have an actual completed SUCCESS on its current head.
+  // In particular, do not treat skipped, neutral, missing, or transient checks as green.
   if (ci !== "success") return { action: "skip", reason: `ci-${ci}` };
 
   const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
