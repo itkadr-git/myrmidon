@@ -1408,6 +1408,10 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       status: "succeeded",
       contextSnapshot: {},
     });
+    await db
+      .update(issues)
+      .set({ checkoutRunId: agentRunId })
+      .where(eq(issues.id, secondBoundTask.id));
     agentApp.use(express.json());
     agentApp.use((req, _res, next) => {
       req.actor = {
