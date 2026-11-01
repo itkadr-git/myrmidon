@@ -169,16 +169,34 @@ export function findEngineerPr(
  */
 export function hasChangesRequestedVerdict(
   executionState: Record<string, unknown> | null | undefined,
+  comments: CommentSummary[] = [],
 ): boolean {
+  // Comments are newest-first; the latest explicit verdict wins.
+  for (const c of comments) {
+    if (c.authorType === "system" || !c.body) continue;
+    const text = c.body.trim().toLowerCase();
+    const approved =
+      text.startsWith("approved") ||
+      text.includes("decision: approved") ||
+      text.includes("verdict: approved") ||
+      text.includes("lgtm");
+    const changesRequested =
+      text.startsWith("request changes") ||
+      text.includes("changes_requested") ||
+      text.includes("changes requested") ||
+      text.includes("decision: changes_requested") ||
+      text.includes("verdict: changes_requested") ||
+      text.includes("замечания ревью") ||
+      text.includes("требуются доработки");
+    if (approved && !changesRequested) return false;
+    if (changesRequested) return true;
+  }
   if (!executionState) return false;
-
+  if (executionState.lastDecisionOutcome === "approved") return false;
   if (
     executionState.status === "changes_requested" ||
     executionState.lastDecisionOutcome === "changes_requested"
-  ) {
-    return true;
-  }
-
+  ) return true;
   const stages = Array.isArray(executionState.stages)
     ? (executionState.stages as Array<Record<string, unknown>>)
     : [];

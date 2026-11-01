@@ -51,17 +51,21 @@ import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
   buildPrRoutingTaskPatch,
+  buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
   excludedReviewerIds,
   hoursSince,
+  isEscalatedReviewStage,
   isReviewOverdue,
+  issueAnchorAgentId,
   issueNeedsReviewer,
-  buildReviewRoutingAssignPatch,
   pickPrReviewer,
-  readPendingAgentReview,
   pickReviewer,
+  readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
+  type RoutingIssue,
 } from "./policy.js";
 import {
   prRoutingCoverageKey,
@@ -69,7 +73,6 @@ import {
   prRoutingTaskDescription,
   prStewardTaskTitle,
   prTaskIsSuperseded,
-  shouldRouteOpenPrToReview,
   reviewTaskDueForHead,
   stewardTaskDueForHead,
 } from "./pr-policy.js";
@@ -82,6 +85,24 @@ import type { PrRoutedTask } from "./pr-policy.js";
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
 /** Tasks inspected per company per pass (oldest update first). */
 export const REVIEW_ROUTING_PAGE_SIZE = 200;
+
+/** True when some non-excluded pool member has strictly lower load than the current reviewer. */
+export function poolHasLessLoadedAlternative(
+  current: { id: string; load: number },
+  pool: readonly ReviewerCandidate[],
+  excluded: ReadonlySet<string>,
+): boolean {
+  return pool.some(
+    (candidate) => candidate.id !== current.id && !excluded.has(candidate.id) && candidate.load < current.load,
+  );
+}
+
+function routedReviewerIds(
+  history: ReadonlyMap<string, { lastAt: Date; reviewerAgentIds: string[] }>,
+  issueId: string,
+): string[] {
+  return history.get(issueId)?.reviewerAgentIds ?? [];
+}
 /** PR candidates inspected per company per pass. */
 export const REVIEW_ROUTING_PR_PAGE_SIZE = 100;
 /** How long the card of a completed reassignment stays on the desk. */
@@ -312,27 +333,16 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         isReviewOverdue({ since: routed.lastAt, now, afterHours: settings.reassignAfterHours })
       );
     });
+    const overloaded = pending.filter((entry) => {
+      if (overdue.includes(entry)) return false;
+      if (isEscalatedReviewStage(entry.row)) return false;
+      const currentLoad = liveByReviewer.get(entry.review.reviewerAgentId) ?? 0;
+      return currentLoad > settings.queueThreshold;
+    });
 
     const signals: ReviewRoutingSignal[] = [];
     let moves = 0;
     let reviewerPool: ReviewerCandidate[] | null = null;
-    const managerChains = new Map<string, ReviewerCandidate[]>();
-    const managerCandidates = async (engineerId: string | null): Promise<ReviewerCandidate[]> => {
-      if (!engineerId) return [];
-      if (managerChains.has(engineerId)) return managerChains.get(engineerId)!;
-      const [agentRows, load] = await Promise.all([
-        deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
-        deps.store.loadByAgent(companyId),
-      ]);
-      const candidates = agentRows.map((agent) => ({
-        id: agent.id,
-        role: agent.role,
-        model: agent.model ?? null,
-        load: load.get(agent.id) ?? 0,
-      }));
-      managerChains.set(engineerId, candidates);
-      return candidates;
-    };
     const globalPool = async (): Promise<ReviewerCandidate[]> => {
       if (reviewerPool) return reviewerPool;
       const [agentRows, load] = await Promise.all([
@@ -341,17 +351,53 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       ]);
       reviewerPool = agentRows.map((agent) => ({
         id: agent.id,
+        name: agent.name,
         role: agent.role,
-        invokable: agent.invokable ?? true,
         model: agent.model ?? null,
+        metadata: agent.metadata,
+        invokable: agent.invokable ?? true,
         load: load.get(agent.id) ?? 0,
       }));
       return reviewerPool;
     };
     const pool = globalPool;
+    const agentGroupCache = new Map<string, string>();
+    const getAgentGroup = async (agentId?: string | null): Promise<string> => {
+      if (!agentId) return "";
+      const cached = agentGroupCache.get(agentId);
+      if (cached !== undefined) return cached;
+      const fromPool = (await pool()).find((c) => c.id === agentId);
+      if (fromPool) {
+        const key = resolveAgentGroupKey(fromPool);
+        agentGroupCache.set(agentId, key);
+        return key;
+      }
+      const fromStore = await deps.store.getAgent(companyId, agentId);
+      const key = resolveAgentGroupKey(fromStore);
+      agentGroupCache.set(agentId, key);
+      return key;
+    };
+    const getIssueGroupKey = async (row: RoutingIssue, currentReviewerId?: string): Promise<string> => {
+      const anchorId = issueAnchorAgentId(row);
+      if (anchorId) {
+        const group = await getAgentGroup(anchorId);
+        if (group) return group;
+      }
+      if (currentReviewerId) {
+        const group = await getAgentGroup(currentReviewerId);
+        if (group) return group;
+      }
+      return "";
+    };
+    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
+      const all = await pool();
+      if (!groupKey) return all;
+      const matching = all.filter((c) => resolveAgentGroupKey(c) === groupKey);
+      return matching.length > 0 ? matching : all;
+    };
     const bumpLoad = (agentId: string, delta: number) => {
-      for (const pool of [reviewerPool, ...managerChains.values()]) {
-        const candidate = pool?.find((entry) => entry.id === agentId);
+      if (reviewerPool) {
+        const candidate = reviewerPool.find((entry) => entry.id === agentId);
         if (candidate) candidate.load = Math.max(0, candidate.load + delta);
       }
     };
@@ -370,8 +416,8 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       try {
         let candidates: ReviewerCandidate[];
         try {
-          candidates = await managerCandidates(row.assigneeAgentId);
-          if (candidates.length === 0) candidates = await globalPool();
+          const groupKey = await getIssueGroupKey(row);
+          candidates = await poolForGroup(groupKey);
         } catch (error) {
           log.warn({ err: error, issueId: row.id, companyId }, "Review-routing reviewer lookup failed");
           signals.push(signal);
@@ -422,11 +468,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         continue;
       }
       try {
+        const groupKey = await getIssueGroupKey(row, review.reviewerAgentId);
+        const candidates = await poolForGroup(groupKey);
         const authorModel = row.createdByAgentId
           ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
           : null;
         const picked = pickReviewer({
-          candidates: await pool(),
+          candidates,
           excluded: excludedReviewerIds(row, [
             ...routed.reviewerAgentIds,
             review.reviewerAgentId,
@@ -459,6 +507,70 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         signals.push(signal);
         result.failed += 1;
         log.warn({ err, issueId: row.id }, "review routing failed to reassign a reviewer");
+      }
+    }
+
+    for (const { row, review } of overloaded) {
+      const signal: ReviewRoutingSignal = {
+        kind: "review_overdue",
+        issueId: row.id,
+        companyId,
+        identifier: row.identifier,
+        title: row.title,
+        since: now.toISOString(),
+        hoursInReview: null,
+      };
+      if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) {
+        signals.push(signal);
+        result.signaled += 1;
+        continue;
+      }
+      try {
+        const currentLoad = liveByReviewer.get(review.reviewerAgentId) ?? 0;
+        const groupKey = await getIssueGroupKey(row, review.reviewerAgentId);
+        const candidates = await poolForGroup(groupKey);
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
+        const picked = pickReviewer({
+          candidates,
+          excluded: excludedReviewerIds(row, [
+            ...routedReviewerIds(history, row.id),
+            review.reviewerAgentId,
+            ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
+          ]),
+          maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
+        });
+        if (!picked || picked.load >= currentLoad) {
+          signals.push(signal);
+          result.signaled += 1;
+          continue;
+        }
+        const state = await reassign(row, review.reviewerAgentId, picked, 0, {
+          reason: "queue",
+          currentLoad,
+          threshold: settings.queueThreshold,
+        });
+        if (state) {
+          moves += 1;
+          result.reassigned += 1;
+          result.signaled += 1;
+          bumpLoad(picked.id, 1);
+          bumpLoad(review.reviewerAgentId, -1);
+          liveByReviewer.set(review.reviewerAgentId, Math.max(0, currentLoad - 1));
+          recentReassignments.set(row.id, {
+            signal,
+            untilMs: now.getTime() + REVIEW_ROUTING_REASSIGN_SIGNAL_TTL_MS,
+          });
+        } else {
+          signals.push(signal);
+          result.signaled += 1;
+        }
+      } catch (err) {
+        signals.push(signal);
+        result.failed += 1;
+        log.warn({ err, issueId: row.id }, "review routing failed to offload an overloaded reviewer");
       }
     }
 
@@ -513,53 +625,6 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     lastPrLaneAtMs = now.getTime();
 
     const signals: ReviewRoutingSignal[] = [];
-    const existingWork = await deps.store.listInProgressPrIssues(companyId, REVIEW_ROUTING_PR_PAGE_SIZE);
-    for (const row of existingWork) {
-      try {
-        const product = await deps.store.findPrWorkProduct(companyId, row.id);
-        if (!product) continue;
-        const head = await deps.prResolver.resolve({ companyId, repository: product.repository, number: product.number });
-        result.prScanned += 1;
-        if (head.reviewDecision !== null) continue;
-        if (!shouldRouteOpenPrToReview(head)) continue;
-        const [reviewerRows, boardLoad, openReviewLoad] = await Promise.all([
-          deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
-          deps.store.loadByAgent(companyId),
-          deps.store.openPrTaskLoadByAgent(companyId, "review"),
-        ]);
-        const picked = pickPrReviewer({
-          reviewers: reviewerRows.map((agent) => ({ ...agent, load: 0 })),
-          boardLoadByAgent: boardLoad,
-          openPrLoadByAgent: openReviewLoad,
-          excluded: new Set([row.assigneeAgentId ?? "", row.createdByAgentId ?? ""]),
-          maxLoadPerReviewer: settings.maxLoadPerReviewer,
-          maxOpenReviewsPerReviewer: prWatch.maxOpenReviewsPerReviewer,
-        });
-        if (!picked) continue;
-        const applied = await deps.store.applyPatch({
-          issueId: row.id,
-          companyId,
-          guard: (fresh) => fresh.status === "in_progress" && fresh.assigneeAgentId === row.assigneeAgentId,
-          build: (fresh) => buildReviewRoutingAssignPatch({ issue: fresh, reviewerAgentId: picked.id }),
-        });
-        if (!applied) continue;
-        await deps.logActivity({
-          companyId,
-          action: REVIEW_ROUTING_ASSIGNED_ACTION,
-          issueId: row.id,
-          details: { reviewerAgentId: picked.id, reviewerRole: picked.role, reason: "existing_pr_ci_wait", repository: product.repository, pullRequest: product.number, ci: head.ci },
-        });
-        await deps.addComment(row.id,
-          `Automatic review routing: ${product.repository}#${product.number} is open, non-draft, mergeable, and CI is pending or green. This task is now in review; the original assignee will resume only if changes are requested.`,
-          { presentation: notice("PR waiting for CI/review"), metadata: metadataFor({ "Pull request": `${product.repository}#${product.number}`, CI: head.ci, Reviewer: picked.id }) });
-        await wake(row, picked.id, applied.executionState, "myrmidon_review_routing_pr_wait");
-        result.assigned += 1;
-        result.prTasksCreated += 1;
-      } catch (err) {
-        result.failed += 1;
-        log.warn({ err, issueId: row.id }, "review routing failed to hand off an existing PR task");
-      }
-    }
     // Source (a): webhook-fed rows.
     const candidates = new Map<string, { repository: string; number: number }>();
     for (const row of await deps.store.listPrCandidates(companyId, REVIEW_ROUTING_PR_PAGE_SIZE)) {
@@ -684,7 +749,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
               })
             : false);
 
-        if (hasBoardApproval && !head.labels?.includes("review-approved")) {
+        if (hasBoardApproval) {
           try {
             const propRes = await deps.approvalPropagator({
               companyId,
@@ -693,7 +758,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
               headSha: head.headSha,
               reviewedHeadSha: head.headSha,
             });
-            if (propRes.success) {
+            if (propRes.success && propRes.action !== "noop" && propRes.action !== "skipped") {
               result.prApprovalsPropagated += 1;
             }
           } catch (err) {
@@ -852,6 +917,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     previousReviewerId: string,
     reviewer: ReviewerCandidate,
     hoursInReview: number,
+    overload?: { reason: "queue"; currentLoad: number; threshold: number },
   ) {
     const applied = await deps.store.applyPatch({
       issueId: row.id,
@@ -862,14 +928,22 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     if (!applied) return null;
     await deps.addComment(
       row.id,
-      `Automatic review routing: this review had no verdict for ${hoursInReview} h, so it was moved to ` +
-        "another reviewer. An attention card was raised for the operator.",
+      overload
+        ? `Automatic review routing: the reviewer's queue held ${overload.currentLoad} runs (threshold ${overload.threshold}), so the review was moved to the least-loaded pool member.`
+        : `Automatic review routing: this review had no verdict for ${hoursInReview} h, so it was moved to ` +
+            "another reviewer. An attention card was raised for the operator.",
       {
         presentation: { ...notice("Review reassigned"), tone: "warning" },
         metadata: metadataFor({
           "Previous reviewer": previousReviewerId,
           "New reviewer": reviewer.id,
-          "Hours in review": String(hoursInReview),
+          ...(overload
+            ? {
+                Reason: "reviewer-queue-overload",
+                "Queue size": String(overload.currentLoad),
+                Threshold: String(overload.threshold),
+              }
+            : { "Hours in review": String(hoursInReview) }),
         }),
       },
     );
@@ -883,6 +957,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reviewerAgentId: reviewer.id,
         previousReviewerAgentId: previousReviewerId,
         hoursInReview,
+        ...(overload
+          ? { reason: "reviewer-queue-overload", currentLoad: overload.currentLoad, threshold: overload.threshold }
+          : {}),
       },
     });
     return applied;
