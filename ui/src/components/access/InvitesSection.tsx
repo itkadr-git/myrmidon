@@ -4,6 +4,8 @@ import { Check, Copy } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
@@ -55,6 +57,8 @@ export function InvitesSection() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  const [inviteeEmail, setInviteeEmail] = useState("");
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
   const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
@@ -116,11 +120,14 @@ export function InvitesSection() {
       accessApi.createCompanyInvite(selectedCompanyId!, {
         allowedJoinTypes: "human",
         humanRole,
+        defaultsPayload: { email: inviteeEmail.trim() },
         agentMessage: null,
       }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
+      setInviteeEmail("");
+      setEmailError(null);
       const copied = await copyText(invite.inviteUrl, t("area.access-secrets-1.invites-section.copyManually"));
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
@@ -186,6 +193,24 @@ export function InvitesSection() {
           </p>
         </div>
 
+        <div className="max-w-md space-y-2">
+          <Label htmlFor="invitee-email">{t("area.access-secrets-1.invites-section.emailLabel")}</Label>
+          <Input
+            id="invitee-email"
+            type="email"
+            autoComplete="email"
+            required
+            value={inviteeEmail}
+            aria-invalid={emailError ? true : undefined}
+            aria-describedby={emailError ? "invitee-email-error" : undefined}
+            onChange={(event) => {
+              setInviteeEmail(event.target.value);
+              setEmailError(null);
+            }}
+          />
+          {emailError ? <p id="invitee-email-error" role="alert" className="text-sm text-destructive">{emailError}</p> : null}
+        </div>
+
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium">{t("area.access-secrets-1.invites-section.chooseRole")}</legend>
           <div className="rounded-xl border border-border">
@@ -227,7 +252,14 @@ export function InvitesSection() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
+          <Button onClick={() => {
+            const email = inviteeEmail.trim();
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+              setEmailError(t("area.access-secrets-1.invites-section.emailInvalid"));
+              return;
+            }
+            createInviteMutation.mutate();
+          }} disabled={createInviteMutation.isPending}>
             {createInviteMutation.isPending ? t("area.access-secrets-1.invites-section.creating") : t("area.access-secrets-1.invites-section.createInvite")}
           </Button>
           <span className="text-sm text-muted-foreground">{t("area.access-secrets-1.invites-section.historyNote")}</span>
