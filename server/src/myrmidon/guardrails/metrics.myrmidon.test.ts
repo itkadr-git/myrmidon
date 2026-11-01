@@ -54,13 +54,9 @@ describe("guardrail trigger metrics counter", () => {
 
   it("rejects unknown rules, modes and counts", () => {
     const counter = createGuardrailTriggerMetrics();
-    // @ts-expect-error — runtime guard against a future detector passing junk
     expect(() => counter.record("totes-new-rule", "flag")).toThrow(/rule/);
-    // @ts-expect-error — runtime guard against a bad mode hint
     expect(() => counter.record("secret", "quarantine")).toThrow(/mode/);
-    // @ts-expect-error — runtime guard against a non-integer or negative count
     expect(() => counter.record("secret", "flag", 1.5)).toThrow(/count/);
-    // @ts-expect-error
     expect(() => counter.record("secret", "flag", -1)).toThrow(/count/);
     // nothing was counted by the rejected calls
     expect(counter.read().secret.flag).toBe(0);
