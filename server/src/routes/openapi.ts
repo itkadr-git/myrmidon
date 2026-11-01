@@ -3948,7 +3948,7 @@ registry.registerPath({
   summary: "Block a user instance-wide with a mandatory audited reason",
   request: {
     params: z.object({ userId: z.string() }),
-    body: z.object({ reason: z.string().min(1).max(1000) }),
+    body: jsonBody(z.object({ reason: z.string().min(1).max(1000) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
@@ -3960,7 +3960,7 @@ registry.registerPath({
   summary: "Block a user inside a company with a mandatory audited reason",
   request: {
     params: z.object({ companyId: z.string(), userId: z.string() }),
-    body: z.object({ reason: z.string().min(1).max(1000) }),
+    body: jsonBody(z.object({ reason: z.string().min(1).max(1000) })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
