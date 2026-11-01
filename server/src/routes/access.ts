@@ -4721,7 +4721,7 @@ export function accessRoutes(
             .some((value) => value.toLowerCase().includes(needle)),
         )
       : users;
-    const userIds = filteredUsers.map((user) => user.id);
+    const userIds = filteredUsers.slice(0, 50).map((user) => user.id);
     const memberships = userIds.length
       ? await db
           .select({
@@ -4746,8 +4746,8 @@ export function accessRoutes(
         .map((membership) => membership.principalId),
     );
     const usersByMembership = query.role !== undefined || query.status !== undefined
-      ? filteredUsers.filter((user) => matchingUserIds.has(user.id))
-      : filteredUsers;
+      ? filteredUsers.slice(0, 50).filter((user) => matchingUserIds.has(user.id))
+      : filteredUsers.slice(0, 50);
     const membershipCountByUserId = new Map<string, number>();
     for (const membership of memberships) {
       if (membership.status !== "active") continue;
