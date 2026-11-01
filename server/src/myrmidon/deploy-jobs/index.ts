@@ -15,6 +15,7 @@ import { readDeployJobsSettings } from "./settings.js";
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { createUpdateNotifier } from "../bot-containers/update-notify.js";
 
 export { digestProblem, parseDigest, verifyCiImage } from "./domain.js";
 export { deployJobsService } from "./service.js";
@@ -61,6 +62,7 @@ function defaultDeps(db: Db): DeployJobServiceDeps {
       }
     },
     settings,
+    notifyUpdate: createUpdateNotifier(db),
   };
 }
 

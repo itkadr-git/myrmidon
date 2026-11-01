@@ -27,6 +27,10 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): unpriced counters and current-month forecast
+  unpricedEvents: number;
+  unpricedTokens: number;
+  forecastCents: number | null;
 }
 
 export interface IssueCostSummary {
@@ -132,3 +136,13 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+export interface CostByDay {
+  day: string; // "YYYY-MM-DD" (UTC)
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  unpricedEvents: number;
+}
+

@@ -62,6 +62,36 @@ const call = (actor: unknown, mod: ReturnType<typeof makeModule>, name: string, 
   request(app(actor, mod)).post(url).send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
 
 describe("myrmidon(1.6.6 K-3) knowledge MCP: rule grade", () => {
+  it("knowledge_write_draft exposes and forwards changeSummary and sources", async () => {
+    const mod = makeModule({ ...ruleItem(["engineer"]), kind: "wiki", folderPath: "ops" });
+
+    const listRes = await request(app(operator, mod)).post(url).send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(listRes.status).toBe(200);
+    const tools = listRes.body.result?.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>;
+    const writeDraftTool = tools.find((t) => t.name === "knowledge_write_draft");
+    expect(writeDraftTool?.inputSchema.properties.changeSummary).toBeDefined();
+    expect(writeDraftTool?.inputSchema.properties.sources).toBeDefined();
+
+    const sources = [{ kind: "task", ref: "OPE-10263", note: "Acceptance work" }, { kind: "pr", ref: "itkadr-git/myrmidon#2187" }];
+    const response = await call(operator, mod, "knowledge_write_draft", {
+      idOrSlug: "ops/runbook",
+      content: "Updated guidance",
+      changeSummary: "Clarified deployment steps",
+      sources,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mod.draft).toHaveBeenCalledWith(
+      "ops/runbook",
+      expect.objectContaining({
+        content: "Updated guidance",
+        changeSummary: "Clarified deployment steps",
+        sources,
+      }),
+      expect.anything(),
+    );
+  });
+
   it("knowledge_publish of an old approved revision of a smm rule: operator 403, owner 200", async () => {
     const mod = makeModule(ruleItem(["smm"]));
     const args = { idOrSlug: "rules/smm/publications", revisionId: "rev-old-approved" };

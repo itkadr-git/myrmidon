@@ -168,7 +168,7 @@ Telegram delivery»). Режимы:
 - Точка вызова доставки карточек: `server/src/services/chat-interaction-publications.ts`
   (метка `myrmidon(U2)`, после вендорского поиска биндингов; фильтр режима
   живёт внутри поиска биндингов).
-- Поиск биндингов: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
+- Поиск биндингов: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (с 1.7-ACTIVE-CHANNEL; там же выбор активного канала).
 - Текст сообщения владельцу (заменил прежний префикс карточки `owner-card-text.ts`): `server/src/myrmidon/owner-delivery/telegram-text.ts`; см. раздел «Публикации владельцу обычным текстом» выше — он заменяет описание кнопок и заголовка для личного чата владельца.
 - Резолюция колбэков: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Запись о поведении: [../DIVERGENCE.md](../DIVERGENCE.md), строка U2.

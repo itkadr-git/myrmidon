@@ -38,6 +38,9 @@ export function parseDesiredState(body) {
   for (const k of ["closingMinutes", "scratchTtlHours", "orphanHours"]) {
     if (!isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
   }
+  for (const k of ["npmCacheTtlHours", "uvCacheTtlHours", "terminalOutputTtlHours"]) {
+    if (grace[k] !== undefined && !isPosInt(grace[k])) return bad(`grace.${k} is not a positive integer`);
+  }
   if (grace.legacyPressureIdleDays !== undefined && !(isPosInt(grace.legacyPressureIdleDays) && grace.legacyPressureIdleDays <= 90)) {
     return bad("grace.legacyPressureIdleDays is not 1..90");
   }
@@ -52,6 +55,7 @@ export function parseDesiredState(body) {
     const at = `workspaces[${i}]`;
     if (!isObj(w)) return bad(`${at} is not an object`);
     if (!nonEmpty(w.key)) return bad(`${at}.key is empty`);
+    if (w.id !== undefined && typeof w.id !== "string") return bad(`${at}.id is not a string`);
     if (w.repo !== undefined && !(typeof w.repo === "string" && REPO_RE.test(w.repo))) return bad(`${at}.repo is not owner/name`);
     if (!STATES.includes(w.state)) return bad(`${at}.state is unknown (${JSON.stringify(String(w.state)).slice(0, 40)})`);
     if (!isDatetime(w.since)) return bad(`${at}.since is not a UTC datetime`);
@@ -63,6 +67,15 @@ export function parseDesiredState(body) {
   }
   if (body.closedKeys !== undefined && !(Array.isArray(body.closedKeys) && body.closedKeys.every((k) => typeof k === "string"))) {
     return bad("closedKeys is not an array of strings");
+  }
+  if (body.closedTasks !== undefined) {
+    if (!Array.isArray(body.closedTasks)) return bad("closedTasks is not an array");
+    for (let i = 0; i < body.closedTasks.length; i += 1) {
+      const k = body.closedTasks[i];
+      if (!isObj(k) || !nonEmpty(k.key)) return bad(`closedTasks[${i}] missing key`);
+      if (k.closedAt !== undefined && !isDatetime(k.closedAt)) return bad(`closedTasks[${i}].closedAt is not a UTC datetime`);
+      if (k.issueId !== undefined && typeof k.issueId !== "string") return bad(`closedTasks[${i}].issueId is not a string`);
+    }
   }
   return { ok: true, value: body };
 }

@@ -1,4 +1,5 @@
 export { healthRoutes } from "./health.js";
+export { haRoutes } from "./ha.js";
 export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
 export { companySkillPolicyRoutes } from "./company-skill-policy.js";
@@ -41,3 +42,7 @@ export { instanceSettingsRoutes } from "./instance-settings.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
 export { managedAgentProfileRoutes } from "./managed-agent-profiles.js";
 export { remoteAgentProfileRoutes } from "./remote-agent-profiles.js";
+export { adminAssistantRoutes, collectClusterHealth } from "./admin-assistant.js";
+export { guardrailsRoutes } from "./guardrails.js";
+export { usersRoutes, userRoutes } from "./users.js";
+export { auditRoutes } from "./audit.js";

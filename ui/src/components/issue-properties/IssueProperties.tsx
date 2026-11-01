@@ -5,7 +5,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { i18n, useTranslation } from "@/i18n";
 import {
   deriveOriginatingActor,
   effectivePheromone,
@@ -393,6 +393,7 @@ export function IssueProperties({
   sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
   const { t } = useTranslation();
+  const dateLocale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
@@ -1484,6 +1485,7 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
+  const rewakeFreeze = issue.blockerMetadata?.issueRewakeFreeze ?? null;
   const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
@@ -1582,10 +1584,10 @@ export function IssueProperties({
     ? formatMonitorOffset(scheduledRetryDueAtIso)
     : null;
   const scheduledRetryAbsolute = scheduledRetry?.scheduledRetryAt
-    ? formatDateTime(scheduledRetry.scheduledRetryAt)
+    ? formatDateTime(scheduledRetry.scheduledRetryAt, { locale: dateLocale })
     : null;
   const scheduledRetryShortDate = scheduledRetry?.scheduledRetryAt
-    ? formatDate(new Date(scheduledRetry.scheduledRetryAt))
+    ? formatDate(new Date(scheduledRetry.scheduledRetryAt), dateLocale)
     : null;
   const scheduledRetryReasonLabel = formatRetryReason(scheduledRetry?.scheduledRetryReason);
   const scheduledRetryAttemptLabel = formatRetryAttemptCounter(
@@ -2881,6 +2883,11 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
+        {rewakeFreeze ? (
+          <div className="text-sm text-amber-700 dark:text-amber-400" title={rewakeFreeze.frozenAt}>
+            Empty re-wakes frozen since {new Date(rewakeFreeze.frozenAt).toLocaleString()} ({rewakeFreeze.noProgressStreak} runs)
+          </div>
+        ) : null}
         <PropertyPicker
           inline={inline}
           label={t("area.issue-properties-panels-2.issue-properties.rows.monitor")}
@@ -3090,6 +3097,20 @@ export function IssueProperties({
       ) : null}
 
       <PropertySection title={t("area.issue-properties-panels-2.issue-properties.sections.about")} streamlined={streamlinedPropertiesEnabled}>
+        {issue.responsibleAgentId ? (
+          <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.responsible", { defaultValue: "Responsible" })}>
+            <Link
+              to={`/agents/${issue.responsibleAgentId}`}
+              className="hover:underline"
+            >
+              <Identity
+                name={agentName(issue.responsibleAgentId) ?? issue.responsibleAgentId.slice(0, 8)}
+                size="sm"
+                shape="square"
+              />
+            </Link>
+          </PropertyRow>
+        ) : null}
         {originatingActor ? (
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.originating")}>
             {originatingActor.kind === "agent" ? (
@@ -3123,23 +3144,23 @@ export function IssueProperties({
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.started")}>
             <span
               className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
-              title={streamlinedPropertiesEnabled ? formatDateTime(issue.startedAt) : undefined}
-            >{formatDateTime(issue.startedAt)}</span>
+              title={streamlinedPropertiesEnabled ? formatDateTime(issue.startedAt, { locale: dateLocale }) : undefined}
+            >{formatDateTime(issue.startedAt, { locale: dateLocale })}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
           <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.completed")}>
             <span
               className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
-              title={streamlinedPropertiesEnabled ? formatDateTime(issue.completedAt) : undefined}
-            >{formatDateTime(issue.completedAt)}</span>
+              title={streamlinedPropertiesEnabled ? formatDateTime(issue.completedAt, { locale: dateLocale }) : undefined}
+            >{formatDateTime(issue.completedAt, { locale: dateLocale })}</span>
           </PropertyRow>
         )}
         <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.created")}>
           <span
             className={streamlinedPropertiesEnabled ? "min-w-0 truncate whitespace-nowrap text-sm" : "text-sm"}
-            title={streamlinedPropertiesEnabled ? formatDateTime(issue.createdAt) : undefined}
-          >{formatDateTime(issue.createdAt)}</span>
+            title={streamlinedPropertiesEnabled ? formatDateTime(issue.createdAt, { locale: dateLocale }) : undefined}
+          >{formatDateTime(issue.createdAt, { locale: dateLocale })}</span>
         </PropertyRow>
         <PropertyRow label={t("area.issue-properties-panels-2.issue-properties.rows.updated")}>
           <span
@@ -3162,7 +3183,7 @@ export function IssueProperties({
                       truncation on genuinely long names is recoverable. */}
                   <span
                     className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
-                    title={t("area.issue-properties-panels-2.issue-properties.about.archivedBy", { name: archivedByName, date: formatDateTime(issue.archivedAt) })}
+                    title={t("area.issue-properties-panels-2.issue-properties.about.archivedBy", { name: archivedByName, date: formatDateTime(issue.archivedAt, { locale: dateLocale }) })}
                   >
                     {archivedByAgent
                       ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

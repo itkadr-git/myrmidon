@@ -315,6 +315,42 @@
         "path": "tools/terminal_tool.py",
         "upstreamMarker": "foreground.{0,80}(ignor|drop)"
       }
+    },
+    {
+      "id": "19-redact-auth-bearer-template-syntax",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/19-redact-auth-bearer-template-syntax.patch",
+      "files": [
+        "agent/redact.py"
+      ],
+      "reason": "Upstream _AUTH_HEADER_RE in agent/redact.py unconditionally masked any token following Authorization: Bearer, swallowing enclosing backticks and leading Bearer into *** when inspecting code template strings (e.g. `authorization: `Bearer ${token}``). This resulted in syntax corruption (`authorization: *** ${token}`) in tool outputs, leading to false-positive review rejections. The patch preserves enclosing quotes and backticks in _AUTH_HEADER_RE and introduces _is_probable_auth_secret to distinguish genuine high-entropy credentials (Bearer ghp_... 36+ chars, JWTs, opaque tokens) from code template syntax (${...}, <...>, {...}) and variable names ($token, authToken).",
+      "dropCondition": "Upstream distinguishes code template syntax and variable identifiers from genuine credentials in authorization header redaction and preserves enclosing quote delimiters.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/redact.py",
+        "upstreamMarker": "_is_probable_auth_secret|_AUTH_KNOWN_SECRET_PREFIXES"
+      }
+    },
+    {
+      "id": "20-run-scoped-run-id",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/20-run-scoped-run-id.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_id_context.py"
+      ],
+      "reason": "A bot gateway container is long-lived and serves many runs, so the container-level PAPERCLIP_RUN_ID/MYRMIDON_RUN_ID in os.environ belongs to whichever run happened to start the container and is stale for every later run. An agent reading $PAPERCLIP_RUN_ID and sending it as X-Paperclip-Run-Id on a board mutation got a stale value and the board answered 409 Issue run ownership conflict, blocking decision writes (OPE-10358). _run_agent_sync now binds the current run's id through contextvars for the whole turn; the terminal child-env bridge in local.py overrides the inherited (stale) container-level value for that run's subprocesses only.",
+      "dropCondition": "Upstream ships a per-run run-id binding for gateway-spawned children, or the board stops enforcing run ownership on agent mutations.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "run_id_context|set_run_id_vars|PAPERCLIP_RUN_ID"
+      }
     }
   ]
 }

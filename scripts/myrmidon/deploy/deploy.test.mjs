@@ -278,6 +278,8 @@ function sandbox({
       // predeploy-board-check.test.mjs and in the release-gate sandbox, which
       // knows BOARD_COMPANY_ID).
       "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+      "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
       `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
       "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       `MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2`,
@@ -531,6 +533,47 @@ describe("deploy.sh", () => {
     });
   });
 
+  describe("shared package cache preflight", () => {
+    const cacheSandbox = ({ readOnly = false, missing = false } = {}) => {
+      const sb = sandbox();
+      const cache = path.join(sb.dir, "shared-cache");
+      if (!missing) fs.mkdirSync(cache);
+      fs.writeFileSync(
+        path.join(sb.dir, "compose-json"),
+        JSON.stringify({
+          services: {
+            server: {
+              volumes: [{ type: "bind", source: cache, target: cache, ...(readOnly ? { read_only: true } : {}) }],
+            },
+          },
+        }),
+      );
+      sb.env = { MYRMIDON_SHARED_PACKAGE_CACHE_PATH: cache };
+      return { sb, cache };
+    };
+
+    it("requires a writable cache directory and a read/write server bind", () => {
+      const { sb } = cacheSandbox();
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+    });
+
+    it("stops before pulling when the cache directory is missing", () => {
+      const { sb } = cacheSandbox({ missing: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache path is not a directory/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+
+    it("rejects a read-only cache bind", () => {
+      const { sb } = cacheSandbox({ readOnly: true });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.notEqual(code, 0);
+      assert.match(out, /shared package cache is not mounted read\/write/);
+      assert.doesNotMatch(calls(sb), /docker pull/);
+    });
+  });
   it("--dry-run fails with the real compose error when the compose project cannot be read", () => {
     const sb = sandbox({ composeConfigFails: true });
     const before = read(sb.override);

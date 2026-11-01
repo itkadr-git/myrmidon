@@ -68,6 +68,7 @@ type InboxScopeFilters = {
 const inboxCategoryOptions = (): ReadonlyArray<[InboxCategoryFilter, string]> => [
   ["everything", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.everything")],
   ["issues_i_touched", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.issuesITouched")],
+  ["knowledge", i18n.t("ui2.nav.knowledge")],
   ["join_requests", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.joinRequests")],
   ["approvals", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.approvals")],
   ["failed_runs", i18n.t("area.issue-threads-runs-1.issue-filters-popover.categories.failedRuns")],
@@ -556,6 +557,13 @@ export function IssueFiltersPopover({
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
                   />
                   <span className="text-sm">{t("area.issue-threads-runs-1.issue-filters-popover.liveRunsOnly")}</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.olderThan30Days === true}
+                    onCheckedChange={(checked) => onChange({ olderThan30Days: checked === true })}
+                  />
+                  <span className="text-sm">{t("area.issue-threads-runs-1.issue-filters-popover.olderThan30Days")}</span>
                 </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">

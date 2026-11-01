@@ -1,6 +1,15 @@
 // myrmidon(M2-B): per-agent LLM gateway keys and the gateway's fallback
 // topology. GET/POST /api/myrmidon/companies/:id/litellm/keys/*.
 import { api } from "@/api/client";
+import type { FallbackChain } from "@myrmidon/shared";
+
+export interface KeyBudgetLimitView {
+  amountUsd: number | null;
+  periodHours: number;
+  mode: "block" | "soft";
+  effectiveMode: "block" | "soft";
+  caste: string | null;
+}
 
 export interface AgentGatewayKeyView {
   agentId: string;
@@ -9,6 +18,30 @@ export interface AgentGatewayKeyView {
   /** sha256 of the key value — the only form the value is ever reported in. */
   valueHash: string | null;
   canManageKeys: boolean;
+  /** Allowed models list. Empty array means all models allowed. */
+  models?: string[];
+  /** Key budget limit projected from the OPE-8675 budget projection (OPE-9859). */
+  agentName?: string | null;
+  role?: string | null;
+  budget?: KeyBudgetLimitView | null;
+}
+
+export interface ServiceKeyBudgetView {
+  serviceId: string;
+  serviceName: string;
+  level: "caste" | "nest" | "foraging" | "ticket";
+  scopeId: string;
+  tag: string;
+  secretName: string | null;
+  budget: KeyBudgetLimitView;
+}
+
+export interface CompanyKeyBudgetsReport {
+  companyId: string;
+  signalOnly: boolean;
+  projectionEnabled: boolean;
+  agents: AgentGatewayKeyView[];
+  services: ServiceKeyBudgetView[];
 }
 
 export interface GatewayFallbackCycle {
@@ -16,9 +49,18 @@ export interface GatewayFallbackCycle {
   described: string;
 }
 
+export interface GatewayFallbackModelInfo {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+  isFree?: boolean;
+}
+
 export interface GatewayFallbackReport {
   chains: Array<{ model: string; targets: string[] }>;
   cycles: GatewayFallbackCycle[];
+  models?: GatewayFallbackModelInfo[];
   error?: string;
 }
 
@@ -31,18 +73,31 @@ const base = (companyId: string) => `/myrmidon/companies/${encodeURIComponent(co
 
 export const litellmKeysApi = {
   keys: (companyId: string) => api.get<AgentGatewayKeyView[]>(`${base(companyId)}/keys`),
+  keyBudgets: (companyId: string) =>
+    api.get<CompanyKeyBudgetsReport>(`${base(companyId)}/key-budgets`),
   fallbacks: (companyId: string) => api.get<GatewayFallbackReport>(`${base(companyId)}/fallbacks`),
-  create: (companyId: string, agentId: string) =>
+  updateFallbacks: (companyId: string, chains: readonly FallbackChain[]) =>
+    api.put<GatewayFallbackReport>(`${base(companyId)}/fallbacks`, { chains }),
+  create: (companyId: string, agentId: string, models?: string[]) =>
     api.post<AgentGatewayKeyView & { value: string }>(
       `${base(companyId)}/keys/${encodeURIComponent(agentId)}`,
-      {},
+      { models },
     ),
   rotate: (companyId: string, agentId: string) =>
     api.post<AgentGatewayKeyView>(`${base(companyId)}/keys/${encodeURIComponent(agentId)}/rotate`, {}),
+  revoke: (companyId: string, agentId: string) =>
+    api.delete<AgentGatewayKeyView>(`${base(companyId)}/keys/${encodeURIComponent(agentId)}`),
+  updateAllowlist: (companyId: string, agentId: string, models: string[]) =>
+    api.put<AgentGatewayKeyView>(
+      `${base(companyId)}/keys/${encodeURIComponent(agentId)}/models`,
+      { models },
+    ),
 };
 
 export const litellmKeysKey = (companyId: string) =>
   ["myrmidon", "litellm", "keys", companyId] as const;
+export const litellmKeyBudgetsKey = (companyId: string) =>
+  ["myrmidon", "litellm", "key-budgets", companyId] as const;
 export const litellmFallbacksKey = (companyId: string) =>
   ["myrmidon", "litellm", "fallbacks", companyId] as const;
 
