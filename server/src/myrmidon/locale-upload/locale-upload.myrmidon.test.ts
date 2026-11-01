@@ -126,8 +126,8 @@ describe("validator unit tests", () => {
     expect(result.report.missingKeys).toEqual([
       "app.description",
       "settings.language",
-      "settings.profile.name",
       "settings.profile.email",
+      "settings.profile.name",
     ]);
     expect(result.report.extraKeys).toEqual(["custom_feature.label"]);
     expect(result.warnings.length).toBeGreaterThan(0);
