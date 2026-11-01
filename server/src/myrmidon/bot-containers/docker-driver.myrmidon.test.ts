@@ -1447,6 +1447,47 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(bot()?.state).toBe("running");
     });
 
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("uses the same unhealthy startup grace for non-dev images as the runtime healthcheck start period", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 420_000,
+          healthPollIntervalMs: 30_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await expect(regularDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      // Image's 300-second start period plus three 30-second retries can elapse.
+      expect(elapsed).toBeGreaterThanOrEqual(390_000);
+    });
+
     it("fails an unhealthy container after its startup grace expires", async () => {
       let elapsed = 0;
       daemon.options.healthOnStart = "unhealthy";
