@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // owner is the resolver.
 import type { OwnerReplyCard } from "./parse-owner-reply.js";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
-import type { OwnerReplyDeps } from "./owner-task-reply.js";
+import type { OwnerReplyOutcome } from "./owner-task-reply.js";
 import { handleTelegramOwnerReply, loadRepliedInteractionIds, narrowCardsToReply, shouldSuppressTelegramOwnerWake } from "./telegram-door.js";
 import { listOwnerExplanations } from "../owner-delivery/owner-dialogue.js";
 
@@ -131,7 +131,7 @@ describe("handleTelegramOwnerReply", () => {
     ["failed resolution", { outcome: "failed", error: "failure" }, true, false],
     ["non-via-bot mode skipped", { outcome: "skipped_mode", mode: "via_bot" }, true, false],
   ] as const)("wake settlement: %s", (_label, outcome, hasReplyTarget, expected) => {
-    expect(shouldSuppressTelegramOwnerWake(outcome, hasReplyTarget)).toBe(expected);
+    expect(shouldSuppressTelegramOwnerWake(outcome as OwnerReplyOutcome, hasReplyTarget)).toBe(expected);
   });
 
   it("rejects a reply target from another Telegram chat before consulting links", async () => {
