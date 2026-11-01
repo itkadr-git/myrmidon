@@ -10197,7 +10197,9 @@ export function issueRoutes(
             const executionPolicy = safeNormalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
-            const transitionIssue = await withDefaultEscalationChain(
+            const transitionIssue: IssueRouteSnapshot & {
+              executionReviewParticipantAgentIds?: string[];
+            } = await withDefaultEscalationChain(
               tx as unknown as Db,
               lockedIssue,
               executionPolicy,
