@@ -157,8 +157,7 @@ esac
 [[ -n "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE is required: the throwaway board needs the board's own environment (secrets, tokens) to start like the production board; nothing was changed"
 [[ -f "$board_env_file" ]] || die "MYRMIDON_PREDEPLOY_BOARD_ENV_FILE not found: $board_env_file; nothing was changed"
 io_device="${MYRMIDON_PREDEPLOY_IO_DEVICE:-}"
-io_rate="${MYRMIDON_PREDEPLOY_IO_RATE:-31457280}"
-[[ "$io_rate" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_PREDEPLOY_IO_RATE must be a positive integer of bytes per second (default 31457280 = 30 MiB/s); nothing was changed"
+io_rate="${MYRMIDON_PREDEPLOY_IO_RATE:-30000000}"
 if [[ -n "$io_device" ]]; then
   # An explicit device is taken as-is (word-safe): Docker validates that it is
   # a block device before the container starts, before anything is restored.
