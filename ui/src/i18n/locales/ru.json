@@ -131,6 +131,7 @@
       "status": "Владелец · Web"
     },
     "screens": {
+      "commander": "Командный центр",
       "decisions": "Решения",
       "costs": "Расходы",
       "agentOverview": "Обзор агента",

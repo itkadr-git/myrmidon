@@ -77,7 +77,7 @@ export function Ui2I18nProvider({
   children,
   initialLocale,
 }: {
-  children: ReactNode;
+  children?: ReactNode;
   initialLocale?: Ui2Locale;
 }) {
   const [locale, setLocaleState] = useState<Ui2Locale>(

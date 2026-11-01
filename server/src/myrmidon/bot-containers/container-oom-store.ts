@@ -88,3 +88,5 @@ export async function getAgentContainerOomEvents(db: Db, agentId: string, runId?
     .where(and(...conditions))
     .orderBy(desc(activityLog.createdAt));
 }
+
+export type ContainerOomEvidenceEvent = Awaited<ReturnType<typeof getAgentContainerOomEvents>>[number];

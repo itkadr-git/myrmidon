@@ -140,6 +140,7 @@ import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
 import { installIdProviderFor } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
 import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
+import { startDenyListPuller } from "./myrmidon/licensing/denylist-pull.js"; // myrmidon(OPE-9084)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
@@ -1686,6 +1687,9 @@ export async function createApp(
     jobCoordinator.start();
     scheduler.start();
   }
+  // myrmidon(OPE-9084): the client installation pulls the issuer's signed
+  // deny-list itself. API-only processes do not own periodic work.
+  const denyListPuller = backgroundWorkEnabled ? startDenyListPuller() : null;
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -1932,6 +1936,7 @@ export async function createApp(
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;
       }
+      denyListPuller?.stop();
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);
