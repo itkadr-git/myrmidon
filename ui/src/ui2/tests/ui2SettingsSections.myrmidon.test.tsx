@@ -81,22 +81,16 @@ vi.mock("@/context/CompanyContext", () => ({
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const UI_SRC = join(__dirname, "../..");
+const ROUTE_TEST_SOURCE = readFileSync(join(UI_SRC, "App.tsx"), "utf8");
 
-export function getApplicationSettingsRoutes(customAppSource?: string): string[] {
-  const appSource = customAppSource ?? readFileSync(join(UI_SRC, "App.tsx"), "utf8");
-  const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
-  if (!routeBlock) {
-    throw new Error("Unable to locate boardRoutes in App.tsx");
-  }
-
-  const appSettingsPaths = [
-    ...routeBlock.matchAll(/path="(company\/settings(?:\/[^"]*)?)"/g),
-  ]
+export function getApplicationSettingsRoutes(customAppSource = ROUTE_TEST_SOURCE): string[] {
+  const source = customAppSource ?? readFileSync(join(UI_SRC, "App.tsx"), "utf8");
+  const routeBlock = source.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+  if (!routeBlock) throw new Error("Unable to locate boardRoutes in App.tsx");
+  const vendorPaths = [...routeBlock.matchAll(/path="(company\/settings(?:\/[^"]*)?)"/g)]
     .map(([, path]) => `/${path}`)
     .filter((path) => !path.includes(":") && !path.includes("*"));
-
-  const ui2Paths = UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`);
-  return Array.from(new Set([...ui2Paths, ...appSettingsPaths]));
+  return Array.from(new Set([...UI2_ROUTE_TABLE.map((route) => `/${route.path}`), ...vendorPaths]));
 }
 
 export interface SettingsSectionSpec {
@@ -207,15 +201,17 @@ describe("UI-2.0 Settings Sections Regression Suite (OPE-10138)", () => {
   SETTINGS_SECTION_SPECS.forEach((spec) => {
     describe(`section: ${spec.name}`, () => {
       it(`${spec.name}: matches an application route (not Page not found)`, () => {
-        const appRoutes = getApplicationSettingsRoutes();
-        const routerRoutes = appRoutes.map((p) => ({ path: p }));
-        const matches = matchRoutes(routerRoutes, spec.path);
-
+        const matches = matchRoutes(
+          getApplicationSettingsRoutes(ROUTE_TEST_SOURCE).map((path) => ({ path })),
+          spec.path,
+        );
         expect(matches, `Path ${spec.path} must match a concrete application route`).not.toBeNull();
-        expect(matches?.[0]?.route?.path).toBe(spec.path);
+        expect(matches?.[0]?.route.path).toBe(spec.path);
       });
 
       it(`${spec.name}: sidebar active state is correct on ${spec.path}`, () => {
+        const routeMatches = matchRoutes(getApplicationSettingsRoutes(ROUTE_TEST_SOURCE).map((path) => ({ path })), spec.path);
+
         flushSync(() => {
           root.render(
             <Ui2I18nProvider>
@@ -226,11 +222,16 @@ describe("UI-2.0 Settings Sections Regression Suite (OPE-10138)", () => {
           );
         });
 
+        expect(routeMatches, `Path ${spec.path} must be an application route`).not.toBeNull();
         const links = Array.from(container.querySelectorAll("a"));
         expect(links.length).toBe(UI2_SETTINGS_SECTIONS.length);
 
         for (const section of UI2_SETTINGS_SECTIONS) {
-          const link = links.find((l) => l.getAttribute("href") === section.path);
+          const link = links.find((candidate) => {
+            const href = candidate.getAttribute("href");
+            const path = new URL(href ?? "/", window.location.origin).pathname;
+            return path.endsWith(section.path);
+          });
           expect(link, `NavLink for section ${section.key} (${section.path}) not found`).toBeDefined();
 
           const shouldBeActive = spec.sidebarKey === section.key;
@@ -275,10 +276,12 @@ describe("UI-2.0 Settings Sections Regression Suite (OPE-10138)", () => {
 
   describe("guards route failure contract (acceptance criterion)", () => {
     it("guards: fails route matching if guards is missing from application routes", () => {
-      const appSourceWithoutGuards = readFileSync(join(UI_SRC, "App.tsx"), "utf8").replace(
+      const appSource = readFileSync(join(UI_SRC, "App.tsx"), "utf8");
+      const appSourceWithoutGuards = appSource.replace(
         /<Route path="company\/settings\/guards" element=\{<Ui2PlaceholderScreen \/>\} \/>[^\n]*/,
         "",
       );
+      expect(appSourceWithoutGuards).not.toBe(appSource);
 
       const routesWithoutGuards = getApplicationSettingsRoutes(appSourceWithoutGuards);
       expect(routesWithoutGuards).not.toContain("/company/settings/guards");
