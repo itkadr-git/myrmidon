@@ -473,6 +473,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
           issueId,
           interactionId: interaction.id,
           interactionKind: interaction.kind,
+          mutation: "interaction",
         },
         idempotencyKey: `interaction-pending:${interaction.id}`,
         requestedByActorType: "agent",
@@ -566,6 +567,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         payload: {
           version: 1 as const,
           prompt: "Approve migration plan?",
+          allowDeclineReason: true,
         },
       };
 
@@ -586,6 +588,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
           issueId,
           interactionId: interaction.id,
           interactionKind: interaction.kind,
+          mutation: "interaction",
         },
         idempotencyKey: `interaction-pending:${interaction.id}`,
         requestedByActorType: "agent",
@@ -701,6 +704,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
           issueId,
           interactionId: interaction.id,
           interactionKind: interaction.kind,
+          mutation: "interaction",
         },
         idempotencyKey: `interaction-pending:${interaction.id}`,
         requestedByActorType: "agent",
@@ -814,6 +818,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
           issueId: fallbackIssueId,
           interactionId: interaction.id,
           interactionKind: interaction.kind,
+          mutation: "interaction",
         },
         idempotencyKey: `interaction-pending:${interaction.id}`,
         contextSnapshot: {
