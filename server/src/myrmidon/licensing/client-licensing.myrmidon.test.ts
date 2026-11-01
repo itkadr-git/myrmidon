@@ -334,10 +334,10 @@ describe("license state per module", () => {
     );
 
   it("maps the module decisions to the screen states", () => {
-    expect(states(RUNNER_ISSUED.all)).toEqual({ "google-ai": "valid", antigravity: "valid", "chatgpt-pool": "valid", "client-1": "not_granted" });
+    expect(states(RUNNER_ISSUED.all)).toEqual({ "google-ai": "valid", antigravity: "valid", "chatgpt-pool": "valid", "alibaba-image": "not_granted", "client-1": "not_granted" });
     expect(states(RUNNER_ISSUED.expired)["google-ai"]).toBe("expired");
     expect(states(RUNNER_ISSUED.other)["google-ai"]).toBe("wrong_instance");
-    expect(states(RUNNER_ISSUED.chatgptOnly)).toEqual({ "google-ai": "not_granted", antigravity: "not_granted", "chatgpt-pool": "valid", "client-1": "not_granted" });
+    expect(states(RUNNER_ISSUED.chatgptOnly)).toEqual({ "google-ai": "not_granted", antigravity: "not_granted", "chatgpt-pool": "valid", "alibaba-image": "not_granted", "client-1": "not_granted" });
     expect(states(RUNNER_ISSUED.key2Antigravity).antigravity).toBe("bad_signature");
     expect(states(null).antigravity).toBe("missing");
     expect(states("MYR1.garbage").antigravity).toBe("invalid");
@@ -483,6 +483,7 @@ describe("licensing routes: client side", () => {
       { module: "google-ai", installed: true, state: "missing", reason: "no_license", expires: null },
       { module: "antigravity", installed: true, state: "missing", reason: "no_license", expires: null },
       { module: "chatgpt-pool", installed: false, state: "missing", reason: "no_license", expires: null },
+      { module: "alibaba-image", installed: false, state: "missing", reason: "no_license", expires: null },
       { module: "client-1", installed: false, state: "missing", reason: "no_license", expires: null },
     ]);
     const payload = JSON.parse(Buffer.from(res.body.request.split(".")[1], "base64url").toString("ascii"));
@@ -493,7 +494,7 @@ describe("licensing routes: client side", () => {
   it("falls back to every known module in the request when none is installed", async () => {
     const res = await request(app(admin, envFor(), [])).get("/api/licensing/status");
     const payload = JSON.parse(Buffer.from(res.body.request.split(".")[1], "base64url").toString("ascii"));
-    expect(payload.modules).toEqual(["antigravity", "chatgpt-pool", "client-1", "google-ai"]);
+    expect(payload.modules).toEqual(["alibaba-image", "antigravity", "chatgpt-pool", "client-1", "google-ai"]);
     expect(res.body.attention).toBe(false);
   });
 
@@ -507,7 +508,7 @@ describe("licensing routes: client side", () => {
     expect(readFileSync(licenseFile, "utf8")).toBe(RUNNER_ISSUED.all + "\n");
     expect(res.body.attention).toBe(false);
     expect(res.body.license.source).toBe("file");
-    expect(res.body.modules.map((m: { state: string }) => m.state)).toEqual(["valid", "valid", "valid", "not_granted"]);
+    expect(res.body.modules.map((m: { state: string }) => m.state)).toEqual(["valid", "valid", "valid", "not_granted", "not_granted"]);
     expect(res.body.modules[0].expires).toBe(4102444800);
     expect(JSON.stringify(res.body)).not.toContain(RUNNER_ISSUED.all.split(".")[2]);
 
