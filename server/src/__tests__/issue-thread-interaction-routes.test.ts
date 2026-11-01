@@ -652,7 +652,7 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
-      message: expect.stringContaining(
+      error: expect.stringContaining(
         "Cannot determine recipient for interaction",
       ),
     });
