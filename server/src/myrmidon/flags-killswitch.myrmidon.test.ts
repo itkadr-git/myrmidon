@@ -258,8 +258,6 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     // Edge gateway fetcher (OPE-9642)
     "MYRMIDON_VMEXEC_URL",
     "MYRMIDON_VMEXEC_TOKEN",
-    // CHANNEL-ACCESS setting documented in its change fragment.
-    "MYRMIDON_CHANNEL_ACCESS_MODE",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {
