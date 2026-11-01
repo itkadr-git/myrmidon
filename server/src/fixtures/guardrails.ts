@@ -1,6 +1,6 @@
-import type { GuardrailRule } from "@myrmidon/shared";
+import type { GuardrailRuleRecord } from "@myrmidon/shared";
 
-export const MOCK_GUARDRAIL_RULES: GuardrailRule[] = [
+export const MOCK_GUARDRAIL_RULES: GuardrailRuleRecord[] = [
   {
     id: "rule-injection-01",
     name: "Prompt Injection Defense",
@@ -87,7 +87,7 @@ export const MOCK_GUARDRAIL_RULES: GuardrailRule[] = [
   },
 ];
 
-export function createMockGuardrailRule(overrides?: Partial<GuardrailRule>): GuardrailRule {
+export function createMockGuardrailRule(overrides?: Partial<GuardrailRuleRecord>): GuardrailRuleRecord {
   const id = overrides?.id ?? `rule-${Math.random().toString(36).slice(2, 9)}`;
   return {
     id,
@@ -105,12 +105,12 @@ export function createMockGuardrailRule(overrides?: Partial<GuardrailRule>): Gua
   };
 }
 
-export function generateMockGuardrailRules(count: number, prefix = "rule"): GuardrailRule[] {
+export function generateMockGuardrailRules(count: number, prefix = "rule"): GuardrailRuleRecord[] {
   return Array.from({ length: count }, (_, i) => {
     const num = String(i + 1).padStart(3, "0");
-    const types: GuardrailRule["type"][] = ["secret", "pii", "injection", "regex", "content", "custom"];
-    const statuses: GuardrailRule["status"][] = ["active", "disabled", "draft", "archived"];
-    const modes: NonNullable<GuardrailRule["mode"]>[] = ["block", "mask", "flag", "warn"];
+    const types: GuardrailRuleRecord["type"][] = ["secret", "pii", "injection", "regex", "content", "custom"];
+    const statuses: GuardrailRuleRecord["status"][] = ["active", "disabled", "draft", "archived"];
+    const modes: NonNullable<GuardrailRuleRecord["mode"]>[] = ["block", "mask", "flag", "warn"];
     
     return {
       id: `${prefix}-${num}`,

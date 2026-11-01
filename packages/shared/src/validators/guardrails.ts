@@ -38,7 +38,8 @@ export const guardrailRuleSchema = z.object({
   createdAt: z.string().datetime().or(z.date()).optional(),
   updatedAt: z.string().datetime().or(z.date()).optional(),
 });
-export type GuardrailRule = z.infer<typeof guardrailRuleSchema>;
+export type GuardrailRuleDefinition = z.infer<typeof guardrailRuleSchema>;
+export type GuardrailRuleRecord = GuardrailRuleDefinition;
 
 export const listGuardrailRulesQuerySchema = z.object({
   status: guardrailRuleStatusSchema.optional(),

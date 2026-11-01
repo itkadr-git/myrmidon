@@ -10,10 +10,10 @@ import {
 } from "../fixtures/guardrails.js";
 import {
   listGuardrailRulesResponseSchema,
-  type GuardrailRule,
+  type GuardrailRuleRecord,
 } from "@myrmidon/shared";
 
-function buildTestApp(actor: unknown, rules?: GuardrailRule[]) {
+function buildTestApp(actor: unknown, rules?: GuardrailRuleRecord[]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -132,7 +132,7 @@ describe("Guardrails Routes - OPE-10216", () => {
   });
 
   describe("Filter validation and behavior", () => {
-    const testRules: GuardrailRule[] = [
+    const testRules: GuardrailRuleRecord[] = [
       createMockGuardrailRule({ id: "rule-1", type: "secret", status: "active" }),
       createMockGuardrailRule({ id: "rule-2", type: "secret", status: "disabled" }),
       createMockGuardrailRule({ id: "rule-3", type: "pii", status: "active" }),
@@ -147,7 +147,7 @@ describe("Guardrails Routes - OPE-10216", () => {
         .expect(200);
 
       expect(res.body.rules).toHaveLength(2);
-      expect(res.body.rules.every((r: GuardrailRule) => r.status === "active")).toBe(true);
+      expect(res.body.rules.every((r: GuardrailRuleRecord) => r.status === "active")).toBe(true);
     });
 
     it("filters correctly by type", async () => {
@@ -157,7 +157,7 @@ describe("Guardrails Routes - OPE-10216", () => {
         .expect(200);
 
       expect(res.body.rules).toHaveLength(2);
-      expect(res.body.rules.every((r: GuardrailRule) => r.type === "secret")).toBe(true);
+      expect(res.body.rules.every((r: GuardrailRuleRecord) => r.type === "secret")).toBe(true);
     });
 
     it("filters correctly by combined status and type", async () => {
@@ -214,7 +214,7 @@ describe("Guardrails Routes - OPE-10216", () => {
       const testRules = generateMockGuardrailRules(totalRulesCount, "page-test");
       const app = buildTestApp(boardActor, testRules);
 
-      const collectedRules: GuardrailRule[] = [];
+      const collectedRules: GuardrailRuleRecord[] = [];
       let cursor: string | null = null;
       let pageCount = 0;
 

@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
 import {
   listGuardrailRulesQuerySchema,
-  type GuardrailRule,
+  type GuardrailRuleRecord,
   type GuardrailRuleStatus,
   type GuardrailRuleType,
 } from "@myrmidon/shared";
@@ -11,13 +11,13 @@ import { badRequest } from "../errors.js";
 import { MOCK_GUARDRAIL_RULES } from "../fixtures/guardrails.js";
 
 export interface GuardrailsRoutesOptions {
-  rules?: GuardrailRule[];
+  rules?: GuardrailRuleRecord[];
   rulesStore?: {
     listRules: (options: {
       companyId?: string;
       status?: GuardrailRuleStatus;
       type?: GuardrailRuleType;
-    }) => Promise<GuardrailRule[]> | GuardrailRule[];
+    }) => Promise<GuardrailRuleRecord[]> | GuardrailRuleRecord[];
   };
 }
 
@@ -46,8 +46,8 @@ export function guardrailsRoutes(_db: Db, options?: GuardrailsRoutesOptions) {
     companyId?: string;
     status?: GuardrailRuleStatus;
     type?: GuardrailRuleType;
-  }): Promise<GuardrailRule[]> {
-    let list: GuardrailRule[];
+  }): Promise<GuardrailRuleRecord[]> {
+    let list: GuardrailRuleRecord[];
     if (options?.rulesStore) {
       list = await options.rulesStore.listRules(params);
     } else {
