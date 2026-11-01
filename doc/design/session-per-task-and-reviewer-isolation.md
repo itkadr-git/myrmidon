@@ -1,10 +1,10 @@
 # Session-Per-Task Isolation and Reviewer Containment Design (WAKE-9)
 
-**Issue**: OPE-9501 (1.7 WAKE-9)  
-**Parent**: OPE-9479 (1.6.6 ARCH: холостые прогоны и сожжённые токены)  
-**Author**: adm-dev-eng-18  
-**Date**: 2026-10-30  
-**Status**: Complete Design & Acceptance Specification  
+**Issue**: OPE-9501 (1.7 WAKE-9)
+**Parent**: OPE-9479 (1.6.6 ARCH: холостые прогоны и сожжённые токены)
+**Author**: adm-dev-eng-18
+**Date**: 2026-10-30
+**Status**: Complete Design & Acceptance Specification
 
 ---
 
