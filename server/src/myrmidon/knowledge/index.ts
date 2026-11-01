@@ -7,6 +7,7 @@
 // (decision registry, 08.10, 08.10).
 
 export * from "./domain.js";
+export * from "./deviations.js";
 export {
   createKnowledgeService,
   type KnowledgeActor,

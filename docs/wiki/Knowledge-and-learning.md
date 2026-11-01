@@ -69,6 +69,10 @@ and per role, and compares the window against the company's pinned baseline
 snapshot with per-row deltas — so a regression in delivery speed or rework
 rate is visible as a number, not a feeling.
 
+## Knowledge suggestions and inbox review
+
+Pending knowledge proposals appear directly in the unified inbox (`/inbox`) under the `Knowledge` category alongside operational issues and alerts. Operators can filter the inbox by knowledge items to focus on pending additions to the company wiki. Selecting any knowledge proposal routes immediately to `/knowledge/review` to inspect the rationale, review evidence and source links, and accept or decline the proposal.
+
 ## In detail
 
 - [Knowledge seed corpus: decisions and product reference](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.md)
