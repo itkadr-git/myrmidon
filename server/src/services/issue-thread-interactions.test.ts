@@ -348,7 +348,7 @@ describe("issueThreadInteractionService", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
-      payload: { version: 1, tasks: [] },
+      payload: { version: 1, tasks: [{ title: "Review the closed interaction" }] },
       result: null,
       resolvedAt: null,
       createdAt: new Date("2026-07-25T10:00:00.000Z"),
