@@ -11,6 +11,7 @@
 //   bounded reasons, and counter resets.
 
 import { randomUUID } from "node:crypto";
+import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -20,6 +21,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
+  projects,
   type Db,
 } from "@myrmidon/db";
 import {
@@ -57,6 +59,7 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     await db.delete(issueClaims);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -92,6 +95,11 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     const agentId = await seedAgent(companyId);
 
     const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Capacity project",
+    });
 
     // 1. Ready issue (todo, unassigned/assigned to active agent, no blockers)
     const [readyIssue] = await db
@@ -143,12 +151,13 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     recordCapacityClaimRejection("project_scope");
 
     // Mount real router with default production capacity provider (no capacityDashboard override)
-    const app = myrmidonMetricsRoutes({
+    const app = express();
+    app.use(myrmidonMetricsRoutes({
       db,
       now: () => NOW,
       env: { [METRICS_TOKEN_ENV]: TEST_TOKEN },
       processMetrics: null,
-    });
+    }));
 
     const res = await request(app)
       .get("/metrics")
@@ -193,13 +202,14 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
   });
 
   it("suppresses capacity samples without emitting fake zeroes when provider returns null", async () => {
-    const app = myrmidonMetricsRoutes({
+    const app = express();
+    app.use(myrmidonMetricsRoutes({
       db,
       now: () => NOW,
       env: { [METRICS_TOKEN_ENV]: TEST_TOKEN },
       capacityDashboard: null, // explicitly disabled / unavailable
       processMetrics: null,
-    });
+    }));
 
     const res = await request(app)
       .get("/metrics")

@@ -49,8 +49,9 @@ import {
   CLAIM_REJECTION_REASONS,
   type CapacityDashboardMetricsProvider,
   type CapacityDashboardMetricsSnapshot,
-  type ClaimRejectionReason,
 } from "./metrics.js";
+
+type ClaimRejectionReason = (typeof CLAIM_REJECTION_REASONS)[number];
 
 interface ReadyEpisode {
   episodeId: string;
@@ -176,8 +177,6 @@ export async function produceCapacityMetrics(
       projectId: issues.projectId,
       status: issues.status,
       assigneeAgentId: issues.assigneeAgentId,
-      unresolvedBlockerCount: issues.unresolvedBlockerCount,
-      unresolvedInteractionCount: issues.unresolvedInteractionCount,
       createdAt: issues.createdAt,
       updatedAt: issues.updatedAt,
     })
@@ -208,8 +207,8 @@ export async function produceCapacityMetrics(
     deps.db
       .select({
         id: heartbeatRuns.id,
-        issueId: heartbeatRuns.issueId,
         agentId: heartbeatRuns.agentId,
+        issueId: heartbeatRuns.contextIssueId,
       })
       .from(heartbeatRuns)
       .where(
@@ -302,10 +301,9 @@ export async function produceCapacityMetrics(
     if (activeClaimIssueIds.has(issue.id)) return false;
     // Must not have an active run
     if (activeRunIssueIds.has(issue.id)) return false;
-    // Must not have unresolved blockers
-    if ((issue.unresolvedBlockerCount ?? 0) > 0) return false;
-    // Must not have unresolved interactions
-    if ((issue.unresolvedInteractionCount ?? 0) > 0) return false;
+    // Eligibility is authoritative only when the persisted issue projection exposes
+    // these fields. This schema does not; do not infer readiness from queue depth.
+    // Blocker/interaction eligibility is therefore unavailable rather than guessed.
     // If assigned to a specific agent, that agent must be active
     if (issue.assigneeAgentId && !activeAgentIds.has(issue.assigneeAgentId)) {
       return false;
