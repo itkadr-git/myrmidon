@@ -33,6 +33,20 @@ describe("run retry policy: failure classification", () => {
     });
   });
 
+  // myrmidon(1.6.7 RUN-LIMITS): a busy Hermes gateway HTTP 429 is a resource
+  // wait, not a provider failure — the run must requeue through the bounded
+  // transient retry path instead of failing the wake (OPE-10338).
+  it("classifies a busy gateway 429 as transient so the run requeues", () => {
+    expect(
+      TRANSIENT_RUN_FAILURE_ERROR_CODES.has("hermes_gateway_rate_limited"),
+    ).toBe(true);
+    const verdict = classifyRunFailureForRetry({
+      errorCode: "hermes_gateway_rate_limited",
+    });
+    expect(verdict.classification).toBe("transient");
+    expect(isRetryableRunFailure(verdict)).toBe(true);
+  });
+
   it("calls a known permanent failure terminal", () => {
     for (const errorCode of PERMANENT_RUN_FAILURE_ERROR_CODES) {
       const verdict = classifyRunFailureForRetry({ errorCode });

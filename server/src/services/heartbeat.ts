@@ -828,6 +828,7 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+import { effectiveAgentRunLimit } from "../myrmidon/effective-run-limit.js";
 import { dbAdmissionAllowsClaim, usesDatabaseAdmission } from "../myrmidon/db-run-admission.js";
 import {
   // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
@@ -17643,14 +17644,30 @@ export function heartbeatService(
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const boardLimit = normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+    const adapterConfig = parseObject(agent.adapterConfig);
+    const container = parseObject(adapterConfig.container);
+    const memoryMb = asNumber(container.memoryMb, Number.NaN);
+    // Managed bot profiles persist the gateway ceiling in the container block;
+    // use it as an admission ceiling when present. Unmanaged gateways leave it
+    // absent and retain the conservative board/memory calculation.
+    const gatewayLimit = asNumber(
+      container.maxConcurrentRuns ??
+        container.max_concurrent_runs ??
+        parseObject(adapterConfig.gateway).maxConcurrentRuns ??
+        parseObject(adapterConfig.gateway).max_concurrent_runs,
+      Number.NaN,
+    );
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(
-        heartbeat.maxConcurrentRuns,
-      ),
+      maxConcurrentRuns: effectiveAgentRunLimit({
+        boardLimit,
+        gatewayLimit: Number.isFinite(gatewayLimit) && gatewayLimit > 0 ? gatewayLimit : null,
+        memoryMb: Number.isFinite(memoryMb) && memoryMb > 0 ? memoryMb : null,
+      }),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
@@ -22216,7 +22233,7 @@ export function heartbeatService(
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
-        policy.maxConcurrentRuns - runningCount,
+        effectiveAgentRunLimit({ boardLimit: policy.maxConcurrentRuns }) - runningCount,
       );
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
       // the queue read, so the runs it holds get their waitReason.
