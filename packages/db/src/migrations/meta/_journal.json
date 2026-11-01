@@ -2578,6 +2578,13 @@
       "when": 1793323806001,
       "tag": "0434_blocked_tasks_with_open_blockers",
       "breakpoints": true
+    },
+    {
+      "idx": 435,
+      "version": "7",
+      "when": 1793323805002,
+      "tag": "0435_project_development_process",
+      "breakpoints": true
     }
   ]
 }
