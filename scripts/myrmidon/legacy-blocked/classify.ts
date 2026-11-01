@@ -26,6 +26,7 @@ export type LegacyBlockedFacts = {
   latestComments?: readonly string[];
   links?: readonly LegacyBlockedLinkFact[];
   pullRequests?: readonly LegacyBlockedPullRequestFact[];
+  blockerIds?: readonly string[];
 };
 
 export type LegacyBlockedClassification = {
@@ -34,6 +35,8 @@ export type LegacyBlockedClassification = {
 };
 
 type Candidate = Exclude<LegacyBlockedClass, "unknown">;
+
+const resolvedBlockerStatuses = new Set(["done", "cancelled"]);
 
 const activeStatuses = new Set([
   "blocked",
@@ -111,8 +114,7 @@ export function classifyLegacyBlocked(
 
   for (const link of facts.links ?? []) {
     const linkStatus = normalized(link.status);
-    if (!activeStatuses.has(linkStatus)) continue;
-
+    if (resolvedBlockerStatuses.has(linkStatus)) continue;
     const relation = normalized(link.relation);
     const label = normalized(link.label);
     let candidate: Candidate | undefined;
@@ -143,6 +145,10 @@ export function classifyLegacyBlocked(
         .filter((part): part is string => Boolean(part));
       addCandidate(candidates, candidate, `Linked fact: ${details.join(" / ")}.`);
     }
+  }
+
+  if ((facts.blockerIds?.length ?? 0) > 0) {
+    addCandidate(candidates, "dependency", `Explicit active blocker IDs: ${facts.blockerIds!.join(", ")}.`);
   }
 
   for (const comment of facts.latestComments ?? []) {

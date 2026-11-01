@@ -60,10 +60,8 @@ export const legacyBlockedReportRowSchema = {
       if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
         return { success: false, error: new Error("Invalid proposedOwner") };
       }
-    } else {
-      if (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0) {
-        return { success: false, error: new Error("Missing proposedOwner") };
-      }
+    } else if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
+      return { success: false, error: new Error("Invalid proposedOwner") };
     }
     if (r.proposedSlaMinutes !== undefined && (typeof r.proposedSlaMinutes !== "number" || !Number.isInteger(r.proposedSlaMinutes) || r.proposedSlaMinutes <= 0)) {
       return { success: false, error: new Error("Invalid proposedSlaMinutes") };
@@ -78,10 +76,10 @@ export const legacyBlockedReportRowSchema = {
       issueId: r.issueId,
       identifier: (r.identifier as string).trim(),
       oldStatus: (r.oldStatus as string).trim(),
-      oldBlockers: r.oldBlockers as string[],
       class: blockClass ?? "unknown",
       evidence: (r.evidence as string).trim(),
       importKey: (r.importKey as string).trim(),
+      oldBlockers: r.oldBlockers as string[],
     };
     if (typeof r.proposedOwner === "string" && r.proposedOwner.trim().length > 0) {
       rowData.proposedOwner = r.proposedOwner.trim();
