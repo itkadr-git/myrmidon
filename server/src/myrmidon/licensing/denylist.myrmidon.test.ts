@@ -2,7 +2,7 @@
 // check. Key pairs are generated here; no real key is stored in the repository.
 
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
