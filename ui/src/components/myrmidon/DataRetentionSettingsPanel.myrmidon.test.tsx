@@ -25,11 +25,12 @@ function setInputValue(input: HTMLInputElement, value: string) {
 }
 
 const view = {
-  settings: { heartbeatRunsDays: 90, activityLogDays: 90, accessAuditDays: 365 },
+  settings: { heartbeatRunsDays: 90, activityLogDays: 90, accessAuditDays: 365, litellmCostEventsDays: 30 },
   sources: {
     heartbeatRunsDays: "default",
     activityLogDays: "settings",
     accessAuditDays: "default",
+    litellmCostEventsDays: "default",
   },
   status: {
     lastRunAt: "2026-10-05T03:00:00.000Z",
@@ -40,6 +41,7 @@ const view = {
       runs: { deletedTotal: 1200, lastDeleted: 30, lastFreedBytes: 1024 * 1024 * 8 },
       activity: { deletedTotal: 400, lastDeleted: 0, lastFreedBytes: 0 },
       access: { deletedTotal: 90, lastDeleted: 7, lastFreedBytes: 1024 * 1024 * 4 },
+      litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
     },
   },
 };
@@ -60,7 +62,7 @@ describe("DataRetentionSettingsPanel", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows the three retention windows and the last sweep readout", async () => {
+  it("shows four retention windows and the last sweep readout", async () => {
     vi.spyOn(dataRetentionApiModule.dataRetentionApi, "get").mockResolvedValue(view as never);
     const container = renderPanel();
     await waitFor(() => Boolean(container.querySelector('[data-testid="data-retention-status"]')));

@@ -41,6 +41,7 @@ export const litellmCostEvents = pgTable(
     requestIdx: uniqueIndex("litellm_cost_events_request_uq").on(table.requestId),
     companyOccurredIdx: index("litellm_cost_events_company_occurred_idx").on(table.companyId, table.occurredAt),
     companyRunIdx: index("litellm_cost_events_company_run_idx").on(table.companyId, table.heartbeatRunId),
+    collectedAtIdx: index("litellm_cost_events_collected_at_idx").on(table.collectedAt),
   }),
 );
 

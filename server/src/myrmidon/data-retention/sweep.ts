@@ -2,6 +2,10 @@
 //
 // myrmidon(1.6.5-DB-RETENTION): the retention sweep of runs and logs.
 //
+// Attachment bundle cleanup is deliberately not part of this SQL sweep: it
+// requires storage-provider deletion and must run only after a closed-task
+// eligibility check in the issue service.
+//
 // One pass per scheduler tick, internally paced: every table group deletes in
 // batches of 5000 rows, at most 100 batches per table per pass (the
 // plugin-log-retention precedent), so a pass stays short even over GB-sized
@@ -39,17 +43,14 @@
 //       ride along: an effect's decision or a finalization's run is kept,
 //       so the chain keeps the run too.
 //
-//   activity_log rows of the doomed runs are never deleted: the activity
-//   log is the audit trail and is kept regardless of the run's fate. The
-//   FK has no action, so the reference is cleared (run_id is nullable)
-//   instead of the row going with the run.
+//   activity_log rows of doomed runs have their nullable run_id cleared before
+//   deleting the heartbeat run; activity retention is governed independently.
 //
 //   NULL before the delete (nullable column, no action in the schema):
 //     - cost_events.heartbeat_run_id, finance_events.heartbeat_run_id,
 //       agent_task_sessions.last_run_id,
 //       document_annotation_comments.created_by_run_id,
-//       activity_log.run_id (the activity rows themselves are never
-//       deleted — the log is the audit trail and outlives the run)
+//       activity_log.run_id (activity retention is governed independently)
 //     - the five run columns of the decision-queue family, one per table:
 //       decision_queues.created_by_run_id,
 //       decision_queue_items.added_by_run_id, decision_triage.set_by_run_id,
@@ -74,9 +75,8 @@
 //
 //   - `activity` (activityLogDays): activity_log rows older than the cutoff,
 //     except rows whose runId points at a run that survives — the audit
-//     trail of a kept run stays complete. The default is 0 (keep forever):
-//     the activity log is the audit trail and is not aged out unless the
-//     instance admin opts in.
+//     trail of a kept run stays complete. The default is 90 days and can be
+//     changed by the instance administrator.
 //   - `access` (accessAuditDays): tool_access_audit_events and
 //     secret_access_events rows older than the cutoff (no dependencies).
 //
@@ -166,7 +166,7 @@ export interface DataRetentionSweepResult {
   startedAt: Date;
   finishedAt: Date;
   waitingForBackup: boolean;
-  perTable: Record<"runs" | "activity" | "access", { deleted: number; freedBytes: number }>;
+  perTable: Record<"runs" | "activity" | "access" | "litellmCostEvents", { deleted: number; freedBytes: number }>;
 }
 
 interface DeletedRow {
@@ -337,9 +337,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           UPDATE document_annotation_comments dac SET created_by_run_id = NULL
           WHERE dac.created_by_run_id IN (SELECT id FROM doomed)
         ),
-        -- the audit trail outlives the run: activity_log rows are never
-        -- deleted (activityLogDays defaults to 0 = keep forever), so the
-        -- reference is cleared instead of the row going with the run
+        -- activity_log is retained according to its independently configured
+        -- policy. Clear only its FK to the heartbeat run before deleting it.
         null_run_activity AS (
           UPDATE activity_log al SET run_id = NULL
           WHERE al.run_id IN (SELECT id FROM doomed)
@@ -391,6 +390,32 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     return { deleted, freedBytes };
   }
 
+  async function deleteLitellmCostEventsGroup(
+    tx: Db,
+    cutoff: string,
+    batchSize: number,
+  ): Promise<{ deleted: number; freedBytes: number }> {
+    const rows = await tx.execute(sql`
+      WITH doomed AS (
+        SELECT id
+        FROM litellm_cost_events
+        WHERE collected_at < ${cutoff}::timestamptz
+        ORDER BY collected_at
+        LIMIT ${batchSize}
+      ), deleted AS (
+        DELETE FROM litellm_cost_events lce
+        USING doomed
+        WHERE lce.id = doomed.id
+        RETURNING lce.id, pg_column_size(lce.id) AS size
+      )
+      SELECT id, size FROM deleted
+    `);
+    const batchRows = rows as unknown as DeletedRow[];
+    let freedBytes = 0;
+    for (const row of batchRows) freedBytes += Number(row.size) || 0;
+    return { deleted: batchRows.length, freedBytes };
+  }
+
   async function deleteAccessGroup(
     tx: Db,
     cutoff: string,
@@ -432,7 +457,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     };
   }
 
-  type GroupKey = "runs" | "activity" | "access";
+  type GroupKey = "runs" | "activity" | "access" | "litellmCostEvents";
 
   async function runGroup(
     group: { key: GroupKey; days: number },
@@ -443,7 +468,9 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         ? deleteRunsGroup
         : group.key === "activity"
           ? deleteActivityGroup
-          : deleteAccessGroup;
+          : group.key === "access"
+            ? deleteAccessGroup
+            : deleteLitellmCostEventsGroup;
     let deleted = 0;
     let freedBytes = 0;
     let batchSize = DATA_RETENTION_DELETE_BATCH_SIZE;
@@ -525,6 +552,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           runs: { deleted: 0, freedBytes: 0 },
           activity: { deleted: 0, freedBytes: 0 },
           access: { deleted: 0, freedBytes: 0 },
+          litellmCostEvents: { deleted: 0, freedBytes: 0 },
         },
       };
     }
@@ -533,12 +561,14 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       runs: { deleted: 0, freedBytes: 0 },
       activity: { deleted: 0, freedBytes: 0 },
       access: { deleted: 0, freedBytes: 0 },
+      litellmCostEvents: { deleted: 0, freedBytes: 0 },
     };
 
     const groups: Array<{ key: GroupKey; days: number }> = [
       { key: "runs", days: settings.heartbeatRunsDays },
       { key: "activity", days: settings.activityLogDays },
       { key: "access", days: settings.accessAuditDays },
+      { key: "litellmCostEvents", days: settings.litellmCostEventsDays },
     ];
 
     for (const group of groups) {
@@ -550,7 +580,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
     const didWork =
       results.runs.deleted > 0 ||
       results.activity.deleted > 0 ||
-      results.access.deleted > 0;
+      results.access.deleted > 0 ||
+      results.litellmCostEvents.deleted > 0;
     // The state is written only when the pass actually deleted something or
     // the backup-gate flag changes — not on every idle tick (operator review
     // dbcare-review-20261008).
@@ -564,11 +595,13 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
           previous.freedBytesTotal +
           results.runs.freedBytes +
           results.activity.freedBytes +
-          results.access.freedBytes,
+          results.access.freedBytes +
+          results.litellmCostEvents.freedBytes,
         perTable: {
           runs: mergeTableStatus(previous.perTable.runs, results.runs),
           activity: mergeTableStatus(previous.perTable.activity, results.activity),
           access: mergeTableStatus(previous.perTable.access, results.access),
+          litellmCostEvents: mergeTableStatus(previous.perTable.litellmCostEvents, results.litellmCostEvents),
         },
       };
       await deps.writeLastRun(lastRun);
@@ -603,6 +636,7 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
               runs: { deleted: 0, freedBytes: 0 },
               activity: { deleted: 0, freedBytes: 0 },
               access: { deleted: 0, freedBytes: 0 },
+              litellmCostEvents: { deleted: 0, freedBytes: 0 },
             },
           });
         }

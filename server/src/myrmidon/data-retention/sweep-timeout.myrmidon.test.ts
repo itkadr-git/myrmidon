@@ -43,12 +43,12 @@ function makeSweep(opts: { maxBatchThatFits: number; totalRows: number }) {
   const sweep = createDataRetentionSweep({
     db: db as never,
     resolveSettings: async () =>
-      ({ heartbeatRunsDays: 30, activityLogDays: 0, accessAuditDays: 0 }) as never,
+      ({ heartbeatRunsDays: 30, activityLogDays: 90, accessAuditDays: 0, litellmCostEventsDays: 0 }) as never,
     readLastRun: async () => {
       const empty = { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 };
       return {
         waitingForBackup: false,
-        perTable: { runs: empty, activity: empty, access: empty },
+        perTable: { runs: empty, activity: empty, access: empty, litellmCostEvents: empty },
         ...lastRun,
       } as never;
     },

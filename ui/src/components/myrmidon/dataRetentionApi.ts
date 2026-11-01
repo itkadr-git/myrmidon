@@ -1,24 +1,25 @@
 // Data retention (myrmidon 1.6.5-DB-RETENTION):
 // GET/PATCH /api/myrmidon/data-retention.
 //
-// GET reports the retention windows in force for the three grown tables
-// (heartbeat runs, the activity log, the access audit log), where each value
+// GET reports the retention windows in force for four grown tables
+// (heartbeat runs, the activity log, the access audit log and LiteLLM cost events), where each value
 // came from, and the state of the last cleanup sweep: when it ran, whether it
 // is waiting for a fresh backup, and how many rows it deleted and how many
 // bytes it freed per table group and in total. PATCH saves a partial of the
-// three windows to the instance settings; the value applies immediately,
+// four windows to the instance settings; the value applies immediately,
 // without restarting the server. `0` means "keep forever".
 import { api } from "@/api/client";
 
 export type DataRetentionLimitSource = "settings" | "default";
 
-export type DataRetentionTableGroup = "runs" | "activity" | "access";
+export type DataRetentionTableGroup = "runs" | "activity" | "access" | "litellmCostEvents";
 
-/** The three whole-day windows the panel edits. */
+/** The four whole-day windows the panel edits. */
 export interface DataRetentionSettings {
   heartbeatRunsDays: number;
   activityLogDays: number;
   accessAuditDays: number;
+  litellmCostEventsDays: number;
 }
 
 /** Sweep counters for one table group. */
