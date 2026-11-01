@@ -1083,9 +1083,12 @@ except Exception:
 if [ "${MYRMIDON_BOT_SESSION_MAINTENANCE:-1}" != "0" ]; then
   export -f run_session_maintenance now_monotonic_ms log
   m_rc=0
-  timeout 120 bash -c 'run_session_maintenance' || m_rc=$?
-  if [ "$m_rc" -eq 124 ]; then
-    log "WARNING: session maintenance timed out after 120s; continuing gateway startup"
+  # Bounded by the image HEALTHCHECK start-period (300 s): maintenance + gateway init must fit.
+  # --kill-after: a hermes child that ignores TERM must not keep state.db locked for the gateway.
+  m_timeout="${MYRMIDON_BOT_SESSION_MAINTENANCE_TIMEOUT_SEC:-240}"
+  timeout --signal=TERM --kill-after=10s "${m_timeout}s" bash -c 'run_session_maintenance' || m_rc=$?
+  if [ "$m_rc" -eq 124 ] || [ "$m_rc" -eq 137 ]; then
+    log "WARNING: session maintenance timed out after ${m_timeout}s; continuing gateway startup"
   elif [ "$m_rc" -ne 0 ]; then
     log "WARNING: session maintenance failed with exit code ${m_rc}; continuing gateway startup"
   fi
