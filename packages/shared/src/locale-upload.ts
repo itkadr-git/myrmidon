@@ -1,7 +1,5 @@
-// myrmidon(1.7 LOCALE-UPLOAD): locale upload types and re-exports
+// myrmidon(1.7 LOCALE-UPLOAD): locale upload types and persistence contracts
 import { z } from "zod";
-
-export * from "./locale-validator.js";
 
 export const CUSTOM_LOCALES_SETTINGS_KEY = "customLocales";
 
@@ -27,3 +25,12 @@ export const storedCustomLocaleSummarySchema = z.object({
 });
 
 export type StoredCustomLocaleSummary = z.infer<typeof storedCustomLocaleSummarySchema>;
+
+export const uploadLocaleBodySchema = z.object({
+  locale: z.string().min(2).max(35).regex(/^[a-zA-Z0-9_-]+$/),
+  catalog: z.record(z.string(), z.unknown()).optional(),
+  dryRun: z.boolean().optional(),
+  strict: z.boolean().optional(),
+});
+
+export type UploadLocaleBody = z.infer<typeof uploadLocaleBodySchema>;
