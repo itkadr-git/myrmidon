@@ -18,6 +18,7 @@ import {
   UNTRUSTED_DATA_CLOSE,
   UNTRUSTED_DATA_OPEN,
 } from "../../../myrmidon/guardrails/injection.js";
+import { guardrailTriggerMetrics } from "../../../myrmidon/guardrails/metrics.js";
 
 const ISSUE: QueuedCommentIssueContext = {
   id: "issue-1",
@@ -188,6 +189,9 @@ describe("myrmidon(1.6-GRD-B) editQueuedComment guardrails integration", () => {
     expect(wakeWrite!.payload["commentBody"]).toBe(`${UNTRUSTED_DATA_OPEN}${injectionBody}${UNTRUSTED_DATA_CLOSE}`);
     expect(guard!.injection).toMatchObject({ flagged: true, surface: "wake_queue" });
     expect(Array.isArray(guard!.injection?.matched)).toBe(true);
+    // myrmidon(1.6.6 GUARDRAILS OPE-10182): the flagged text also ticked the
+    // process counter — injection rule, flag mode
+    expect(guardrailTriggerMetrics.read().injection.flag).toBe(1);
   });
 
   it("keeps the stored body, the payload and the flag untouched for benign text (enabled)", async () => {
