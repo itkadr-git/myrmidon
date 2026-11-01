@@ -32,6 +32,7 @@ export {
   type DocumentParseSubmissionPayload,
 } from "./parser/document-parser-adapter.js";
 export * from "./import/ragflow.js";
+export * from "./import/ragflow-dry-run.js";
 export {
   installPgvectorIntoEmbeddedCluster,
   type PgvectorInstall,
