@@ -27,6 +27,8 @@ import {
   setUserBlocked,
 } from "./service.js";
 
+import { blockUserSchema } from "@myrmidon/shared";
+
 const createUserSchema = z
   .object({
     username: z.string().min(1).max(64),
@@ -37,7 +39,11 @@ const createUserSchema = z
   .strict();
 
 const patchUserSchema = z
-  .object({ blocked: z.boolean().optional(), resetPassword: z.boolean().optional() })
+  .object({
+    blocked: z.boolean().optional(),
+    resetPassword: z.boolean().optional(),
+    reason: z.string().trim().min(1).max(1000).optional(),
+  })
   .strict()
   .refine((v) => v.blocked !== undefined || v.resetPassword !== undefined, {
     message: "Provide `blocked` or `resetPassword`",
@@ -135,7 +141,7 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
         await audit(db, {
           actorType: "user", actorId: actor.actorId, targetUserId: userId,
           action: body.blocked ? "instance.user.blocked" : "instance.user.unblocked",
-          details: { sessionsClosed },
+          details: { sessionsClosed, ...(body.reason ? { reason: body.reason } : {}) },
         });
       }
       if (body.resetPassword) {
@@ -147,6 +153,26 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
         });
       }
       res.json(result);
+    } catch (err) {
+      handle(err, res);
+    }
+  });
+
+  router.post("/myrmidon/users-admin-a/users/:userId/block", validate(blockUserSchema), async (req, res) => {
+    assertInstanceAdmin(req);
+    const actor = getActorInfo(req);
+    const userId = String(req.params.userId);
+    const { reason } = req.body as { reason: string };
+    try {
+      const { sessionsClosed } = await setUserBlocked(db, { userId, blocked: true, actorUserId: actor.actorId });
+      await audit(db, {
+        actorType: "user",
+        actorId: actor.actorId,
+        targetUserId: userId,
+        action: "instance.user.blocked",
+        details: { reason, sessionsClosed },
+      });
+      res.json({ ok: true, userId, blocked: true, reason, sessionsClosed });
     } catch (err) {
       handle(err, res);
     }

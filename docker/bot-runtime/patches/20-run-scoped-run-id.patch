@@ -1,0 +1,135 @@
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+index a05dcd3945..6773051f35 100644
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -822,6 +822,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+     # myrmidon(G1): staging and binding the run's launcher goes through the same
+     # per-run context (NONCONTAINER-GITHUB-LAUNCHER).
+     from tools.github_launcher_context import set_github_launcher_vars
++    # myrmidon(G1): bind THIS run's id for the whole turn so tool
++    # children see it as $PAPERCLIP_RUN_ID/$MYRMIDON_RUN_ID — the container's
++    # os.environ copy belongs to whichever run started the container and is
++    # stale for every later run (409 run-ownership on board mutations).
++    from tools.run_id_context import set_run_id_vars
+     session_id = run.session_id
+     effective_task_id = session_id or run.run_id
+     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
+@@ -842,6 +847,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+             # root, or a run without a broker capability leaves the run untouched.
+             if run.github_launcher:
+                 resets.append(set_github_launcher_vars(run.github_launcher, run.run_id))
++            # myrmidon(G1): every run carries its own id — bind it
++            # unconditionally (contextvars, reset in the finally block) so the
++            # child-env bridge in tools/environments/local.py overrides the
++            # stale container-level value for this run's spawns.
++            resets.append(set_run_id_vars(run.run_id))
+             # myrmidon(BOT-DISK-H5b): the request named a task workspace — open (or reuse)
+             # the copy BEFORE the model starts (bot-disk contract C6). On success the
+             # run's cwd is the copy (bound as the session cwd, so the prompt builder,
+diff --git a/tools/environments/local.py b/tools/environments/local.py
+index 899c4378b1..b0757df085 100644
+--- a/tools/environments/local.py
++++ b/tools/environments/local.py
+@@ -277,6 +277,19 @@ def _inject_session_context_env(env: dict) -> None:
+         env.update(launcher_env)
+     elif strip_github_launcher_env is not None:
+         strip_github_launcher_env(env)
++    # myrmidon(G1): bridge THIS run's id into every child spawn, always
++    # overriding the container-level os.environ copy (which belongs to whatever
++    # run started the long-lived gateway container and is stale for every later
++    # run — a stale $PAPERCLIP_RUN_ID on an X-Paperclip-Run-Id board mutation
++    # gets a 409 run-ownership conflict). A context outside a run (CLI, tests)
++    # binds nothing and leaves the inherited value untouched.
++    try:
++        from tools.run_id_context import run_id_bound, run_id_env
++        _run_id = run_id_bound()
++    except Exception:
++        _run_id = False
++    if _run_id:
++        env.update(run_id_env())
+     # myrmidon(BOT-DISK-H5b): bridge the run's task workspace (bound by
+     # gateway/platforms/api_server_runs.py after ``myr-ws open``, bot-disk
+     # contract C6) into this run's child processes as MYRMIDON_TASK_WORKSPACE.
+diff --git a/tools/run_id_context.py b/tools/run_id_context.py
+new file mode 100644
+index 0000000000..f170a39b49
+--- /dev/null
++++ b/tools/run_id_context.py
+@@ -0,0 +1,77 @@
++"""Run-scoped Paperclip run-id context (myrmidon G1).
++
++The board's ``hermes_gateway`` adapter POSTs each run with the attempt's own
++run id (the ``Idempotency-Key``/body identity the board's checkout guard
++expects on mutating Paperclip API calls). Inside a bot container the gateway
++process is long-lived and serves many runs, so the container-level
++``PAPERCLIP_RUN_ID``/``MYRMIDON_RUN_ID`` in ``os.environ`` belongs to
++whichever run happened to start the container — an agent reading
++``$PAPERCLIP_RUN_ID`` and sending it as ``X-Paperclip-Run-Id`` on a PATCH
++gets a stale value and the board answers ``409 Issue run ownership conflict``.
++
++``gateway/platforms/api_server_runs.py`` binds the CURRENT run's id here for
++the whole turn — contextvars, never the process env, because concurrent runs
++share ``os.environ``. ``tools/environments/local.py`` then bridges the bound
++value into the environment of every terminal/execute_code child spawned
++inside the turn, OVERRIDING the inherited (stale) container-level value, so
++``$PAPERCLIP_RUN_ID`` inside any tool call is exactly this run's id.
++"""
++
++from __future__ import annotations
++
++import re
++from contextvars import ContextVar, Token
++from typing import Any, Callable, Optional
++
++# The run id the board minted for THIS run, or None outside a run context.
++_RUN_ID: ContextVar[Optional[str]] = ContextVar("PAPERCLIP_RUN_ID_CONTEXT", default=None)
++
++# Same shape the other context modules use: a single path segment, no "..".
++_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
++
++
++def set_run_id_vars(run_id: Any) -> tuple[Callable[[], None], Callable[[Any], None]]:
++    """Bind *run_id* for this context.
++
++    Returns ``(marker, reset)`` shaped exactly like the other (token, reset)
++    pairs the API server collects: the ``finally`` block calls
++    ``reset(token)`` for every entry, so ``reset`` must accept and ignore one
++    positional argument (the token is already closed over here).
++    """
++    value = str(run_id or "").strip()
++    token: Optional[Token[Optional[str]]] = None
++    if value and _RUN_ID_PATTERN.match(value) and ".." not in value:
++        token = _RUN_ID.set(value)
++
++    def reset(_token: Any = None) -> None:
++        # Reset to the pre-bind value, not to None — a nested binding (delegate
++        # workers re-running this module's setter under a copied context) must
++        # not clear an outer scope's id. The argument is ignored: the real
++        # token is closed over (the caller's `reset(token)` convention passes
++        # its own marker back).
++        if token is not None:
++            _RUN_ID.reset(token)
++
++    return (lambda _marker=None: None), reset
++
++
++def run_id_env() -> dict[str, str]:
++    """The run id as a child-process env fragment, or ``{}`` when unbound.
++
++    Called from the terminal child-env bridge (``local.py``) at spawn time,
++    so each subprocess sees only its own run's id. Both the Paperclip name
++    and the legacy Myrmidon alias are written: agent prompts and skills use
++    ``PAPERCLIP_RUN_ID``; some older material still reads ``MYRMIDON_RUN_ID``.
++    """
++    bound = _RUN_ID.get()
++    if not bound:
++        return {}
++    return {
++        "PAPERCLIP_RUN_ID": bound,
++        "MYRMIDON_RUN_ID": bound,
++    }
++
++
++def run_id_bound() -> bool:
++    """True when the current context carries a run id."""
++    return bool(_RUN_ID.get())

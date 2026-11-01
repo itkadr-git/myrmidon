@@ -63,6 +63,14 @@
           "label": "Max host load per core, % of a core",
           "hint": "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. A turn started by a message the owner wrote in a chat does not wait for this ceiling either. Default 90. Empty switches the ceiling off."
         },
+        "maxHostCpuBusyPercent": {
+          "label": "Max host CPU busy, %",
+          "hint": "The deciding ceiling: a new run starts only while the host CPU's non-idle share (from /proc/stat over a short window) stays under this ABSOLUTE percent of all cores. Unlike the load average, utilisation measures real work, so no background is subtracted. Default 90. Empty switches the ceiling off."
+        },
+        "maxHostCpuPsiSomeAvg10": {
+          "label": "Max host CPU PSI some avg10, %",
+          "hint": "A new run starts only while the PSI cpu 'some avg10' (the percent of the last ten minutes with at least one task stalled on the CPU, from /proc/pressure/cpu) stays under this value. Off unless set: pressure rises on an oversubscribed CPU, not on a slow disk, so it guards a different failure than the busy ceiling."
+        },
         "fairShare": {
           "label": "Single-agent start share, % per 10 min",
           "hint": "The most starts one agent may take in a 10-minute window, in percent. Past its share its new runs wait until the other agents have had their turn, so a hot agent cannot occupy the queue. Default 15. Empty switches the limit off (100 = no limit)."
