@@ -95,6 +95,8 @@ const HTTP_METHODS = new Set([
 ]);
 const explicitOpenApiCoverageExclusions = new Set<string>([
   "audit.ts",
+  // Mounted directly by app.ts; its routes are documented in openapi.ts.
+  "admin-assistant.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a

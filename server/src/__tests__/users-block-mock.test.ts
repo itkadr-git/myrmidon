@@ -52,7 +52,9 @@ describe("users block API and audit routes", () => {
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(mockAuditEntries),
         })),
-        then: vi.fn().mockResolvedValue([{ id: "company-1" }]),
+        then: vi.fn((resolve: (value: any[]) => unknown) =>
+          Promise.resolve(resolve([{ id: "company-1" }])),
+        ),
       })),
     })),
   };
