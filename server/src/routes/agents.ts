@@ -7172,7 +7172,7 @@ function getActorIdentityPart(req: Request): string {
     res.json(redactedRuns);
   });
 
-  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10066)
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10096)
   router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

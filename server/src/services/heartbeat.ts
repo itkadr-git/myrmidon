@@ -14130,11 +14130,13 @@ export function heartbeatService(
       idempotentWakeExists: Boolean(existingWake),
     });
 
-    // 1.7 AGENT-RUNTIME: гейт завершения прогона и эскалация холостых прогонов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: Гейт завершения прогона и эскалация повторов (OPE-10096)
     const initialStatus =
       typeof context.issue === "object" && context.issue !== null && "status" in (context.issue as any)
         ? String((context.issue as any).status)
         : null;
+    const evidence = await buildRunLivenessInput(run, parseObject(run.resultJson));
+    const evidenceCounts = evidence.evidence;
 
     const hasProgressEvidence =
       Boolean(detectedProgressSummary) ||
@@ -14158,7 +14160,10 @@ export function heartbeatService(
       statusBefore: initialStatus,
       statusAfter: issue?.status,
       livenessState: run.livenessState,
-      hasFileOrArtifactChanges: hasProgressEvidence,
+      hasFileOrArtifactChanges: hasProgressEvidence || (evidenceCounts?.activityEventsCreated ?? 0) > 0 || (evidenceCounts?.toolOrActionEventsCreated ?? 0) > 0,
+      workProductsCreated: evidenceCounts?.workProductsCreated ?? 0,
+      documentRevisionsCreated: evidenceCounts?.documentRevisionsCreated ?? 0,
+      workspaceOperationsCreated: evidenceCounts?.workspaceOperationsCreated ?? 0,
       repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
       repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
       isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
@@ -14172,7 +14177,10 @@ export function heartbeatService(
       statusBefore: initialStatus,
       statusAfter: issue?.status,
       livenessState: run.livenessState,
-      hasFileOrArtifactChanges: hasProgressEvidence,
+      hasFileOrArtifactChanges: hasProgressEvidence || (evidenceCounts?.activityEventsCreated ?? 0) > 0 || (evidenceCounts?.toolOrActionEventsCreated ?? 0) > 0,
+      workProductsCreated: evidenceCounts?.workProductsCreated ?? 0,
+      documentRevisionsCreated: evidenceCounts?.documentRevisionsCreated ?? 0,
+      workspaceOperationsCreated: evidenceCounts?.workspaceOperationsCreated ?? 0,
       repeatedToolErrorDetails: isRepeatedToolFailure ? run.error : null,
       repeatedToolErrorCount: isRepeatedToolFailure ? 3 : 0,
       isExplicitBlocker: Boolean(explicitBlocker) || (issue?.status === "blocked" && Boolean(blockerReason)),
