@@ -227,7 +227,7 @@ vi.mock("../context/CompanyContext", () => {
   });
   return {
     useCompany: companyValue,
-    // CompanySettingsNav reads the optional hook since #1979 (model-providers tab gate).
+    // CompanySettingsNav reads the optional hook since #1991 (model-providers tab gate).
     useOptionalCompany: companyValue,
   };
 });
