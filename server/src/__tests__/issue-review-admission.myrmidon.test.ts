@@ -138,8 +138,11 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       runtimeConfig: {},
       permissions: {},
     });
-    const issueId = randomUUID();
-    const policy = { stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }] };
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
     await ctx.db.insert(issues).values({
       id: issueId,
       companyId,
@@ -181,7 +184,11 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       permissions: {},
     });
     const issueId = randomUUID();
-    const policy = { stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }] };
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
     await ctx.db.insert(issues).values({
       id: issueId,
       companyId,
@@ -201,6 +208,8 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
         .send({ status: "in_review", executionPolicy: policy });
       expect(response.status).toBe(200);
     }
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionState).toMatchObject({ currentStageId: stageId });
     const events = await ctx.db.select().from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(events.filter((event) => event.action === "review_ci_unreadable")).toHaveLength(1);
