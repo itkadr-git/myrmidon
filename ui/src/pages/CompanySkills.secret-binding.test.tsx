@@ -396,7 +396,7 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
 
     // The bound agent shows as bound.
     await waitForElement(
-      () => node.textContent?.includes("Bound to") ? node : null,
+      () => (node.textContent?.includes("Bound to") ? (node as Element) : null),
       "bound-agent indicator",
     );
 
