@@ -409,7 +409,7 @@ export function validateFallbackOrder(
       if (seenPaidCost !== null) {
         return {
           valid: false,
-          error: `Free channel '${target}' appears after paid channels in chain for '${chain.model}'. Free channels must come first.`,
+          error: `Free channels must precede paid channels: free channel '${target}' appears after paid channels in chain for '${chain.model}'.`,
           warning: `Free channel '${target}' appears after paid channels in chain for '${chain.model}'. Free channels should come first.`,
         };
       }
@@ -509,5 +509,5 @@ export function findUnknownModelGroups(
       if (!known.has(target)) unknown.add(target);
     }
   }
-  return [...unknown];
+  return [...unknown].sort();
 }

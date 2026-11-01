@@ -110,22 +110,23 @@ export function createLitellmConfigClient(deps: LitellmConfigClientDeps): Litell
         );
       }
 
-      // 3. Validate single provider rule: "не допускать единственного provider"
-      for (const chain of chains) {
-        const diversity = validateFallbackDiversity(chain, catalog);
-        if (!diversity.valid) {
-          throw unprocessable(diversity.error ?? "Fallback chain must not rely on a single provider", {
-            code: "litellm_single_provider_forbidden",
-          });
-        }
-      }
-
-      // 4. Validate order rule: "сначала бесплатные каналы, затем дешёвые на другом provider"
+      // 3. Validate order before diversity so callers receive the specific
+      // ordering/provider violation rather than a generic single-provider error.
       for (const chain of chains) {
         const order = validateFallbackOrder(chain, catalog);
         if (!order.valid) {
           throw unprocessable(order.error ?? "Free channels must precede paid channels in fallback chains", {
             code: "litellm_invalid_fallback_order",
+          });
+        }
+      }
+
+      // 4. Validate single provider rule: "не допускать единственного provider"
+      for (const chain of chains) {
+        const diversity = validateFallbackDiversity(chain, catalog);
+        if (!diversity.valid) {
+          throw unprocessable(diversity.error ?? "Fallback chain must not rely on a single provider", {
+            code: "litellm_single_provider_forbidden",
           });
         }
       }
