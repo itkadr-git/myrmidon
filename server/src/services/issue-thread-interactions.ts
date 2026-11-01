@@ -3490,7 +3490,7 @@ export function issueThreadInteractionService(
         let issueHasAssignedAgent = Boolean(
           (issue as { assigneeAgentId?: string | null }).assigneeAgentId,
         );
-        if (!isConversationIssue) {
+        if (!isChatOriginatedIssue) {
           const [issueRow] = await db
             .select({
               responsibleUserId: issues.responsibleUserId,
