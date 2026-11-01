@@ -32,6 +32,7 @@ describe("recoveryFactoryRequestSchema", () => {
       "workspace_myr_ws",
       "devbuild",
       "disk_space",
+      "resource.oom",
       "operator_action",
     ] as const;
     for (const kind of factoryKinds) {
