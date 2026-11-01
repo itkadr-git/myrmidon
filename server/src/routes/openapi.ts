@@ -3890,6 +3890,15 @@ registry.registerPath({
 
 // myrmidon(1.6.6 main-red 01.11): routes mounted by OPE-9964 / OPE-10096 / ideas SLA were missing in the spec.
 registry.registerPath({
+  method: "patch",
+  path: "/api/issues/{id}/execution-participants",
+  tags: ["issues"],
+  summary: "Operator: replace the execution stage participant or return assignee (e.g. a terminated agent)",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/costs/by-day",
   tags: ["costs"],
