@@ -1,5 +1,5 @@
 {
-  "id": "b6db6d84-e17b-46b0-bc1c-b6fc3ae3b1a7",
+  "id": "1370d17b-b413-4e50-b9f6-e782b4f94c68",
   "prevId": "310c78e6-2b4c-4105-b37c-c419d4c3cba1",
   "version": "7",
   "dialect": "postgresql",
@@ -46467,6 +46467,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "development_process": {
+          "name": "development_process",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
