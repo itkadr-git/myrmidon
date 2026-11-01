@@ -99,6 +99,18 @@ export function validateReport(r) {
       (!isObj(r.metrics) || !Number.isInteger(r.metrics.copies_without_assignee) || r.metrics.copies_without_assignee < 0)) {
     return { ok: false, reason: "metrics.copies_without_assignee is not a non-negative int" };
   }
+  if (r.sessionPrune !== undefined && r.sessionPrune !== null) {
+    if (!isObj(r.sessionPrune)) return bad("sessionPrune is not an object");
+    if (r.sessionPrune.stateDbBytesBefore !== undefined && r.sessionPrune.stateDbBytesBefore !== null && !isNonNegInt(r.sessionPrune.stateDbBytesBefore)) {
+      return bad("sessionPrune.stateDbBytesBefore is not int|null");
+    }
+    if (r.sessionPrune.stateDbBytesAfter !== undefined && r.sessionPrune.stateDbBytesAfter !== null && !isNonNegInt(r.sessionPrune.stateDbBytesAfter)) {
+      return bad("sessionPrune.stateDbBytesAfter is not int|null");
+    }
+    if (r.sessionPrune.deletedSessions !== undefined && !isNonNegInt(r.sessionPrune.deletedSessions)) {
+      return bad("sessionPrune.deletedSessions is not a non-negative int");
+    }
+  }
   return { ok: true };
 }
 
@@ -135,6 +147,13 @@ export function buildReport(parts) {
     ...(Number.isInteger(parts.metrics?.copies_without_assignee) ? { metrics: { copies_without_assignee: parts.metrics.copies_without_assignee } } : {}),
     foreignUid: parts.foreignUid && typeof parts.foreignUid === "object"
       ? { path: clip(parts.foreignUid.path, 500), reason: clip(parts.foreignUid.reason, 500) }
+      : null,
+    sessionPrune: parts.sessionPrune && typeof parts.sessionPrune === "object"
+      ? {
+          stateDbBytesBefore: parts.sessionPrune.stateDbBytesBefore ?? null,
+          stateDbBytesAfter: parts.sessionPrune.stateDbBytesAfter ?? null,
+          deletedSessions: parts.sessionPrune.deletedSessions ?? 0,
+        }
       : null,
   };
   const size = () => Buffer.byteLength(JSON.stringify(report));

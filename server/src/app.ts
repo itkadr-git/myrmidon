@@ -19,7 +19,7 @@ import {
 } from "@myrmidon/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
-import { httpLogger, errorHandler } from "./middleware/index.js";
+import { httpLogger, errorHandler, brandHeadersMiddleware } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardKeyScopeMiddleware } from "./middleware/board-key-scope.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
@@ -94,6 +94,7 @@ import { decisionRoutes } from "./routes/decisions.js";
 import { decisionQueueRoutes } from "./routes/decision-queues.js";
 import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
+import { usersRoutes } from "./routes/users.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
@@ -124,11 +125,13 @@ import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index
 import { myrmidonUsersAdminRoutes } from "./myrmidon/users-admin-a/index.js"; // myrmidon(OPE-8985)
 import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
 import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
-
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold API.
+import { myrmidonOwnerActiveChannelRoutes } from "./myrmidon/owner-active-channel/index.js";
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
 import { myrmidonFeaturesRoutes } from "./myrmidon/features/index.js"; // myrmidon(FEATURES)
+import { myrmidonVendorNameCheckRoutes } from "./myrmidon/vendor-name/index.js"; // myrmidon(1.7-REBRAND-F)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
@@ -726,6 +729,39 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   };
 }
 
+export interface PluginReadinessRecord {
+  pluginId: string;
+  pluginKey: string;
+  readyAt: number;
+}
+
+export interface PluginReadinessState {
+  boardReadyAt: number | null;
+  plugins: Map<string, PluginReadinessRecord>;
+}
+
+export function createPluginReadinessRouter(pluginReadiness: PluginReadinessState): Router {
+  const router = Router();
+  router.get("/plugins/readiness", (req, res) => {
+    if (!req.actor?.userId && req.actor?.type !== "agent") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    const boardReadyAt = pluginReadiness.boardReadyAt;
+    res.json({
+      boardReadyAt: boardReadyAt === null ? null : new Date(boardReadyAt).toISOString(),
+      plugins: Array.from(pluginReadiness.plugins.values(), (plugin) => ({
+        pluginId: plugin.pluginId,
+        pluginKey: plugin.pluginKey,
+        readyAt: new Date(plugin.readyAt).toISOString(),
+        readyAfterBoardReadyMs:
+          boardReadyAt === null ? null : plugin.readyAt - boardReadyAt,
+      })),
+    });
+  });
+  return router;
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -799,6 +835,13 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  const pluginReadiness = {
+    boardReadyAt: Date.now() as number | null,
+    plugins: new Map<string, { pluginId: string; pluginKey: string; readyAt: number }>(),
+  };
+  app.locals.pluginReadiness = pluginReadiness;
+  const readinessOrigin = Date.now();
+  pluginReadiness.boardReadyAt = readinessOrigin;
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
@@ -817,6 +860,8 @@ export async function createApp(
   // workspace-runtime) to the worker. Before the body parsers on purpose — the
   // request body is streamed through unread. Absent in the single process.
   if (opts.singletonProxy) app.use(singletonProxyMiddleware(opts.singletonProxy));
+
+  app.use(brandHeadersMiddleware());
 
   // myrmidon(1.6.6 OPE-9058): the http_route lane is attached before every
   // other middleware — the actor / run-identity lookups and the provider
@@ -964,6 +1009,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
   // guard below is load the board really served, so it is measured too.
@@ -1124,6 +1170,7 @@ export async function createApp(
   api.use(decisionRoutes(db, opts.decisionServiceOptions));
   api.use(decisionQueueRoutes(db));
   api.use(userProfileRoutes(db));
+  api.use(usersRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
@@ -1148,10 +1195,12 @@ export async function createApp(
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
   api.use(myrmidonUsersAdminRoutes(db, { authPublicBaseUrl: opts.authPublicBaseUrl })); // myrmidon(OPE-8985): users admin + public password-set
   api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
+  api.use(myrmidonOwnerActiveChannelRoutes(db)); // myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonFeaturesRoutes(db)); // myrmidon(FEATURES): feature registry with live health
+  api.use(myrmidonVendorNameCheckRoutes(db)); // myrmidon(1.7-REBRAND-F)
   api.use(boardJanitorRoutes(db)); // myrmidon(BOARD-JANITOR)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
@@ -1260,11 +1309,9 @@ export async function createApp(
     if (!endpoint || !apiKey) return null;
     return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
   };
-  // Keep provider-backed pool-chat disabled until an operator explicitly
-  // enables the deployment after recovery/settlement checks.
-  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
-    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
-  }
+  // Mount pool-chat routes (authenticated API and telegram pool bridge webhook).
+  // Individual bridges stay dormant until explicitly enabled by an operator in channel settings.
+  api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary & telegram pool bridge
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -1365,6 +1412,21 @@ export async function createApp(
       jobStore,
       toolDispatcher,
       lifecycleManager: lifecycle,
+      onPluginReady: ({ id, pluginKey }) => {
+        const readyAt = Date.now();
+        pluginReadiness.plugins.set(id, { pluginId: id, pluginKey, readyAt });
+        logger.info(
+          {
+            pluginId: id,
+            pluginKey,
+            boardReadyAt: pluginReadiness.boardReadyAt,
+            readyAt,
+            readyAfterBoardReadyMs: readyAt - (pluginReadiness.boardReadyAt ?? readyAt),
+          },
+          "plugin readiness: ready",
+        );
+      },
+
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
         hostVersion: opts.hostVersion ?? "0.0.0",

@@ -1,3 +1,4 @@
+import { useOwnerActiveChannel, formatOwnerActiveChannelLabel } from "../useOwnerActiveChannel.js";
 // myrmidon(UI-0a): UI-2.0 phone frame — 56px header (logo + status) and the
 // bottom tab bar (Center / Decisions / Agents / Servers / Commander / More) at 390px.
 // Touch targets: tab items 60px high (screen-map §3.3: >= 44px, bar items 60).
@@ -5,9 +6,10 @@
 // two bars.
 import { useEffect, useRef } from "react";
 import { useTranslation } from "@/i18n";
-import { useUi2I18n } from "../i18n/Ui2I18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Link, useLocation } from "@/lib/router";
+import { toCompanyRelativePath } from "@/lib/company-routes";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
 import { UI2_PHONE_TABS } from "../navModel";
 import { useUi2AttentionCount } from "../useUi2Status";
@@ -100,10 +102,11 @@ function PhoneTab({
 import type { Gauge as GaugeIcon } from "lucide-react";
 
 export function Ui2PhoneHeader() {
-  const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
+  const { t: tApp, i18n } = useTranslation();
+  const activeChannel = useOwnerActiveChannel();
+  const ui2I18n = useUi2I18nOptional();
   const t = (key: string, values?: Record<string, string | number>) => {
-    const val = tUi2(key as never, values);
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
     return val && val !== key ? val : tApp(key, values);
   };
   return (
@@ -122,8 +125,11 @@ export function Ui2PhoneHeader() {
       <MyrmidonLockup className="max-h-6 w-auto" decorative />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
         <LanguageSwitch compact />
-        <span style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}>
-          {t("ui2.phone.status", { defaultValue: "Owner · Web" })}
+        <span
+          style={{ fontSize: "var(--myr-text-nano)", color: "var(--myr-ink-muted)" }}
+          data-testid="ui2-phone-owner-active-channel"
+        >
+          {formatOwnerActiveChannelLabel(activeChannel, t, { locale: i18n?.language })}
         </span>
         <Ui2AccountMenu compact />
       </div>
@@ -132,7 +138,8 @@ export function Ui2PhoneHeader() {
 }
 
 export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean {
-  const normalizedPath = pathname.split("?")[0].replace(/\/$/, "") || "/";
+  const relativePath = toCompanyRelativePath(pathname);
+  const normalizedPath = relativePath.split("?")[0].replace(/\/$/, "") || "/";
   const normalizedTabPath = tabPath.replace(/\/$/, "") || "/";
   if (normalizedTabPath === "/agents/all") return normalizedPath === "/agents/all";
   if (normalizedTabPath === "/agents") return normalizedPath === "/agents" || normalizedPath.startsWith("/agents/") && !normalizedPath.startsWith("/agents/all");
@@ -141,9 +148,9 @@ export function isUi2PhoneTabActive(tabPath: string, pathname: string): boolean 
 
 export function Ui2PhoneTabBar() {
   const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
+  const ui2I18n = useUi2I18nOptional();
   const t = (key: string, values?: Record<string, string | number>) => {
-    const val = tUi2(key as never, values);
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
     return val && val !== key ? val : tApp(key, values);
   };
   const location = useLocation();
@@ -198,9 +205,9 @@ export function Ui2PhoneTabBar() {
         })}
       </nav>
       {hasPlugins ? (
-        <section aria-label={tUi2("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
+        <section aria-label={t("ui2.nav.group.plugins")} style={{ borderTop: "1px solid var(--myr-hairline)", padding: "6px 8px", maxHeight: 112, overflowY: "auto" }}>
           <div style={{ fontSize: "var(--myr-text-nano)", fontWeight: 700, color: "var(--myr-ink-muted)", padding: "2px 4px 6px" }}>
-            {tUi2("ui2.nav.group.plugins")}
+            {t("ui2.nav.group.plugins")}
           </div>
           {pluginSlots.map((slot) => (
             <PluginSlotMount key={`${slot.pluginKey}:${slot.id}`} slot={slot} context={{ companyId: selectedCompany?.id, companyPrefix: selectedCompany?.issuePrefix }} />

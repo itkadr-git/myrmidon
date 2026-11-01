@@ -15,8 +15,8 @@ import { issueThreadInteractions, type Db } from "@myrmidon/db";
  * still pending and addressed to the run's agent.
  */
 
-const PENDING_INTERACTION_WAKE_REASON = "interaction_pending";
-const PENDING_INTERACTION_WAKE_SOURCE = "issue.interaction.created";
+export const PENDING_INTERACTION_WAKE_REASON = "interaction_pending";
+export const PENDING_INTERACTION_WAKE_SOURCE = "issue.interaction.created";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

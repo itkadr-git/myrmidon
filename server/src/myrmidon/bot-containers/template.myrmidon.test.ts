@@ -583,6 +583,7 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
     partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
     partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+    sessionRetentionDays: WS_BOT_DISK_SETTING_DEFAULTS.sessionRetentionDays,
   };
 
   it("writes the C7 variables with their values, and no interval when none is set", () => {
@@ -592,6 +593,7 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
       [WS_PROFILE_ENV.partitionCriticalPercent]: "95",
       [WS_PROFILE_ENV.graceClosingMinutes]: "30",
       [WS_PROFILE_ENV.scratchTtlHours]: "24",
+      [WS_PROFILE_ENV.sessionRetentionDays]: "30",
       [WS_PROFILE_ENV.boardUrl]: "http://board.example.com:3100",
       // The key travels as the NAME of the .env variable holding it — never the value.
       [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
