@@ -690,6 +690,9 @@ export type Ui2Catalog = {
           raiseAndResume: string;
           title: string;
         },
+        forecast: string;
+        unpriced: string;
+        unpricedEvents: string;
         policies: {
           amount: string;
           empty: string;
