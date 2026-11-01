@@ -1,0 +1,251 @@
+# Runbook: T9 Central Standby (Option A2)
+
+This runbook defines the operational procedures for the central database warm standby (Board database `paperclip` and `myrmidon_hindsight`) on `myr-vm1`, supporting automatic and manual failover with RPO <= 15 minutes and RTO <= 30 minutes.
+
+---
+
+## 1. Architecture & Topology
+
+- **Primary Site (`vm-core`)**:
+  - Hosts single production PostgreSQL 18 cluster `myrmidon-pg` on port `5432`.
+  - Contains both `paperclip` board database (~6.6 GB) and `myrmidon_hindsight` vector database (~16 GB).
+  - Configured with `wal_level = replica`, `archive_mode = on`, continuous WAL streaming to replication slot `standby_board_slot`.
+- **Standby Site (`myr-vm1`)**:
+  - Connected to `vm-core` via secure IPsec tunnel.
+  - Hosts a single warm standby PostgreSQL cluster in isolated directory and port:
+    - **Cluster Standby**: port `5433` (maps to container `5432`), data directory `/srv/standby/myrmidon-pg/data`.
+    - Physical streaming replication replicates the entire cluster (both `paperclip` and `myrmidon_hindsight` databases).
+  - Operates in `hot_standby = on` mode with continuous streaming replay and WAL archive fallback (`restore_command`).
+  - Does NOT alter or conflict with local host workloads or bots running on `myr-vm1`.
+
+---
+
+## 2. Prerequisites & Credentials
+
+1. **Replication Role**:
+   A dedicated replication role on the primary PostgreSQL cluster:
+   ```sql
+   CREATE ROLE myr_replicator WITH REPLICATION LOGIN PASSWORD '...';
+   ```
+2. **Client Authentication (`pg_hba.conf`)**:
+   Allow replication user access from standby host over the internal IPsec tunnel:
+   ```text
+   host replication myr_replicator <standby-host-ip>/32 scram-sha-256
+   ```
+3. **Replication Slots**:
+   - Slot name: `standby_board_slot` (physical, for the entire cluster).
+   - `setup` first validates finite `max_slot_wal_keep_size`, then creates the slot on the primary with `pg_create_physical_replication_slot('standby_board_slot', true)` if absent; `pg_basebackup --slot=standby_board_slot` then consumes the existing slot. Do not use `pg_basebackup -C` here. If an existing slot has uncertain ownership, stop and investigate; do not drop it.
+   - A stopped standby/dead tunnel retains WAL until `max_slot_wal_keep_size` is reached; monitor `check-lag` for retained bytes and `wal_status`.
+4. **Tooling**:
+   The management CLI is located at:
+   `scripts/myrmidon/standby/standby-ctl.sh` (backed by `standby-ctl.mjs`).
+
+**Mandatory primary-side PostgreSQL settings** (validated by `setup` and `check-lag`, fail-closed):
+```sql
+-- Streaming replication for the warm standby
+ALTER SYSTEM SET wal_level = 'replica';
+-- Bound WAL retention per slot so a stopped standby cannot fill the disk (e.g. 50 GB)
+ALTER SYSTEM SET max_slot_wal_keep_size = '50GB';
+SELECT pg_reload_conf();
+```
+`max_slot_wal_keep_size = -1` (unbounded, the live `myrmidon-pg` default) is rejected by `setup` and reported by `check-lag`; a VM with `/` at 90% capacity must not run an unbounded slot.
+
+
+---
+
+## 3. Initial Standby Setup
+
+On the standby host (`myr-vm1`):
+
+1. **Prepare Directories**:
+   ```bash
+   mkdir -p /srv/standby/myrmidon-pg/data
+   mkdir -p /srv/backups/wal/myrmidon-pg
+   chmod 700 /srv/standby/myrmidon-pg/data
+   ```
+
+2. **Execute Base Backup Sync**:
+   Run the setup command to stream initial base backup, configure credentials/passfile, and register replication slot:
+   ```bash
+   PRIMARY_PG_HOST="<primary-host>" PG_REPLICATOR_PASSWORD="<replication-password>" scripts/myrmidon/standby/standby-ctl.sh setup --target all
+   # Or using an existing credential passfile:
+   # scripts/myrmidon/standby/standby-ctl.sh setup --target all --credentials /etc/standby/pgpass
+   ```
+   This prepares replication credentials via `.pgpass`, streams initial basebackup with `PGPASSFILE`, generates `standby.signal`, and configures `primary_conninfo` (with passfile reference, never embedding raw passwords in config) and `restore_command`.
+
+3. **Start Standby Services**:
+   Launch the standby container via Docker Compose:
+   ```bash
+   docker compose -f scripts/myrmidon/standby/docker-compose.standby.yml up -d
+   ```
+
+4. **Verify Standby Readiness**:
+   ```bash
+   docker compose -f scripts/myrmidon/standby/docker-compose.standby.yml ps
+   psql -h localhost -p 5433 -U paperclip -d paperclip -c "SELECT pg_is_in_recovery();"
+   psql -h localhost -p 5433 -U myrmidon_hindsight -d myrmidon_hindsight -c "SELECT pg_is_in_recovery();"
+   ```
+   Both queries must return `t` (true).
+
+---
+
+## 4. Freshness & Lag Monitoring (RPO Verification)
+
+To guarantee the **RPO <= 15 minutes (900 seconds)** requirement, run the lag check tool regularly:
+
+```bash
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+```
+(Alternative flag: `--rpo-max-seconds 900`).
+
+### JSON Monitoring Output
+For integration into automated probes or monitoring pipelines:
+```bash
+scripts/myrmidon/standby/standby-ctl.sh check-lag --target all --rpo 900
+```
+
+Output example:
+```json
+{
+  "command": "check-lag",
+  "allRpoOk": true,
+  "results": [
+    {
+      "target": "board",
+      "success": true,
+      "role": "standby",
+      "inRecovery": true,
+      "measuredAgainst": "primary",
+      "primaryLsn": "1/2000000",
+      "receiveLsn": "1/2000000",
+      "replayLsn": "1/2000000",
+      "byteLag": "0",
+      "receiveByteLag": "0",
+      "timeLagSeconds": 4,
+      "rpoMaxSeconds": 900,
+      "rpoOk": true,
+      "rpoStatus": "ok"
+    },
+    {
+      "target": "hindsight",
+      "success": true,
+      "role": "standby",
+      "inRecovery": true,
+      "measuredAgainst": "primary",
+      "primaryLsn": "1/2000000",
+      "receiveLsn": "1/2000000",
+      "replayLsn": "1/2000000",
+      "byteLag": "0",
+      "receiveByteLag": "0",
+      "timeLagSeconds": 6,
+      "rpoMaxSeconds": 900,
+      "rpoOk": true,
+      "rpoStatus": "ok"
+    }
+  ]
+}
+```
+
+- Exit code `0`: Standby is in recovery, connected, and within RPO threshold (`allRpoOk: true`).
+- Exit code `1`: Replication lag exceeds 15 minutes, standby is disconnected, or replication stream is down.
+
+---
+
+## 5. Failover Procedure (Disaster Recovery)
+
+When `vm-core` experiences total failure or network isolation:
+
+### Step 1: Promote Standby Instance
+Execute promotion using `standby-ctl.sh`:
+```bash
+scripts/myrmidon/standby/standby-ctl.sh failover --target all
+```
+Or execute SQL promotion directly:
+```sql
+-- On port 5433 (Cluster Standby):
+SELECT pg_promote();
+```
+
+### Step 2: Confirm Standby is in Read-Write Mode
+```bash
+psql -h localhost -p 5433 -U paperclip -d paperclip -c "SELECT pg_is_in_recovery();"
+# Expected: f (false)
+
+psql -h localhost -p 5433 -U myrmidon_hindsight -d myrmidon_hindsight -c "SELECT pg_is_in_recovery();"
+# Expected: f (false)
+```
+
+### Step 3: Start Application on `myr-vm1`
+Start the Myrmidon application container pointing to the promoted local database instances:
+```bash
+export DATABASE_URL="postgresql://paperclip:***@localhost:5433/paperclip"
+export HINDSIGHT_DATABASE_URL="postgresql://myrmidon_hindsight:***@localhost:5433/myrmidon_hindsight"
+docker compose up -d myrmidon-board
+```
+
+### Step 4: Reroute Fleet & Validate Service
+- Update internal DNS / load balancer to route agent traffic to `myr-vm1`.
+- Verify board readiness: `curl -s http://localhost:3100/healthz`.
+- Verify fleet connection status in the Myrmidon UI / API.
+- Measured **RTO <= 30 minutes** (typically under 5 minutes for promotion and service start).
+
+---
+
+## 6. Switchback Procedure (Primary Restored)
+
+When `vm-core` is recovered and ready to resume primary service:
+
+**Order matters.** The promoted standby on `myr-vm1` holds all writes accepted after failover — it is the source of truth until it is re-synced back to `vm-core`. Never wipe the standby data directory first.
+
+1. **Verify both sides' roles**:
+   ```bash
+   # vm-core (recovered) must be in recovery or freshly re-cloned, never a live writer:
+   psql -h <vm-core> -p 5432 -c "SELECT pg_is_in_recovery();"
+   # myr-vm1 standby must still be the active writer (in recovery = f):
+   psql -h 127.0.0.1 -p 5433 -c "SELECT pg_is_in_recovery();"
+   ```
+2. **Re-sync Primary from Standby**:
+   Take a fresh `pg_basebackup` of the promoted standby into `vm-core`'s clean data directory (or use `pg_rewind` only when timelines allow). `vm-core` must accept writes only after this sync.
+3. **Switch Application Back**:
+   Drain active tasks on `myr-vm1`, update `DATABASE_URL` back to `vm-core:5432`, restart application services, and verify `http://localhost:3100/healthz`.
+4. **Re-arm Standby on `myr-vm1`** (last step, and only with an explicit data-loss acknowledgement):
+   ```bash
+   scripts/myrmidon/standby/standby-ctl.sh switchback --target all --force --discard-promoted-standby
+   ```
+   The tool refuses (`exit 1`, no destructive action) if the standby is not in recovery — i.e. when it still holds the only copy of post-failover writes — unless `--discard-promoted-standby` is passed explicitly after step 2/3 confirmed `vm-core` is the writer again.
+   Standby signals are placed and replication restarts from the active primary.
+
+---
+
+## 7. Disaster Recovery Rehearsal (Restore Drill)
+
+To validate restore capability and measure actual RTO without affecting live replication:
+
+```bash
+# Automated live drill on isolated drill port 5533 / drill directory
+scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
+
+# Or inspect the execution plan first with --dry-run
+scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --dry-run
+```
+
+The automated rehearsal procedure:
+1. Takes a consistent basebackup snapshot of current standby data into an isolated drill directory (e.g. `/srv/standby/drill-cluster`).
+2. Launches an ephemeral PostgreSQL instance on alternate drill port (`5533`) bound to localhost.
+3. Promotes the ephemeral instance and confirms recovery exit (`SELECT pg_is_in_recovery() === false`).
+4. Executes smoke verification queries on both databases (`paperclip` and `myrmidon_hindsight`).
+5. Stops the ephemeral drill instance cleanly via `pg_ctl stop -m immediate`.
+6. Cleans up the ephemeral drill directory.
+7. Measures exact elapsed duration and validates that actual RTO is well within the 30-minute target (typically < 30 seconds).
+
+---
+
+## 8. Acceptance Criteria & Evidence Matrix
+
+| Requirement | Target | Verification Method | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **Warm Standby Configuration** | Cluster (5433) for Board & Hindsight | `scripts/myrmidon/standby/docker-compose.standby.yml` | Single standby cluster on `myr-vm1`, port 5433, replicating both DBs |
+| **Streaming Replication** | Continuous WAL replay | `standby-ctl.sh setup` + `docker-compose.standby.yml` | `standby.signal`, `primary_conninfo` with credentials, active streaming verified |
+| **RPO Limit** | <= 15 minutes (900s) | `standby-ctl.sh check-lag --rpo 900` | True primary-to-standby LSN lag & replay delay <= 900s, exit code 0; fail-closed on error |
+| **RTO Limit** | <= 30 minutes (1800s) | `standby-ctl.sh failover` & `standby-ctl.sh rehearse` | Promotion in < 10s, read-write confirmed on both DBs, measured duration <= 1800s |
+| **CI Automation** | Automatic regression check | `node --test scripts/myrmidon/standby/*.test.mjs` | 100% passing behavioral & unit tests in CI suite |
