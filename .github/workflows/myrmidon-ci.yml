@@ -56,7 +56,10 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    # Every labeled pull_request event must execute plan. A non-full label is
+    # still a real CI request; skipping plan makes the aggregate CI result
+    # indistinguishable from a failed or missing verification.
+    if: ${{ always() }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
