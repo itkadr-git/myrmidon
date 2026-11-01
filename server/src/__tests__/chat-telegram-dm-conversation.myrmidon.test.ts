@@ -1401,6 +1401,13 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
 
     const agentApp = express();
     const agentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: agentRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "succeeded",
+      contextSnapshot: {},
+    });
     agentApp.use(express.json());
     agentApp.use((req, _res, next) => {
       req.actor = {
