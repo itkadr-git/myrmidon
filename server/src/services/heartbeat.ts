@@ -29821,7 +29821,8 @@ export function heartbeatService(
       }
       if (failed && !activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
         await sweepPendingCleanupLeases({ explicitRetry: {
-          companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
+          companyId: failed.companyId, runId: failed.id,
+          actorId: opts.requestedByActorId ?? failed.requestedByActorId ?? agent.id,
         } });
       }
       if (failed && (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner")) {
