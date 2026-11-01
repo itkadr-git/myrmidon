@@ -46,10 +46,10 @@ export interface HindsightModelsStorageDeps<TGeneral extends object = Record<str
   env?: NodeJS.ProcessEnv;
 }
 
-export function hindsightModelsAdapter(deps: HindsightModelsStorageDeps) {
+export function hindsightModelsAdapter<TGeneral extends object = Record<string, unknown>>(deps: HindsightModelsStorageDeps<TGeneral>) {
   async function readStoredSettings(): Promise<AgentMemorySettings> {
     const general = await deps.getGeneral();
-    const raw = general[AGENT_MEMORY_SETTINGS_KEY];
+    const raw = (general as Record<string, unknown>)[AGENT_MEMORY_SETTINGS_KEY];
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
       return raw as AgentMemorySettings;
     }

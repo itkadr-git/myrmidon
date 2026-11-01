@@ -114,6 +114,7 @@ export function HindsightModelGroupsPanel({
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
 
   useEffect(() => {
+    if (dirty) return;
     if (groups.length > 0) {
       const next: Record<HindsightRole, string> = {
         write: "gpt-4o-mini",
@@ -128,7 +129,7 @@ export function HindsightModelGroupsPanel({
       setModels(next);
       setDirty(false);
     }
-  }, [groups]);
+  }, [groups, dirty]);
 
   const saveMutation = useMutation({
     mutationFn: (modelsToSave: Record<HindsightRole, string>) =>

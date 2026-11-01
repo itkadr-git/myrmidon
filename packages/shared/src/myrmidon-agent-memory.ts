@@ -199,7 +199,8 @@ export const patchHindsightModelsSchema = z
       })
       .optional(),
   })
-  .strict();
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, { message: "At least one model update is required" });
 
 export type PatchHindsightModels = z.infer<typeof patchHindsightModelsSchema>;
 
