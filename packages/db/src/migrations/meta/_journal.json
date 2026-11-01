@@ -2573,10 +2573,10 @@
       "breakpoints": true
     },
     {
-      "idx": 434,
+      "idx": 435,
       "version": "7",
       "when": 1793323806001,
-      "tag": "0434_fleet_site_client_cert_fingerprint",
+      "tag": "0435_fleet_site_client_cert_fingerprint",
       "breakpoints": true
     }
   ]
