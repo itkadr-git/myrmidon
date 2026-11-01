@@ -33667,6 +33667,18 @@ export function heartbeatService(
 
         return {
           ...rest,
+          // Keep the thin fields in the response as first-class values. The
+          // contextSnapshot/resultJson objects below are compatibility views;
+          // consumers of the list endpoint should not need to unpack them to
+          // read the wake reason or the brief result.
+          contextWakeReason,
+          resultSummary: resultSummary ?? null,
+          resultResult: resultResult ?? null,
+          resultMessage: resultMessage ?? null,
+          resultError: resultError ?? null,
+          resultTotalCostUsd: resultTotalCostUsd ?? null,
+          resultCostUsd: resultCostUsd ?? null,
+          resultCostUsdCamel: resultCostUsdCamel ?? null,
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
