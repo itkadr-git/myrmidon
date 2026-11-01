@@ -15829,7 +15829,10 @@ export function issueRoutes(
               });
               if (stageWake?.agentId) {
                 let admitReviewer = true;
-                if (stageWake.wakeup.reason === "execution_review_requested") {
+                if (
+                  stageWake.wakeup.reason === "execution_review_requested" ||
+                  stageWake.wakeup.reason === "execution_review_participant_recovery"
+                ) {
                   const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                     companyId: updated.companyId,
                     issueId: updated.id,
