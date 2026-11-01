@@ -18456,6 +18456,16 @@ export function heartbeatService(
     const adapterConfig = parseObject(agent.adapterConfig);
     const container = parseObject(adapterConfig.container);
     const memoryMb = asNumber(container.memoryMb, Number.NaN);
+    // Managed bot profiles persist the gateway ceiling in the container block;
+    // use it as an admission ceiling when present. Unmanaged gateways leave it
+    // absent and retain the conservative board/memory calculation.
+    const gatewayLimit = asNumber(
+      container.maxConcurrentRuns ??
+        container.max_concurrent_runs ??
+        parseObject(adapterConfig.gateway).maxConcurrentRuns ??
+        parseObject(adapterConfig.gateway).max_concurrent_runs,
+      Number.NaN,
+    );
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
@@ -18463,6 +18473,7 @@ export function heartbeatService(
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       maxConcurrentRuns: effectiveAgentRunLimit({
         boardLimit,
+        gatewayLimit: Number.isFinite(gatewayLimit) && gatewayLimit > 0 ? gatewayLimit : null,
         memoryMb: Number.isFinite(memoryMb) && memoryMb > 0 ? memoryMb : null,
       }),
       skipTimerWhenNoActionableWork: asBoolean(
