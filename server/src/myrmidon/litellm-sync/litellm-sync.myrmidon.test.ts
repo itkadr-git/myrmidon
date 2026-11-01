@@ -108,6 +108,7 @@ describe("LitellmSyncService", () => {
               credentialSecretName: "secret-name-123",
             },
           },
+        ],
         [{ credentialSecretName: "secret-name-123" }],
       ]),
       litellm: port,
