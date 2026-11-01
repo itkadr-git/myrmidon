@@ -64,6 +64,7 @@ function renderView(overrides: Partial<Parameters<typeof GuardrailsScreenView>[0
     settings: SETTINGS,
     agents: AGENTS,
     resolved: RESOLVED,
+    injectionResolved: null,
     onSave,
     pending: false,
     error: null,
