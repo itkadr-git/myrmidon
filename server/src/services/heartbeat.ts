@@ -736,6 +736,13 @@ import {
 } from "./heartbeat-run-runtime-status.js";
 // myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
 import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
+// myrmidon(WAKE-10.2 / OPE-9657): low-priority wake event accumulation & digest
+import {
+  classifyEventPriority,
+  EVENT_PRIORITY_BY_TYPE,
+  isDigestAccumulatedPriority,
+  getSharedEventDigestService,
+} from "../myrmidon/event-digest/index.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -8455,6 +8462,7 @@ export async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
+    eventDigest: input.contextSnapshot.eventDigest ?? null,
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
@@ -20898,9 +20906,10 @@ export function heartbeatService(
   // whose latest run is a legacy run, and the release drain stops at an
   // acknowledged operator Stop. This pass is idempotent and bounded, so one
   // pass after deploy is also the one-off cleanup of the records left behind.
-  async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number }> {
+  async function reconcileStrandedDeferredWakes(): Promise<{ cancelledTerminal: number; revisited: number; expired: number }> {
     const now = Date.now();
-    const settleBefore = new Date(now - 2 * 60_000);
+    // Execution-wait deferrals belong to the queued-comment resume path; the
+    // stale issue-execution expiry must not cancel them before their blocker clears.
     // Wakes of a closed task are dead input: the comment is saved on the task,
     // the wake itself can only start work nobody wants. Cancel them like the
     // close transition does (DEFERRED-WAKE-LEAK), with the same marker.
@@ -20918,6 +20927,51 @@ export function heartbeatService(
       ))),
     )).returning({ id: agentWakeupRequests.id });
 
+    const staleCutoff = new Date(now - 30 * 60_000);
+    const staleWakes = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests).innerJoin(companies,
+      and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active"))).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->'executionWait' is null`,
+      lt(agentWakeupRequests.requestedAt, staleCutoff),
+      lt(agentWakeupRequests.createdAt, staleCutoff),
+      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+      // Only an active/live run holds the execution lock; completed historical runs
+      // must not prevent a stale deferred wake from expiring.
+      not(exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        or(
+          sql`${heartbeatRuns.nativeIssueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+          sql`${heartbeatRuns.contextSnapshot}->>'taskId' = ${agentWakeupRequests.payload}->>'issueId'`,
+        ),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      )))),
+      not(exists(db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        inArray(issues.status, ["done", "cancelled"]),
+      )))),
+    )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
+    let expired = 0;
+    for (const row of staleWakes) {
+      const wake = row.wake;
+      const wakePayload = parseObject(wake.payload);
+      if (wakePayload.executionWait !== undefined) continue;
+      const [cancelled] = await db.update(agentWakeupRequests).set({
+        status: "cancelled", error: "deferred_issue_execution_expired", finishedAt: new Date(), updatedAt: new Date(),
+      }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lt(agentWakeupRequests.requestedAt, staleCutoff))).returning({ id: agentWakeupRequests.id });
+      if (!cancelled) continue;
+      expired++;
+      await enqueueWakeup(wake.agentId, { source: "automation", reason: "deferred_issue_execution_expired", payload: {
+        issueId: readNonEmptyString(wake.payload?.issueId) ?? readNonEmptyString(wake.payload?.taskId),
+        expiredWakeId: wake.id,
+      } })
+        .catch(err => logger.warn({ err, wakeId: wake.id }, "failed to re-wake agent after deferred issue execution expiry"));
+    }
+    const settleBefore = new Date(now - 2 * 60_000);
+
     // Open tasks: hand the free lock's queue to the ordinary release drain, so
     // every gate (pause holds, handoff, liveness of comments, agent state)
     // applies. A task under an effective "do not replay" hold is skipped here:
@@ -20934,6 +20988,7 @@ export function heartbeatService(
         isNull(issues.executionRunId),
         notInArray(issues.status, ["done", "cancelled"]),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait' is null`,
         lte(agentWakeupRequests.requestedAt, settleBefore),
         lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
         not(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
@@ -21001,10 +21056,10 @@ export function heartbeatService(
         logger.warn({ err, wakeId: wake.id, issueId }, "failed to advance stranded deferred wake");
       });
     }
-    if (closed.length || revisited) {
-      logger.info({ cancelledTerminal: closed.length, revisited }, "stranded deferred wake reconcile");
+    if (closed.length || revisited || expired) {
+      logger.info({ cancelledTerminal: closed.length, revisited, expired }, "stranded deferred wake reconcile");
     }
-    return { cancelledTerminal: closed.length, revisited };
+    return { cancelledTerminal: closed.length, revisited, expired };
   }
 
   async function resumeQueuedRuns() {
@@ -29240,7 +29295,16 @@ export function heartbeatService(
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     try {
-      return await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+      const run = await enqueueWakeupInner(agentId, opts, executionWaitRequestId);
+      if (run) {
+        getSharedEventDigestService().commitPendingDigest(agentId);
+      } else {
+        getSharedEventDigestService().rollbackPendingDigest(agentId);
+      }
+      return run;
+    } catch (err) {
+      getSharedEventDigestService().rollbackPendingDigest(agentId);
+      throw err;
     } finally {
       const key = opts.idempotencyKey;
       if (typeof key === "string" && key.startsWith("issue-review-admission:")) {
@@ -29386,6 +29450,60 @@ export function heartbeatService(
           "wake suppressed by agent notification preferences",
         );
         return null;
+      }
+    }
+
+    // myrmidon(WAKE-10.2 / OPE-9657): low-priority events (P3-P4) accumulate
+    // in the agent's event digest without triggering a wake run.
+    if (!opts.manualUserWake) {
+      const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+      if (effectiveReason) {
+        const normalizedReason = effectiveReason.trim().toLowerCase();
+        const isExplicitlyClassified =
+          Object.prototype.hasOwnProperty.call(EVENT_PRIORITY_BY_TYPE, normalizedReason) ||
+          normalizedReason.startsWith("progress.") ||
+          normalizedReason.startsWith("metric.") ||
+          normalizedReason.startsWith("heartbeat.") ||
+          normalizedReason.startsWith("log.");
+        const priority = classifyEventPriority(effectiveReason);
+        if (
+          isExplicitlyClassified &&
+          isDigestAccumulatedPriority(priority) &&
+          normalizedReason !== "heartbeat_timer" &&
+          normalizedReason !== "timer"
+        ) {
+          getSharedEventDigestService().recordEvent({
+            agentId,
+            issueId,
+            type: effectiveReason,
+            priority,
+            payload: (payload as Record<string, unknown> | null) ?? undefined,
+            timestamp: new Date(),
+          });
+          logger.info(
+            { agentId, issueId, reason: effectiveReason, priority },
+            "myrmidon.wake.accumulated_in_digest: low-priority wake event buffered without waking agent",
+          );
+          return null;
+        }
+      }
+    }
+
+    if (!enrichedContextSnapshot.eventDigest) {
+      const effectiveReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason ?? "wake";
+      const priority = classifyEventPriority(effectiveReason);
+      const triggeringEvent = {
+        id: randomUUID(),
+        agentId,
+        issueId,
+        type: effectiveReason,
+        priority,
+        payload: (payload as Record<string, unknown> | null) ?? undefined,
+        timestamp: new Date(),
+      };
+      const stagedDigest = getSharedEventDigestService().prepareDigest(agentId, triggeringEvent);
+      if (stagedDigest) {
+        enrichedContextSnapshot.eventDigest = stagedDigest;
       }
     }
     if (issueId) {

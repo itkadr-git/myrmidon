@@ -181,12 +181,17 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
       .expect(400);
   });
 
-  it("answers 400 on an invalid amount", async () => {
+  it("answers stable 400 contracts for an invalid amount and a missing limit", async () => {
     const { app } = appFor(boardActor);
-    await request(app)
+    const invalid = await request(app)
       .put(`${base}/limits/caste/engineer`)
-      .send({ amountCents: -5 }
-    ).expect(400);
+      .send({ amountCents: -5 })
+      .expect(400);
+    expect(invalid.body).toMatchObject({ error: "Validation error" });
+    expect(invalid.body.details).toEqual(expect.any(Array));
+
+    const missing = await request(app).get(`${base}/limits/caste/engineer`).expect(404);
+    expect(missing.body).toEqual({ error: "Limit not found" });
   });
 
   it("answers 400 on an invalid export format", async () => {

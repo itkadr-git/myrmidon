@@ -23,6 +23,7 @@ import {
   companies,
   corpusShadowLog,
   heartbeatRuns,
+  agentWakeupRequests,
   issueClaims,
   issues,
   litellmCostEvents,
@@ -129,6 +130,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
   "myrmidon_runs_queued_over_30m",
+  "myrmidon_deferred_issue_execution_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
@@ -269,6 +271,8 @@ export interface MetricsSnapshotFields {
   runsQueuedByReason?: Array<{ reason: string; count: number }>;
   /** Queued runs older than 30 minutes. */
   runsQueuedOver30m: number;
+  /** Deferred issue-execution wakes older than thirty minutes. */
+  deferredIssueExecutionOver30m: number;
   /** Failed runs, all time. */
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
@@ -825,6 +829,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCostWindow(deps.db, errorWindowStart),
     0,
   );
+  const deferredIssueExecutionOver30m = await guarded(
+    "myrmidon_deferred_issue_execution_over_30m",
+    () => deps.db.select({ total: count() }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      isNull(agentWakeupRequests.runId),
+      lt(agentWakeupRequests.requestedAt, new Date(now.getTime() - 30 * 60_000)),
+      lt(agentWakeupRequests.createdAt, new Date(now.getTime() - 30 * 60_000)),
+      )).then((rows) => Number(rows[0]?.total ?? 0)),
+    0,
+  );
   const failedWindow = await guarded(
     "myrmidon_runs_failed_window",
     () =>
@@ -939,6 +953,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runsQueued: runCounters.queued,
       runsQueuedByReason: runCounters.queuedByReason,
       runsQueuedOver30m: runCounters.queuedOver30m,
+      deferredIssueExecutionOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       runDurationSecondsP50: durations.p50,
@@ -1180,6 +1195,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Queued heartbeat runs older than 30 minutes.",
       "gauge",
       [`myrmidon_runs_queued_over_30m{${R}} ${formatSampleValue(snapshot.runsQueuedOver30m)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_deferred_issue_execution_over_30m",
+      "Deferred issue-execution wake requests older than thirty minutes.",
+      "gauge",
+      [`myrmidon_deferred_issue_execution_over_30m{${R}} ${formatSampleValue(snapshot.deferredIssueExecutionOver30m)}`],
     ),
   );
   blocks.push(
