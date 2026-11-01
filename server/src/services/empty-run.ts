@@ -11,6 +11,12 @@ import {
   workspaceOperations,
   agentWakeupRequests,
 } from "@myrmidon/db";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+
+// myrmidon(1.7 DEVEFF, OPE-10096): canonical run-log event types for the
+// empty-run stop rules; schema documented in doc/run-log-events.md.
+export const DEVEFF_EVENT_NO_OP = "run.deveff.no_op";
+export const DEVEFF_EVENT_REPEATED_TOOL_ERROR = "run.deveff.repeated_tool_error";
 
 export type EmptyRunReason =
   | "no_changes_and_no_status_transition"
@@ -46,7 +52,7 @@ export const MAX_REPEATED_TOOL_ERRORS = 3;
 export const MAX_CONSECUTIVE_EMPTY_RUNS = 5;
 
 /**
- * 1.7 AGENT-RUNTIME: Определение «пустого прогона» (OPE-10066).
+ * 1.7 AGENT-RUNTIME: Определение «пустого прогона» (OPE-10096).
  * Критерии: нет изменения файлов или артефакта, нет смены статуса,
  * повтор той же ошибки инструмента, либо пустой ответ (empty_response).
  */
@@ -135,7 +141,7 @@ export interface CompletionGateResult {
 }
 
 /**
- * 1.7 AGENT-RUNTIME: Гейт завершения прогона (OPE-10066, пункт 4).
+ * 1.7 AGENT-RUNTIME: Гейт завершения прогона (OPE-10096, пункт 4).
  * Прогон завершается только с коммитом/PR, сменой статуса, либо явным блокером с причиной.
  */
 export function evaluateCompletionGate(input: EmptyRunEvaluationInput): CompletionGateResult {
@@ -198,7 +204,7 @@ export interface EmptyRunEscalationResult {
 }
 
 /**
- * 1.7 AGENT-RUNTIME: Лимит повторов и эскалация (OPE-10066, пункт 3).
+ * 1.7 AGENT-RUNTIME: Лимит повторов и эскалация (OPE-10096, пункт 3).
  * После N (5) пустых прогонов по задаче — эскалация с причиной, а не новое пробуждение.
  */
 export async function checkAndHandleEmptyRunEscalation(
@@ -341,6 +347,107 @@ export async function checkAndHandleEmptyRunEscalation(
   };
 }
 
+/**
+ * 1.7 DEVEFF: Запись run-log событий для no-op и repeated-tool-error (OPE-10096).
+ * События записываются в heartbeat_run_events и формируют неизменяемый след
+ * для аналитики холостых прогонов и дашборда эффективности.
+ */
+export async function recordEmptyRunEvent(
+  db: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    issueId?: string | null;
+    classification: EmptyRunClassification;
+    gateResult: CompletionGateResult;
+  },
+): Promise<void> {
+  const isRepeatedError = input.classification.reason === "repeated_tool_errors";
+  const eventType = isRepeatedError ? DEVEFF_EVENT_REPEATED_TOOL_ERROR : DEVEFF_EVENT_NO_OP;
+  const level = isRepeatedError ? "warn" : "info";
+  const message = isRepeatedError
+    ? `DEVEFF stop rule: repeated tool error limit exceeded (${input.classification.description})`
+    : `DEVEFF stop rule: empty run detected (${input.classification.description})`;
+
+  const payload: Record<string, unknown> = {
+    rule: isRepeatedError ? "repeated_tool_error" : "no_op",
+    reason: input.classification.reason,
+    description: input.classification.description,
+    issueId: input.issueId ?? null,
+    gateMet: input.gateResult.gateMet,
+    gatePassed: input.gateResult.passed,
+    gateReason: input.gateResult.reason,
+  };
+
+  try {
+    await appendHeartbeatRunEvent(db, {
+      companyId: input.companyId,
+      runId: input.runId,
+      agentId: input.agentId,
+      eventType,
+      level,
+      message,
+      payload,
+    });
+  } catch (_err) {
+    // Non-fatal: run-log event failure must not crash execution settlement
+  }
+}
+
+/**
+ * 1.7 DEVEFF: Канонический SQL-запрос для дашборда метрик холостых прогонов (OPE-10096).
+ * Считает долю пустых прогонов по агентам за 14 дней, разбивку по причинам
+ * и прогресс относительно цели сокращения на 30%.
+ */
+export const DEVEFF_DASHBOARD_SQL_QUERY = `-- 14-day agent empty run and stop condition metrics dashboard query
+WITH runs_14d AS (
+  SELECT
+    r.id AS run_id,
+    r.company_id,
+    r.agent_id,
+    a.name AS agent_name,
+    r.created_at,
+    r.status,
+    r.liveness_state,
+    r.liveness_reason,
+    COALESCE(r.native_issue_id::text, r.context_issue_id, r.context_snapshot->>'issueId') AS issue_id
+  FROM heartbeat_runs r
+  JOIN agents a ON a.id = r.agent_id
+  WHERE r.company_id = :companyId
+    AND r.created_at >= NOW() - INTERVAL '14 days'
+    AND r.status IN ('succeeded', 'failed')
+),
+run_events_agg AS (
+  SELECT
+    run_id,
+    BOOL_OR(event_type = 'run.deveff.no_op') AS has_no_op,
+    BOOL_OR(event_type = 'run.deveff.repeated_tool_error') AS has_repeated_error
+  FROM heartbeat_run_events
+  WHERE company_id = :companyId
+    AND created_at >= NOW() - INTERVAL '14 days'
+    AND event_type IN ('run.deveff.no_op', 'run.deveff.repeated_tool_error')
+  GROUP BY run_id
+)
+SELECT
+  r.agent_id,
+  r.agent_name,
+  COUNT(r.run_id) AS total_runs,
+  COUNT(r.run_id) FILTER (WHERE ev.has_no_op OR ev.has_repeated_error OR r.liveness_state = 'empty_response' OR r.liveness_reason ILIKE '%no file changes%' OR r.liveness_reason ILIKE '%Repeated tool failure%') AS empty_runs,
+  COUNT(r.run_id) FILTER (WHERE ev.has_no_op OR r.liveness_reason ILIKE '%no file changes%') AS no_op_runs,
+  COUNT(r.run_id) FILTER (WHERE ev.has_repeated_error OR r.liveness_reason ILIKE '%Repeated tool failure%') AS repeated_error_runs,
+  ROUND(
+    COUNT(r.run_id) FILTER (WHERE ev.has_no_op OR ev.has_repeated_error OR r.liveness_state = 'empty_response' OR r.liveness_reason ILIKE '%no file changes%' OR r.liveness_reason ILIKE '%Repeated tool failure%') * 100.0 / NULLIF(COUNT(r.run_id), 0),
+    1
+  ) AS empty_run_ratio_pct,
+  ROUND(
+    (COUNT(r.run_id) FILTER (WHERE ev.has_no_op OR ev.has_repeated_error OR r.liveness_state = 'empty_response' OR r.liveness_reason ILIKE '%no file changes%' OR r.liveness_reason ILIKE '%Repeated tool failure%') * 100.0 / NULLIF(COUNT(r.run_id), 0)) * 0.7,
+    1
+  ) AS target_ratio_pct
+FROM runs_14d r
+LEFT JOIN run_events_agg ev ON ev.run_id = r.run_id
+GROUP BY r.agent_id, r.agent_name
+ORDER BY empty_runs DESC, total_runs DESC;`;
 export interface AgentEmptyRunStats {
   agentId: string;
   agentName: string;
@@ -372,10 +479,11 @@ export interface CompanyEmptyRunStatsReport {
     reductionTargetMet: boolean; // true if reductionPercent >= 30 or baseline had 0 empty runs
   };
   agents: AgentEmptyRunStats[];
+  dashboardSqlQuery: string; // canonical SQL for Grafana/PostgreSQL dashboards (DEVEFF, OPE-10096)
 }
 
 /**
- * 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10066, пункт 2).
+ * 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10096, пункт 2).
  */
 export async function getCompanyEmptyRunStats(
   db: Db,
@@ -568,5 +676,6 @@ export async function getCompanyEmptyRunStats(
       reductionTargetMet,
     },
     agents: agentsResult,
+    dashboardSqlQuery: DEVEFF_DASHBOARD_SQL_QUERY,
   };
 }

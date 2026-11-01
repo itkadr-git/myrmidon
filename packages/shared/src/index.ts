@@ -934,6 +934,7 @@ export type {
   AgentChainOfCommandEntry,
   // myrmidon(PERF-DIET-G): the slim company list row and the configuration read
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDetail,
   ClearAgentErrorResponse,
@@ -1842,6 +1843,10 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+  type HaStandbyStatus,
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
 } from "./validators/index.js";
 
 export {
@@ -2810,6 +2815,7 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
+export * from "./validators/guardrails.js";
 export * from "./announcements.js";
 // myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
 // event-shaped wakes (assignment / mention / review), read at wake generation.

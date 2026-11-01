@@ -262,6 +262,34 @@ Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be re
 
 Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
 
+### Guardrails panel (Instance → General)
+
+The **Guardrails** panel on the general instance settings page (`InstanceGeneralSettings.tsx`) allows administrators to configure execution safety parameters and limits live without restarting the server:
+- **Bot egress mode** (`bot_egress_mode` / `MYRMIDON_BOT_EGRESS_MODE`): `"off"` (direct access) or `"log"` (outbound requests routed through the egress logging proxy).
+- **Tool circuit breaker** (`tool_breaker_failures`, `tool_breaker_cooldown_ms`, `tool_breaker_window_ms`): controls consecutive failures before pausing execution, cooldown time, and sliding window.
+- **Tool execution timeouts** (`tool_timeout_max_ms`, `tool_timeout_slow_ms`): hard cutoff timeout and slow-execution warning threshold for tool invocations.
+- **Allowed environment variables** (`run_env_allow` / `MYRMIDON_RUN_ENV_ALLOW`): comma-separated list of additional host environment variable names permitted to pass into agent execution runs.
+
+Every field displays its origin indicator (`Source: saved setting`, `Source: server environment`, or `Source: default`). Saving applies immediately to subsequent tool calls and runs.
+
+### Fleet guardrails and container lists (Company Settings)
+
+The **Fleet guardrails** panel on the Company Settings page (`CompanySettings.tsx`) provides centralized management of bot container execution, isolation boundaries, and auxiliary fleets:
+- **Bot container reconciliation** (`bot_containers` / `MYRMIDON_BOT_CONTAINERS`): toggles container runner mode and reconciliation loops.
+- **Reconciliation interval** (`bot_reconcile_interval_sec` / `MYRMIDON_BOT_RECONCILE_INTERVAL_SEC`): background reconciliation check frequency in seconds.
+- **Container image allowlist** (`bot_image_allowlist` / `MYRMIDON_BOT_IMAGE_ALLOWLIST`): list of permitted Docker container image patterns.
+- **Mount sources allowlist** (`bot_mount_sources` / `MYRMIDON_BOT_MOUNT_SOURCES`): list of permitted host filesystem directories that can be mounted into containers.
+- **Container GitHub environment allowlist** (`bot_container_github_env_allowlist`): permitted GitHub-related environment variables for bot containers.
+- **YOLO mode** (`bot_yolo` / `MYRMIDON_BOT_YOLO`): toggles autonomous execution without interactive confirmation prompts (`HERMES_YOLO_MODE`).
+- **Hindsight memory banks** (`bot_hindsight_allowed_banks`): allowed long-term memory banks for bot profiles.
+- **MCP servers** (`bot_mcp_servers`): JSON definitions of shared Model Context Protocol servers.
+- **Browser fleet registry** (`browser_fleet`, `browser_idle_timeout_min`, `browser_max_duration_min`): fleet node definitions, idle cleanup timeout, and maximum session duration for managed browser instances.
+- **Stack check interval** (`stack_check_interval_sec`): periodic infrastructure health check interval.
+
+#### Precedence and Security Confirmation
+- **Precedence**: `ui` (saved in UI / API) > `env` (server environment variable) > `default` (built-in fallback).
+- **Modal Confirmation for Allowlist & YOLO Changes**: Because container image allowlists, mount paths, and YOLO mode define critical security boundaries, any modification to allowlists or enabling YOLO mode requires explicit confirmation via a confirmation dialog before saving.
+
 # Agents page live-run refresh
 
 The Agents page refreshes live-run data every 60 seconds. Use the page's manual refresh when an immediate update is needed.

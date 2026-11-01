@@ -1,23 +1,25 @@
 // server/src/myrmidon/model-providers/routes.ts
 //
-// myrmidon(1.6.1 MODEL-PROVIDERS A): the settings API of the company model
+// myrmidon(1.6.1 MODEL-PROVIDERS A, 1.6.7 OPE-9852): the settings API of the company model
 // provider registry.
 //
-//   POST   /api/myrmidon/companies/:companyId/model-providers            (board only)
-//   GET    /api/myrmidon/companies/:companyId/model-providers            (company access)
-//   PATCH  /api/myrmidon/companies/:companyId/model-providers/:id        (board only)
-//   DELETE /api/myrmidon/companies/:companyId/model-providers/:id        (board only)
-//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/models (company access)
-//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/models (board only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers            (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers            (owner/admin only)
+//   PATCH  /api/myrmidon/companies/:companyId/model-providers/:id        (owner/admin only)
+//   DELETE /api/myrmidon/companies/:companyId/model-providers/:id        (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/models (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/models (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/channels (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/account-status (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/tool-call-probe (owner/admin only)
 //
 // Reads answer the provider state and its cached model list. The credential
 // key is accepted on POST (creation) and PATCH (rotation), validated against
 // the live provider, stored in the secret store — and NEVER answered. No
 // response body of this router contains the key value; the suite asserts it.
 //
-// Mutations are board-only: they mint and rotate credentials. Reads are open
-// to any actor with company access (the settings screen shows which providers
-// exist and which models are enabled).
+// Reads and mutations require company admin access (owner or admin, or instance admin).
+// Plain members, operators, viewers and agents are denied (403).
 //
 // No database or service imports here: everything arrives through
 // ModelProviderRoutesDeps, so the suite runs the real routes with fakes (the
@@ -32,7 +34,7 @@ import {
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import type { ModelProviderActivityEntry, ModelProviderService } from "./service.js";
 import { reportPoolAccountStatus } from "./signals.js";
 import { sanitizeErrorMessage } from "../litellm-sync/client.js";
@@ -103,8 +105,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   router.post("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(createModelProviderSchema, bodyOf(req));
     const provider = await deps.service.createProvider({
       companyId,
@@ -116,7 +117,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
@@ -128,8 +129,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.patch("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(patchModelProviderSchema, bodyOf(req));
     if (body.key !== undefined) {
       const view = await deps.service.rotateProviderKey({
@@ -153,8 +153,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.delete("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     await deps.service.removeProvider({
       companyId,
       providerId,
@@ -166,7 +165,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.get("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     res.json({ models: await deps.service.listModels(companyId, providerId) });
   });
 
@@ -175,8 +174,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     async (req: Request, res: Response) => {
       const companyId = req.params.companyId as string;
       const providerId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
-      assertBoard(req);
+      assertCompanyAdmin(req, companyId);
       // The probe is deliberately detached from request latency. Its persisted state
       // is read by the next provider list request.
       void deps.service.checkToolCallCompatibility({ companyId, providerId }).catch(() => undefined);
@@ -187,8 +185,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.post("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(setModelProviderModelsSchema, bodyOf(req));
     const models = await deps.service.setModels({
       companyId,
@@ -200,7 +197,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   const handleLitellmChannels = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     if (typeof (deps.service as any).listLitellmChannels === "function") {
       try {
         const channels = await (deps.service as any).listLitellmChannels(companyId);
@@ -225,7 +222,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     const result = await deps.service.listChannels(companyId, providerId);
     res.json(result);
   });
@@ -233,8 +230,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(reportAccountStatusSchema, bodyOf(req));
     const signal = reportPoolAccountStatus({
       companyId,

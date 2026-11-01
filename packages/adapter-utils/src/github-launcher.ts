@@ -25,6 +25,49 @@ if (!['git', 'gh'].includes(program) || !executable) {
 }
 ${githubBrokerCandidatesLauncherSource()}
 ${githubBrokerRepositoryLauncherSource()}
+function isPrCreate(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "pr" && args[i + 1] === "create") return true;
+  }
+  return false;
+}
+
+function sanitizePrCreateBase(args) {
+  const result = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-B" || arg === "--base") {
+      const val = args[i + 1];
+      if (val && val.startsWith("bot/")) {
+        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        result.push(arg, "main");
+        i++;
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("--base=")) {
+      const val = arg.slice("--base=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        result.push("--base=main");
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("-B=")) {
+      const val = arg.slice("-B=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        result.push("-B=main");
+      } else {
+        result.push(arg);
+      }
+    } else {
+      result.push(arg);
+    }
+  }
+  return result;
+}
+
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -117,7 +160,11 @@ async function main() {
   env.ZDOTDIR = configDirectory;
   env.BASH_ENV = '/dev/null';
   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
-  const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+  let childArgs = process.argv.slice(2);
+  if (program === 'gh' && isPrCreate(childArgs)) {
+    childArgs = sanitizePrCreateBase(childArgs);
+  }
+  const child = spawn(executable, childArgs, { env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });

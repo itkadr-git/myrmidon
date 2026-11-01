@@ -653,6 +653,8 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
     queryKey: knowledgeQueryKeys.items(companyId),
     queryFn: () => knowledgeApi.items(companyId),
     enabled: Boolean(companyId),
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
   });
 
   const itemQuery = useQuery({
@@ -660,6 +662,9 @@ export function Ui2Knowledge({ basePath }: { basePath?: string } = {}) {
     queryFn: () =>
       knowledgeApi.item(companyId, selection?.spaceKey ?? "", selection?.slug ?? "", {}),
     enabled: Boolean(companyId) && Boolean(selection),
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    placeholderData: (previous) => previous,
   });
 
   // One pass + one sort per level; the budget of §3.9 (<300 ms) is pinned in
