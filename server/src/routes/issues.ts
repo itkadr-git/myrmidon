@@ -3716,6 +3716,7 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
@@ -15839,6 +15840,37 @@ export function issueRoutes(
                   });
                   if (ci.state === "pending" || ci.state === "unknown") {
                     admitReviewer = false;
+                    if (ci.state === "unknown") {
+                      const headKey = ci.headSha ?? "unknown-head";
+                      const eventIdempotencyKey = `review-ci-unreadable:${updated.id}:${headKey}`;
+                      const priorEvent = await tx.query.activityLog.findFirst({
+                        where: and(
+                          eq(activityLog.companyId, updated.companyId),
+                          eq(activityLog.entityType, "issue"),
+                          eq(activityLog.entityId, updated.id),
+                          eq(activityLog.action, "review_ci_unreadable"),
+                          sql`${activityLog.details}->>'idempotencyKey' = ${eventIdempotencyKey}`,
+                        ),
+                      });
+                      if (!priorEvent) {
+                        await logActivity(tx as unknown as Db, {
+                          companyId: updated.companyId,
+                          actorType: "system",
+                          actorId: "review-admission",
+                          agentId: null,
+                          runId: actor.runId,
+                          action: "review_ci_unreadable",
+                          entityType: "issue",
+                          entityId: updated.id,
+                          details: {
+                            idempotencyKey: eventIdempotencyKey,
+                            pullRequestUrl: ci.pullRequestUrl,
+                            headSha: ci.headSha,
+                            reason: ci.reason ?? "unknown",
+                          },
+                        });
+                      }
+                    }
                     const previousPolicy = normalizeIssueExecutionPolicy(
                       (updateFields.executionPolicy ?? existing.executionPolicy) as any,
                     );

@@ -24,6 +24,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
@@ -121,6 +122,91 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .send({ executionPolicy: policy });
     expect(assigned.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
+  });
+
+  it("defers reviewer admission while exact PR-head CI is pending", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "CI-gated Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const policy = { stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }] };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Pending CI must not wake reviewer",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+    const pendingCiRoutes = (db: any, storage: any, options?: any) => issueRoutes(db, storage, {
+      ...options,
+      resolveReviewPullRequestCi: async () => ({ state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+
+    const response = await request(routeApp(ctx.db, actor, pendingCiRoutes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy });
+
+    expect(response.status).toBe(200);
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionPolicy).toMatchObject({ monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } });
+    expect(issue?.monitorNextCheckAt).toBeInstanceOf(Date);
+  });
+
+  it("records one operator activity when exact-head CI is unreadable", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission unreadable CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "CI-unavailable Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const policy = { stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }] };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unreadable CI should be logged once",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+    const unreadableCiRoutes = (db: any, storage: any, options?: any) => issueRoutes(db, storage, {
+      ...options,
+      resolveReviewPullRequestCi: async () => ({ state: "unknown", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc", reason: "pull:http_403" }),
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await request(routeApp(ctx.db, actor, unreadableCiRoutes as any))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review", executionPolicy: policy });
+      expect(response.status).toBe(200);
+    }
+    const events = await ctx.db.select().from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(events.filter((event) => event.action === "review_ci_unreadable")).toHaveLength(1);
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
   });
 
   it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
