@@ -15,15 +15,13 @@
  * "mangled" must never mean "unlimited".
  */
 
+import { liveRunPipelineSettings } from "./runs-queue-settings/live.js";
+
 export const CROSS_ISSUE_INFLUENCE_LIMIT_ENV = "MYRMIDON_CROSS_ISSUE_INFLUENCE_LIMIT";
 export const DEFAULT_CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 
-/** Returns the configured cap; invalid values fall back to the default. */
+/** Configured cap. OPE-4096: resolves live (UI value → env forced override →
+ * default 20); an explicit env value always wins. */
 export function readCrossIssueInfluenceLimit(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[CROSS_ISSUE_INFLUENCE_LIMIT_ENV]?.trim();
-  if (!raw) return DEFAULT_CROSS_ISSUE_INFLUENCE_LIMIT;
-  if (!/^\d+$/.test(raw)) return DEFAULT_CROSS_ISSUE_INFLUENCE_LIMIT;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_CROSS_ISSUE_INFLUENCE_LIMIT;
-  return value;
+  return liveRunPipelineSettings(env).crossIssueInfluenceLimit;
 }

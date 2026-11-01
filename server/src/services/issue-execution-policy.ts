@@ -37,6 +37,9 @@ type IssueLike = AssigneeLike & {
   defaultEscalationAgentIds?: string[] | null;
   /** Role of the currently assigned agent, when resolved by the route. */
   assigneeAgentRole?: string | null;
+  /** Replacement engineer when a persisted return assignee was terminated. */
+  terminatedReturnAssigneeAgentId?: string | null;
+  fallbackReturnAssigneeAgentId?: string | null;
   executionReviewParticipantAgentIds?: string[];
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
@@ -819,6 +822,20 @@ function safeReturnAssignee(
   return null;
 }
 
+function replaceTerminatedReturnAssignee(
+  currentAssignee: IssueExecutionStagePrincipal | null,
+  issue: IssueLike,
+) {
+  if (
+    currentAssignee?.type !== "agent" ||
+    currentAssignee.agentId !== issue.terminatedReturnAssigneeAgentId ||
+    !issue.fallbackReturnAssigneeAgentId
+  ) {
+    return currentAssignee;
+  }
+  return { type: "agent" as const, agentId: issue.fallbackReturnAssigneeAgentId };
+}
+
 function clearExecutionStatePatch(input: {
   patch: Record<string, unknown>;
   issueStatus: string;
@@ -1213,11 +1230,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (requestedAssigneePatchProvided) {
           Object.assign(patch, patchForPrincipal(explicitAssignee));
         } else {
-          const safeAssignee = safeReturnAssignee(
-            existingState.returnAssignee,
-            activeStage,
+          const safeAssignee = replaceTerminatedReturnAssignee(
+            safeReturnAssignee(
+              existingState.returnAssignee,
+              activeStage,
+              input.issue,
+              actor,
+            ),
             input.issue,
-            actor,
           );
           if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
         }

@@ -77,6 +77,9 @@ import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
 // general settings row (the sweep reads them through this schema).
 import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate settings stored in the same
+// general settings row (mode + ratchet baseline).
+import { vendorNameCheckSettingsSchema } from "../myrmidon-vendor-name.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -429,6 +432,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+  // (ratchet / strict) and the ratchet baseline, changed from the instance
+  // settings page and GET/PATCH /api/myrmidon/vendor-name-check; absent means
+  // the module defaults (ratchet against the count the instance records).
+  vendorNameCheck: vendorNameCheckSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

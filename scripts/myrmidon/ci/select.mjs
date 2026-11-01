@@ -24,6 +24,9 @@ export const FULL_TRIGGERS = [
   { pattern: /^\.github\/workflows\/myrmidon-ci\.yml$/, reason: "CI workflow" },
   { pattern: /^scripts\/myrmidon\/ci\//, reason: "CI test selection" },
   { pattern: /^scripts\/myrmidon\/deploy\/predeploy-board-check\.(sh|test\.mjs)$/, reason: "predeploy compatibility gate" },
+  // The vendor-name policy and its snapshots gate the built interface and the
+  // server answers: a change there must run the build lane (the gate itself).
+  { pattern: /^scripts\/myrmidon\/vendor-name\//, reason: "vendor-name policy" },
   { pattern: /^packages\/db\//, reason: "database package" },
   { pattern: /^packages\/shared\//, reason: "shared package" },
   { pattern: /^packages\/plugins\/sdk\//, reason: "plugin SDK" },

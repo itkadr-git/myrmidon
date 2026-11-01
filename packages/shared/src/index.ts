@@ -2907,6 +2907,15 @@ export * from "./myrmidon-datastore-care.js";
 export * from "./myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
+// Unique SETTINGS-TO-UI B registration module is imported for side effects by
+// myrmidon-behavior-settings.ts; avoid star-exporting its duplicate registry names.
+export {
+  RUNS_QUEUE_SECTION,
+  RUNS_QUEUE_SETTING_KEYS,
+  validateRunsQueueBoolean,
+  validateRunsQueueIntRange,
+} from "./myrmidon-runs-queue-settings.js";
+
 export * from "./myrmidon-fallback-signal.js";
 
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills contract — the list of
@@ -2942,6 +2951,8 @@ export * from "./myrmidon-budget-enforcement.js";
 // precedence resolver shared by the server core, the settings validator and the
 // UI panels of parts B–E.
 export * from "./myrmidon-behavior-settings.js";
+// Import registrations only after the registry module has initialized.
+import "./myrmidon-runs-queue-settings.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
@@ -3036,3 +3047,6 @@ export * from "./build-chain.js";
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
+// mode (ratchet / strict), the baseline and the source of each value.
+export * from "./myrmidon-vendor-name.js";
