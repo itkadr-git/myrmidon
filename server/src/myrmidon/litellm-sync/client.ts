@@ -7,7 +7,6 @@
 
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
-
 /**
  * Strips or redacts any sensitive keys or tokens from an error string.
  */
@@ -97,6 +96,16 @@ export interface LitellmSyncClientDeps {
   litellmAdminKey: string;
 }
 
+/** LiteLLM provider prefix for a board connector type. */
+export function litellmProviderPrefix(providerType: string): string {
+  // These board connectors expose OpenAI-compatible APIs. LiteLLM routes them
+  // through its `openai` provider; `openai-compatible` is not a LiteLLM prefix.
+  if (providerType === "openai-compatible" || providerType === "dashscope" || providerType === "google") {
+    return "openai";
+  }
+  return providerType;
+}
+
 export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyncPort {
   const url = (path: string) => `${deps.litellmBaseUrl.replace(/\/$/, "")}${path}`;
 
@@ -143,11 +152,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       const payload = {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? input.credentialSecretName ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
@@ -167,11 +175,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/model/update", {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? input.credentialSecretName ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),

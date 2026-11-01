@@ -15,6 +15,8 @@ import { LitellmSyncPort } from "./port.js";
 export interface LitellmSyncServiceDeps {
   db: Db;
   litellm: LitellmSyncPort;
+  /** Resolves a board secret name to its value before sending it to LiteLLM. */
+  resolveCredential?: (companyId: string, secretName: string) => Promise<string | null>;
 }
 
 export interface SyncTrigger {
@@ -64,12 +66,18 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       if (!provider.credentialSecretName) {
         throw new Error(`Provider ${providerId} has no credential secret name`);
       }
+      const credentialValue = deps.resolveCredential
+        ? await deps.resolveCredential(companyId, provider.credentialSecretName)
+        : provider.credentialSecretName;
+      if (!credentialValue) {
+        throw new Error(`Provider ${providerId} credential could not be resolved`);
+      }
 
       await deps.litellm.registerModel({
         litellmModelName: model.litellmModelName,
         providerType: provider.type,
         baseUrl: provider.baseUrl,
-        credentialSecretName: provider.credentialSecretName,
+        credentialValue,
       });
 
       await trigger?.onModelRegistered?.(model.litellmModelName);
@@ -230,6 +238,13 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       throw new Error(`Provider ${providerId} has no credential secret name`);
     }
 
+    const credentialValue = deps.resolveCredential
+      ? await deps.resolveCredential(companyId, provider.credentialSecretName)
+      : provider.credentialSecretName;
+    if (!credentialValue) {
+      throw new Error(`Provider ${providerId} credential could not be resolved`);
+    }
+
     // Get all enabled models for this provider
     const models = await deps.db
       .select()
@@ -250,7 +265,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
         litellmModelName: model.litellmModelName,
         providerType: provider.type,
         baseUrl: provider.baseUrl,
-        credentialSecretName: provider.credentialSecretName,
+        credentialValue,
       };
       const deployments = registered.filter(
         (r) => r.litellmModelName === model.litellmModelName && r.modelId,

@@ -35,14 +35,14 @@ export interface AllowlistSyncResult {
   skipped: string[];
 }
 
-/** The company's enabled model names as registered in the gateway. */
-async function listEnabledModelNames(db: Db, companyId: string): Promise<string[]> {
+/** The company's model names and enabled state as registered in the gateway. */
+async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
   const rows = await db
-    .select({ litellmModelName: modelProviderModels.litellmModelName })
+    .select({ name: modelProviderModels.litellmModelName, enabled: modelProviderModels.enabled })
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
-    .where(and(eq(modelProviders.companyId, companyId), eq(modelProviderModels.enabled, true)));
-  return [...new Set(rows.map((row) => row.litellmModelName))];
+    .where(eq(modelProviders.companyId, companyId));
+  return rows.map((row) => ({ name: row.name, enabled: row.enabled }));
 }
 
 /**
@@ -64,7 +64,8 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const models = await listEnabledModelNames(db, companyId);
+  const companyModels = await listCompanyModels(db, companyId);
+  const models = companyModels.filter((model) => model.enabled).map((model) => model.name);
   if (models.length === 0) {
     // Nothing enabled yet: leave keys unrestricted rather than locking the
     // fleet out with an empty allowlist.
@@ -100,7 +101,33 @@ export async function updateAgentAllowlistsForCompany(
     }
     attempted += 1;
     try {
-      const applied = await gateway.setKeyAllowedModels({ alias, models });
+      // An empty gateway list means ALL models. Never turn that into a
+      // restrictive list merely because the board owns some models.
+      if (!gateway.getKeyInfo) {
+        skipped.push(`gateway-port-without-key-info:${agent.id}`);
+        continue;
+      }
+      const keyInfo = await gateway.getKeyInfo({ alias });
+      if (!keyInfo) {
+        skipped.push(`alias-unknown-to-gateway:${agent.id}`);
+        continue;
+      }
+      const current = keyInfo.models ?? [];
+      if (current.length === 0) {
+        skipped.push(`key-all-models:${agent.id}`);
+        continue;
+      }
+      const ownedNames = new Set(companyModels.map((model) => model.name));
+      const enabledOwned = new Set(models);
+      const next = [
+        ...current.filter((name) => !ownedNames.has(name)),
+        ...models.filter((name) => !current.includes(name)),
+      ];
+      if (next.length === 0 && enabledOwned.size === 0) {
+        skipped.push(`key-update-would-empty:${agent.id}`);
+        continue;
+      }
+      const applied = await gateway.setKeyAllowedModels({ alias, models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {
