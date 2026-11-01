@@ -3482,9 +3482,6 @@ export function issueThreadInteractionService(
         data.kind === "request_confirmation"
       ) {
         let issueOwnerUserId: string | null = null;
-        const isConversationIssue = Boolean(
-          (issue as { conversationAgentId?: string | null }).conversationAgentId,
-        );
         let issueHasAssignedAgent = Boolean(
           (issue as { assigneeAgentId?: string | null }).assigneeAgentId,
         );
