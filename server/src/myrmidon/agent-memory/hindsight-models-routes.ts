@@ -1,9 +1,9 @@
 import { Router } from "express";
+import { ZodError } from "zod";
 import {
   patchHindsightModelsSchema,
   type PatchHindsightModels,
 } from "@myrmidon/shared";
-import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import type { hindsightModelsAdapter } from "./hindsight-models-adapter.js";
 
@@ -16,7 +16,20 @@ export function hindsightModelsRoutes(adapter: ReturnType<typeof hindsightModels
     res.json(catalog);
   });
 
-  router.patch("/", validate(patchHindsightModelsSchema), async (req, res) => {
+  router.patch("/", (req, _res, next) => {
+    try {
+      req.body = patchHindsightModelsSchema.parse(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const validationError = new Error("Validation error");
+        Object.assign(validationError, { status: 400, details: error.issues });
+        next(validationError);
+        return;
+      }
+      next(error);
+    }
+  }, async (req, res) => {
     assertInstanceAdmin(req);
     const patch = req.body as PatchHindsightModels;
     const updated = await adapter.updateCatalog(patch);
