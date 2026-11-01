@@ -107,7 +107,6 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
-  error?: string | null;
 }
 
 export interface PoolAccountRoleSignal {

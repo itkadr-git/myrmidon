@@ -741,9 +741,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   ): Promise<ModelProviderChannelsView> {
     const provider = await loadProvider(companyId, providerId);
     const connector = getModelProviderConnector(provider.type);
-    const poolType = provider.type === "chatgpt-pool" ||
-      provider.type === "antigravity-pool" ||
-      provider.type === "google-ai-pool";
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
     if (!poolType && (!connector || !connector.supportsChannels)) {
       return {
         providerId: provider.id,
@@ -824,9 +822,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     for (const p of providers) {
       const connector = getModelProviderConnector(p.type);
       if (
-        p.type === "chatgpt-pool" ||
-        p.type === "antigravity-pool" ||
-        p.type === "google-ai-pool" ||
+        ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(p.type) ||
         connector?.supportsChannels
       ) {
         try {
