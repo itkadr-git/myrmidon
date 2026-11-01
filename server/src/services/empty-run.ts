@@ -479,6 +479,7 @@ export interface CompanyEmptyRunStatsReport {
     reductionTargetMet: boolean; // true if reductionPercent >= 30 or baseline had 0 empty runs
   };
   agents: AgentEmptyRunStats[];
+  dashboardSqlQuery: string; // canonical SQL for Grafana/PostgreSQL dashboards (DEVEFF, OPE-10096)
 }
 
 /**
@@ -675,5 +676,6 @@ export async function getCompanyEmptyRunStats(
       reductionTargetMet,
     },
     agents: agentsResult,
+    dashboardSqlQuery: DEVEFF_DASHBOARD_SQL_QUERY,
   };
 }
