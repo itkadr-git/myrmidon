@@ -3035,3 +3035,6 @@ export * from "./build-chain.js";
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
+// mode (ratchet / strict), the baseline and the source of each value.
+export * from "./myrmidon-vendor-name.js";

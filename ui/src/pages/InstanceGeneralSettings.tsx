@@ -47,6 +47,7 @@ import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { VendorNameCheckSettingsPanel } from "@/components/myrmidon/VendorNameCheckSettingsPanel"; // myrmidon(1.7-REBRAND-F)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
 import { Trans } from "react-i18next"; // myrmidon(UI-RU)
@@ -193,6 +194,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <VendorNameCheckSettingsPanel /> {/* myrmidon(1.7-REBRAND-F) */}
 
       {showDeploymentStatus && (
       <section>
