@@ -300,6 +300,21 @@
       }
     },
     {
+      "id": "20-session-storage-diet",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/20-session-storage-diet.patch",
+      "files": ["hermes_state_common.py"],
+      "reason": "The state database stores repeated wake envelopes in user messages and indexes long user/tool content in both full-text indexes. Keep transcript rows intact while bounding regular FTS indexing of user messages and excluding long user messages from trigram FTS.",
+      "dropCondition": "Upstream state schema and FTS rebuild/migration support avoid indexing long wake payloads and large tool outputs.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_common.py",
+        "upstreamMarker": "FTS.*(trigram|content)"
+      }
+    },
+    {
       "id": "18-terminal-foreground-defaults",
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/18-terminal-foreground-defaults.patch",
