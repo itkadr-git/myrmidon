@@ -443,6 +443,8 @@ function sandbox({
       // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
       // default and refuses without its inputs.
       "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+      "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
       `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
       "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       "",
