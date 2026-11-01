@@ -1699,10 +1699,50 @@ function parseRetryAfterSeconds(value: unknown): number | null {
   return null;
 }
 
+function extractUsageLimitReset(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const absolute =
+    record.resets_at ?? record.resetsAt ?? record.reset_at ?? record.resetAt;
+  const absoluteIso =
+    typeof absolute === "string" ? parseRetryAfterToIso(absolute) : null;
+  if (absoluteIso) return absoluteIso;
+  const seconds =
+    record.resets_in_seconds ?? record.resetsInSeconds ?? record.reset_in_seconds ?? record.resetInSeconds;
+  const resetSeconds = parseRetryAfterSeconds(seconds);
+  return resetSeconds === null
+    ? null
+    : new Date(Date.now() + resetSeconds * 1000).toISOString();
+}
+
+function extractUsageLimitResetFromWindows(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const direct = extractUsageLimitReset(record);
+  if (direct) return direct;
+  for (const key of ["windows", "usage_windows", "usageWindows", "wham_usage", "whamUsage"]) {
+    const windows = record[key];
+    if (!Array.isArray(windows)) continue;
+    const resets = windows
+      .map((window) => extractUsageLimitReset(window))
+      .filter((reset): reset is string => reset !== null)
+      .sort();
+    if (resets[0]) return resets[0];
+  }
+  return null;
+}
+
 function extractCooldownRetryNotBefore(
   payload: Record<string, unknown>,
 ): string | null {
   const errorRecord = asRecord(payload.error);
+  const usageLimitReset =
+    extractUsageLimitReset(errorRecord) ??
+    extractUsageLimitReset(payload) ??
+    extractUsageLimitResetFromWindows(payload.usage) ??
+    extractUsageLimitResetFromWindows(payload.wham_usage) ??
+    extractUsageLimitResetFromWindows(payload.whamUsage);
+  if (usageLimitReset) return usageLimitReset;
   const explicitIso = parseRetryAfterToIso(
     nonEmpty(payload.retry_not_before) ??
       nonEmpty(payload.retryNotBefore) ??
@@ -1743,6 +1783,7 @@ function isCooldownOrRateLimit(
     errorCode === 429 ||
     errorCode === "429" ||
     errorCode === "rate_limit_error" ||
+    errorType === "usage_limit_reached" ||
     errorType === "rate_limit_error" ||
     errorType === "cooldown_error" ||
     payload.cooldown === true ||
