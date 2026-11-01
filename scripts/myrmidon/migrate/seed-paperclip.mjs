@@ -657,7 +657,20 @@ export async function seedPaperclip(options = {}) {
     const issue = issuesForDocs[dIdx];
     const docKey = "specification";
 
-    // Revision 1
+    const revision1 = await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
+      method: "PUT",
+      body: {
+        title: `Техническая спецификация #${dIdx + 1}`,
+        format: "markdown",
+        body: `# Архитектурная спецификация задачи ${issue.identifier || issue.id}`,
+        changeSummary: "Создание первичной редакции архитектурной спецификации",
+      },
+    });
+    const baseRevisionId = revision1.data?.latestRevisionId || revision1.data?.revisionId || revision1.data?.id;
+    if (!baseRevisionId) throw new Error(`Document creation for ${issue.id} did not return a revision id`);
+    report.counts.documents++;
+    report.counts.documentRevisions++;
+
     await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
       method: "PUT",
       body: {
@@ -678,6 +691,7 @@ export async function seedPaperclip(options = {}) {
         format: "markdown",
         body: `# Архитектурная спецификация задачи ${issue.identifier || issue.id}\n\n## 1. Введение\nОбновленная редакция требований к модулю с детализацией контрактов API.\n\n## 2. Границы применения\nПрименяется для внутренних микросервисов платформы.\n\n## 3. Модель данных\nВсе входящие структуры валидируются строгой схемой.`,
         changeSummary: "Добавление спецификации схемы данных и форматов сообщений",
+        baseRevisionId,
       },
     });
     report.counts.documentRevisions++;
@@ -690,6 +704,7 @@ export async function seedPaperclip(options = {}) {
         format: "markdown",
         body: `# Архитектурная спецификация задачи ${issue.identifier || issue.id}\n\n## 1. Введение\nФинальная утвержденная редакция требований к модулю с детализацией контрактов API.\n\n## 2. Границы применения\nПрименяется для внутренних микросервисов платформы.\n\n## 3. Модель данных\nВсе входящие структуры валидируются строгой схемой.\n\n## 4. SLA и параметры надёжности\nЦелевой перцентиль p99 времени отклика не превышает 150 мс.`,
         changeSummary: "Финальное утверждение спецификации с показателями SLA",
+        baseRevisionId,
       },
     });
     report.counts.documentRevisions++;
