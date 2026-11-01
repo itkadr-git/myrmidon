@@ -70,18 +70,29 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-function invalidAgentTokenMessage(token: string) {
+function unverifiedAgentTokenContext(token: string) {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      sub?: unknown;
+      company_id?: unknown;
+      run_id?: unknown;
       exp?: unknown;
     };
-    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
-      return "Expired agent token; obtain fresh credentials and retry";
-    }
+    return {
+      agentId: typeof payload.sub === "string" ? payload.sub : undefined,
+      companyId: typeof payload.company_id === "string" ? payload.company_id : undefined,
+      tokenRunId: typeof payload.run_id === "string" ? payload.run_id : undefined,
+      expired: typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000),
+    };
   } catch {
-    // Malformed and incorrectly signed tokens share the generic failure below.
+    return { expired: false };
   }
-  return "Agent token did not verify; obtain fresh credentials and retry";
+}
+
+function invalidAgentTokenMessage(token: string) {
+  return unverifiedAgentTokenContext(token).expired
+    ? "Expired agent token; obtain fresh credentials and retry"
+    : "Agent token did not verify; obtain fresh credentials and retry";
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -348,6 +359,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        const context = unverifiedAgentTokenContext(token);
+        logger.warn(
+          {
+            agentId: context.agentId,
+            companyId: context.companyId,
+            runId: context.tokenRunId ?? runIdHeader ?? undefined,
+            reason: context.expired ? "expired" : "signature_or_malformed",
+            method: req.method,
+            url: req.originalUrl,
+          },
+          "Rejected agent token",
+        );
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
