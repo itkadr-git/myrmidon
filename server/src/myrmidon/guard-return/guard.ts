@@ -1,7 +1,7 @@
 // server/src/myrmidon/guard-return/guard.ts
 // 1.6.6 GUARD-RETURN (OPE-9962): Guard against putting code tasks of dev projects into in_progress on non-coding roles.
 
-import { and, eq, inArray, ne, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import { agents, issueWorkProducts, heartbeatRuns, projects, type Db } from "@myrmidon/db";
 import { unprocessable } from "../../errors.js";
 import { isNoncodingRole, isDevProjectCodeIssue } from "./domain.js";
@@ -158,7 +158,7 @@ export async function assertCodeTaskNotInProgressOnNoncodingRole(
         and(
           eq(agents.companyId, input.companyId),
           eq(agents.role, "engineer"),
-          ne(agents.status, "retired"),
+          notInArray(agents.status, ["retired", "terminated"]),
         ),
       )
       .limit(1);

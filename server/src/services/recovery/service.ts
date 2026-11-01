@@ -2269,6 +2269,32 @@ export function recoveryService(
       continuationClaimKey = key;
     }
 
+    const extraContext = { ...(input.extraContext ?? {}) };
+    if (
+      (input.reason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+        input.retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+      !extraContext.executionStage
+    ) {
+      const [issueRow] = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+      const parsed = parseIssueExecutionState(issueRow?.executionState);
+      if (parsed) {
+        extraContext.executionStage = {
+          wakeRole: "reviewer" as const,
+          stageId: parsed.currentStageId ?? null,
+          stageType: parsed.currentStageType ?? null,
+          currentParticipant: parsed.currentParticipant ?? null,
+          returnAssignee: parsed.returnAssignee ?? null,
+          reviewRequest: parsed.reviewRequest ?? null,
+          lastDecisionOutcome: parsed.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        };
+      }
+    }
+
     let queued: typeof heartbeatRuns.$inferSelect | null;
     try {
       queued = await deps.enqueueWakeup(input.agentId, {
@@ -2291,7 +2317,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -2305,7 +2331,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -4245,6 +4271,8 @@ export function recoveryService(
           `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
           `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
           `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          `${input.ci.rateLimit?.remaining !== null && input.ci.rateLimit?.remaining !== undefined ? `GitHub rate limit remaining=${input.ci.rateLimit.remaining}/${input.ci.rateLimit.limit ?? "unknown"}; ` : ""}` +
+          `${input.ci.rateLimit?.resetEpochSeconds ? `rate limit reset at ${new Date(input.ci.rateLimit.resetEpochSeconds * 1000).toISOString()}; ` : ""}` +
           "the board wakes the reviewer to decide when the wait ends.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
@@ -4339,6 +4367,7 @@ export function recoveryService(
       latestRunId: latestRun.id,
       ciState: ci.state,
       ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      ...(ci.rateLimit ? { rateLimitRemaining: ci.rateLimit.remaining, rateLimitResetEpoch: ci.rateLimit.resetEpochSeconds } : {}),
       pullRequestUrl: ci.pullRequestUrl,
       headSha: ci.headSha,
     };
@@ -4352,13 +4381,17 @@ export function recoveryService(
             issueId: input.issue.id,
             identifier: input.issue.identifier,
             reason: ci.reason ?? null,
+            rateLimitRemaining: ci.rateLimit?.remaining ?? null,
+            rateLimitResetEpoch: ci.rateLimit?.resetEpochSeconds ?? null,
             attempt: decision.attempt,
             maxAttempts: decision.maxAttempts,
           },
           `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
         );
       }
-      const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+      const intervalCheckAt = Date.now() + REVIEW_CI_WAIT_INTERVAL_MS;
+      const resetCheckAt = (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000;
+      const nextCheckAt = new Date(Math.max(intervalCheckAt, resetCheckAt));
       const updated = await scheduleReviewCiWaitMonitor({
         issue: input.issue,
         latestRun,
@@ -4402,6 +4435,18 @@ export function recoveryService(
       entityId: input.issue.id,
       details: activityDetails,
     });
+    const executionStage = state
+      ? {
+          wakeRole: "reviewer" as const,
+          stageId,
+          stageType: state.currentStageType ?? null,
+          currentParticipant: state.currentParticipant ?? null,
+          returnAssignee: state.returnAssignee ?? null,
+          reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        }
+      : null;
     const queued = await enqueueStrandedIssueRecovery({
       issueId: input.issue.id,
       companyId: input.issue.companyId,
@@ -4413,6 +4458,7 @@ export function recoveryService(
       extraContext: {
         currentStageId: stageId,
         currentStageType: state.currentStageType ?? null,
+        ...(executionStage ? { executionStage } : {}),
         reviewRecoveryInstruction:
           `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
         reviewDecisionRetryAttempt: decision.attempt,
@@ -5671,6 +5717,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5693,6 +5813,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -6554,6 +6675,19 @@ export function recoveryService(
           continue;
         }
 
+        const executionStage = pendingExecutionState
+          ? {
+              wakeRole: "reviewer" as const,
+              stageId: pendingExecutionState.currentStageId ?? null,
+              stageType: pendingExecutionState.currentStageType ?? null,
+              currentParticipant: pendingExecutionState.currentParticipant ?? null,
+              returnAssignee: pendingExecutionState.returnAssignee ?? null,
+              reviewRequest: pendingExecutionState.reviewRequest ?? null,
+              lastDecisionOutcome: pendingExecutionState.lastDecisionOutcome ?? null,
+              allowedActions: ["approve", "request_changes"],
+            }
+          : null;
+
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
@@ -6566,6 +6700,7 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            ...(executionStage ? { executionStage } : {}),
             // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
               `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
