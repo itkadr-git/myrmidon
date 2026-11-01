@@ -340,6 +340,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         status: (query.status ?? "published") as KnowledgeItemStatus,
         folderPrefix: query.space,
       });
+      // The default catalogue is published-only; explicit status queries can
+      // request drafts, archived, or superseded records. Do not truncate the
+      // published tree unless the caller explicitly supplies a limit.
       const body = JSON.stringify({ items: query.limit ? items.slice(0, query.limit) : items });
       const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
       res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");

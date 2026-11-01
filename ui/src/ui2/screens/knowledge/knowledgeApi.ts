@@ -166,6 +166,8 @@ export const knowledgeApi = {
         space: params.spaceKey,
         kind: params.kind,
         status: params.status,
+        // The tree needs every live item, not the default page of 50.
+        limit: "1000",
       })}`,
     );
     return { ...response, items: response.items.map(toSummary) };
