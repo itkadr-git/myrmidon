@@ -1,49 +1,81 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
+import { agents, heartbeatRuns, issues } from "@myrmidon/db";
 import { adminAssistantRoutes, collectClusterHealth } from "./admin-assistant.js";
+
+/**
+ * Builds a mock drizzle query result that supports both
+ * `await builder` (agents query without company filter) and
+ * `await builder.where(...)` (filtered queries).
+ */
+function queryResult(rows: unknown[]) {
+  const promise = Promise.resolve(rows);
+  return Object.assign(promise, {
+    where: vi.fn().mockResolvedValue(rows),
+  });
+}
+
+function rejectedQuery(error: Error) {
+  const promise = Promise.reject(error);
+  // Mark the base promise as handled: filtered paths only await `.where()`.
+  promise.catch(() => {});
+  return Object.assign(promise, {
+    where: vi.fn().mockRejectedValue(error),
+  });
+}
+
+function mockDb(
+  tables: {
+    agents?: unknown[];
+    issues?: unknown[];
+    heartbeats?: unknown[];
+  },
+  error?: Error,
+): any {
+  return {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockImplementation((table: unknown) => {
+        if (error) {
+          return rejectedQuery(error);
+        }
+        if (table === agents) {
+          return queryResult(tables.agents ?? []);
+        }
+        if (table === issues) {
+          return queryResult(tables.issues ?? []);
+        }
+        if (table === heartbeatRuns) {
+          return queryResult(tables.heartbeats ?? []);
+        }
+        return queryResult([]);
+      }),
+    }),
+  };
+}
 
 describe("admin assistant routes and health collection", () => {
   describe("collectClusterHealth", () => {
     it("collects and summarizes cluster metrics correctly from db", async () => {
       const now = new Date("2026-10-31T12:00:00.000Z");
 
-      const mockDb: any = {
-        select: vi.fn().mockImplementation((selectObj?: any) => {
-          return {
-            from: vi.fn().mockImplementation((table: any) => {
-              // Agents query
-              if (table && table.id && table.status && table.lastHeartbeatAt) {
-                return {
-                  where: vi.fn().mockResolvedValue([
-                    { id: "agent-1", status: "running", lastHeartbeatAt: new Date(now.getTime() - 5000) },
-                    { id: "agent-2", status: "idle", lastHeartbeatAt: new Date(now.getTime() - 10000) },
-                    { id: "agent-3", status: "paused", lastHeartbeatAt: null },
-                  ]),
-                };
-              }
-              // Issues query
-              if (table && table.status && !table.lastHeartbeatAt) {
-                return {
-                  where: vi.fn().mockResolvedValue([
-                    { status: "todo" },
-                    { status: "backlog" },
-                    { status: "in_progress" },
-                    { status: "blocked" },
-                    { status: "done" },
-                  ]),
-                };
-              }
-              // Heartbeat runs query
-              return {
-                where: vi.fn().mockResolvedValue([{ count: 2 }]),
-              };
-            }),
-          };
-        }),
-      };
+      const db = mockDb({
+        agents: [
+          { id: "agent-1", status: "running", lastHeartbeatAt: new Date(now.getTime() - 5000) },
+          { id: "agent-2", status: "idle", lastHeartbeatAt: new Date(now.getTime() - 10000) },
+          { id: "agent-3", status: "paused", lastHeartbeatAt: null },
+        ],
+        issues: [
+          { status: "todo" },
+          { status: "backlog" },
+          { status: "in_progress" },
+          { status: "blocked" },
+          { status: "done" },
+        ],
+        heartbeats: [{ count: 2 }],
+      });
 
-      const result = await collectClusterHealth(mockDb, { companyId: "comp-1", now });
+      const result = await collectClusterHealth(db, { companyId: "comp-1", now });
 
       expect(result).toBeDefined();
       expect(result.status).toBe("warning"); // blocked task > 0
@@ -75,31 +107,21 @@ describe("admin assistant routes and health collection", () => {
     it("marks status as critical when an agent is in error state or heartbeats are stale", async () => {
       const now = new Date("2026-10-31T12:00:00.000Z");
 
-      const mockDb: any = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValueOnce([
-              { id: "agent-err", status: "error", lastHeartbeatAt: null },
-            ]).mockResolvedValueOnce([]).mockResolvedValueOnce([{ count: 0 }]),
-          }),
-        }),
-      };
+      const db = mockDb({
+        agents: [{ id: "agent-err", status: "error", lastHeartbeatAt: null }],
+        issues: [],
+        heartbeats: [{ count: 0 }],
+      });
 
-      const result = await collectClusterHealth(mockDb, { now });
+      const result = await collectClusterHealth(db, { now });
       expect(result.status).toBe("critical");
       expect(result.agents.error).toBe(1);
     });
 
     it("handles database errors gracefully and returns default zero metrics", async () => {
-      const mockDb: any = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockRejectedValue(new Error("Database connection error")),
-          }),
-        }),
-      };
+      const db = mockDb({}, new Error("Database connection error"));
 
-      const result = await collectClusterHealth(mockDb);
+      const result = await collectClusterHealth(db);
 
       expect(result).toBeDefined();
       expect(result.agents.total).toBe(0);
@@ -111,16 +133,10 @@ describe("admin assistant routes and health collection", () => {
 
   describe("adminAssistantRoutes endpoints", () => {
     it("responds with cluster health json on GET /admin-assistant/cluster-health", async () => {
-      const mockDb: any = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
+      const db = mockDb({});
 
       const app = express();
-      app.use(adminAssistantRoutes(mockDb));
+      app.use(adminAssistantRoutes(db));
 
       const res = await request(app).get("/admin-assistant/cluster-health");
 
@@ -138,16 +154,10 @@ describe("admin assistant routes and health collection", () => {
     });
 
     it("responds with cluster health json on GET /admin-assistant/health", async () => {
-      const mockDb: any = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([]),
-          }),
-        }),
-      };
+      const db = mockDb({});
 
       const app = express();
-      app.use(adminAssistantRoutes(mockDb));
+      app.use(adminAssistantRoutes(db));
 
       const res = await request(app).get("/admin-assistant/health");
 

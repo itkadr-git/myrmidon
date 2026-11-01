@@ -11,19 +11,20 @@
 // product locales with their native names and the current one marked
 // (aria-checked), so it doubles as the accessible control on phone.
 
-import { UI2_LOCALES, type Ui2Locale } from "./locales";
+import { clsx } from "clsx";
+import { UI2_LOCALES } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
-
-const LOCALE_SELF_NAMES: Record<Ui2Locale, string> = {
-  en: "English",
-  ru: "Русский",
-};
+import { setAppLanguage } from "@/i18n/myrmidon-i18n";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
   const { t, locale, setLocale } = useUi2I18n();
 
   return (
-    <div className="ui2-language-switch flex gap-2" role="radiogroup" aria-label={t("ui2.settings.language.title")}>
+    <div
+      className={clsx("ui2-language-switch flex gap-2", compact && "ui2-language-switch--compact")}
+      role="radiogroup"
+      aria-label={t("ui2.settings.language.title")}
+    >
       {UI2_LOCALES.map((candidate) => {
         const selected = locale === candidate;
         return (
@@ -33,12 +34,17 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
             role="radio"
             aria-checked={selected}
             lang={candidate}
-            className={`ui2-language-switch-option rounded-md border px-3 py-1 text-xs ${
-              selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-accent"
-            }`}
-            onClick={() => setLocale(candidate)}
+            className={clsx(
+              "ui2-language-switch-option rounded-md border px-3 py-1 text-xs",
+              compact && "ui2-language-switch-option--compact",
+              selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:bg-accent",
+            )}
+            onClick={() => {
+              setLocale(candidate);
+              void setAppLanguage(candidate);
+            }}
           >
-            {LOCALE_SELF_NAMES[candidate]}
+            {candidate === "ru" ? t("ui2.settings.language.ru") : t("ui2.settings.language.en")}
             {compact ? null : <span className="sr-only">{t("ui2.settings.language.title")}</span>}
           </button>
         );

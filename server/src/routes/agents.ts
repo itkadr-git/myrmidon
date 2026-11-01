@@ -1,3 +1,4 @@
+import { enrichWithPoolModels } from "../myrmidon/model-providers/pool-models.js";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
@@ -13,6 +14,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { executionProjectionForRun, executionProjectionsForRuns, sanitizeExecutionProjectionForActor } from "../services/execution-projection.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): a run response carries one continuation copy.
 import { withoutDuplicateExecutionContinuation } from "../services/run-continuation-snapshot.js";
+import { getCompanyEmptyRunStats } from "../services/empty-run.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -3381,9 +3383,10 @@ export function agentRoutes(
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
-    const models = refresh
+    const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
 
@@ -5729,7 +5732,7 @@ function getActorIdentityPart(req: Request): string {
         adapterConfig: patchData.adapterConfig,
       });
       // myrmidon(S4): admin-only inheritProcessEnv, unknown models are rejected
-      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>);
+      await assertMyrmidonAgentConfigChange(req, existing, requestedAdapterType, patchData.adapterConfig as Record<string, unknown>, { db });
     }
     if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
@@ -7149,6 +7152,8 @@ function getActorIdentityPart(req: Request): string {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+    const wakeReason = typeof req.query.wakeReason === "string" ? req.query.wakeReason : undefined;
+    const hasResult = req.query.hasResult === "true" || req.query.hasResult === "1";
 
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
@@ -7158,11 +7163,36 @@ function getActorIdentityPart(req: Request): string {
         : null,
     ]);
     // Compute the validator before fetching and redacting the response body.
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    const vk = (wakeReason !== undefined || hasResult)
+      ? await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape, wakeReason, hasResult)
+      : await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, wakeReason, hasResult });
     const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
+  });
+
+  // 1.7 AGENT-RUNTIME: Расчет доли пустых прогонов по агентам за 14 дней (OPE-10066)
+  router.get("/companies/:companyId/reports/empty-runs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
+  });
+
+  router.get("/companies/:companyId/agents/:agentId/empty-run-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const daysParam = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const days = Number.isFinite(daysParam) && daysParam > 0 ? daysParam : 14;
+    const report = await getCompanyEmptyRunStats(db, { companyId, days, agentId });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/external-sessions", async (req, res) => {
@@ -7353,6 +7383,7 @@ function getActorIdentityPart(req: Request): string {
     // copy; a payload that differs from it is left untouched.
     const singleContinuationRun = {
       ...decoratedRun,
+      queuedReason: decoratedRun.queuedReason ?? null,
       contextSnapshot: withoutDuplicateExecutionContinuation(
         decoratedRun.contextSnapshot,
       ),
