@@ -67,6 +67,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       }
 
       const provider = providerRecords[0];
+      const providerCompanyId = companyId ?? provider.companyId;
 
       if (!provider.credentialSecretName) {
         throw new Error(`Provider ${providerId} has no credential secret name`);
@@ -74,7 +75,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       // The secret NAME never travels to LiteLLM as a value: without a
       // resolver there is no way to obtain the value, so this is an error.
       const credentialValue = deps.resolveCredential
-        ? await deps.resolveCredential(companyId ?? provider.companyId, provider.credentialSecretName)
+        ? await deps.resolveCredential(providerCompanyId, provider.credentialSecretName)
         : null;
       if (!credentialValue) {
         throw new Error(`Provider ${providerId} credential could not be resolved`);

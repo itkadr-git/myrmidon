@@ -206,7 +206,6 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result.attempted).toBe(2);
     expect(result.updated).toBe(1);
     expect(result.skipped).toContain(`key-update-failed:${"agent-1"}`);
-    const okAlias = agentKeySecretName({ agentId: "agent-2", agentSlug: "Good" });
     expect(gateway.calls.map((c) => c.alias)).toEqual([okAlias]);
   });
 

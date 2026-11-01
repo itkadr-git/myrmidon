@@ -184,13 +184,13 @@ describe("LitellmSyncService", () => {
     };
     const gateway: LitellmSyncPort = {
       async registerModel(input) {
-        deployments.push({ modelId: `new-${nextId++}`, name: input.litellmModelName, secret: input.credentialValue ?? input.credentialSecretName ?? "" });
+        deployments.push({ modelId: `new-${nextId++}`, name: input.litellmModelName, secret: input.credentialValue ?? "" });
         check();
       },
       async updateDeployment(input) {
         const target = deployments.find((d) => d.modelId === input.modelId);
         if (!target) throw new Error("unknown deployment id");
-        target.secret = input.credentialValue ?? input.credentialSecretName ?? "";
+        target.secret = input.credentialValue ?? "";
         check();
       },
       async deleteDeployment(modelId) {

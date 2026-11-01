@@ -42,10 +42,15 @@ async function listCompanyModels(db: Db, companyId: string): Promise<{ name: str
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
     .where(eq(modelProviders.companyId, companyId));
-  return rows.map((row: { litellmModelName: string; enabled: boolean }) => ({
-    name: row.litellmModelName,
-    enabled: row.enabled,
-  }));
+  return rows.map((row: any) => {
+    // Drizzle returns joined tables under their table keys; keeping the flat
+    // fallback makes this port easy to exercise with lightweight adapters.
+    const model = row.modelProviderModels ?? row;
+    return {
+      name: model.litellmModelName ?? model.modelName,
+      enabled: model.enabled === true,
+    };
+  });
 }
 
 /**
@@ -69,13 +74,10 @@ export async function updateAgentAllowlistsForCompany(
 
   const companyModels = await listCompanyModels(db, companyId);
   const models = companyModels.filter((model) => model.enabled).map((model) => model.name);
-  if (models.length === 0) {
-    // Nothing enabled yet: leave keys unrestricted rather than locking the
-    // fleet out with an empty allowlist.
-    return skip("no-enabled-models");
-  }
 
-  // The env carries the secret NAME; the gateway needs the VALUE.
+  // The env carries the secret NAME; the gateway needs the VALUE. Resolve it
+  // before the empty-registry guard so a configured-but-broken deployment is
+  // reported distinctly, while still leaving all keys untouched.
   const adminKey = await agentGatewayKeys.readSecretValue(companyId, settings.adminKeySecret);
   if (!adminKey) {
     return skip("admin-key-secret-unresolved");
@@ -83,6 +85,11 @@ export async function updateAgentAllowlistsForCompany(
   const gateway = agentGatewayKeys.gateway({ baseUrl: settings.baseUrl, adminKey });
   if (!gateway.setKeyAllowedModels) {
     return skip("gateway-port-without-allowlist-support");
+  }
+  if (models.length === 0) {
+    // Nothing enabled yet: leave keys unrestricted rather than locking the
+    // fleet out with an empty allowlist.
+    return skip("no-enabled-models");
   }
 
   const companyAgents = await db
