@@ -9078,6 +9078,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).not.toHaveProperty("modelProfile");
   });
 
+  it("restores changes-requested blocked review to the return engineer and wakes them", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+      await seedInReviewParticipantRunFixture();
+    const engineerId = randomUUID();
+    await db.insert(agents).values({
+      id: engineerId,
+      companyId,
+      name: "ReturnEngineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "changes_requested",
+        currentStageId: null,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: engineerId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: randomUUID(),
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, issueId));
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt, updatedAt: finishedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "completed", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues({ issueIds: [issueId] });
+    const [restored] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(result.reviewBlocksRestored).toBe(1);
+    expect(restored).toMatchObject({ status: "in_progress", assigneeAgentId: engineerId });
+    const [wake] = await db.select().from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, engineerId), eq(agentWakeupRequests.reason, "issue_continuation_needed")));
+    expect(wake?.payload).toMatchObject({ issueId });
+  });
+
+  it("restores a blocked pending review to the participant without losing the stage", async () => {
+    const { agentId, issueId, runId, wakeupRequestId, stageId } =
+      await seedInReviewParticipantRunFixture();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt, updatedAt: finishedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "completed", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues({ issueIds: [issueId] });
+    const [restored] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(result.reviewBlocksRestored).toBe(1);
+    expect(restored.status).toBe("in_review");
+    expect(restored.executionState).toMatchObject({ currentStageId: stageId, status: "pending" });
+    const [wake] = await db.select().from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "execution_review_participant_recovery")));
+    expect(wake?.payload).toMatchObject({ issueId });
+  });
+
+  it("does not restore changes-requested review while awaiting a human decision", async () => {
+    const { issueId } = await seedInReviewParticipantRunFixture();
+    await db.update(issues).set({
+      status: "blocked",
+      blockerMetadata: { blockReason: "human_decision" },
+      executionState: {
+        status: "changes_requested",
+        currentStageId: null,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: randomUUID(),
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, issueId));
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues({ issueIds: [issueId] });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(result.reviewBlocksRestored).toBe(0);
+    expect(issue.status).toBe("blocked");
+  });
+
   it("re-enqueues a stranded execution-review participant when another agent has the latest issue run", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
       await seedInReviewParticipantRunFixture();
@@ -10662,6 +10752,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           row.value === "Board decision required",
       ),
     ).toBe(true);
+  });
+
+  it("does not wake assigned todo issue when there are no new inputs since prior run (OPE-4519)", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "todo",
+        runStatus: "failed",
+        retryReason: "assignment_recovery",
+      });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+  });
+
+  it("re-dispatches assigned todo issue if a new user comment arrived since prior run (OPE-4519)", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "todo",
+        runStatus: "failed",
+      });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: randomUUID(),
+      body: "Operator update: please retry this task",
+      createdAt: new Date(Date.now() + 1000),
+      updatedAt: new Date(Date.now() + 1000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {

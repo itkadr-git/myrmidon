@@ -2822,10 +2822,6 @@ export * from "./notification-prefs.js";
 // add them to packages/shared/src/myrmidon/index.ts (or regenerate via
 // `pnpm generate:shared`) to prevent parallel PR merge conflicts.
 export * from "./myrmidon/index.js";
-
-// myrmidon(1.7-BUDGET-CONFIG A): the shared contract of the per-level spend
-// limits — schemas, level semantics, signal-only resolution, window math.
-export * from "./myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota settings, resolution and the rejection contract
 // shared by the server, the board UI and the settings validator.
 export * from "./myrmidon-bot-disk-quota.js";
@@ -3014,13 +3010,13 @@ export * from "./myrmidon-tool-policy-cache.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
 // idle gate — the toggle, its storage key and the resolver with sources.
 export * from "./myrmidon-foraging-idle-gate.js";
+export * from "./validators/foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-B): owner-facing exchange feed and skill candidates.
 export * from "./myrmidon-agent-exchange-feed.js";
 // myrmidon(1.6.5 LITELLM-WORKERS A): the shared contract of the LiteLLM worker
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.
 export * from "./myrmidon-litellm-workers.js";
-export * from "./myrmidon-capacity-policy-schema.js";
 export * from "./myrmidon-capacity-policy.js";
 export * from "./myrmidon-capacity-policy-order.js";
 export * from "./blocker-graph.js";
