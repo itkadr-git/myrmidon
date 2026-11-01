@@ -65,7 +65,7 @@ import {
   type TeamsInlineImageLocator,
   type TeamsInlineImageScope,
 } from "./chat-teams-inline-image-intake.js";
-import { normalizeTelegramVideoNoteAttachments } from "./chat-telegram-video-note.js";
+import { normalizeTelegramVideoNoteAttachments } from "../myrmidon/channel-connectors/bridge/telegram-video-note.js";
 import {
   hasTelegramMediaProvenance,
   normalizeTelegramMediaAttachments,
@@ -82,7 +82,7 @@ import {
   type TelegramDraftControl,
   type TelegramDraftStopped,
   type TelegramGenerationStoppedProof,
-} from "./chat-telegram-draft-stop.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-draft-stop.js";
 import {
   applySlackReceiptReaction,
   type SlackReceiptMutation,

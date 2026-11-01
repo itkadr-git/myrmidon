@@ -8,6 +8,7 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
+import { behaviorSettingRegistry, resolveBehaviorSettings } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import {
@@ -100,6 +101,28 @@ function harness(options: HarnessOptions = {}) {
 
 const INSTANCE_URL = "/api/myrmidon/behavior-settings";
 const COMPANY_URL = (companyId: string) => `/api/myrmidon/behavior-settings/${companyId}`;
+
+describe("myrmidon(1.7) behavior settings: guardrail and fleet keys (SETTINGS-TO-UI C)", () => {
+  it("registers the keys with strict list validation", () => {
+    for (const key of ["bot_egress_mode", "tool_breaker_failures", "run_env_allow", "bot_containers", "bot_reconcile_interval_sec", "bot_image_allowlist", "bot_mount_sources", "bot_container_github_env_allowlist", "bot_yolo", "bot_hindsight_allowed_banks", "bot_mcp_servers", "browser_fleet", "browser_idle_timeout_min", "browser_max_duration_min", "stack_check_interval_sec"]) {
+      expect(behaviorSettingRegistry.get(key)?.scope).toBe("instance");
+    }
+    const valid = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag"] }, env: {} });
+    expect(valid.settings.bot_image_allowlist).toEqual(["repo/image:tag"]);
+    const blank = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag", " "] }, env: {} });
+    expect(blank.settings.bot_image_allowlist).toEqual([]);
+  });
+
+  it("keeps the shared precedence: a saved value wins, the environment is the default", () => {
+    const env = { MYRMIDON_TOOL_BREAKER_FAILURES: "3" };
+    const saved = resolveBehaviorSettings({ stored: { tool_breaker_failures: 0 }, env });
+    expect(saved.settings.tool_breaker_failures).toBe(0);
+    expect(saved.sources.tool_breaker_failures).toBe("ui");
+    const unsaved = resolveBehaviorSettings({ stored: {}, env });
+    expect(unsaved.settings.tool_breaker_failures).toBe(3);
+    expect(unsaved.sources.tool_breaker_failures).toBe("env");
+  });
+});
 
 describe("myrmidon(1.7) behavior settings: reading the effective values", () => {
   it("reports the environment as the source when it declares a value", async () => {

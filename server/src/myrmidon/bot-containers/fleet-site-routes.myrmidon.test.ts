@@ -355,6 +355,20 @@ describe("fleet site enroll routes", () => {
     expect(deps.deleteSecret).toHaveBeenCalledWith(COMPANY_A, "myrmidon-site-client-myr-vm1");
   });
 
+  it("enrolls a site with privateNetwork / tunnel profile flags", async () => {
+    const { app, deps } = harness();
+    await request(app)
+      .post(path)
+      .send(body({ privateNetwork: true, tunnel: true }))
+      .expect(201);
+    expect(deps.createSite).toHaveBeenCalledTimes(1);
+    const input = deps.createSite.mock.calls[0]![0];
+    expect(input.profile).toMatchObject({
+      privateNetwork: true,
+      tunnel: true,
+    });
+  });
+
   it("rejects http, paths and credentials in the url", async () => {
     const { app } = harness();
     await request(app).post(path).send(body({ url: "http://fleetd.internal:9100" })).expect(400);

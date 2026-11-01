@@ -506,13 +506,40 @@ preflight_license_dir() {
   fi
 }
 
+# SHARED-PACKAGE-CACHE (OPE-10300): when configured, the host cache must
+# exist and be writable before any pull, dump, or environment change. The
+# rendered Compose config is authoritative: require the bind on the deployed
+# service, with the configured path as both source and target and no read-only
+# flag.
+preflight_shared_package_cache() {
+  local cache_path="${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-}"
+  local compose_json mount_ok
+  [[ -n "$cache_path" ]] || return 0
+
+  if [[ ! -d "$cache_path" ]]; then
+    die "shared package cache path is not a directory: $cache_path; nothing was changed"
+  fi
+  if [[ ! -w "$cache_path" ]]; then
+    die "shared package cache path is not writable: $cache_path; nothing was changed"
+  fi
+
+  compose_json="$(compose config --format json 2>/dev/null)" || die "cannot render Compose config to validate the shared package cache mount; nothing was changed"
+  mount_ok="$(jq -r --arg service "$COMPOSE_SERVICE" --arg path "$cache_path" '
+    [.services[$service].volumes[]? | select(type == "object" and .type == "bind" and .source == $path and .target == $path and (.read_only // false) != true)] | length
+  ' <<<"$compose_json" 2>/dev/null || printf '0')"
+  if [[ "$mount_ok" != "1" ]]; then
+    die "shared package cache is not mounted read/write at $cache_path in Compose service $COMPOSE_SERVICE; nothing was changed"
+  fi
+}
+
 preflight_all() {
   ((need_window)) || return 0
   preflight_board_compose
+  preflight_shared_package_cache
   preflight_license_dir
   preflight_components
   preflight_bot_config
-  log "preflight ok: compose project, components, dockergate config"
+  log "preflight ok: compose project, shared package cache, components, dockergate config"
 }
 preflight_all
 

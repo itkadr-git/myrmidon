@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { companySecrets, type Db } from "@myrmidon/db";
 import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+export { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
@@ -15,7 +16,7 @@ import type {
   ExternalObjectResolveResult,
 } from "./external-objects.js";
 
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
@@ -118,10 +119,10 @@ function displayKeyFor(identity: Pick<GitHubObjectIdentity, "objectType">) {
 }
 
 function retryAfterSeconds(response: Response) {
-  const retryAfter = response.headers.get("retry-after");
+  const retryAfter = response.headers?.get ? response.headers.get("retry-after") : null;
   if (retryAfter && /^[0-9]+$/.test(retryAfter)) return Number(retryAfter);
 
-  const reset = response.headers.get("x-ratelimit-reset");
+  const reset = response.headers?.get ? response.headers.get("x-ratelimit-reset") : null;
   if (reset && /^[0-9]+$/.test(reset)) {
     return Math.max(1, Number(reset) - Math.floor(Date.now() / 1000));
   }
@@ -141,7 +142,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   }
 
   if (response.status === 403) {
-    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+    const rateLimitRemaining = response.headers?.get ? response.headers.get("x-ratelimit-remaining") : null;
     if (rateLimitRemaining === "0") {
       return {
         ok: false,
@@ -208,6 +209,8 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
+  const baseRepo = asRecord(asRecord(body.base)?.repo);
+  const defaultBranch = asString(baseRepo?.default_branch) ?? "main";
   const reviewDecision = asString(body.review_decision);
   const rawMergeable = body.mergeable ?? body.mergeable_state ?? body.mergeableState;
   const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
@@ -276,6 +279,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
       ...(additions !== null ? { additions } : {}),
       ...(deletions !== null ? { deletions } : {}),
@@ -341,12 +345,12 @@ const RESOLVER_CONSUMER_ID = "github-external-object-resolver";
  * 403, the read falls back to anonymous, and the anonymous per-IP limit runs out,
  * so a reviewer that waits for CI is blocked as a stalled review (OPE-10246).
  */
-const READ_ONLY_APP_PERMISSIONS = {
+export const READ_ONLY_APP_PERMISSIONS = {
   contents: "read",
   pull_requests: "read",
+  checks: "read",
   issues: "none",
   actions: "none",
-  checks: "read",
   deployments: "none",
   environments: "none",
   workflows: "none",
@@ -361,6 +365,16 @@ const READ_ONLY_APP_PERMISSIONS = {
  *   3. null (anonymous), as before.
  * Neither a token nor an App key is logged or returned in an error.
  */
+export async function resolveGitHubRepositoryToken(
+  db: Db,
+  companyId: string,
+  repository: string,
+  secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  fetchImpl?: FetchLike,
+) {
+  return defaultTokenProvider(db, companyId, repository, secretNames, fetchImpl);
+}
+
 export async function defaultTokenProvider(
   db: Db,
   companyId: string,
@@ -504,7 +518,7 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        const etag = response.headers.get("etag");
+        const etag = response.headers?.get ? response.headers.get("etag") : null;
         if (response.status === 404) {
           return { ok: true, snapshot: notFoundSnapshot(identity, etag, Boolean(token)) };
         }
