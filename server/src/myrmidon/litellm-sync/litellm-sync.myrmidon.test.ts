@@ -39,14 +39,15 @@ function scriptedDb(results: unknown[][]): Db {
   } as unknown as Db;
 }
 
+const COMPANY_ID = "comp-789";
+
 const OPENAI_PROVIDER = {
   id: "prov-123",
   type: "openai",
   baseUrl: "https://api.openai.com/v1",
   credentialSecretName: "secret-name-123",
+  companyId: COMPANY_ID,
 };
-
-const COMPANY_ID = "comp-789";
 
 describe("LitellmSyncService", () => {
   let port: Mocked<LitellmSyncPort>;
@@ -67,6 +68,7 @@ describe("LitellmSyncService", () => {
     const service = createLitellmSyncService({
       db: scriptedDb([[{ litellmModelName: "openai/gpt-4o" }], [OPENAI_PROVIDER]]),
       litellm: port,
+      resolveCredential: async () => "resolved-secret-value",
     });
 
     await service.syncModel("prov-123", "gpt-4o", true);
@@ -75,7 +77,7 @@ describe("LitellmSyncService", () => {
       litellmModelName: "openai/gpt-4o",
       providerType: "openai",
       baseUrl: "https://api.openai.com/v1",
-      credentialSecretName: "secret-name-123",
+      credentialValue: "resolved-secret-value",
     });
     expect(port.unregisterModel).not.toHaveBeenCalled();
   });
@@ -110,6 +112,7 @@ describe("LitellmSyncService", () => {
         [{ credentialSecretName: "secret-name-123" }],
       ]),
       litellm: port,
+      resolveCredential: async () => "resolved-secret-value",
     });
     port.listRegisteredModels.mockResolvedValue([
       {
@@ -127,7 +130,7 @@ describe("LitellmSyncService", () => {
       litellmModelName: "openai/gpt-4o",
       providerType: "openai",
       baseUrl: "https://api.openai.com/v1",
-      credentialSecretName: "secret-name-123",
+      credentialValue: "resolved-secret-value",
     });
     // Registered in LiteLLM under this company's credential and not enabled
     // in the database: removed.
@@ -182,13 +185,13 @@ describe("LitellmSyncService", () => {
     };
     const gateway: LitellmSyncPort = {
       async registerModel(input) {
-        deployments.push({ modelId: `new-${nextId++}`, name: input.litellmModelName, secret: input.credentialSecretName });
+        deployments.push({ modelId: `new-${nextId++}`, name: input.litellmModelName, secret: input.credentialValue ?? "" });
         check();
       },
       async updateDeployment(input) {
         const target = deployments.find((d) => d.modelId === input.modelId);
         if (!target) throw new Error("unknown deployment id");
-        target.secret = input.credentialSecretName;
+        target.secret = input.credentialValue ?? "";
         check();
       },
       async deleteDeployment(modelId) {
@@ -228,15 +231,16 @@ describe("LitellmSyncService", () => {
         [{ litellmModelName: "openai/gpt-4o" }, { litellmModelName: "openai/gpt-4-turbo" }],
       ]),
       litellm: gateway,
+      resolveCredential: async () => "resolved-secret-value",
     });
 
     await service.handleProviderCredentialRotation(COMPANY_ID, "prov-123");
 
     expect(deployments.filter((d) => d.name === "openai/gpt-4o")).toEqual([
-      { modelId: "id-a", name: "openai/gpt-4o", secret: "new-secret-name-456" },
+      { modelId: "id-a", name: "openai/gpt-4o", secret: "resolved-secret-value" },
     ]);
     expect(deployments.filter((d) => d.name === "openai/gpt-4-turbo")).toEqual([
-      { modelId: "id-b", name: "openai/gpt-4-turbo", secret: "new-secret-name-456" },
+      { modelId: "id-b", name: "openai/gpt-4-turbo", secret: "resolved-secret-value" },
     ]);
     // another provider's deployment is untouched
     expect(deployments.find((d) => d.modelId === "id-other")?.secret).toBe("other-secret");
@@ -256,12 +260,13 @@ describe("LitellmSyncService", () => {
         [{ litellmModelName: "openai/gpt-4o" }, { litellmModelName: "openai/missing" }],
       ]),
       litellm: gateway,
+      resolveCredential: async () => "resolved-secret-value",
     });
 
     await service.handleProviderCredentialRotation(COMPANY_ID, "prov-123");
 
     expect(deployments.filter((d) => d.name === "openai/gpt-4o")).toEqual([
-      { modelId: "id-a", name: "openai/gpt-4o", secret: "new-secret-name-456" },
+      { modelId: "id-a", name: "openai/gpt-4o", secret: "resolved-secret-value" },
     ]);
     expect(deployments.filter((d) => d.name === "openai/missing")).toHaveLength(1);
     expect(absentAfterCall).toEqual([]);
@@ -277,6 +282,7 @@ describe("LitellmSyncService", () => {
         [{ litellmModelName: "openai/gpt-4o" }],
       ]),
       litellm: port,
+      resolveCredential: async () => "resolved-secret-value",
     });
 
     await service.handleProviderCredentialRotation(COMPANY_ID, "prov-123");
@@ -288,29 +294,59 @@ describe("LitellmSyncService", () => {
       litellmModelName: "openai/gpt-4o",
       providerType: "openai",
       baseUrl: "https://api.openai.com/v1",
-      credentialSecretName: "new-secret-name-456",
+      credentialValue: "resolved-secret-value",
     });
   });
 
-  it("client sends /model/update addressed by model_info.id and keeps the secret as a reference", async () => {
+  it("registers openai-compatible providers with a LiteLLM prefix and credential value", async () => {
+    const { createLitellmSyncClient } = await import("./client.js");
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response("{}", { status: 200 });
+    }) as never);
+    try {
+      const client = createLitellmSyncClient({ litellmBaseUrl: "http://gw.invalid/", litellmAdminKey: "k" });
+      await client.registerModel({
+        litellmModelName: "kimi-for-coding",
+        providerType: "openai-compatible",
+        baseUrl: "https://api.example.invalid/v1",
+        credentialValue: "resolved-secret-value",
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+    expect(requests[0]!.url).toBe("http://gw.invalid/model/new");
+    expect(requests[0]!.body).toMatchObject({
+      model_name: "kimi-for-coding",
+      litellm_params: {
+        model: "openai/kimi-for-coding",
+        provider: "openai",
+        api_base: "https://api.example.invalid/v1",
+        api_key: "resolved-secret-value",
+      },
+    });
+  });
+
+  it("client sends /model/update with a resolved credential value and model info id", async () => {
     const { createLitellmSyncClient } = await import("./client.js");
     const calls: Array<{ url: string; body: any }> = [];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((async (url: string, init: any) => {
-      calls.push({ url, body: JSON.parse(init.body) });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
       return new Response("{}", { status: 200 });
     }) as never);
     try {
       const client = createLitellmSyncClient({ litellmBaseUrl: "http://gw.invalid/", litellmAdminKey: "k" });
       await client.updateDeployment({
-        modelId: "id-a", litellmModelName: "openai/gpt-4o", providerType: "openai", baseUrl: null, credentialSecretName: "new-secret",
+        modelId: "id-a", litellmModelName: "openai/gpt-4o", providerType: "openai", baseUrl: null, credentialValue: "resolved-secret-value",
       });
       await client.deleteDeployment("id-dup");
     } finally {
       fetchMock.mockRestore();
     }
-    expect(calls[0].url).toBe("http://gw.invalid/model/update");
-    expect(calls[0].body.model_info).toEqual({ id: "id-a" });
-    expect(calls[0].body.litellm_params.api_key).toBe("secrets/new-secret");
+    expect(calls[0]!.url).toBe("http://gw.invalid/model/update");
+    expect(calls[0]!.body.model_info).toEqual({ id: "id-a" });
+    expect(calls[0]!.body.litellm_params.api_key).toBe("resolved-secret-value");
     expect(calls[1]).toEqual({ url: "http://gw.invalid/model/delete", body: { id: "id-dup" } });
   });
 
@@ -327,18 +363,21 @@ describe("LitellmSyncService", () => {
     expect(port.unregisterModel).toHaveBeenCalledWith("openai/gpt-4-turbo");
   });
 
-  it("does not expose secret values in registerModel calls", async () => {
+  it("passes resolved credentials into model registration", async () => {
     const service = createLitellmSyncService({
       db: scriptedDb([[{ litellmModelName: "openai/gpt-4o" }], [OPENAI_PROVIDER]]),
       litellm: port,
+      resolveCredential: async () => "resolved-secret-value",
     });
 
     await service.syncModel("prov-123", "gpt-4o", true);
 
-    const callArgs = port.registerModel.mock.calls[0]![0];
-    // Only the secret NAME reference goes to LiteLLM, never a value.
-    expect(callArgs.credentialSecretName).toBe("secret-name-123");
-    expect(callArgs).not.toHaveProperty("credentialValue");
+    expect(port.registerModel).toHaveBeenCalledWith({
+      litellmModelName: "openai/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialValue: "resolved-secret-value",
+    });
   });
 
   describe("listChannels & sanitization (OPE-9853)", () => {
