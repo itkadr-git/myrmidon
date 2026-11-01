@@ -78,7 +78,8 @@ describe("settings readers", () => {
     expect(readAutoResumeSettings({ [AUTO_RESUME_MAX_ATTEMPTS_ENV]: "5" }).maxAttempts).toBe(5);
     expect(readAutoResumeSettings({ [AUTO_RESUME_WINDOW_MS_ENV]: "abc" }).failureWindowMs).toBe(60 * 60 * 1000);
     expect(readAutoResumeSettings({ [AUTO_RESUME_WINDOW_MS_ENV]: "120000" }).failureWindowMs).toBe(120_000);
-    expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "1" }).intervalSec).toBe(10);
+    // The legacy reader's historical clamp is still part of its public contract.
+    expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "1" }).intervalSec).toBe(60);
     expect(readAutoResumeSettings({ [AUTO_RESUME_INTERVAL_SEC_ENV]: "300" }).intervalSec).toBe(300);
   });
 });

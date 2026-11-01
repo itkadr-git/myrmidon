@@ -77,6 +77,9 @@ import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
 // general settings row (the sweep reads them through this schema).
 import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate settings stored in the same
+// general settings row (mode + ratchet baseline).
+import { vendorNameCheckSettingsSchema } from "../myrmidon-vendor-name.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -99,6 +102,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
 import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
@@ -353,6 +358,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bridge-language; absent means "use the environment force,
   // then English".
   bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
@@ -426,6 +432,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+  // (ratchet / strict) and the ratchet baseline, changed from the instance
+  // settings page and GET/PATCH /api/myrmidon/vendor-name-check; absent means
+  // the module defaults (ratchet against the count the instance records).
+  vendorNameCheck: vendorNameCheckSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

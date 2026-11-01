@@ -249,6 +249,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
           partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
           partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+          sessionRetentionDays: WS_BOT_DISK_SETTING_DEFAULTS.sessionRetentionDays,
         }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
@@ -276,6 +277,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       });
@@ -299,6 +301,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -315,6 +318,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const changed = fakeBoard({
@@ -324,6 +328,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const first = await createBotProfileCompile(defaults.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -339,6 +344,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       };
