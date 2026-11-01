@@ -168,7 +168,6 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { buildContinuationKey } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,

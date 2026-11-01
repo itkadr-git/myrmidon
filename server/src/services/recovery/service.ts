@@ -2198,6 +2198,7 @@ export function recoveryService(
           ),
         );
       if (
+        input.reason !== "issue_continuation_needed" &&
         predecessor &&
         ["failed", "timed_out", "interrupted", "cancelled"].includes(
           predecessor.status,
@@ -2248,7 +2249,7 @@ export function recoveryService(
     if (input.reason === "issue_continuation_needed") {
       const key = buildContinuationKey({
         issueId: input.issueId,
-        event: "issue_continuation_needed",
+        event: `issue_continuation_needed:${input.agentId}`,
         head: input.continuationHead ?? "unversioned",
       });
       const claimed = await tryClaimContinuationKey(db, {
