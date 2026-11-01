@@ -3647,8 +3647,6 @@ export function issueThreadInteractionService(
       ) {
         routeType = "operator_action";
       } else if (
-        (recipientCandidate && "userId" in recipientCandidate) ||
-        normalizedData.kind === "ask_user_questions" ||
         policy.effectiveResolverPolicy === "human_only"
       ) {
         routeType = "human_input";
