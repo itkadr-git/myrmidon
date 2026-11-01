@@ -298,6 +298,7 @@
           "workspaceMyrWs": "myr-ws Workspace",
           "devbuild": "Devbuild",
           "diskSpace": "Disk Space",
+          "resourceOom": "Out of Memory",
           "operatorAction": "Operator Action"
         },
         "kindHeadline": {
@@ -315,6 +316,7 @@
           "workspaceMyrWs": "The myr-ws workspace bridge is failing. Recovery is restoring it.",
           "devbuild": "The devbuild gateway is unavailable. Recovery is restoring build offload.",
           "diskSpace": "Disk space is running out. Recovery is freeing space before runs fail.",
+          "resourceOom": "A run stopped after an out-of-memory event. Recovery recorded the event and routed follow-up to an infrastructure owner.",
           "operatorAction": "An operator action is required to move this task forward. Recovery tracked it with a deadline and an owner."
         },
         "stateLabel": {

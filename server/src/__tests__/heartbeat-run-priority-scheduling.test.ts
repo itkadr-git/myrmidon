@@ -38,7 +38,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
-  assertRunPriorityQueueInvariant,
   readRunPriorityFromEnv,
   type RunPrioritySettings,
 } from "@myrmidon/shared";
@@ -313,7 +312,7 @@ describeEmbeddedPostgres("heartbeat run-priority queued run selection", () => {
   }, 30_000);
 
   it("keeps the role in front of the issue priority: the review run starts before an older critical engineer run", async () => {
-    applyRunPrioritySettings({ ...defaultSettings(), starvationLimitMinutes: 120 });
+    applyRunPrioritySettings(defaultSettings());
     pinAdmission({ maxConcurrentRuns: 0 });
 
     const review = await seedCompanyAndAgent({ name: "RoleReviewer", role: "review" });

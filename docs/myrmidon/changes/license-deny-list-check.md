@@ -13,6 +13,7 @@ divergence-section: Трек 1 — платформа
   request, and an absent, broken or foreign-signed file revokes nobody (a warning is logged).
   A list with a `serial` lower than the highest one seen is rejected; the highest serial is kept
   next to the license (`MYR_LICENSE_DENY_STATE_PATH`).
+- Added `POST /api/licensing/deny-list` endpoint for atomic delivery and saving of the signed deny-list.
 
 ## changelog-ru
 
@@ -25,3 +26,4 @@ divergence-section: Трек 1 — платформа
   запросе; нет файла, битый файл или чужая подпись никого не отзывают (в журнал пишется предупреждение).
   Список с `serial` меньше виденного отвергается; наибольший serial хранится рядом с лицензией
   (`MYR_LICENSE_DENY_STATE_PATH`).
+- Добавлен эндпоинт `POST /api/licensing/deny-list` для атомарной доставки и сохранения подписанного списка отзыва.
