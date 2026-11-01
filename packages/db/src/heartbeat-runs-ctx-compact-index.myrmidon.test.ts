@@ -22,7 +22,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "./migrations/0436_lush_greymalkin.sql";
+const MIGRATION_FILE = "./migrations/0438_lush_greymalkin.sql";
 const INDEX_NAME = "heartbeat_runs_ctx_compact_pending_idx";
 const CREATE_STATEMENT =
   `CREATE INDEX IF NOT EXISTS "${INDEX_NAME}" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation')`;
@@ -90,12 +90,12 @@ describe("heartbeat_runs context compact index migration (static checks)", () =>
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string; when: number }> };
-    const entry = journal.entries.find((e) => e.idx === 436);
-    expect(entry?.tag).toBe("0436_lush_greymalkin");
+    const entry = journal.entries.find((e) => e.idx === 438);
+    expect(entry?.tag).toBe("0438_lush_greymalkin");
 
     const snapshot = JSON.parse(
       await readFile(
-        fileURLToPath(new URL("./migrations/meta/0436_snapshot.json", import.meta.url)),
+        fileURLToPath(new URL("./migrations/meta/0438_snapshot.json", import.meta.url)),
         "utf8",
       ),
     ) as { tables: Record<string, { indexes: Record<string, { name: string }> }> };
