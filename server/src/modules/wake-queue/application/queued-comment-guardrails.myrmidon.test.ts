@@ -149,6 +149,7 @@ describe("myrmidon(1.6-GRD-B) editQueuedComment guardrails integration", () => {
   afterEach(() => {
     if (savedEnabled === undefined) delete process.env[GUARDRAILS_INJECTION_ENABLED_ENV];
     else process.env[GUARDRAILS_INJECTION_ENABLED_ENV] = savedEnabled;
+    guardrailTriggerMetrics.reset(); // isolate process-global trigger counts between cases
     vi.restoreAllMocks();
   });
 
