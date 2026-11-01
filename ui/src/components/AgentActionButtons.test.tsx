@@ -226,9 +226,9 @@ describe("AgentActionButtons", () => {
       id: "agent-1",
       status: "terminated",
     }));
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
   });
 
   it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
