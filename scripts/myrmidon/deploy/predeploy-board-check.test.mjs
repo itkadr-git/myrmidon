@@ -219,7 +219,7 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const log = calls(sb);
     // its own network: created, used by all three containers, removed at the end
     assert.match(log, /docker network create myr-predeploy-bbbbbbbb-\d+/);
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ --device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000 -v /);
     assert.match(log, /docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-/);
     assert.match(log, /docker run -d --name myr-predeploy-board-[^ ]+ --network myr-predeploy-/);
     // the copy is a Postgres created with the configured database/user
