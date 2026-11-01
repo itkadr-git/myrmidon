@@ -216,7 +216,7 @@ export interface BotContainerRuntimeDeps {
    *  release. Returns null while its own flag checks exclude it. A throw is
    *  recorded in the activity log and does not fail the sweep: the facade keeps
    *  serving the previous registry. */
-  exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl?: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
   /**
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company of an agent,
    * for the back-import of the bot's own skills into the company catalog.
@@ -553,6 +553,16 @@ async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<voi
   try {
     const result = await deps.exportMediaAcl();
     if (!result) return;
+    if (result.skipped) {
+      await deps.activity?.record({
+        level: "info",
+        agentId: "*",
+        botKey: "*",
+        message: "media ACL registry export skipped; registry mount is unavailable",
+        details: { path: result.path },
+      });
+      return;
+    }
     if (!result.changed && result.failedResolves === 0) return;
     await deps.activity?.record({
       level: result.failedResolves > 0 ? "error" : "info",

@@ -4,9 +4,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   APPLIED_MARKER_CONTAINER_PATH,
   BOT_CONTAINER_UID,
+  BOT_YOLO_ENV,
   BOT_STOP_TIMEOUT_SEC,
   botStateFromInspect,
   buildApplyScript,
@@ -20,6 +22,8 @@ import {
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
   dockerBotContainerDriver,
+  readDockerDriverConfig,
+  BOT_VOLUME_ROOT_ENV,
   parseAppliedMarker,
   serializeAppliedMarker,
   templateDriftFields,
@@ -88,6 +92,32 @@ function testProfile(
 
 const NONCE = "00112233aabbccdd";
 
+describe("readDockerDriverConfig YOLO setting", () => {
+  it("prefers a value saved from the UI to the process environment, and ignores it for an explicit env", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorRoot = process.env[BOT_VOLUME_ROOT_ENV];
+    const priorYolo = process.env[BOT_YOLO_ENV];
+    try {
+      process.env[BOT_VOLUME_ROOT_ENV] = "/var/lib/myrmidon/bots";
+      process.env[BOT_YOLO_ENV] = "true";
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      expect(readDockerDriverConfig().yolo).toBe(false);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} });
+      expect(readDockerDriverConfig().yolo).toBe(true);
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      const explicit = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      expect(readDockerDriverConfig(explicit).yolo).toBeUndefined();
+      expect(readDockerDriverConfig({ ...explicit, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
+    } finally {
+      if (priorRoot === undefined) delete process.env[BOT_VOLUME_ROOT_ENV];
+      else process.env[BOT_VOLUME_ROOT_ENV] = priorRoot;
+      if (priorYolo === undefined) delete process.env[BOT_YOLO_ENV];
+      else process.env[BOT_YOLO_ENV] = priorYolo;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+});
+
 describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
     const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
@@ -103,8 +133,14 @@ describe("buildCreateContainerRequestBody", () => {
     ]);
     const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
     expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
-    // A mirror without a cache path has nowhere to live: no bind.
     expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
+  it("adds the operator-selected YOLO mode as a driver-owned runtime env", () => {
+    const enabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: true });
+    expect(enabled.Env).toContain(`${BOT_YOLO_ENV}=1`);
+    const disabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: false });
+    expect(disabled.Env).toContain(`${BOT_YOLO_ENV}=0`);
   });
 
   it("builds the fixed template body for an allowed image and the configured network", () => {
