@@ -45,3 +45,4 @@ export { remoteAgentProfileRoutes } from "./remote-agent-profiles.js";
 export { adminAssistantRoutes, collectClusterHealth } from "./admin-assistant.js";
 export { guardrailsRoutes } from "./guardrails.js";
 export { usersRoutes, userRoutes } from "./users.js";
+export { auditRoutes } from "./audit.js";

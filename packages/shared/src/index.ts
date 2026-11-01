@@ -1,5 +1,5 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
-export { PRODUCT_NAME } from "./myrmidon-product.js";
+export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
 export {
   LEGACY_BLOCKED_IMPORT_RULE_VERSION,
   createLegacyBlockedImportKey,
@@ -2542,6 +2542,10 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -3048,6 +3052,19 @@ export * from "./build-chain.js";
 // contract of the recovery factory — how CI, GitHub, myr-ws, devbuild, disk and
 // operator failures ask for a recovery issue with a deterministic dedupe key.
 export * from "./recovery-factory.js";
+
+// myrmidon(1.6.6 ARCH-DATA): read-only product access for the architect role
+// to full operational metrics without secrets.
+export * from "./myrmidon-architect-data.js";
+
+// myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
+export * from "./locale-validator.js";
+export * from "./locale-upload.js";
+
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.
 export * from "./myrmidon-vendor-name.js";
+
+// myrmidon(1.7 HA-GEO, OPE-10184): site readiness evaluation contract and helpers for geo-check.
+export * from "./geo-check.js";
+export * from "./validators/geo-check.js";

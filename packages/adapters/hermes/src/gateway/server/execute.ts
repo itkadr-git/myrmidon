@@ -1653,6 +1653,14 @@ const HERMES_GATEWAY_CONNECTION_ERROR_SIGNATURE = "Connection error.";
 const HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE = "key not allowed";
 
 export const PROVIDER_ERROR_AS_CONTENT_PATTERNS: readonly RegExp[] = [
+  // myrmidon(OPE-10494): provider maintenance / resource-exhaustion replies.
+  // The upstream proxy answers with a bilingual Vietnamese/English notice
+  // ("Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to
+  // resource exhaustion…") that must be classified as a provider error, not
+  // agent output. Match either language fragment; the separator split in
+  // isProviderErrorAsContent below covers the joined " | " and " / " forms.
+  /^(?:tạm bảo trì|bảo trì).*(?:hết tài nguyên|tài nguyên)[.!…]?$/i,
+  /^(?:temporarily )?(?:under )?maintenance.*(?:resource exhaustion|out of resources|insufficient resources|try again later)[.!…]?$/i,
   /^(?:(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại).*\|\s*)?(?:the )?server is (?:(?:\(sometimes\)|sometimes) )?overloaded.*(?:please retry|try again)[.!]?$/i,
   /^(?:server )?(?:\(đôi khi\) )?quá tải.*(?:vui lòng retry|thử lại)[.!]?$/i,
   /^(?:rate limit|too many requests|quota exceeded).*(?:retry|try again)[.!]?$/i,
@@ -1665,9 +1673,17 @@ export function isProviderErrorAsContent(response: string): boolean {
   if (PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return true;
   }
-  if (normalized.includes(" | ")) {
-    const afterPipe = normalized.split(/\s*\|\s*/).pop()?.trim();
-    if (afterPipe && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(afterPipe))) {
+  // myrmidon(OPE-10494): the bilingual maintenance notice joins its two
+  // halves with " / " (e.g. "Tạm bảo trì… / Temporarily under maintenance…"),
+  // so the split covers both separators.
+  const tails = normalized
+    .split(/\s*(?:\||\/)\s*/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  // The full text was already tested above; test the last segment and any
+  // segment that looks like a self-contained notice.
+  for (const segment of tails) {
+    if (segment !== normalized && PROVIDER_ERROR_AS_CONTENT_PATTERNS.some((pattern) => pattern.test(segment))) {
       return true;
     }
   }

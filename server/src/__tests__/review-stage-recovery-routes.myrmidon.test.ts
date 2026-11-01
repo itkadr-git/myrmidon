@@ -1,4 +1,4 @@
-// myrmidon(OPE-10045): route-level tests of the review stage around recovery.
+// myrmidon(OPE-10460): route-level regression tests of review CI gating and pre-merge approval.
 //
 //  - A reviewer approves the last stage (`PATCH status=done` + comment) while
 //    the PR is still open: the approval is recorded, the stage completes and
@@ -29,6 +29,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -83,14 +84,15 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(actor: Express.Request["actor"]) {
+  function createApp(actor: Express.Request["actor"], resolveCi: ReviewPullRequestCiResolver = async () => ({ state: "complete", pullRequestUrl: PR_URL, headSha: "test-head" })) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = actor;
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any));
+    const router = issueRoutes(db, {} as any, { resolveReviewPullRequestCi: resolveCi });
+    app.use("/api", router);
     app.use(errorHandler);
     return app;
   }
@@ -225,6 +227,22 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     return issue!;
   }
+
+  it("rejects REQUEST CHANGES when current-head CI is running or unavailable", async () => {
+    for (const state of ["pending", "unknown"] as const) {
+      const s = await seed({ status: "in_review", pullRequestStatus: "open" });
+      const res = await request(createApp(reviewerActor(s), async () => ({ state, pullRequestUrl: PR_URL, headSha: "test-head" })))
+        .patch(`/api/issues/${s.issueId}`)
+        .send({ status: "in_progress", comment: "REQUEST CHANGES: the CI result must be checked first." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toContain("REQUEST CHANGES rejected");
+      const issue = await readIssue(s.issueId);
+      expect(issue.status).toBe("in_review");
+      expect(issue.executionState).toMatchObject({ status: "pending", lastDecisionOutcome: null });
+      expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, s.issueId))).toHaveLength(0);
+    }
+  });
 
   it("records an approval given before the PR is merged and keeps the task in review", async () => {
     const s = await seed({ status: "in_review", pullRequestStatus: "open" });

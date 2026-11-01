@@ -135,9 +135,12 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
-// Developer images run slow cache/devbuild diagnostics during container init.
-const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
+// Not shorter than the bot image's HEALTHCHECK window (start-period 300 s + 3 x 30 s):
+// the entrypoint runs session maintenance before the gateway starts.
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 420_000;
+// Grace for transient `unhealthy` applies to all bots and matches the image's
+// startup health window (300 s); total startup remains bounded by the same timeout.
+const DEFAULT_HEALTH_START_GRACE_MS = 300_000;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -1812,14 +1815,9 @@ export function dockerBotContainerDriver(
       const health = info.State?.Health?.Status;
       if (state === "running" && health === "healthy") return;
       if (state === "running" && health === "unhealthy") {
-        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
-        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
-        if (healthGrace > 0) {
-          unhealthySince ??= monotonicClock();
-          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
-        } else {
-          throw new Error(`${name} reports unhealthy after start`);
-        }
+        unhealthySince ??= monotonicClock();
+        const healthGrace = Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS);
+        if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
       } else {
         unhealthySince = undefined;
       }

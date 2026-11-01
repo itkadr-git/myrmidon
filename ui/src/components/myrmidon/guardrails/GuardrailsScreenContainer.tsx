@@ -132,6 +132,7 @@ export function GuardrailsScreen() {
         settings={settingsQuery.data}
         agents={agents}
         resolved={resolvedByAgent}
+        injectionResolved={settingsQuery.data?.injectionConfigResolved}
         onSave={(next) => save.mutate(next)}
         pending={save.isPending}
         error={error}

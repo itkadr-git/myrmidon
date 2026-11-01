@@ -131,20 +131,58 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): routes", () => {
     await tempDb?.cleanup();
   });
 
+  it("PUT stores injectionConfig and GET reports env override with provenance", async () => {
+    const put = await request(app)
+      .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)
+      .send({ company: {}, castes: {}, agents: {}, injectionConfig: { enabled: true, scoreThreshold: 0.75 } });
+    expect(put.status).toBe(200);
+    expect(put.body.injectionConfig).toEqual({ enabled: true, scoreThreshold: 0.75 });
+    expect(put.body.injectionConfigResolved).toMatchObject({
+      enabled: true,
+      scoreThreshold: 0.75,
+      enabledSource: "settings",
+      scoreSource: "settings",
+    });
+    // The environment stays the incident lever: explicit false wins over the UI.
+    process.env.MYRMIDON_GUARDRAILS_INJECTION_ENABLED = "false";
+    process.env.MYRMIDON_GUARDRAILS_INJECTION_SCORE = "0.2";
+    try {
+      const overridden = await request(app).get(`/api/myrmidon/companies/${companyId}/guardrails/settings`);
+      expect(overridden.body.injectionConfigResolved).toMatchObject({
+        enabled: false,
+        scoreThreshold: 0.2,
+        enabledSource: "env",
+        scoreSource: "env",
+      });
+      // A stored document is untouched by the override; it is still echoed.
+      expect(overridden.body.injectionConfig).toEqual({ enabled: true, scoreThreshold: 0.75 });
+    } finally {
+      delete process.env.MYRMIDON_GUARDRAILS_INJECTION_ENABLED;
+      delete process.env.MYRMIDON_GUARDRAILS_INJECTION_SCORE;
+    }
+  });
+
+  it("PUT rejects an out-of-range scoreThreshold", async () => {
+    const res = await request(app)
+      .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)
+      .send({ company: {}, castes: {}, agents: {}, injectionConfig: { enabled: true, scoreThreshold: 1.5 } });
+    expect(res.status).toBe(400);
+  });
+
   it("GET settings answers the empty default document", async () => {
     const res = await request(app).get(`/api/myrmidon/companies/${companyId}/guardrails/settings`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ company: {}, castes: {}, agents: {} });
+    expect(res.body).toMatchObject({ company: {}, castes: {}, agents: {}, injectionConfig: { enabled: false, scoreThreshold: 0.6 }, injectionConfigResolved: { enabled: false, scoreThreshold: 0.6, enabledSource: "default", scoreSource: "default" } });
   });
 
   it("PUT settings stores the document for a board actor and echoes it", async () => {
     const res = await request(app)
       .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)
-      .send({ company: { secret: "mask" }, castes: { engineer: { injection: "block" } }, agents: {} });
+      .send({ company: { secret: "mask" }, castes: { engineer: { injection: "block" } }, agents: {}, injectionConfig: { enabled: true, scoreThreshold: 0.75 } });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ company: { secret: "mask" } });
     const stored = await request(app).get(`/api/myrmidon/companies/${companyId}/guardrails/settings`);
-    expect(stored.body).toEqual(res.body);
+    expect(stored.body).toMatchObject(res.body as object);
     // The mutation is audited.
     const [audit] = await db.select().from(activityLog).limit(1);
     expect(audit?.action).toBe("guardrails.modes_settings_updated");

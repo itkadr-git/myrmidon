@@ -1,3 +1,4 @@
+import { knowledgeApi } from "../api/knowledge";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -219,6 +220,7 @@ function normalizeInboxCollectionViewState(value: unknown): StreamlinedInboxView
   return {
     allCategoryFilter:
       category === "issues_i_touched"
+      || category === "knowledge"
       || category === "join_requests"
       || category === "approvals"
       || category === "failed_runs"
@@ -922,6 +924,12 @@ function StreamlinedInbox() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: knowledgeSuggestions = [], isLoading: isKnowledgeLoading, isError: isKnowledgeError } = useQuery({
+    queryKey: ["knowledge-suggestions", selectedCompanyId],
+    queryFn: () => knowledgeApi.listSuggestions(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const {
     data: joinRequests = [],
     isLoading: isJoinRequestsLoading,
@@ -1358,8 +1366,9 @@ function StreamlinedInbox() {
         approvals: tab === "all" && !showApprovalsCategory ? [] : approvalsToRender,
         failedRuns: failedRunsForTab,
         joinRequests: joinRequestsForTab,
+        knowledgeSuggestions: tab !== "all" || allCategoryFilter === "everything" || allCategoryFilter === "knowledge" ? knowledgeSuggestions : [],
       }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
+    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab, knowledgeSuggestions, allCategoryFilter],
   );
 
   const filteredWorkItems = useMemo(() => {
@@ -1395,6 +1404,7 @@ function StreamlinedInbox() {
         }
         return false;
       }
+      if (item.kind === "knowledge") return item.suggestion.body.toLowerCase().includes(q);
       if (item.kind === "join_request") {
         const jr = item.joinRequest;
         if (jr.agentName?.toLowerCase().includes(q)) return true;
@@ -2318,6 +2328,8 @@ function StreamlinedInbox() {
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
+            } else if (item.kind === "knowledge") {
+              act.navigate("/knowledge/review");
             } else if (item.kind === "failed_run") {
               act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
             }
@@ -2375,6 +2387,7 @@ function StreamlinedInbox() {
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
+    !isKnowledgeLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
@@ -2721,6 +2734,7 @@ function StreamlinedInbox() {
         </div>
       ) : null}
 
+      {isKnowledgeError && <p role="alert">{t("area.inbox-status-cards-2.inbox.knowledgeLoadFailed")}</p>}
       {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
@@ -3143,6 +3157,17 @@ function StreamlinedInbox() {
                       continue;
                     }
 
+                    if (item.kind === "knowledge") {
+                      elements.push(wrapItem(`knowledge:${item.suggestion.id}`, isSelected, (
+                        <InboxRowSurface selected={isSelected}>
+                          <Link to="/knowledge/review" className="flex flex-col gap-1 px-4 py-3 hover:bg-accent">
+                            <span className="text-xs text-muted-foreground">{t("ui2.nav.knowledge")}</span>
+                            <span className="line-clamp-2 text-sm">{item.suggestion.body}</span>
+                          </Link>
+                        </InboxRowSurface>
+                      )));
+                      continue;
+                    }
                     if (item.kind === "join_request") {
                       const joinKey = `join:${item.joinRequest.id}`;
                       const isArchiving = archivingNonIssueIds.has(joinKey);
