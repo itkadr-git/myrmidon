@@ -181,7 +181,7 @@ export async function runInBatches(items, batchSize, fn) {
 }
 
 export async function seedPaperclip(options = {}) {
-  const { baseUrl, apiKey = "", passwords, concurrency = 15, confirmThrowaway = "" } = options;
+  const { baseUrl, apiKey = "", passwords, concurrency = 15, confirmThrowaway = "", client: providedClient } = options;
   if (!baseUrl) throw new Error("Explicit --base-url is required; environment-based Paperclip URL fallbacks are disabled");
   if (!Array.isArray(passwords) || passwords.length < 2 || passwords.some((value) => !String(value || "").trim())) {
     throw new Error("Two explicit non-empty passwords are required via --passwords-file");
@@ -194,7 +194,7 @@ export async function seedPaperclip(options = {}) {
     throw new Error(`--confirm-throwaway must exactly match target host ${target.hostname}`);
   }
   const safeBaseUrl = target.origin;
-  const client = new PaperclipApiClient(safeBaseUrl, apiKey);
+  const client = providedClient || new PaperclipApiClient(safeBaseUrl, apiKey);
   const report = {
     seededAt: new Date().toISOString(),
     vendorRelease: "v2026.1012.0",
@@ -930,6 +930,7 @@ export async function main() {
     confirmThrowaway: args.confirmThrowaway,
     passwords,
     concurrency: args.concurrency,
+    client,
   });
 
   if (args.verify) {
