@@ -35,6 +35,22 @@ function compactPayload(payload: BufferedEvent["payload"]): BufferedEvent["paylo
   return { truncated: true, preview: text.slice(0, 500) };
 }
 
+/**
+ * Bounds any digest before it is stored in a run context or rendered into a wake prompt — also a
+ * digest copied from an older run snapshot (written before the buffer was capped).
+ */
+export function boundEventDigest<T>(digest: T): T {
+  if (!digest || typeof digest !== "object") return digest;
+  const raw = digest as unknown as { events?: unknown; eventCount?: unknown };
+  if (!Array.isArray(raw.events)) return digest;
+  const events = raw.events as BufferedEvent[];
+  const kept = events
+    .slice(Math.max(0, events.length - MAX_DIGEST_EVENTS))
+    .map((entry) => ({ ...entry, payload: compactPayload(entry?.payload) }));
+  const total = typeof raw.eventCount === "number" ? raw.eventCount : events.length;
+  return { ...(digest as object), events: kept, eventCount: total, omittedEventCount: total - kept.length } as T;
+}
+
 export class EventDigestService {
   private buffers = new Map<string, BufferedEvent[]>();
   private preparedDigests = new Map<string, BufferedEvent[]>();

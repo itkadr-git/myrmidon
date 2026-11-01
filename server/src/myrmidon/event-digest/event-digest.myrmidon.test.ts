@@ -7,6 +7,7 @@ import {
   EVENT_PRIORITY_BY_TYPE,
   getSharedEventDigestService,
   dispatchAgentEvent,
+  boundEventDigest,
   type AgentEvent,
 } from "./index.js";
 
@@ -507,6 +508,19 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       for (const entry of digest?.events ?? []) {
         expect(JSON.stringify(entry.payload).length).toBeLessThanOrEqual(2_100);
       }
+    });
+
+    it("bounds a digest copied from an older run snapshot", () => {
+      const old = {
+        agentId: "a",
+        events: Array.from({ length: 900 }, (_, i) => ({ id: `e${i}`, agentId: "a", type: "issue_commented", priority: "P2", payload: { body: "y".repeat(10_000) }, timestamp: new Date() })),
+        eventCount: 900,
+      };
+      const bounded = boundEventDigest(old);
+      expect(bounded.events).toHaveLength(30);
+      expect(bounded.eventCount).toBe(900);
+      expect(JSON.stringify(bounded).length).toBeLessThan(80_000);
+      expect(boundEventDigest(null)).toBeNull();
     });
 
     it("does not pile coalesced P2 wakes back into the buffer", async () => {
