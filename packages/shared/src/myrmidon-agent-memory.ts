@@ -19,6 +19,53 @@ export const AGENT_MEMORY_SETTINGS_KEY = "agentMemory";
 export const HINDSIGHT_ROLES = ["write", "summarize", "search"] as const;
 export type HindsightRole = (typeof HINDSIGHT_ROLES)[number];
 
+export type AgentMemoryAccessMode = "all" | "roles" | "selected";
+
+export interface HindsightBankConfig {
+  retention_days?: number | null;
+  recall_threshold?: number | null;
+  auto_retain?: boolean | null;
+  [key: string]: unknown;
+}
+
+export interface HindsightBankSummary {
+  id: string;
+  name?: string | null;
+  description?: string | null;
+  memoriesCount?: number | null;
+  pendingConsolidations?: number | null;
+  failedConsolidations?: number | null;
+}
+
+export interface HindsightAsyncOperation {
+  id: string;
+  operation_type: string;
+  status: "pending" | "processing" | "completed" | "failed" | string;
+  created_at?: string | null;
+  error?: string | null;
+}
+
+export interface HindsightRecallProbeResult {
+  success: boolean;
+  durationMs: number;
+  resultsCount: number;
+  results: Array<{ text: string; score?: number }>;
+  error?: string | null;
+}
+
+export interface HindsightWorkloadMetrics {
+  lastRecallDurationMs: number | null;
+  avgRecallDurationMs: number | null;
+  totalRecalls: number;
+  consolidationQueue: {
+    pending: number;
+    processing: number;
+    failed: number;
+    total: number;
+    recentOperations: HindsightAsyncOperation[];
+  };
+}
+
 export interface HindsightModelsConfig {
   write?: string;
   summarize?: string;
@@ -104,6 +151,9 @@ export interface AgentMemorySettings {
   apiUrl?: string;
   /** Name of the company secret holding the service API key. */
   keySecretName?: string;
+  accessMode?: AgentMemoryAccessMode;
+  enabledRoles?: string[];
+  enabledAgentIds?: string[];
   /** Configured models for Hindsight roles (write, summarize, search). */
   hindsightModels?: HindsightModelsConfig;
   writeModel?: string;
@@ -158,6 +208,9 @@ export const agentMemorySettingsSchema = z
     enabled: z.boolean().optional(),
     apiUrl: httpUrl.optional(),
     keySecretName: z.string().trim().min(1).max(256).optional(),
+    accessMode: z.enum(["all", "roles", "selected"]).optional(),
+    enabledRoles: z.array(z.string().trim().min(1).max(100)).optional(),
+    enabledAgentIds: z.array(z.string().trim().min(1).max(100)).optional(),
     hindsightModels: hindsightModelsSchema.optional(),
     writeModel: modelNameSchema.optional(),
     summarizeModel: modelNameSchema.optional(),
@@ -171,6 +224,9 @@ export const patchAgentMemorySettingsSchema = z
     enabled: z.boolean().nullable().optional(),
     apiUrl: httpUrl.nullable().optional(),
     keySecretName: z.string().trim().min(1).max(256).nullable().optional(),
+    accessMode: z.enum(["all", "roles", "selected"]).nullable().optional(),
+    enabledRoles: z.array(z.string().trim().min(1).max(100)).nullable().optional(),
+    enabledAgentIds: z.array(z.string().trim().min(1).max(100)).nullable().optional(),
     hindsightModels: z
       .object({
         write: modelNameSchema.nullable().optional(),
