@@ -3,6 +3,7 @@ import multer from "multer";
 import type { Db } from "@myrmidon/db";
 import { badRequest, notFound } from "../../errors.js";
 import { assertAuthenticated, assertBoard } from "../../routes/authz.js";
+import { validateCatalogInputSchema } from "@myrmidon/shared";
 import { parseCatalogJson } from "./validator.js";
 import {
   createLocaleUploadService,
@@ -63,7 +64,10 @@ export function localeUploadRoutes(
     if (file && file.buffer) {
       const parseResult = parseCatalogJson(file.buffer);
       if (parseResult.error || !parseResult.catalog) {
-        throw badRequest(parseResult.error || "Failed to parse JSON file");
+        throw badRequest("INVALID_CATALOG_JSON", {
+          message: parseResult.error || "Failed to parse JSON file",
+          errors: [{ path: "<root>", code: "PARSE_ERROR", message: parseResult.error || "Failed to parse JSON file" }],
+        });
       }
       rawCatalog = parseResult.catalog;
 
@@ -81,12 +85,16 @@ export function localeUploadRoutes(
       ""
     ).trim();
 
-    if (!localeParam) {
-      throw badRequest("Locale identifier is required (e.g. 'fr', 'de', 'custom-1')");
-    }
-
-    if (!/^[a-zA-Z0-9_-]{2,35}$/.test(localeParam)) {
-      throw badRequest("Invalid locale identifier format: must be 2-35 alphanumeric chars, dashes or underscores");
+    const localeInput = validateCatalogInputSchema.safeParse({ locale: localeParam });
+    if (!localeInput.success) {
+      throw badRequest("INVALID_LOCALE", {
+        message: "Field 'locale' must contain 2-35 letters, numbers, underscores, or hyphens",
+        errors: localeInput.error.issues.map((issue) => ({
+          path: issue.path.join(".") || "locale",
+          code: "INVALID_LOCALE",
+          message: issue.message,
+        })),
+      });
     }
 
     if (!rawCatalog) {
@@ -95,7 +103,10 @@ export function localeUploadRoutes(
       } else if (body.content && typeof body.content === "string") {
         const parsed = parseCatalogJson(body.content);
         if (parsed.error || !parsed.catalog) {
-          throw badRequest(parsed.error || "Invalid JSON in content field");
+          throw badRequest("INVALID_CATALOG_JSON", {
+            message: parsed.error || "Invalid JSON in content field",
+            errors: [{ path: "<root>", code: "PARSE_ERROR", message: parsed.error || "Invalid JSON in content field" }],
+          });
         }
         rawCatalog = parsed.catalog;
       } else if (typeof body === "object" && !Array.isArray(body) && !body.catalog && Object.keys(body).length > 0 && !body.locale) {
@@ -104,7 +115,9 @@ export function localeUploadRoutes(
     }
 
     if (!rawCatalog) {
-      throw badRequest("Missing localization catalog data. Send a JSON file or catalog object in request body");
+      throw badRequest("MISSING_CATALOG", {
+        message: "Catalog must be provided as a multipart file upload, JSON object ('catalog'), or raw string ('content')",
+      });
     }
 
     const dryRun =

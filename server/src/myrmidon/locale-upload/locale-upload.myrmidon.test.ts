@@ -21,6 +21,25 @@ import {
   validateCatalog,
 } from "./validator.js";
 
+function createStatefulMockDb(): any {
+  const row: { general: Record<string, unknown> } = { general: {} };
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({ limit: async () => [{ general: row.general }] }),
+      }),
+    }),
+    insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
+    update: () => ({
+      set: (patch: { general: Record<string, unknown> }) => ({
+        where: async () => {
+          row.general = patch.general;
+        },
+      }),
+    }),
+  };
+}
+
 const sampleBaseCatalog = {
   app: {
     title: "Myrmidon",
@@ -358,10 +377,12 @@ describe("locale upload HTTP routes", () => {
 
     app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       const status = err.statusCode || err.status || 500;
+      const detail = err instanceof Error ? err.message : String(err);
       res.status(status).json({
         error: err.code || err.name || "ERROR",
-        message: err.message || "Internal error",
+        message: err.details?.message || detail,
         details: err.details,
+        ...(err.details?.errors ? { errors: err.details.errors } : {}),
       });
     });
 

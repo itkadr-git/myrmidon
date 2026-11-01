@@ -10,6 +10,8 @@ import {
   type ValidateCatalogOptions,
 } from "@myrmidon/shared";
 
+export type { ValidateCatalogOptions } from "@myrmidon/shared";
+
 export {
   parseCatalogJson,
   extractPlaceholders,

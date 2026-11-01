@@ -11,6 +11,9 @@ export const LOCALE_VALIDATION_ERROR_CODES = [
   "PLACEHOLDER_SYNTAX_ERROR",
   "PLACEHOLDER_MISMATCH",
   "PARSE_ERROR",
+  "INVALID_LOCALE",
+  "MISSING_CATALOG",
+  "INVALID_CATALOG_JSON",
 ] as const;
 
 export type LocaleValidationErrorCode = (typeof LOCALE_VALIDATION_ERROR_CODES)[number];
@@ -138,12 +141,19 @@ export function extractPlaceholders(text: string): string[] {
   return [...new Set([...doubleMatches, ...singleMatches])].sort();
 }
 
+export interface FlattenedCatalog {
+  entries: Map<string, string>;
+  depthErrors: string[];
+  get(key: string): string | undefined;
+  size: number;
+}
+
 export function flattenCatalog(
   source: Record<string, unknown>,
   prefix = "",
   depth = 1,
   maxDepth = DEFAULT_MAX_DEPTH,
-): { entries: Map<string, string>; depthErrors: string[] } {
+): FlattenedCatalog {
   const entries = new Map<string, string>();
   const depthErrors: string[] = [];
 
@@ -164,7 +174,14 @@ export function flattenCatalog(
     }
   }
 
-  return { entries, depthErrors };
+  return {
+    entries,
+    depthErrors,
+    get: (key: string) => entries.get(key),
+    get size() {
+      return entries.size;
+    },
+  };
 }
 
 function hasDisallowedPayloads(value: string, baseValue?: string): string[] {
