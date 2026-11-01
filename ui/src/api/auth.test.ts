@@ -4,13 +4,44 @@ import {
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
 import { authApi } from "./auth";
+import { authSessionRecovery } from "@/lib/auth-session-recovery";
 
 afterEach(() => {
+  authSessionRecovery.reset();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("authApi.getSession", () => {
+  it("redirects and stays pending when the protected session endpoint returns 401", async () => {
+    const redirectToLogin = vi.fn();
+    const recovery = createAuthSessionRecoveryCoordinator({
+      redirectToLogin,
+      getLocation: () => ({ pathname: "/OPE/agents/all", search: "?filter=active", hash: "" }),
+    });
+    vi.spyOn(authSessionRecovery, "handleUnauthorized").mockImplementation(
+      recovery.handleUnauthorized,
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = authApi.getSession();
+    await vi.waitFor(() =>
+      expect(redirectToLogin).toHaveBeenCalledWith(
+        "/auth?next=%2FOPE%2Fagents%2Fall%3Ffilter%3Dactive",
+      ),
+    );
+    let settled = false;
+    void request.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
   it("returns null for an ordinary local 401", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), {
