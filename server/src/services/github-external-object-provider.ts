@@ -209,6 +209,8 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
+  const baseRepo = asRecord(asRecord(body.base)?.repo);
+  const defaultBranch = asString(baseRepo?.default_branch) ?? "main";
   const reviewDecision = asString(body.review_decision);
   const rawMergeable = body.mergeable ?? body.mergeable_state ?? body.mergeableState;
   const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
@@ -277,6 +279,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
       ...(additions !== null ? { additions } : {}),
       ...(deletions !== null ? { deletions } : {}),

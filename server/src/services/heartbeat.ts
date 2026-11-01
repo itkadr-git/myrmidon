@@ -5,6 +5,7 @@ import {
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
 } from "../myrmidon/review-stage-recovery/policy.js";
+import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
@@ -224,6 +225,7 @@ import {
   issueDocuments,
   issueLabels,
   executionWorkspaces,
+  externalObjects,
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
@@ -535,6 +537,7 @@ import { resolveAgentAssignedToolSet } from "./agent-assigned-tools.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
+  applyIssueMonitorPolicyTransition,
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
@@ -812,11 +815,11 @@ import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
   invalidateFailedRunsCache,
-  invalidateLastRunRowsCache,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
 } from "../myrmidon/swarm-claim/index.js";
+import { PHEROMONE_EVAPORATING_RUN_STATUSES } from "../myrmidon/swarm-claim/effective-pheromone.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
@@ -13256,13 +13259,7 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
-    invalidateLastRunRowsCache(updated.companyId);
-    if (
-      updated.status === "failed" ||
-      updated.status === "timed_out" ||
-      (updated.status as string) === "blocked" ||
-      (updated.status as string) === "needs_followup"
-    ) {
+    if ((PHEROMONE_EVAPORATING_RUN_STATUSES as readonly string[]).includes(updated.status)) {
       invalidateFailedRunsCache(updated.companyId);
     }
     void emitAgentTaskRun(db, updated);
@@ -13905,6 +13902,7 @@ export function heartbeatService(
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
@@ -13948,6 +13946,80 @@ export function heartbeatService(
       readNonEmptyString(run.nextAction),
       currentUserRedactionOptions,
     );
+
+    if (issue && issue.status === "in_progress" && !issue.monitorNextCheckAt) {
+      const openPr = await db.query.issueWorkProducts.findFirst({
+        where: and(
+          eq(issueWorkProducts.issueId, issue.id),
+          eq(issueWorkProducts.type, "pull_request"),
+          inArray(issueWorkProducts.status, [
+            "open",
+            "active",
+            "ready_for_review",
+            "approved",
+          ]),
+        ),
+      });
+      if (openPr) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPr.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPr.externalId),
+              ),
+            })
+          : null;
+        const hasPendingCi = isPendingCiForOpenPr({
+          openPr,
+          lastComment,
+          contextSnapshot: run.contextSnapshot,
+          externalPrObject,
+        });
+        if (hasPendingCi) {
+          const nextCheckAt = new Date(Date.now() + 10 * 60 * 1000);
+          const previousPolicy = (issue.executionPolicy ?? null) as any;
+          const policy = {
+            ...(previousPolicy ?? {
+              mode: "normal" as const,
+              commentRequired: true,
+              stages: [],
+            }),
+            monitor: {
+              nextCheckAt: nextCheckAt.toISOString(),
+              notes: "GitHub CI pending monitor",
+              scheduledBy: "assignee" as const,
+              kind: "external_service" as const,
+              serviceName: "CI",
+              externalRef: openPr.url ?? null,
+              timeoutAt: null,
+              maxAttempts: null,
+              recoveryPolicy: "wake_owner" as const,
+            },
+          };
+          const transition = applyIssueMonitorPolicyTransition({
+            issue,
+            policy,
+            previousPolicy,
+            requestedStatus: issue.status,
+            requestedAssigneePatch: {},
+            actor: { agentId: null, userId: null },
+            monitorExplicitlyUpdated: true,
+          });
+          await issuesSvc.update(issue.id, {
+            ...transition.patch,
+            executionPolicy: policy,
+          });
+          issue.monitorNextCheckAt = nextCheckAt;
+          issue.executionPolicy = policy;
+        }
+      }
+    }
 
     const [
       activeExecutionPath,

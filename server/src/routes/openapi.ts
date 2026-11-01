@@ -5490,6 +5490,54 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// ─── Guardrails ──────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/guardrails/rules",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/guardrails",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/guardrails/rules",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/guardrails",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({

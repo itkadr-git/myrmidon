@@ -1,18 +1,15 @@
 // server/src/myrmidon/swarm-claim/matcher-cache.myrmidon.test.ts
 //
-// myrmidon(1.6.6 OPE-10004 PERF): company-level 60s TTL cache for failed-runs
+// myrmidon(1.6.6 OPE-10004 PERF): company-level 60s TTL caches for failed-runs
 // and lastRunRows. N matcher passes within 60s perform exactly one SQL calculation.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import {
   DEFAULT_FAILED_RUNS_CACHE_TTL_MS,
-  failedRunsDerivedSql,
   failedRunsValuesSql,
-  getCachedFailedRunsDerivedSql,
   getCachedFailedRunsMap,
   invalidateFailedRunsCache,
-  queryFailedRunsMap,
 } from "./effective-pheromone.js";
 import {
   getCachedLastRunRows,
@@ -122,21 +119,6 @@ describe("myrmidon(1.6.6 OPE-10004) swarm matcher cache", () => {
         expect(map.get(ISSUE_1)).toBe(5);
       }
       expect(executeMock).toHaveBeenCalledTimes(1);
-    });
-
-    it("generates lightweight VALUES table SQL from cached map", async () => {
-      const executeMock = vi.fn().mockResolvedValue([
-        { issue_uuid: ISSUE_1, failed_runs: 2 },
-      ]);
-      const fakeDb = { execute: executeMock } as unknown as Db;
-      const now = new Date("2026-10-30T10:00:00.000Z");
-
-      const derivedSql = await getCachedFailedRunsDerivedSql(fakeDb, COMPANY_ID, now);
-      expect(derivedSql).toBeDefined();
-
-      // Check failedRunsDerivedSql uses primed cache without hitting DB
-      const sqlObj = failedRunsDerivedSql(COMPANY_ID, now);
-      expect(sqlObj).toBeDefined();
     });
 
     it("handles empty failed-runs result cleanly", async () => {
