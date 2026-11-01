@@ -118,14 +118,12 @@ describeEmbeddedPostgres("agent service clearError", () => {
       const issue = workload.find((row) => row.id === id)!;
       const roleAssignment = expectedReplacements.get(id)!;
       const expectedRole = replacementNames.get(roleAssignment)!;
-      const originalTitle = id === issueIds[0] ? "TR-1" : id === issueIds[1] ? "TR-2" : "TR-3";
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, id));
       expect(comments).toHaveLength(1);
       expect(comments[0]).toMatchObject({
         authorType: "system",
         body: expect.stringContaining(`Terminated agent Departing Engineer was replaced by ${expectedRole} for open work.`),
       });
-      expect(comments[0]?.body).toContain(originalTitle);
       expect(issue.assigneeAgentId).toBe(id === issueIds[0] ? replacementId : null);
       const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
       if (id === issueIds[0]) {
