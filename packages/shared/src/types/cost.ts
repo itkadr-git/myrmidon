@@ -132,3 +132,13 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+export interface CostByDay {
+  day: string; // "YYYY-MM-DD" (UTC)
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  unpricedEvents: number;
+}
+

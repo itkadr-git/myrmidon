@@ -96,6 +96,7 @@
     "test:canary-onboarding-smoke": "npx playwright test --config tests/canary-onboarding/playwright.config.ts",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
+    "perf:plugin-readiness": "node scripts/measure-plugin-readiness.mjs",
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {

@@ -1,0 +1,58 @@
+# tools/document-parser/compose.example.yml
+# Standalone compose stack for DocumentParser + Docling-Serve + TEI embeddings
+#
+# Endpoints:
+#   Embeddings:      http://${CORPUS_HOST_GATEWAY}:8090/v1 (or http://tei:80/v1)
+#   DocumentParser:  http://${CORPUS_HOST_GATEWAY}:5001 (or http://document-parser:5001)
+
+name: document-parser-stack
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    command:
+      - "--model-id"
+      - "BAAI/bge-m3"
+      - "--auto-truncate"
+      - "--max-client-batch-size"
+      - "2048"
+      - "--max-batch-tokens"
+      - "16384"
+      - "--max-concurrent-requests"
+      - "8"
+      - "--port"
+      - "80"
+    ports:
+      - "0.0.0.0:8090:80"
+    volumes:
+      - tei-models:/data
+    mem_limit: 4g
+    restart: unless-stopped
+
+  docling-serve:
+    image: quay.io/ds4sd/docling-serve:latest
+    environment:
+      - DOCLING_SERVE_ENGINES=cpu
+      - DOCLING_SERVE_PORT=5001
+    mem_limit: 4g
+    restart: unless-stopped
+
+  document-parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "0.0.0.0:5001:5001"
+    environment:
+      - PORT=5001
+      - HOST=0.0.0.0
+      - DOCLING_SERVE_URL=http://docling-serve:5001
+      - MAX_BODY_BYTES=157286400
+      - CHUNK_MAX_CHARS=1500
+    depends_on:
+      - docling-serve
+    mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  tei-models: {}
