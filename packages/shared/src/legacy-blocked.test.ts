@@ -21,12 +21,12 @@ describe("legacy blocked report rows", () => {
     }).success).toBe(true);
   });
 
-  it("requires an owner for classified rows", () => {
+  it("allows classified rows without an inferred owner", () => {
     expect(legacyBlockedReportRowSchema.safeParse({
       ...baseRow,
       class: "dependency",
       importKey: createLegacyBlockedImportKey(baseRow.issueId),
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it("produces a stable import key from issue ID and rule version", () => {
