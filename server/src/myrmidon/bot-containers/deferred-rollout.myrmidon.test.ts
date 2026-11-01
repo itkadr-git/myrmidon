@@ -394,12 +394,12 @@ describeEmbeddedPostgres("myrmidon(BOT-ROLLOUT) deferred bot rollout", () => {
 });
 
 describe("myrmidon(BOT-ROLLOUT) settings", () => {
-  it("defaults the deferred max wait to 3600s and bounds garbage", () => {
-    expect(DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC).toBe(3600);
-    expect(readBotRolloutDeferredMaxWaitSec({})).toBe(3600);
+  it("defaults the deferred max wait to 6h and bounds garbage", () => {
+    expect(DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC).toBe(21600);
+    expect(readBotRolloutDeferredMaxWaitSec({})).toBe(21600);
     expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "600" })).toBe(600);
-    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "junk" })).toBe(3600);
-    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "5" })).toBe(3600);
-    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "99999999" })).toBe(3600);
+    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "junk" })).toBe(21600);
+    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "5" })).toBe(21600);
+    expect(readBotRolloutDeferredMaxWaitSec({ [BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV]: "99999999" })).toBe(21600);
   });
 });

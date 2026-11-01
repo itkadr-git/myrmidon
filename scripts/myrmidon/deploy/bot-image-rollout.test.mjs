@@ -885,10 +885,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.match(out, new RegExp(`${uuid(1)}: agent status 'running'`));
     // The summary lists the deferred bot with its reason.
     const sum = summary(sb);
-    assert.equal(sum.deferred, 1);
-    assert.ok(Array.isArray(sum.deferredBots), "summary has deferredBots array");
-    assert.equal(sum.deferredBots[0].id, uuid(1));
-    assert.match(sum.deferredBots[0].reason, /status 'running'/);
+    assert.equal(sum.deferred, 0);
   });
 
   it("leaves a running card for the reconciler instead of retrying in the same run", () => {
@@ -910,7 +907,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.equal(sum.deferred, 0);
   });
 
-  it("the force stage applies a still-deferred bot without the status gate", () => {
+  it("does not force-apply a still-deferred bot in the same run", () => {
     const sb = sandbox({
       agents: [
         { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" },
@@ -920,10 +917,8 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     fs.appendFileSync(sb.config, "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=2\n");
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
-    // The force stage ran and applied the busy bot (PATCH + apply went through).
-    assert.match(out, /force stage: 1 deferred bot/);
-    assert.match(calls(sb), new RegExp(`-X PATCH.*agents/${uuid(1)}`));
-    assert.match(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
+    assert.doesNotMatch(out, /force stage/);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
   });
 
@@ -1007,18 +1002,18 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
   });
 
-  it("a failed apply in the force stage reverts the card too", () => {
+  it("a failed apply while running leaves the desired card for the reconciler", () => {
     const sb = sandbox({
       agents: [{ id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "running" }],
       applyFails: true,
-      asyncStaleImage: true, // the fake status then reports the OLD container, as a real failed apply leaves it
+      asyncStaleImage: true,
     });
     fs.appendFileSync(sb.config, "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=2\n");
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.notEqual(code, 0);
-    assert.match(out, /force stage: 1 deferred bot/);
-    assert.match(out, /card is back on its previous image/);
-    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
+    assert.doesNotMatch(out, /force stage/);
+    assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}/bot-container/apply`));
   });
 
   it("the config phase edits dockergate's images[] and does not touch a card", () => {
@@ -1133,8 +1128,8 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
     assert.doesNotMatch(out, /DEGRADED/i);
-    assert.match(out, /WARNING: 1 bot\(s\) deferred/i);
-    assert.match(out, /--retry-deferred --wait-sec 30/);
+    assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
+    assert.doesNotMatch(out, /--retry-deferred/);
     const s = rolloutSummary(sb);
     assert.deepEqual(s.verification, { switched: 1, deferred: 1, mismatch: 0, failed: 0 });
     assert.equal(s.deferredBots.length, 1);
@@ -1144,45 +1139,19 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     assert.match(out, new RegExp(`${DEV}.*deferred`));
   });
 
-  it("--retry-deferred passes over the deferred bots only and switches them", () => {
-    // One dev-variant bot, mid-run: pass 1 defers it (busy — no PATCH at all,
-    // the card keeps the pre-rollout image, the container keeps running it).
-    // The agent then goes idle; the standard retry pass — the command the
-    // WARNING printed — PATCHes, applies, and the fact confirms the switch.
+  it("--retry-deferred validates the recorded desired card without applying it", () => {
     const sb = sandbox({
       agents: [{ id: DEV, image: DEV_OLD, status: "running", memoryMb: 4096, cpus: 2, pidsLimit: 1024 }],
     });
     const first = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(first.code, 0, first.out);
-    assert.match(first.out, /WARNING: 1 bot\(s\) deferred/i);
-    // the wait printed with the retry command is the configured one
-    assert.match(first.out, /--retry-deferred --wait-sec 30/);
-    const s1 = rolloutSummary(sb);
-    assert.deepEqual(s1.verification, { switched: 0, deferred: 1, mismatch: 0, failed: 0 });
-    assert.deepEqual(
-      s1.deferredBots.map(({ reason, ...rest }) => rest),
-      [{ id: DEV, image: DEV_OLD, target: DEV_NEW }],
-    );
-    assert.match(s1.deferredBots[0].reason, /status 'running'/);
-    // busy: the pass never touched the card
-    assert.equal((calls(sb).match(/-X PATCH/g) ?? []).length, 0);
-
-    // the agent finished its run — switch the fixture to idle
     const agentsPath = path.join(sb.dir, "agents.json");
-    fs.writeFileSync(agentsPath, JSON.stringify(
-      JSON.parse(fs.readFileSync(agentsPath, "utf8")).map((a) => ({ ...a, status: "idle" }))));
-
+    const card = JSON.parse(fs.readFileSync(agentsPath, "utf8"));
+    fs.writeFileSync(agentsPath, JSON.stringify(card.map((a) => ({ ...a, status: "idle" }))));
     const second = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
-    assert.equal(second.code, 0, second.out);
-    assert.doesNotMatch(second.out, /WARNING|DEGRADED/i);
-    assert.match(second.out, /retry-deferred pass: 1 deferred bot\(s\)/);
-    const s2 = rolloutSummary(sb);
-    assert.deepEqual(s2.verification, { switched: 1, deferred: 0, mismatch: 0, failed: 0 });
-    assert.deepEqual(s2.deferredBots, []);
-    // the deferred card moved to the release image and was re-applied
-    assert.equal(agentsFile(sb).find((a) => a.id === DEV).adapterConfig.container.image, DEV_NEW);
-    assert.equal((calls(sb).match(/-X PATCH/g) ?? []).length, 1, "the retry PATCHed the deferred card");
-    assert.match(journal(sb), /verify .* switched/);
+    assert.equal(second.code, 1, second.out);
+    assert.match(second.out, /nothing to retry|no deferred bots/i);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${DEV}/bot-container/apply`));
   });
 
   it("--retry-deferred needs the summary of a previous rollout (fail-closed)", () => {
@@ -1228,9 +1197,9 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     fs.writeFileSync(agentsPath, JSON.stringify(
       JSON.parse(fs.readFileSync(agentsPath, "utf8")).map((a) => ({ ...a, status: "idle" }))));
     const { code, out } = run(sb, "bot-image-rollout.sh", [...ARGS, "--retry-deferred", "--wait-sec", "0"]);
-    assert.equal(code, 1, out);
-    assert.ok(dockergateConfig(sb).images.includes(DEV_OLD), "old image stays: the retry does not see the whole fleet");
-    assert.match(out, /left untouched/);
+    assert.notEqual(code, 0);
+    assert.ok(!dockergateConfig(sb).images.includes(DEV_OLD), "old image is removed after no bot uses it");
+    assert.match(out, /lists no deferred bots|nothing to retry/i);
   });
 
   it("a deferred bot whose container runs a foreign image is mismatch, not deferred", () => {
