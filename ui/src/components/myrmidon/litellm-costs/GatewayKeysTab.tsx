@@ -39,6 +39,7 @@ import {
   type GatewayFallbackReport,
   type KeyBudgetLimitView,
 } from "./litellmKeysApi";
+import { GatewayFallbacksEditor } from "./GatewayFallbacksEditor";
 
 /** One line per agent: the display name, the secret, present status, value hash, and allowlist. */
 export interface GatewayKeyRow {
@@ -397,7 +398,6 @@ function GatewayFallbacksCard({ companyId }: { companyId: string }) {
     queryFn: () => litellmKeysApi.fallbacks(companyId),
     staleTime: 60_000,
   });
-  const lines = cycleLines(data);
 
   return (
     <Card>
@@ -418,20 +418,13 @@ function GatewayFallbacksCard({ companyId }: { companyId: string }) {
           <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-keys-tab.fallbacksCard.loading")}</p>
         ) : data?.error ? (
           <p className="text-sm text-muted-foreground">{data.error}</p>
-        ) : lines.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-keys-tab.fallbacksCard.empty")}</p>
         ) : (
-          <>
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <TriangleAlert className="h-4 w-4" />
-              {t("area.costs-budgets-2.gateway-keys-tab.fallbacksCard.found", { count: lines.length })}
-            </div>
-            {lines.map((line) => (
-              <div key={line} className="border border-border px-4 py-2 font-mono text-xs">
-                {line}
-              </div>
-            ))}
-          </>
+          <GatewayFallbacksEditor
+            companyId={companyId}
+            initialChains={data?.chains ?? []}
+            cycles={data?.cycles ?? []}
+            knownModels={data?.models ?? []}
+          />
         )}
       </CardContent>
     </Card>

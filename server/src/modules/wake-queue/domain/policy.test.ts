@@ -396,6 +396,18 @@ describe("decideReleaseRecovery", () => {
       expected: { kind: "blocked", notice: "configuration_incomplete" },
     },
     {
+      name: "blocked: immediate recovery applies but issue is todo (OPE-4519)",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          isTodoIssue: true,
+        },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
+    },
+    {
       name: "queue_recovery: immediate recovery applies and no suppression or block condition fires",
       facts: {
         ...baseReleaseRecoveryFacts,

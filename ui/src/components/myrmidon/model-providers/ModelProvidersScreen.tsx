@@ -37,6 +37,7 @@ import {
   type ModelProvidersView,
   type ModelProviderView,
 } from "./modelProvidersApi";
+import { HindsightModelGroupsPanel } from "../hindsight-models/HindsightModelGroupsPanel";
 
 export function sanitizeErrorMessage(message: string): string {
   if (!message) return "";
@@ -401,7 +402,10 @@ export function ModelProvidersScreenView({
         )}
       </section>
 
-      {/* 3. Change log */}
+      {/* 3. Hindsight Memory Models (write, summarize, search) */}
+      <HindsightModelGroupsPanel companyId={companyId} />
+
+      {/* 4. Change log */}
       <section className="space-y-2" data-testid="myrmidon-model-providers-changelog">
         <h2 className="text-sm font-semibold">{t("modelProviders.changeLog.title")}</h2>
         {view.changeLog.length === 0 ? (
@@ -485,7 +489,10 @@ function ProviderCard({
   const channelsQueryResult = useQuery({
     queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
     queryFn: () => modelProvidersApi.channels(companyId, provider.id),
-    enabled: provider.type === "chatgpt-pool",
+    enabled:
+      provider.type === "chatgpt-pool" ||
+      provider.type === "antigravity-pool" ||
+      provider.type === "google-ai-pool",
     staleTime: 30_000,
   });
 
@@ -528,8 +535,8 @@ function ProviderCard({
         </div>
       </div>
 
-      {/* ChatGPT Pool: Channels & Limit Windows */}
-      {provider.type === "chatgpt-pool" && (
+      {/* Pool providers: per-account quota windows */}
+      {(provider.type === "chatgpt-pool" || provider.type === "antigravity-pool" || provider.type === "google-ai-pool") && (
         <div className="space-y-3" data-testid={`myrmidon-model-provider-channels-${provider.id}`}>
           {/* Active Role Signals Alert Banner */}
           {channelsQueryResult.data?.signals && channelsQueryResult.data.signals.length > 0 && (
@@ -581,7 +588,23 @@ function ProviderCard({
                 {t("modelProviders.channels.empty") || "No accounts found in pool."}
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-md border border-border">
+              <>
+                {channelsQueryResult.data.summary && (
+                  <div className="flex flex-wrap gap-2 text-xs" data-testid="myrmidon-pool-summary">
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.live} live / {channelsQueryResult.data.summary.total} total
+                    </span>
+                    <span className="rounded border border-border px-2 py-1">
+                      {channelsQueryResult.data.summary.exhausted} exhausted
+                    </span>
+                    {channelsQueryResult.data.summary.nextResetAt && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground">
+                        next reset {new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-md border border-border">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
                     <tr>
@@ -591,6 +614,7 @@ function ProviderCard({
                       <th className="p-2">{t("modelProviders.channels.window5h") || "5h Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.window7d") || "7d Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.lastOk") || "Last OK"}</th>
+                      <th className="p-2">{t("modelProviders.channels.lastError") || "Last error"}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -630,6 +654,12 @@ function ProviderCard({
                             >
                               {ch.stateRu || ch.state}
                             </span>
+                            {ch.limitedUntil && (
+                              <div className="mt-1 text-[10px] text-muted-foreground" data-testid={`myrmidon-pool-channel-reset-${ch.n}`}>
+                                {t("modelProviders.channels.resetIn") || "Resets in"}{" "}
+                                {new Date(ch.limitedUntil * 1000).toLocaleString()}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             {pWin && pWin.usedPct !== null ? (
@@ -701,12 +731,16 @@ function ProviderCard({
                                 })
                               : "—"}
                           </td>
+                          <td className="p-2 text-muted-foreground" title={ch.error || undefined} data-testid={`myrmidon-pool-channel-error-${ch.n}`}>
+                            {ch.error ? ch.error.slice(0, 120) : "—"}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </div>
         </div>

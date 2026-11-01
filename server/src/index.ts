@@ -2365,7 +2365,9 @@ async function startServerWithDatabaseTeardown(
     } catch (err) {
       logger.warn({ err }, "licensing: cannot determine the installation id at startup");
     }
-    await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
+    if (processRoleProfile.runsBackground) {
+      await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
+    }
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
     if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
@@ -2476,10 +2478,10 @@ async function startServerWithDatabaseTeardown(
           const reattached = await sweepGatewayRunReattach(
             db as any,
             heartbeat,
-            { adoptableControllerBootIds },
+            { adoptableControllerBootIds, isStartup: true },
           );
-          if (reattached.reattached > 0 || reattached.failed > 0) {
-            logger.warn(
+          if (reattached.reattached > 0 || reattached.failed > 0 || reattached.scanned > 0) {
+            logger.info(
               reattached,
               "startup gateway run reattach complete",
             );

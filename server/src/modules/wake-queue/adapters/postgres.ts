@@ -1227,7 +1227,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
           legacyExecutionNeedsReconciliation:
-            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
+            !input.ignoreUnrecordedReconciliation &&
+            // Once recovery has restored a task to the unassigned ready queue,
+            // this terminal run is historical evidence only. Do not let a later
+            // replay sweep turn it back into a permanent hold.
+            Boolean(issueRow?.assigneeAgentId) &&
+            legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.

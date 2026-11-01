@@ -1,6 +1,7 @@
 // myrmidon(M2-B): per-agent LLM gateway keys and the gateway's fallback
 // topology. GET/POST /api/myrmidon/companies/:id/litellm/keys/*.
 import { api } from "@/api/client";
+import type { FallbackChain } from "@myrmidon/shared";
 
 export interface KeyBudgetLimitView {
   amountUsd: number | null;
@@ -48,9 +49,18 @@ export interface GatewayFallbackCycle {
   described: string;
 }
 
+export interface GatewayFallbackModelInfo {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+  isFree?: boolean;
+}
+
 export interface GatewayFallbackReport {
   chains: Array<{ model: string; targets: string[] }>;
   cycles: GatewayFallbackCycle[];
+  models?: GatewayFallbackModelInfo[];
   error?: string;
 }
 
@@ -66,6 +76,8 @@ export const litellmKeysApi = {
   keyBudgets: (companyId: string) =>
     api.get<CompanyKeyBudgetsReport>(`${base(companyId)}/key-budgets`),
   fallbacks: (companyId: string) => api.get<GatewayFallbackReport>(`${base(companyId)}/fallbacks`),
+  updateFallbacks: (companyId: string, chains: readonly FallbackChain[]) =>
+    api.put<GatewayFallbackReport>(`${base(companyId)}/fallbacks`, { chains }),
   create: (companyId: string, agentId: string, models?: string[]) =>
     api.post<AgentGatewayKeyView & { value: string }>(
       `${base(companyId)}/keys/${encodeURIComponent(agentId)}`,
