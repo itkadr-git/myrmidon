@@ -293,8 +293,9 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const schema = { openapi: "3.1.0", paths: {} };
     const forwarded: string[] = [];
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      client, queueDir,
       handleRequest: async (request) => {
         forwarded.push(`${request.method} ${request.path}`);
         return { status: 200, body: JSON.stringify(schema) };
@@ -311,7 +312,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/secrets" },
     ];
     for (const [index, request] of requests.entries()) {
-      await writeFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
+      await client.writeTextFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
         id: `schema-${index}`, ...request, query: "", headers: {}, body: "", createdAt: new Date().toISOString(),
       }));
     }
@@ -384,9 +385,21 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
+    let observedRequests!: () => void;
+    const requestsObserved = new Promise<void>((resolve) => {
+      observedRequests = resolve;
+    });
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client: {
+        ...baseClient,
+        listJsonFiles: async (remotePath) => {
+          const files = await baseClient.listJsonFiles(remotePath);
+          if (remotePath === directories.requestsDir && files.length >= 2) observedRequests();
+          return files;
+        },
+      },
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -426,6 +439,8 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
+    // Shutdown must not race ahead of the poller observing the queued files.
+    await requestsObserved;
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     expect(processed).toEqual(["req-a", "req-b"]);

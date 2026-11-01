@@ -20,6 +20,7 @@ import {
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   resolveActiveManagerAgentId,
+  isPendingCiForOpenPr,
 } from "./stranded-autopolicy.js";
 
 describe("isStrandedAutoPolicyCause", () => {
@@ -95,6 +96,30 @@ describe("decideStrandedAutoPolicy", () => {
       managerAgentId: "manager-1",
     });
     expect(secondAttempt).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
+  });
+
+  it("retries before escalation even with a workflow or an ADM target", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 1,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      hasExecutionWorkflow: true,
+      targetIsAdm: true,
+    })).toEqual({ kind: "retry", attempt: 2, maxAttemptsPerDay: 2 });
+  });
+
+  it("blocks with the senior owner after the successful handoff budget is exhausted", () => {
+    expect(decideStrandedAutoPolicy({
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      successfulRunHandoffExhausted: true,
+    })).toEqual({
+      kind: "disposition_blocked",
+      ownerAgentId: "lead-1",
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+    });
   });
 
   it("hands off to the manager once the cap is reached and a manager exists", () => {
@@ -270,6 +295,12 @@ describe("issueHasExistingExecutionWorkflow", () => {
   it("is false for an issue with no policy and no state at all", () => {
     expect(issueHasExistingExecutionWorkflow({})).toBe(false);
     expect(issueHasExistingExecutionWorkflow({ executionPolicy: null, executionState: null })).toBe(false);
+  });
+
+  it("treats an open pull request work product with active status as an existing execution workflow", () => {
+    // Paperclip's linked GitHub PR work product remains `active` while the PR is open.
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: true })).toBe(true);
+    expect(issueHasExistingExecutionWorkflow({ hasOpenPullRequest: false })).toBe(false);
   });
 
   it("is true when an execution policy already has configured stages, even before any stage has started", () => {
@@ -673,6 +704,25 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     ).toEqual({ kind: "vendor_default", ...exhausted });
   });
 
+  it("successful-run disposition exhaustion never falls through to board", () => {
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: null,
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "vendor_default", ...exhausted });
+    expect(
+      decideStrandedAutoPolicy({
+        ...exhausted,
+        managerAgentId: null,
+        escalationAgentId: "adm-1",
+        requireAgentDisposition: true,
+      }),
+    ).toEqual({ kind: "disposition_blocked", ownerAgentId: "adm-1", ...exhausted });
+  });
+
   it("retries still come first and a paused assignee keeps the old behaviour", () => {
     expect(
       decideStrandedAutoPolicy({
@@ -698,6 +748,15 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
       escalationPolicy: "stranded_disposition_chain_v1",
     });
     expect(patch.unblockDescriptor.owner).toEqual({ agentId: "adm-1" });
+    expect(patch.unblockDescriptor.reasonRef).toEqual({
+      kind: "event",
+      eventKey: "stranded.disposition:issue-1",
+    });
+    expect(patch.blockerMetadata).toMatchObject({
+      blockReason: "recovery",
+      owner: { agentId: "adm-1" },
+      escalationPolicy: "stranded_disposition_chain_v1",
+    });
     expect(patch.unblockDescriptor.action).toContain("final status");
     expect(Object.keys(patch).sort()).toEqual(["blockerMetadata", "status", "unblockDescriptor"]);
   });
@@ -706,5 +765,177 @@ describe("OPE-9072: escalation chain target and workflow-safe blocked dispositio
     const a = buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r1" });
     expect(a).toBe(buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r1" }));
     expect(a).not.toBe(buildStrandedDispositionWakeIdempotencyKey({ issueId: "i", sourceRunId: "r2" }));
+  });
+
+  it("an open PR with pending CI schedules an external_service monitor on CI", () => {
+    const decision = decideStrandedAutoPolicy({
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+      managerAgentId: "lead-1",
+      hasPendingCi: true,
+      hasExecutionWorkflow: false,
+    });
+    expect(decision).toEqual({
+      kind: "monitor_external_service",
+      serviceName: "CI",
+      notes: "Pending CI external service monitor",
+      attemptsInWindow: 0,
+      maxAttemptsPerDay: 2,
+    });
+  });
+
+  it("pending CI takes precedence over retries and blocked disposition", () => {
+    const decision = decideStrandedAutoPolicy({
+      ...exhausted,
+      managerAgentId: "lead-1",
+      hasPendingCi: true,
+      hasExecutionWorkflow: true,
+    });
+    expect(decision).toEqual({
+      kind: "monitor_external_service",
+      serviceName: "CI",
+      notes: "Pending CI external service monitor",
+      ...exhausted,
+    });
+  });
+});
+
+describe("isPendingCiForOpenPr", () => {
+  it("returns false if openPr is null or missing", () => {
+    expect(isPendingCiForOpenPr({ openPr: null })).toBe(false);
+  });
+
+  it("returns false if checks are already marked completed in metadata", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+            checks: "completed",
+          },
+        },
+        lastComment: { body: "PR opened, CI pending" },
+      }),
+    ).toBe(false);
+
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+            activeCi: { status: "completed" },
+          },
+        },
+        lastComment: { body: "PR opened, CI pending" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false if externalObjects indicates completed checks", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          },
+        },
+        lastComment: { body: "CI pending" },
+        externalPrObject: {
+          data: { checks: "success" },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false if comment refers to an outdated/mismatched head", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          },
+        },
+        lastComment: {
+          body: "PR #1898 HEAD: 7a6d6a0b0d7adf2189c8b16b8b7380c8a500c4a3 - CI pending",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false if comment has pending text without matching SHA when PR head is known", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          },
+        },
+        lastComment: {
+          body: "PR #1898 CI pending, monitor in continuation",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true if activeCi is active and head matches", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+            activeCi: {
+              status: "in_progress",
+              headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+            },
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false if activeCi is for a different head", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+            activeCi: {
+              status: "in_progress",
+              headSha: "7a6d6a0b0d7adf2189c8b16b8b7380c8a500c4a3",
+            },
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true if comment matches head and indicates pending CI", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          },
+        },
+        lastComment: {
+          body: "PR #1898 / 66718850 / CI pending",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false if comment indicates CI completed/passed/failed", () => {
+    expect(
+      isPendingCiForOpenPr({
+        openPr: {
+          metadata: {
+            headSha: "6671885048806cfc3de989f14c3ebc9434afcec6",
+          },
+        },
+        lastComment: {
+          body: "PR #1898 / 66718850 / CI completed, checks passed",
+        },
+      }),
+    ).toBe(false);
   });
 });

@@ -1,0 +1,495 @@
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import {
+  EventDigestService,
+  classifyEventPriority,
+  isDigestAccumulatedPriority,
+  isImmediateWakePriority,
+  EVENT_PRIORITY_BY_TYPE,
+  getSharedEventDigestService,
+  dispatchAgentEvent,
+  type AgentEvent,
+} from "./index.js";
+
+type WakeupFn = (agentId: string, context?: Record<string, unknown>) => Promise<unknown>;
+type WakeupMock = Mock<WakeupFn>;
+
+describe("WAKE-10.2: Event Digest and Priority Wake", () => {
+  let service: EventDigestService;
+  let wakeupMock: WakeupMock;
+
+  beforeEach(() => {
+    service = new EventDigestService();
+    wakeupMock = vi.fn<WakeupFn>().mockResolvedValue({ success: true });
+  });
+
+  describe("Acceptance Criterion: P4 does not wake, P0 wakes, digest delivered", () => {
+    it("accumulates P4 events without waking, wakes on P0, and delivers the accumulated digest", async () => {
+      const agentId = "agent-dev-1";
+
+      // 1. Send P4 event (heartbeat)
+      const p4Event: AgentEvent = {
+        agentId,
+        type: "heartbeat",
+        payload: { status: "alive", seq: 1 },
+      };
+
+      const p4Result = await service.handleAgentEvent(p4Event, {
+        wakeup: wakeupMock,
+      });
+
+      // P4 must NOT wake the agent
+      expect(p4Result.woken).toBe(false);
+      expect(wakeupMock).not.toHaveBeenCalled();
+
+      // P4 event must be accumulated into pending digest
+      const pendingAfterP4 = service.getPendingDigest(agentId);
+      expect(pendingAfterP4).not.toBeNull();
+      expect(pendingAfterP4?.eventCount).toBe(1);
+      expect(pendingAfterP4?.events[0]?.type).toBe("heartbeat");
+      expect(pendingAfterP4?.events[0]?.priority).toBe("P4");
+
+      // 2. Send another low-priority event (P3: progress)
+      const p3Event: AgentEvent = {
+        agentId,
+        type: "progress",
+        payload: { step: "syncing", percent: 50 },
+      };
+
+      const p3Result = await service.handleAgentEvent(p3Event, {
+        wakeup: wakeupMock,
+      });
+
+      // P3 must NOT wake the agent
+      expect(p3Result.woken).toBe(false);
+      expect(wakeupMock).not.toHaveBeenCalled();
+
+      // Both events should now be accumulated in the digest
+      const pendingAfterP3 = service.getPendingDigest(agentId);
+      expect(pendingAfterP3?.eventCount).toBe(2);
+
+      // 3. Send P0 event (security incident / emergency)
+      const p0Event: AgentEvent = {
+        agentId,
+        type: "security_incident",
+        payload: { alert: "unauthorized_access", severity: "critical" },
+      };
+
+      const p0Result = await service.handleAgentEvent(p0Event, {
+        wakeup: wakeupMock,
+      });
+
+      // P0 MUST wake the agent immediately
+      expect(p0Result.woken).toBe(true);
+      expect(wakeupMock).toHaveBeenCalledTimes(1);
+
+      // Verify that wakeup received the accumulated digest with all prior low-priority events
+      const [calledAgentId, calledContext] = wakeupMock.mock.calls[0] as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(calledAgentId).toBe(agentId);
+      expect(calledContext.wakeReason).toBe("security_incident");
+      expect(calledContext.priority).toBe("P0");
+
+      const deliveredDigest = calledContext.eventDigest as {
+        eventCount: number;
+        events: Array<{ type: string }>;
+      };
+      expect(deliveredDigest).toBeDefined();
+      expect(deliveredDigest.eventCount).toBe(3);
+      expect(deliveredDigest.events).toHaveLength(3);
+
+      // Verify events in delivered digest
+      const types = deliveredDigest.events.map((e: any) => e.type);
+      expect(types).toEqual(["heartbeat", "progress", "security_incident"]);
+
+      // Verify delivered digest is drained from pending buffer
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+  });
+
+  describe("P1 immediate wake", () => {
+    it("wakes immediately on P1 and delivers pending low-priority digest", async () => {
+      const agentId = "agent-dev-2";
+
+      // Send P4 log
+      await service.handleAgentEvent(
+        { agentId, type: "log", payload: { msg: "debug log" } },
+        { wakeup: wakeupMock },
+      );
+      expect(wakeupMock).not.toHaveBeenCalled();
+
+      // Send P1 ci_completed
+      const ciResult = await service.handleAgentEvent(
+        { agentId, type: "ci_completed", payload: { pr: 1942, status: "passed" } },
+        { wakeup: wakeupMock },
+      );
+
+      expect(ciResult.woken).toBe(true);
+      expect(wakeupMock).toHaveBeenCalledTimes(1);
+
+      const deliveredDigest = ciResult.digest;
+      expect(deliveredDigest?.eventCount).toBe(2);
+      expect(deliveredDigest?.events[0]?.type).toBe("log");
+      expect(deliveredDigest?.events[1]?.type).toBe("ci_completed");
+
+      // Buffer is cleared after delivery
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+  });
+
+  describe("Digest isolation across agents", () => {
+    it("keeps digests separate per agentId", async () => {
+      const agentA = "agent-A";
+      const agentB = "agent-B";
+
+      await service.handleAgentEvent(
+        { agentId: agentA, type: "heartbeat" },
+        { wakeup: wakeupMock },
+      );
+      await service.handleAgentEvent(
+        { agentId: agentB, type: "heartbeat" },
+        { wakeup: wakeupMock },
+      );
+
+      expect(service.getPendingDigest(agentA)?.eventCount).toBe(1);
+      expect(service.getPendingDigest(agentB)?.eventCount).toBe(1);
+
+      // Wake agent A with P0
+      await service.handleAgentEvent(
+        { agentId: agentA, type: "system_failure" },
+        { wakeup: wakeupMock },
+      );
+
+      // Agent A digest is cleared, Agent B digest remains pending
+      expect(service.getPendingDigest(agentA)).toBeNull();
+      expect(service.getPendingDigest(agentB)?.eventCount).toBe(1);
+    });
+  });
+
+  describe("Event priority classification policy (plan-166 §10)", () => {
+    it("classifies P0 emergency events", () => {
+      expect(classifyEventPriority("security_incident")).toBe("P0");
+      expect(classifyEventPriority("service_outage")).toBe("P0");
+      expect(classifyEventPriority("budget.incident.opened")).toBe("P0");
+      expect(classifyEventPriority("run_stalled")).toBe("P0");
+      expect(classifyEventPriority("security.breach")).toBe("P0");
+    });
+
+    it("classifies P1 high-priority operational events", () => {
+      expect(classifyEventPriority("ci_completed")).toBe("P1");
+      expect(classifyEventPriority("review_completed")).toBe("P1");
+      expect(classifyEventPriority("execution_review_requested")).toBe("P1");
+      expect(classifyEventPriority("issue_unblock_requested")).toBe("P1");
+      expect(classifyEventPriority("ci.passed")).toBe("P1");
+    });
+
+    it("classifies P2 actionable updates", () => {
+      expect(classifyEventPriority("issue_assigned")).toBe("P2");
+      expect(classifyEventPriority("issue_commented")).toBe("P2");
+      expect(classifyEventPriority("issue_children_completed")).toBe("P2");
+      expect(classifyEventPriority("task_assigned")).toBe("P2");
+    });
+
+    it("classifies P3 routine progress and metrics", () => {
+      expect(classifyEventPriority("busy")).toBe("P3");
+      expect(classifyEventPriority("progress")).toBe("P3");
+      expect(classifyEventPriority("activity.logged")).toBe("P3");
+      expect(classifyEventPriority("cost_event.created")).toBe("P3");
+      expect(classifyEventPriority("progress.update")).toBe("P3");
+    });
+
+    it("classifies P4 heartbeat, duplicates, no-ops and logs", () => {
+      expect(classifyEventPriority("heartbeat")).toBe("P4");
+      expect(classifyEventPriority("heartbeat_timer")).toBe("P4");
+      expect(classifyEventPriority("noop")).toBe("P4");
+      expect(classifyEventPriority("duplicate")).toBe("P4");
+      expect(classifyEventPriority("log")).toBe("P4");
+      expect(classifyEventPriority("unknown_arbitrary_event")).toBe("P4");
+    });
+
+    it("evaluates wake and accumulation predicates correctly", () => {
+      expect(isImmediateWakePriority("P0")).toBe(true);
+      expect(isImmediateWakePriority("P1")).toBe(true);
+      expect(isImmediateWakePriority("P2")).toBe(false);
+      expect(isImmediateWakePriority("P3")).toBe(false);
+      expect(isImmediateWakePriority("P4")).toBe(false);
+
+      expect(isDigestAccumulatedPriority("P3")).toBe(true);
+      expect(isDigestAccumulatedPriority("P4")).toBe(true);
+      expect(isDigestAccumulatedPriority("P0")).toBe(false);
+      expect(isDigestAccumulatedPriority("P1")).toBe(false);
+      expect(isDigestAccumulatedPriority("P2")).toBe(false);
+    });
+  });
+
+  describe("Behavioral Ingestion and Dispatch Flow", () => {
+    beforeEach(() => {
+      getSharedEventDigestService().reset();
+    });
+
+    it("dispatchAgentEvent accumulates P4/P3 in shared service without waking, and wakes on P0 with accumulated digest", async () => {
+      const agentId = "agent-behavioral-1";
+      const heartbeatMock: { wakeup: WakeupMock } = {
+        wakeup: vi.fn<WakeupFn>().mockResolvedValue({ created: true }),
+      };
+
+      // 1. Dispatch P4 heartbeat event through dispatchAgentEvent
+      const p4Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "heartbeat",
+          payload: { tick: 1 },
+        },
+        heartbeatMock,
+      );
+
+      expect(p4Result.woken).toBe(false);
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+
+      const sharedService = getSharedEventDigestService();
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Dispatch P3 progress event through dispatchAgentEvent
+      const p3Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "progress",
+          payload: { percent: 75 },
+        },
+        heartbeatMock,
+      );
+
+      expect(p3Result.woken).toBe(false);
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // 3. Dispatch P0 emergency event
+      const p0Result = await dispatchAgentEvent(
+        {
+          agentId,
+          type: "security_incident",
+          payload: { alert: "breach_detected" },
+        },
+        heartbeatMock,
+      );
+
+      expect(p0Result.woken).toBe(true);
+      expect(heartbeatMock.wakeup).toHaveBeenCalledTimes(1);
+
+      const [calledAgentId, wakeOpts] = heartbeatMock.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      expect(calledAgentId).toBe(agentId);
+      expect(wakeOpts.reason).toBe("security_incident");
+
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest).toBeDefined();
+      expect(deliveredDigest.eventCount).toBe(3);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "progress",
+        "security_incident",
+      ]);
+
+      // Shared buffer should be drained after delivery
+      expect(sharedService.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("wakes immediately on P1 and delivers pending digest", async () => {
+      const agentId = "agent-behavioral-2";
+      const heartbeatMock: { wakeup: WakeupMock } = {
+        wakeup: vi.fn<WakeupFn>().mockResolvedValue({ created: true }),
+      };
+
+      // Accumulate a P4 log event
+      await dispatchAgentEvent(
+        { agentId, type: "log", payload: { msg: "info message" } },
+        heartbeatMock,
+      );
+      expect(heartbeatMock.wakeup).not.toHaveBeenCalled();
+
+      // Dispatch P1 CI completion event
+      const p1Result = await dispatchAgentEvent(
+        { agentId, type: "ci_completed", payload: { runId: "ci-999", status: "passed" } },
+        heartbeatMock,
+      );
+
+      expect(p1Result.woken).toBe(true);
+      expect(heartbeatMock.wakeup).toHaveBeenCalledTimes(1);
+
+      const [, wakeOpts] = heartbeatMock.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest.eventCount).toBe(2);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual(["log", "ci_completed"]);
+    });
+
+    it("preserves and restores pending events when downstream wake dispatch fails (failure rollback)", async () => {
+      const agentId = "agent-failure-test";
+      const sharedService = getSharedEventDigestService();
+
+      // 1. Accumulate P4 event
+      await dispatchAgentEvent(
+        { agentId, type: "heartbeat", payload: { step: "checkpoint-1" } },
+        { wakeup: vi.fn<WakeupFn>() },
+      );
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Dispatch P0 event, but downstream wakeup throws an error (e.g., db failure)
+      const failingHeartbeat: { wakeup: WakeupMock } = {
+        wakeup: vi.fn<WakeupFn>().mockRejectedValue(
+          new Error("Downstream database connection failure"),
+        ),
+      };
+
+      await expect(
+        dispatchAgentEvent(
+          { agentId, type: "security_incident", payload: { level: "critical" } },
+          failingHeartbeat,
+        ),
+      ).rejects.toThrow("Downstream database connection failure");
+
+      // 3. Verify that the buffered event and triggering event were NOT lost and remain preserved in the digest
+      const preservedDigest = sharedService.getPendingDigest(agentId);
+      expect(preservedDigest).not.toBeNull();
+      expect(preservedDigest?.eventCount).toBe(2);
+      expect(preservedDigest?.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "security_incident",
+      ]);
+
+      // 4. Verify subsequent successful wake delivers the preserved events along with new wake
+      const succeedingHeartbeat: { wakeup: WakeupMock } = {
+        wakeup: vi.fn<WakeupFn>().mockResolvedValue({ created: true }),
+      };
+
+      const retryResult = await dispatchAgentEvent(
+        { agentId, type: "ci_completed", payload: { runId: "ci-retry" } },
+        succeedingHeartbeat,
+      );
+
+      expect(retryResult.woken).toBe(true);
+      expect(succeedingHeartbeat.wakeup).toHaveBeenCalledTimes(1);
+      const [, wakeOpts] = succeedingHeartbeat.wakeup.mock.calls[0] as [
+        string,
+        { reason: string; contextSnapshot: Record<string, unknown> },
+      ];
+      const deliveredDigest = wakeOpts.contextSnapshot.eventDigest as any;
+      expect(deliveredDigest.eventCount).toBe(3);
+      expect(deliveredDigest.events.map((e: any) => e.type)).toEqual([
+        "heartbeat",
+        "security_incident",
+        "ci_completed",
+      ]);
+
+      // 5. Buffer should now be cleanly committed/drained
+      expect(sharedService.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("supports atomic prepare, commit, and rollback directly on EventDigestService", () => {
+      const service = new EventDigestService();
+      const agentId = "agent-atomic-test";
+
+      service.recordEvent({ agentId, type: "heartbeat" });
+      service.recordEvent({ agentId, type: "progress" });
+
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // Stage events for wake
+      const staged = service.prepareDigest(agentId);
+      expect(staged?.eventCount).toBe(2);
+
+      // While staged, getPendingDigest still reports all pending events
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(2);
+
+      // Simulate failure -> rollback
+      service.rollbackPendingDigest(agentId);
+
+      // Events should still be safely present in active buffer
+      const afterRollback = service.getPendingDigest(agentId);
+      expect(afterRollback?.eventCount).toBe(2);
+      expect(afterRollback?.events.map((e) => e.type)).toEqual(["heartbeat", "progress"]);
+
+      // Re-stage and commit (simulating successful run creation)
+      service.prepareDigest(agentId);
+      service.commitPendingDigest(agentId);
+
+      // Now buffer is completely drained
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("preserves both accumulated events and triggering event when prepareDigest is rolled back (early-return / null wake)", () => {
+      const service = new EventDigestService();
+      const agentId = "agent-rollback-trigger-test";
+
+      // 1. Accumulate P4 event
+      service.recordEvent({ agentId, type: "heartbeat", payload: { ping: true } });
+      expect(service.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // 2. Prepare digest with triggering event (P1 / P0)
+      const triggerEvent = {
+        id: "trigger-123",
+        agentId,
+        type: "ci_completed",
+        priority: "P1" as const,
+        payload: { status: "success" },
+        timestamp: new Date(),
+      };
+      const staged = service.prepareDigest(agentId, triggerEvent);
+      expect(staged?.eventCount).toBe(2);
+      expect(staged?.events.map((e) => e.type)).toEqual(["heartbeat", "ci_completed"]);
+
+      // 3. Downstream wake encounters early return null (e.g. conversation check / disabled agent chat)
+      // Rollback is invoked
+      service.rollbackPendingDigest(agentId);
+
+      // 4. Verify that AFTER rollback, pending digest contains BOTH accumulated events AND the triggering event!
+      const afterRollback = service.getPendingDigest(agentId);
+      expect(afterRollback).not.toBeNull();
+      expect(afterRollback?.eventCount).toBe(2);
+      expect(afterRollback?.events.map((e) => e.type)).toEqual(["heartbeat", "ci_completed"]);
+
+      // 5. Subsequent prepare and commit cleanly deliver and clear both
+      const nextStage = service.prepareDigest(agentId);
+      expect(nextStage?.eventCount).toBe(2);
+      service.commitPendingDigest(agentId);
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+
+    it("preserves accumulated digest and triggering event when downstream wake returns null / not created", async () => {
+      const agentId = "agent-early-null";
+      const sharedService = getSharedEventDigestService();
+
+      // Accumulate P4
+      await dispatchAgentEvent(
+        { agentId, type: "heartbeat", payload: { seq: 1 } },
+        { wakeup: vi.fn<WakeupFn>() },
+      );
+      expect(sharedService.getPendingDigest(agentId)?.eventCount).toBe(1);
+
+      // Downstream wakeup returns null (early return / no wake run created)
+      const nullHeartbeat: { wakeup: WakeupMock } = {
+        wakeup: vi.fn<WakeupFn>().mockResolvedValue(null),
+      };
+
+      const result = await dispatchAgentEvent(
+        { agentId, type: "issue_unblock_requested", payload: { issueId: "OPE-9657" } },
+        nullHeartbeat,
+      );
+
+      expect(result.woken).toBe(false);
+      // Both the P4 heartbeat and the P1 unblock trigger MUST be preserved in the buffer!
+      const pending = sharedService.getPendingDigest(agentId);
+      expect(pending).not.toBeNull();
+      expect(pending?.eventCount).toBe(2);
+      expect(pending?.events.map((e) => e.type)).toEqual([
+        "heartbeat",
+        "issue_unblock_requested",
+      ]);
+    });
+  });
+});

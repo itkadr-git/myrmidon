@@ -807,6 +807,65 @@ describe("corpus API: upload, parse and search", () => {
     expect((await request(app).get(`${companyPath()}/datasets/${DATASET_ID}/documents`)).body.documents).toHaveLength(1);
   });
 
+  // Clients send the file name in `Content-Disposition` as raw UTF-8 bytes. Multer
+  // reads header parameters as latin1 unless told otherwise, which turned a
+  // Cyrillic name into mojibake in the stored title and in every API answer.
+  it.each([
+    { script: "Cyrillic", filename: "Руководство по запуску.pdf" },
+    { script: "Cyrillic with spaces, dots and brackets", filename: "Отчёт (черновик) v2.1.txt" },
+    { script: "Chinese", filename: "文档说明.txt" },
+    { script: "accented Latin", filename: "Café menu – été.txt" },
+    { script: "ASCII", filename: "notes v2.txt" },
+  ])("keeps a $script file name intact from the upload to the store", async ({ filename }) => {
+    const h = enabled();
+    h.seedDataset();
+    const app = h.app();
+
+    const response = await upload(app, DATASET_ID, "hello corpus", filename);
+
+    expect(response.status).toBe(202);
+    expect(response.body.document.filename).toBe(filename);
+    // What reached the upload service is what the store saved and the audit log named.
+    expect([...h.state.documents.values()].map((document) => document.filename)).toEqual([filename]);
+    expect(h.audit[0].details).toMatchObject({ filename });
+    const listed = await request(app).get(`${companyPath()}/datasets/${DATASET_ID}/documents`);
+    expect(listed.body.documents.map((document: { filename: string }) => document.filename)).toEqual([filename]);
+  });
+
+  it("runs queued parses concurrently up to the configured cap", async () => {
+    const h = enabled({ MYRMIDON_CORPUS_PARSE_CONCURRENCY: "2" });
+    h.seedDataset();
+    const app = h.app();
+    const uploads = await Promise.all([
+      upload(app, DATASET_ID, "first page", "first.txt"),
+      upload(app, DATASET_ID, "second page", "second.txt"),
+      upload(app, DATASET_ID, "third page", "third.txt"),
+    ]);
+    expect(uploads.map((response) => response.status)).toEqual([202, 202, 202]);
+
+    let activeParses = 0;
+    let peakParses = 0;
+    let releaseParses: (() => void) | undefined;
+    const parseGate = new Promise<void>((resolve) => { releaseParses = resolve; });
+    h.ports.parser.parse = async () => {
+      activeParses += 1;
+      peakParses = Math.max(peakParses, activeParses);
+      await parseGate;
+      activeParses -= 1;
+      return { text: "parallel corpus", chunks: [{ index: 0, text: "parallel corpus" }] };
+    };
+
+    const sweepPromise = h.worker.sweep();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(peakParses).toBe(2);
+    releaseParses!();
+    const sweep = await sweepPromise;
+
+    expect(sweep).toMatchObject({ enabled: true, available: true, claimed: 2, parsed: 2, requeued: 0, failed: 0 });
+    expect(activeParses).toBe(0);
+    expect([...h.state.documents.values()].filter((document) => document.status === "ready")).toHaveLength(2);
+  });
+
   it("parses the uploaded document to ready on the next sweep, and search finds it", async () => {
     const h = enabled();
     h.seedDataset();

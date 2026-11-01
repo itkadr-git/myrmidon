@@ -18,7 +18,10 @@ const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notF
 const FETCH_STAMP = "myr-ws-fetched";
 
 function gitReal(env) {
-  return env[L.ENV.gitReal] || L.DEFAULT_GIT_REAL;
+  if (env && env[L.ENV.gitReal]) return env[L.ENV.gitReal];
+  if (fs.existsSync(L.DEFAULT_GIT_REAL)) return L.DEFAULT_GIT_REAL;
+  if (fs.existsSync("/usr/bin/git")) return "/usr/bin/git";
+  return "git";
 }
 
 function runGit(env, cwd, args, opts = {}) {
@@ -26,7 +29,7 @@ function runGit(env, cwd, args, opts = {}) {
     cwd,
     encoding: "utf8",
     timeout: opts.timeoutMs || 600_000,
-    env: { ...env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
   });
   return r;
 }
@@ -98,6 +101,166 @@ function lastFetchMs(dir) {
   }
 }
 
+function findMirror(parsed, env) {
+  const root = env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
+  const candidates = [
+    path.join(root, `${parsed.owner}/${parsed.repo}.git`),
+    path.join(root, `${parsed.slug}.git`),
+  ];
+
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "HEAD")) && fs.existsSync(path.join(c, "objects"))) {
+      return c;
+    }
+  }
+  return null;
+}
+
+function withSyncLock(dir, fn) {
+  const lockPath = path.join(dir, "sync-mirror.lock");
+  let fd = null;
+  const startTime = Date.now();
+  while (Date.now() - startTime < 5000) {
+    try {
+      fd = fs.openSync(lockPath, "wx");
+      try {
+        fs.writeFileSync(fd, `${process.pid}\n`, "utf8");
+      } catch {}
+      break;
+    } catch (err) {
+      if (err && err.code === "EEXIST") {
+        try {
+          const content = fs.readFileSync(lockPath, "utf8").trim();
+          const lockPid = parseInt(content, 10);
+          let isAlive = false;
+          if (!isNaN(lockPid) && lockPid > 0) {
+            try {
+              process.kill(lockPid, 0);
+              isAlive = true;
+            } catch (e) {
+              isAlive = Boolean(e && e.code === "EPERM");
+            }
+          }
+          const stat = fs.statSync(lockPath);
+          const isStale = (Date.now() - stat.mtimeMs > 700000) || (!isAlive && !isNaN(lockPid));
+          if (isStale) {
+            fs.rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch {
+          // ignore
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      } else {
+        return null;
+      }
+    }
+  }
+  if (fd === null) {
+    // Lock could not be acquired within timeout; do not run unlocked
+    return null;
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {}
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch {}
+  }
+}
+
+const REPACK_MIGRATED_MARKER = ".repack-migrated";
+
+function cleanTmpPacks(packDir) {
+  try {
+    if (!fs.existsSync(packDir)) return;
+    const entries = fs.readdirSync(packDir);
+    for (const f of entries) {
+      if (f.startsWith(".tmp-")) {
+        try {
+          fs.rmSync(path.join(packDir, f), { force: true });
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+function syncMirrorAlternates(env, dir, parsed, opts = {}) {
+  try {
+    const mirror = findMirror(parsed, env);
+    if (!mirror) return null;
+    const objectsDir = path.join(mirror, "objects");
+    if (!fs.existsSync(objectsDir)) return null;
+
+    const targetObjectsDir = fs.existsSync(path.join(dir, ".git", "objects"))
+      ? path.join(dir, ".git", "objects")
+      : path.join(dir, "objects");
+
+    const alternatesFile = path.join(targetObjectsDir, "info", "alternates");
+    const markerFile = path.join(targetObjectsDir, "info", REPACK_MIGRATED_MARKER);
+    const targetLine = `${objectsDir}\n`;
+
+    return withSyncLock(dir, () => {
+      let existing = "";
+      let hasExisting = false;
+      try {
+        existing = fs.readFileSync(alternatesFile, "utf8");
+        hasExisting = true;
+      } catch {
+        // does not exist yet
+      }
+      const lines = existing
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      if (lines.includes(objectsDir)) {
+        if (opts.skipRepack) return mirror;
+        if (fs.existsSync(markerFile)) return mirror;
+        try {
+          mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+          fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
+          return mirror;
+        } catch {
+          cleanTmpPacks(path.join(targetObjectsDir, "pack"));
+          return null;
+        }
+      }
+
+      fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+
+      const newContent = existing ? (existing.endsWith("\n") ? `${existing}${targetLine}` : `${existing}\n${targetLine}`) : targetLine;
+      const tmpNew = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
+      fs.writeFileSync(tmpNew, newContent, "utf8");
+      fs.renameSync(tmpNew, alternatesFile);
+
+      if (opts.skipRepack) {
+        return mirror;
+      }
+
+      if (fs.existsSync(markerFile)) {
+        return mirror;
+      }
+
+      try {
+        mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
+        fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
+      } catch (err) {
+        // Failure path: clean up temporary pack files, never revert alternates!
+        cleanTmpPacks(path.join(targetObjectsDir, "pack"));
+        return null;
+      }
+      return mirror;
+    });
+  } catch {
+    // Degrade gracefully
+    return null;
+  }
+}
+
 /**
  * Creates the base of owner/repo when absent and fetches it when stale.
  * Returns { path, repo, created, fetched }. Throws MyrWsError (exitCode 2
@@ -116,6 +279,7 @@ function ensureBase(repoInput, opts = {}) {
   }
 
   let created = false;
+  let fetched = false;
   if (!fs.existsSync(path.join(dir, "HEAD"))) {
     const existing = listBases(env);
     if (existing.length >= L.WS_GIT_BASE_LIMIT) {
@@ -128,29 +292,44 @@ function ensureBase(repoInput, opts = {}) {
     try {
       mustGit(env, undefined, ["init", "--bare", "--quiet", dir], EXIT.usage);
       configureBase(env, dir, originUrl(parsed, env));
+      try {
+        syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
+      } catch {
+        // mirror attach failure does not break base creation
+      }
+      fetchBase(env, dir);
+      fetched = true;
+      try {
+        syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
+      } catch {
+        // Graceful degradation: mirror sync failure does not break base creation
+      }
     } catch (e) {
       fs.rmSync(dir, { recursive: true, force: true });
       throw e;
     }
     created = true;
+  } else {
+    try {
+      syncMirrorAlternates(env, dir, parsed, { skipRepack: true });
+    } catch {
+      // Graceful degradation
+    }
   }
 
   // refresh 0 means "always fetch": the stamp is written after the fetch, so
   // `now` taken at call start can precede its mtime and the difference go negative.
   const sec = refreshSec(env);
-  const stale = sec === 0 || now - lastFetchMs(dir) >= sec * 1000;
-  let fetched = false;
-  if (created || stale) {
+  const stale = !fetched && (sec === 0 || now - lastFetchMs(dir) >= sec * 1000);
+  if (stale) {
     try {
       fetchBase(env, dir);
       fetched = true;
     } catch (e) {
-      // A base that never fetched holds nothing and must not eat the limit.
-      if (created) fs.rmSync(dir, { recursive: true, force: true });
       throw e;
     }
   }
   return { path: dir, repo: parsed.slug, created, fetched };
 }
 
-module.exports = { ensureBase, listBases, MyrWsError, EXIT, FETCH_STAMP };
+module.exports = { ensureBase, listBases, findMirror, syncMirrorAlternates, REPACK_MIGRATED_MARKER, MyrWsError, EXIT, FETCH_STAMP };

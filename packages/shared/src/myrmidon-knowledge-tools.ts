@@ -62,6 +62,8 @@ export const knowledgeCreateItemSchema = z.object({
   tags: z.array(z.string().min(1).max(64)).max(50).optional(),
   approverKind: z.string().max(120).nullish(),
   sources: z.array(knowledgeSourceInputSchema).max(50).optional(),
+  force: z.boolean().optional(),
+  reason: z.string().max(1000).nullish(),
 });
 export type KnowledgeCreateItemInput = z.infer<typeof knowledgeCreateItemSchema>;
 
@@ -73,6 +75,8 @@ export const knowledgeDraftSchema = z.object({
   folderPath: z.string().max(500).optional(),
   tags: z.array(z.string().min(1).max(64)).max(50).optional(),
   sources: z.array(knowledgeSourceInputSchema).max(50).optional(),
+  force: z.boolean().optional(),
+  reason: z.string().max(1000).nullish(),
 });
 export type KnowledgeDraftInput = z.infer<typeof knowledgeDraftSchema>;
 
@@ -130,7 +134,8 @@ export const knowledgeListQuerySchema = z.object({
   kind: z.enum(["note", "wiki", "answer", "task_outcome", "rule"]).optional(),
   status: z.enum(["draft", "in_review", "published", "archived", "superseded"]).optional(),
   q: z.string().max(500).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  // The UI tree asks for the whole catalog (254 items on 01.11); agents keep the default page of 50.
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
 });
 export type KnowledgeListQuery = z.infer<typeof knowledgeListQuerySchema>;
 
