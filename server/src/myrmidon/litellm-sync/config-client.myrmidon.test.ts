@@ -256,7 +256,10 @@ describe("myrmidon(OPE-9855) LiteLLM config client and DB integration", () => {
         [{ model: "gpt-4o", targets: ["gpt-4o-mini"] }],
         catalog,
       ),
-    ).rejects.toThrow(/single provider/i);
+      // Order validation runs first and reports the specific violation:
+      // a paid fallback on the primary model's provider. The chain is still
+      // rejected; single-provider chains simply surface the precise reason.
+    ).rejects.toThrow(/uses the same provider/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

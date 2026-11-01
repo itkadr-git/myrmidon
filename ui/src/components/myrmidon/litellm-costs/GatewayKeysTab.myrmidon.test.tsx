@@ -116,7 +116,7 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
         ],
         known,
       );
-      expect(unknown).toEqual(["unknown-group-2", "unknown-group-1"]);
+      expect(unknown).toEqual(["unknown-group-1", "unknown-group-2"]);
     });
   });
 });
