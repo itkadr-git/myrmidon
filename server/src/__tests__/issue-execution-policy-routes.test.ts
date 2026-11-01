@@ -39,15 +39,30 @@ const defaultRow = {
   contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
   permissions: null,
 };
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  for: () => ({
+const mockDbSelectWhere = vi.hoisted(() => {
+  const createQueryChain = (): any => ({
+    where: () => createQueryChain(),
+    orderBy: () => createQueryChain(),
+    limit: () => createQueryChain(),
+    offset: () => createQueryChain(),
+    for: () => createQueryChain(),
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
       Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
-  }),
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
-})));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+  });
+  return vi.fn(() => createQueryChain());
+});
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => {
+  const createQueryChain = (): any => ({
+    where: mockDbSelectWhere,
+    orderBy: () => createQueryChain(),
+    limit: () => createQueryChain(),
+    offset: () => createQueryChain(),
+    for: () => createQueryChain(),
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
+  });
+  return createQueryChain();
+}));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
@@ -99,6 +114,7 @@ function registerModuleMocks() {
     createPgReviewRoutingStore: () => ({
       listReviewerAgents: vi.fn(async () => []),
       loadByAgent: vi.fn(async () => new Map()),
+      getAgentModel: vi.fn(async () => null),
     }),
   }));
   vi.doMock("../services/index.js", () => ({
@@ -866,6 +882,74 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("allows an agent-authored in_review resubmission after changes_requested preserving returnAssignee", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1005",
+      title: "Resubmit after changes requested",
+      executionPolicy: policy,
+      executionState: {
+        status: "changes_requested",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        lastDecisionOutcome: "changes_requested",
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentParticipant: expect.objectContaining({
+            type: "agent",
+            agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+          returnAssignee: expect.objectContaining({
+            type: "agent",
+            agentId: "33333333-3333-4333-8333-333333333333",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1414,5 +1498,94 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  });
+
+  describe("legacy executionPolicy mode=sequential route compatibility (OPE-9971)", () => {
+    it("allows changing issue status when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.update.mockResolvedValue({
+        ...legacyIssue,
+        status: "done",
+        executionPolicy: {
+          mode: "normal",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+      });
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.update.mock.calls[0][1]).toEqual(expect.objectContaining({ status: "done" }));
+    });
+
+    it("permits explicit { executionPolicy: null } when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.update.mockResolvedValue({
+        ...legacyIssue,
+        executionPolicy: null,
+      });
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: null });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.update.mock.calls[0][1]).toEqual(expect.objectContaining({ executionPolicy: null }));
+    });
+
+    it("accepts comments when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        body: "Test comment",
+        createdAt: new Date(),
+      });
+
+      const res = await request(await createApp())
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/comments")
+        .send({ body: "Test comment" });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.addComment.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.addComment.mock.calls[0][1]).toBe("Test comment");
+    });
   });
 });

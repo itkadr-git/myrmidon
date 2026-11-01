@@ -1833,7 +1833,7 @@ describe("myrmidon(G2) classifyProfileChange integration", () => {
     ).toBe("restart");
   });
 
-  // OPE-9838: skills are hot-delivered into hermes/skills/paperclip-managed
+  // OPE-9838, OPE-10086: skills are hot-delivered into hermes/skills/paperclip-managed
   // and picked up run-scoped without container restart or maintenance.
   it("reports \"files\" when an existing skill's content changes (skills are files-class)", () => {
     const before = compileHermesProfile(
