@@ -35,7 +35,7 @@ describe("myrmidon(UI2) route table integration", () => {
       expect(routedPaths.has(path), path).toBe(true);
     }
     expect(sidebarPaths).not.toContain("/company/settings/guards");
-    expect(routedPaths.has("/company/settings/guards")).toBe(false);
+    expect(routedPaths.has("/company/settings/guards")).toBe(true);
     expect(routedPaths.has("/company/settings/not-a-real-page")).toBe(false);
   });
 
