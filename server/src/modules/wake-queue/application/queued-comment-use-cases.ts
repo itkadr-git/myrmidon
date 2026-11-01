@@ -18,6 +18,7 @@ import {
 const MASKED_UNTRUSTED_BODY = "[masked by guardrail: injection]";
 const BLOCKED_UNTRUSTED_NOTICE =
   "[blocked by guardrail: injection — the text of this queued message was withheld from the run because it matched the prompt-injection detector; the operator can change the rule's mode in Company Settings → Guardrails]";
+import { guardrailTriggerMetrics } from "../../../myrmidon/guardrails/metrics.js";
 import type {
   QueuedCommentActivityPublication,
   QueuedCommentActor,
@@ -166,6 +167,7 @@ export function createEditQueuedComment(deps: {
           } else if (scan.flagged && injectionMode === "block") { // myrmidon(1.7-GRD-MODES)
             payloadBody = UNTRUSTED_DATA_OPEN + BLOCKED_UNTRUSTED_NOTICE + UNTRUSTED_DATA_CLOSE; // myrmidon(1.7-GRD-MODES)
           }
+          if (scan.flagged) guardrailTriggerMetrics.record("injection", injectionMode);
           guardrailsPayload = { // myrmidon(1.6-GRD)
             ...locked.wake.payload,
             commentBody: payloadBody,
