@@ -8,10 +8,11 @@
 // like any other email.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, like } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import type { Db } from "@myrmidon/db";
 import {
+  activityLog,
   authAccounts,
   authSessions,
   authUsers,
@@ -192,6 +193,152 @@ export async function setUserBlocked(
 export async function isUserBlocked(db: Pick<Db, "select">, userId: string): Promise<boolean> {
   const row = await db.select({ userId: userBlocks.userId }).from(userBlocks).where(eq(userBlocks.userId, userId)).then((r) => r[0] ?? null);
   return row !== null;
+}
+
+/** Updates user role (instance_admin or member). Prevents self-demotion or demoting the last admin. */
+export async function setUserRole(
+  db: Db,
+  input: { userId: string; role: ManagedRole; actorUserId: string },
+): Promise<{ previousRole: ManagedRole; newRole: ManagedRole }> {
+  if (input.userId === input.actorUserId && input.role !== "instance_admin") {
+    throw new UsersAdminError(409, "CONFLICT", "You cannot demote yourself");
+  }
+  await getUser(db, input.userId);
+  const currentAdmins = await db
+    .select({ userId: instanceUserRoles.userId })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")))
+    .then((rows) => rows.length > 0);
+  const previousRole: ManagedRole = currentAdmins ? "instance_admin" : "member";
+
+  if (previousRole === input.role) {
+    return { previousRole, newRole: input.role };
+  }
+
+  if (input.role === "instance_admin") {
+    await db
+      .insert(instanceUserRoles)
+      .values({ userId: input.userId, role: "instance_admin" })
+      .onConflictDoNothing();
+  } else {
+    const totalAdmins = await db
+      .select({ userId: instanceUserRoles.userId })
+      .from(instanceUserRoles)
+      .where(eq(instanceUserRoles.role, "instance_admin"))
+      .then((rows) => rows.length);
+    if (totalAdmins <= 1) {
+      throw new UsersAdminError(409, "CONFLICT", "Cannot demote the last instance administrator");
+    }
+    await db
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")));
+  }
+
+  return { previousRole, newRole: input.role };
+}
+
+export interface UserAuditItem {
+  id: string;
+  action: string;
+  actorId: string;
+  actorName: string;
+  actorUsername: string;
+  targetUserId: string;
+  targetName: string;
+  targetUsername: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ListAuditOptions {
+  userId?: string;
+  actorId?: string;
+  action?: string;
+  limit?: number;
+}
+
+export async function listAuditLogs(
+  db: Db,
+  options: ListAuditOptions = {},
+): Promise<UserAuditItem[]> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+  const conditions = [
+    eq(activityLog.entityType, "user"),
+    like(activityLog.action, "instance.user.%"),
+  ];
+  if (options.userId) {
+    conditions.push(eq(activityLog.entityId, options.userId));
+  }
+  if (options.actorId) {
+    conditions.push(eq(activityLog.actorId, options.actorId));
+  }
+  if (options.action) {
+    conditions.push(eq(activityLog.action, options.action));
+  }
+
+  const fetchLimit = limit * 10;
+  const rawRows = await db
+    .select({
+      id: activityLog.id,
+      actorId: activityLog.actorId,
+      action: activityLog.action,
+      entityId: activityLog.entityId,
+      details: activityLog.details,
+      createdAt: activityLog.createdAt,
+    })
+    .from(activityLog)
+    .where(and(...conditions))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(fetchLimit);
+
+  const seen = new Set<string>();
+  const deduplicated: typeof rawRows = [];
+  for (const row of rawRows) {
+    const key = `${row.createdAt.getTime()}:${row.action}:${row.actorId}:${row.entityId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduplicated.push(row);
+    if (deduplicated.length >= limit) break;
+  }
+
+  const userIds = Array.from(
+    new Set([
+      ...deduplicated.map((r) => r.actorId),
+      ...deduplicated.map((r) => r.entityId),
+    ]),
+  );
+
+  const userMap = new Map<string, { username: string; name: string }>();
+  if (userIds.length > 0) {
+    const userRows = await db
+      .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+      .from(authUsers)
+      .where(inArray(authUsers.id, userIds));
+    for (const u of userRows) {
+      userMap.set(u.id, {
+        username: emailToUsername(u.email),
+        name: u.name,
+      });
+    }
+  }
+
+  return deduplicated.map((row) => {
+    const actor = userMap.get(row.actorId);
+    const target = userMap.get(row.entityId);
+    return {
+      id: row.id,
+      action: row.action,
+      actorId: row.actorId,
+      actorName: actor?.name ?? row.actorId,
+      actorUsername: actor?.username ?? row.actorId,
+      targetUserId: row.entityId,
+      targetName: target?.name ?? row.entityId,
+      targetUsername: target?.username ?? row.entityId,
+      details: (row.details as Record<string, unknown>) ?? {},
+      createdAt: row.createdAt.toISOString(),
+    };
+  });
 }
 
 /** Revokes older live links of the user and returns a fresh raw token. */
