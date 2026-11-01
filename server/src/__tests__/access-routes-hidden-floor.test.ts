@@ -59,7 +59,7 @@ async function createApp(db = stubDb) {
     } as Express.Request["actor"];
     next();
   });
-  app.use("/api", accessRoutes(stubDb, {
+  app.use("/api", accessRoutes(db, {
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bindHost: "127.0.0.1",
