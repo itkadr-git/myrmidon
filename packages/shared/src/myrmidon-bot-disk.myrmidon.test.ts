@@ -1,7 +1,6 @@
-// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 16 stored keys of
-// `general.botDisk` survive every PATCH. Before this part the five
-// workspace-lifecycle numbers (closing grace, scratch TTL, the three partition
-// percents) lived only under `wsBotDiskSettingsSchema` and were not part of the
+// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 20 stored keys of
+// `general.botDisk` survive every PATCH. Before this part the workspace-lifecycle numbers
+// lived only under `wsBotDiskSettingsSchema` and were not part of the
 // patch schema, so a patch of any layout key rewrote the object without them.
 
 import { describe, expect, it } from "vitest";
@@ -23,6 +22,7 @@ const BASE = {
   npmCacheTtlHours: 48,
   uvCacheTtlHours: 168,
   terminalOutputTtlHours: 24,
+  sessionRetentionDays: 30,
   partitionThresholdPercent: 80,
   partitionRefuseOpenPercent: 88,
   partitionCriticalPercent: 97,
@@ -38,12 +38,12 @@ const BASE = {
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 19 distinct keys", () => {
+  it("the three key groups are 20 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(19);
+    expect(new Set(all).size).toBe(20);
   });
 
-  it("the canonical schema accepts all 19 keys", () => {
+  it("the canonical schema accepts all 20 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 
@@ -62,7 +62,7 @@ describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
     expect(merged).toEqual({ ...BASE, pnpmStoreDir: "/scratch/.store" });
   });
 
-  it("a patch of one workspace-lifecycle key keeps the other five", () => {
+  it("a patch of one workspace-lifecycle key keeps the other eight", () => {
     const merged = mergeBotDiskSettings(BASE as never, { scratchTtlHours: 6 });
     expect(merged.scratchTtlHours).toBe(6);
     expect(merged.graceClosingMinutes).toBe(45);
