@@ -30,8 +30,8 @@ import {
   readWorktreePortRegistry,
   withWorktreePortRegistryLock,
   writeWorktreePortRegistry,
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 } from "@myrmidon/shared/worktree-port-registry";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import {
   applyPendingMigrations,
   agents,
