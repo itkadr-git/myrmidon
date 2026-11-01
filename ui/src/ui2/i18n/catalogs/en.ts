@@ -227,6 +227,9 @@ export const en = {
           raiseAndResume: "Raise and resume",
           title: "Cost incidents",
         },
+        forecast: "Forecast through month-end: {{amount}}",
+        unpriced: "Unpriced",
+        unpricedEvents: "{{count}} events without a price",
         policies: {
           amount: "Amount",
           empty: "No cost policies",
@@ -691,6 +694,9 @@ export type Ui2Catalog = {
           raiseAndResume: string;
           title: string;
         },
+        forecast: string;
+        unpriced: string;
+        unpricedEvents: string;
         policies: {
           amount: string;
           empty: string;

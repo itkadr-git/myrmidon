@@ -53,6 +53,27 @@ export const FORBIDDEN_CARD_ENV_KEYS: ReadonlySet<string> = new Set([
   "PAPERCLIP_GITHUB_LAUNCHER_DIR",
 ]);
 
+export const MEDIA_TOOLS_ENV_ALLOWLIST_ENV = "MYRMIDON_BOT_CONTAINER_MEDIA_TOOLS_ENV_ALLOWLIST";
+
+/**
+ * myrmidon(MEDIA-ACL 1.6.6): agent names allowed to keep a MEDIA_TOOLS_TOKEN
+ * card binding, resolved through the secrets service into hermes/.env only.
+ * Same operator-driven shape as the GitHub env allowlist: a comma-separated
+ * list of agent names, empty by default — no bot gets media access until an
+ * operator names it, and the token still must come from a secret bound to that
+ * agent.
+ */
+export function parseMediaToolsEnvAllowlist(raw: string | undefined): ReadonlySet<string> {
+  return new Set((raw ?? "").split(",").map((entry) => entry.trim()).filter(Boolean));
+}
+
+export const FORBIDDEN_ADAPTER_ENV_KEYS: ReadonlySet<string> = new Set([
+  ...FORBIDDEN_CARD_ENV_KEYS,
+  // MEDIA_TOOLS_TOKEN (MEDIA-ACL 1.6.6): allowed only for agents named in
+  // MEDIA_TOOLS_ENV_ALLOWLIST_ENV, via a bound secret; see below.
+  "MEDIA_TOOLS_TOKEN",
+]);
+
 /**
  * The GitHub tokens a run drops from a card when the board manages GitHub
  * credentials (MANAGED_GITHUB_TOKEN_KEYS in services/heartbeat.ts, likewise
@@ -145,6 +166,8 @@ export interface CardEnvResolverOptions {
   /** myrmidon(FLEETD-VMEXEC): agent names allowed to keep managed GitHub token
    *  env bindings (see GITHUB_ENV_ALLOWLIST_ENV). Defaults to none. */
   githubEnvAllowlist?: ReadonlySet<string>;
+  /** Names explicitly enabled for the operator-approved media MCP rollout. */
+  mediaToolsEnvAllowlist?: ReadonlySet<string>;
   /** Test hook for the env source; production passes none (process.env). */
   env?: NodeJS.ProcessEnv;
 }
@@ -161,9 +184,19 @@ export function createCardEnvResolver(
       ? new Set(savedAllowlist)
       : parseGithubEnvAllowlist((options.env ?? process.env)[GITHUB_ENV_ALLOWLIST_ENV]));
     const allowlistFingerprint = [...allowlist].sort().join(",");
+    const mediaAllowlist = options.mediaToolsEnvAllowlist ?? parseMediaToolsEnvAllowlist((options.env ?? process.env)[MEDIA_TOOLS_ENV_ALLOWLIST_ENV]);
+    const mediaAllowlistFingerprint = [...mediaAllowlist].sort().join(",");
     const warnings: string[] = [];
     const bindings: Record<string, unknown> = {};
     for (const [name, binding] of Object.entries(asRecord(agent.adapterConfig.env))) {
+      if (name === "MEDIA_TOOLS_TOKEN") {
+        if (typeof agent.name === "string" && mediaAllowlist.has(agent.name)) {
+          bindings[name] = binding;
+          continue;
+        }
+        warnings.push(`env.${name}: no operator media-tools allowlist permission, dropped`);
+        continue;
+      }
       if (FORBIDDEN_CARD_ENV_KEYS.has(name)) {
         warnings.push(`env.${name}: the board reserves this variable, a card cannot set it, dropped`);
         continue;
@@ -202,7 +235,7 @@ export function createCardEnvResolver(
     }
     // When the allowlist in force changes, invalidate the cache even if the card bindings and secrets are unchanged.
     const fingerprint = createHash("sha256")
-      .update(stableStringify({ companyId: agent.companyId, bindings, stamps, allowlistFingerprint }))
+      .update(stableStringify({ companyId: agent.companyId, bindings, stamps, allowlistFingerprint, mediaAllowlistFingerprint }))
       .digest("hex");
 
     const cached = cache.get(agent.id);
