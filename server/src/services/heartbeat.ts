@@ -31276,17 +31276,61 @@ export function heartbeatService(
             !readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) &&
             !readNonEmptyString(payload?.continuationClaimKey)
           ) {
-            const [latestContinuationEvent] = await tx
-              .select({ id: activityLog.id })
-              .from(activityLog)
-              .where(and(
-                eq(activityLog.companyId, agent.companyId),
-                eq(activityLog.entityType, "issue"),
-                eq(activityLog.entityId, issue.id),
-                inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+            // Do not claim the most recent activity blindly: after a run has
+            // completed, that activity may be the same event that was already
+            // consumed.  The admission claim must use the same post-run event
+            // boundary as the continuation gate below.
+            const continuationRecovery = Boolean(
+              readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
+              readNonEmptyString(payload?.retryOfRunId) ??
+              readNonEmptyString(opts.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.failedRunId) ??
+              readNonEmptyString(payload?.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.continuationHead) ??
+              readNonEmptyString(payload?.continuationHead) ??
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId) ??
+              enrichedContextSnapshot.issueRecovery ??
+              payload?.issueRecovery ??
+              enrichedContextSnapshot.recoveryMode ??
+              payload?.recoveryMode ??
+              (typeof enrichedContextSnapshot.source === "string" && (
+                enrichedContextSnapshot.source.startsWith("issue.") ||
+                enrichedContextSnapshot.source.includes("recovery") ||
+                enrichedContextSnapshot.source.includes("stranded")
               ))
-              .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
-              .limit(1);
+            );
+
+            const lastRunRows = continuationRecovery
+              ? []
+              : await tx
+                  .select({ finishedAt: heartbeatRuns.finishedAt })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agentId),
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                    sql`${heartbeatRuns.finishedAt} is not null`,
+                  ))
+                  .orderBy(desc(heartbeatRuns.finishedAt))
+                  .limit(1);
+            const continuationEventConditions = [
+              eq(activityLog.companyId, agent.companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+              ...(lastRunRows[0]?.finishedAt
+                ? [gt(activityLog.createdAt, lastRunRows[0].finishedAt)]
+                : []),
+            ];
+            const [latestContinuationEvent] = continuationRecovery
+              ? []
+              : await tx
+                  .select({ id: activityLog.id })
+                  .from(activityLog)
+                  .where(and(...continuationEventConditions))
+                  .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+                  .limit(1);
             if (latestContinuationEvent) {
               const continuationRevision = latestContinuationEvent.id;
               const continuationClaimKey = buildContinuationKey({
@@ -31871,17 +31915,19 @@ export function heartbeatService(
               recoveryHead ??
               (typeof enrichedContextSnapshot.source === "string" ? enrichedContextSnapshot.source : "recovery");
 
-            const lastRunRows = await tx
-              .select({ finishedAt: heartbeatRuns.finishedAt })
-              .from(heartbeatRuns)
-              .where(and(
-                eq(heartbeatRuns.companyId, agent.companyId),
-                eq(heartbeatRuns.agentId, agentId),
-                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-                sql`${heartbeatRuns.finishedAt} is not null`,
-              ))
-              .orderBy(desc(heartbeatRuns.finishedAt))
-              .limit(1);
+            const lastRunRows = isRecovery
+              ? []
+              : await tx
+                  .select({ finishedAt: heartbeatRuns.finishedAt })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agentId),
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                    sql`${heartbeatRuns.finishedAt} is not null`,
+                  ))
+                  .orderBy(desc(heartbeatRuns.finishedAt))
+                  .limit(1);
             const lastFinishedAt = lastRunRows[0]?.finishedAt ?? null;
             const eventConditions = [
               eq(activityLog.companyId, agent.companyId),
