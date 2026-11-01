@@ -200,6 +200,9 @@ export async function setUserRole(
   db: Db,
   input: { userId: string; role: ManagedRole; actorUserId: string },
 ): Promise<{ previousRole: ManagedRole; newRole: ManagedRole }> {
+  if (input.userId === input.actorUserId && input.role !== "instance_admin") {
+    throw new UsersAdminError(409, "CONFLICT", "You cannot demote yourself");
+  }
   await getUser(db, input.userId);
   const currentAdmins = await db
     .select({ userId: instanceUserRoles.userId })
@@ -210,10 +213,6 @@ export async function setUserRole(
 
   if (previousRole === input.role) {
     return { previousRole, newRole: input.role };
-  }
-
-  if (input.userId === input.actorUserId && input.role !== "instance_admin") {
-    throw new UsersAdminError(409, "CONFLICT", "You cannot demote yourself");
   }
 
   if (input.role === "instance_admin") {

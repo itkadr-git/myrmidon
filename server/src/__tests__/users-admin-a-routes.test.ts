@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { authSessions, authUsers, boardApiKeys, createDb, userPasswordSetTokens } from "@myrmidon/db";
+import { authSessions, authUsers, boardApiKeys, companies, createDb, userPasswordSetTokens } from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -62,6 +62,7 @@ describePostgres("users-admin-a routes", () => {
     process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-users-admin-routes-");
     db = createDb(tempDb.connectionString);
+    await db.insert(companies).values({ name: "Users Admin Test Company", issuePrefix: "UAT" });
     const config = {
       deploymentMode: "authenticated", deploymentExposure: "private", authBaseUrlMode: "explicit",
       authPublicBaseUrl: ORIGIN, authDisableSignUp: false, allowedHostnames: ["127.0.0.1"], port: 41998,
