@@ -152,8 +152,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       priority: "medium",
       executionPolicy: policy,
     });
-    const pendingCiRoutes = (db: any, storage: any, options?: any) => issueRoutes(db, storage, {
-      ...options,
+    const pendingCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
     });
 
@@ -198,8 +197,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       priority: "medium",
       executionPolicy: policy,
     });
-    const unreadableCiRoutes = (db: any, storage: any, options?: any) => issueRoutes(db, storage, {
-      ...options,
+    const unreadableCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
       resolveReviewPullRequestCi: async () => ({ state: "unknown", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc", reason: "pull:http_403" }),
     });
 
