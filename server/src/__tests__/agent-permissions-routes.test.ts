@@ -729,8 +729,6 @@ describe.sequential("agent permission routes", () => {
       undefined,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
-      undefined,
-      false,
     );
   }, 20_000);
 
