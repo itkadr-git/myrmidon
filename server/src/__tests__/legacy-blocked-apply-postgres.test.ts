@@ -71,7 +71,7 @@ describeEmbeddedPostgres("legacy blocked apply postgres", () => {
       { id: blockerId, companyId, identifier: "LBA-5", title: "Explicit blocker", status: "in_progress", priority: "high", assigneeAgentId: ownerId },
     ]);
     await db.insert(issueRelations).values([
-      { companyId, issueId: dependencyId, relatedIssueId: blockerId, type: "blocks" },
+      { companyId, issueId: blockerId, relatedIssueId: dependencyId, type: "blocks" },
     ]);
 
     const dryRun = await runLegacyBlockedDryRun(db);
