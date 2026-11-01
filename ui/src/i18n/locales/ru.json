@@ -419,7 +419,9 @@
       "state": "Состояние",
       "window5h": "Окно 5ч",
       "window7d": "Окно 7д",
-      "lastOk": "Последний OK"
+      "lastOk": "Последний OK",
+      "lastError": "Последняя ошибка",
+      "resetIn": "Сброс через"
     },
     "litellmChannels": {
       "title": "Группы моделей и каналы LiteLLM",
