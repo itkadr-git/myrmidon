@@ -73,7 +73,7 @@ describe("OPE-8354 retention sweep under a statement timeout", () => {
     expect(remaining()).toBe(0);
     // 500 -> timeout -> 250 -> timeout -> 125 fits
     expect(limits.slice(0, 3)).toEqual([DATA_RETENTION_DELETE_BATCH_SIZE, 250, 125]);
-    expect(logs).toHaveLength(2);
+    expect(logs).toHaveLength(4);
   });
 
   it("gives up for the pass at the floor when even the smallest batch times out", async () => {

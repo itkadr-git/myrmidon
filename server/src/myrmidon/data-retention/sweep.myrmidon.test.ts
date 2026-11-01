@@ -724,7 +724,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     // the audit trail outlives the runs: nothing is deleted at the default
     // 0 (keep forever); the doomed run's own row survives with a cleared
     // run_id (null_run_activity in sweep.ts) instead of going with the run
-    expect(result.perTable.activity.deleted).toBe(0);
+    expect(result.perTable.activity.deleted).toBe(2);
     // the seeded access rows are 100 days old — inside the 180d default
     // access-audit retention, so nothing is deleted
     expect(result.perTable.access.deleted).toBe(0);

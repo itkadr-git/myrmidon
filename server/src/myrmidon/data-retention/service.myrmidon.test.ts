@@ -190,6 +190,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
       heartbeatRunsDays: 30,
       activityLogDays: 365,
       accessAuditDays: 60,
+      litellmCostEventsDays: 30,
     });
     expect(res.body.sources.heartbeatRunsDays).toBe("settings");
   });
