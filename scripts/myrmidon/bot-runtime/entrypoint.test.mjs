@@ -52,15 +52,15 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /log "phase gateway_launch starting"/);
   });
 
-  it("declares hermes session maintenance before gateway launch when enabled", () => {
+  it("does not run session pruning or optimization before launching the gateway", () => {
     const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    const prune = source.indexOf("phase hermes_session_maintenance starting");
     const launch = source.indexOf("phase gateway_launch starting");
-    assert.ok(prune >= 0, "session maintenance must be declared");
-    assert.ok(launch > prune, "gateway launch must follow session maintenance");
-    assert.match(source, /hermes sessions prune --yes --older-than "\$\{prune_days\}d"/);
-    assert.match(source, /hermes sessions optimize/);
+    assert.ok(launch >= 0, "gateway launch must be present");
+    assert.doesNotMatch(source.slice(0, launch), /hermes sessions (?:prune|optimize)/);
+    assert.match(source, /run_live_session_maintenance\(\) \{/);
+    assert.match(source, /run_live_session_maintenance >\/dev\/null 2>&1 &/);
   });
+
 
   it("closes only stale unpinned open sessions before prune", () => {
     const source = fs.readFileSync(ENTRYPOINT, "utf8");
@@ -1301,16 +1301,13 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
 });
 
 describe("hermes session storage maintenance", () => {
-  it("runs compact-index optimization once, logs size bounds, and leaves retry on timeout", () => {
+  it("does not run optimize-storage against the live gateway database", () => {
     const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    assert.match(source, /optimize-storage\.v23\.done/);
-    assert.match(source, /hermes sessions optimize-storage --yes/);
-    assert.match(source, /before=\$\{optimize_before\} bytes/);
-    assert.match(source, /after=\$\{optimize_after\} bytes/);
-    assert.match(source, /MYRMIDON_HERMES_OPTIMIZE_TIMEOUT_SEC/);
-    assert.match(source, /if \[ "\$optimize_rc" -eq 0 \]; then/);
-    assert.match(source, /will retry next idle start/);
-    assert.doesNotMatch(source, /--force/);
+    const liveStart = source.indexOf("run_live_session_maintenance() {");
+    assert.ok(liveStart >= 0, "post-health maintenance must be present");
+    assert.doesNotMatch(source.slice(liveStart), /hermes sessions optimize-storage/);
+    assert.doesNotMatch(source.slice(liveStart), /optimize-storage\.v23\.done/);
+    assert.match(source, /while ! curl -fsS --max-time 3 .*\/health/);
   });
 });
 
