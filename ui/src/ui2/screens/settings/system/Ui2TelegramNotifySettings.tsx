@@ -47,6 +47,7 @@ type Draft = {
   inbound: Partial<TelegramNotifySettings["inbound"]>;
   escalations: Partial<TelegramNotifySettings["escalations"]>;
   proactivity: Partial<TelegramNotifySettings["proactivity"]>;
+  updates: Partial<TelegramNotifySettings["updates"]>;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -55,6 +56,7 @@ const EMPTY_DRAFT: Draft = {
   inbound: {},
   escalations: {},
   proactivity: {},
+  updates: {},
 };
 
 /** Machine values look machine-made: chat/topic ids and field paths stay monospace. */
@@ -128,9 +130,10 @@ export function Ui2TelegramNotifySettings() {
     if (!settings) return false;
     return (Object.keys(draft) as Array<keyof Draft>).some((section) => {
       const stored = settings[section] as unknown as Record<string, unknown>;
-      return Object.entries(draft[section]).some(
-        ([field, value]) => stored[field] !== value,
-      );
+      const sectionDraft = draft[section];
+      return sectionDraft
+        ? Object.entries(sectionDraft).some(([field, value]) => stored[field] !== value)
+        : false;
     });
   }, [draft, settings]);
 

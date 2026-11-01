@@ -16,6 +16,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { ApiError } from "@/api/client";
 import {
+  litellmChannelsQueryKey,
   modelProviderChannelsQueryKey,
   modelProviderModelsQueryKey,
   modelProvidersApi,
@@ -139,6 +140,7 @@ export function ModelProvidersScreen() {
       companyId={companyId}
       modelsQuery={(providerId: string) => modelProviderModelsQueryKey(companyId, providerId)}
       channelsQuery={(providerId: string) => modelProviderChannelsQueryKey(companyId, providerId)}
+      litellmChannelsQuery={(cid: string) => litellmChannelsQueryKey(cid)}
       onAdd={(input) => addMutation.mutate(input)}
       adding={addMutation.isPending}
       addError={addMutation.isError ? readable(addMutation.error) : null}

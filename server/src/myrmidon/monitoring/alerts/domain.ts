@@ -22,8 +22,12 @@ export type AlertPriority = (typeof ALERT_PRIORITIES)[number];
 /** A normalized alert, the single internal shape for both sources. */
 export interface NormalizedAlert {
   source: AlertSource;
-  /** Zabbix `eventid`, Alertmanager `fingerprint`. */
+  /** Stable source identity: Zabbix triggerid (fallback eventid), Alertmanager fingerprint. */
   key: string;
+  /** Zabbix trigger id, shared by each event occurrence of the same trigger. */
+  triggerId?: string | null;
+  /** Source event's human-readable details. */
+  message?: string | null;
   title: string;
   severity: string;
   /** Hosts (Zabbix) or label values (Alertmanager) affected. */
@@ -41,10 +45,15 @@ export interface NormalizedAlert {
 
 /** Raw Zabbix media-type webhook payload (one event). */
 export interface ZabbixWebhookPayload {
+  triggerid?: string | number;
+  trigger_id?: string | number;
+  triggerId?: string | number;
   eventid?: string | number;
   event_date?: string;
   event_time?: string | number;
   name?: string;
+  message?: string;
+  timestamp?: string;
   severity?: string | number;
   status?: string;
   hosts?: string;
@@ -105,7 +114,9 @@ export function alertmanagerPriority(severity: string): AlertPriority {
 export function parseZabbixAlert(raw: unknown): NormalizedAlert | null {
   if (typeof raw !== "object" || raw === null) return null;
   const payload = raw as ZabbixWebhookPayload;
-  const key = asString(payload.eventid);
+  const eventId = asString(payload.eventid);
+  const triggerId = asString(payload.triggerid ?? payload.trigger_id ?? payload.triggerId ?? (raw as { triggerId?: string | number }).triggerId);
+  const key = triggerId ?? eventId;
   const name = asString(payload.name);
   if (!key || !name) return null;
   const severityCode = Number(asString(payload.severity));
@@ -115,21 +126,53 @@ export function parseZabbixAlert(raw: unknown): NormalizedAlert | null {
     .split(/[,;|]/)
     .map((host) => host.trim())
     .filter(Boolean);
-  const startedAt =
-    asString(payload.event_date) && asString(payload.event_time)
+  const rawStarted = asString(payload.timestamp);
+  const startedAt = rawStarted && !Number.isNaN(Date.parse(rawStarted))
+    ? new Date(rawStarted).toISOString()
+    : asString(payload.event_date) && asString(payload.event_time)
       ? `${asString(payload.event_date)}T${asString(payload.event_time)}Z`
       : null;
+
+  const rawTags = (raw as Record<string, unknown>).tags ?? (raw as Record<string, unknown>).event_tags;
+  const labels: Record<string, string> = {};
+  if (typeof rawTags === "string") {
+    for (const part of rawTags.split(/[\r\n,;]+/)) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const sepIdx = trimmed.indexOf("=") !== -1 ? trimmed.indexOf("=") : trimmed.indexOf(":");
+      if (sepIdx !== -1) {
+        labels[trimmed.slice(0, sepIdx).trim()] = trimmed.slice(sepIdx + 1).trim();
+      } else {
+        labels[trimmed] = "";
+      }
+    }
+  } else if (Array.isArray(rawTags)) {
+    for (const item of rawTags) {
+      if (typeof item === "object" && item !== null) {
+        const t = asString((item as { tag?: unknown; name?: unknown }).tag ?? (item as { tag?: unknown; name?: unknown }).name);
+        const v = asString((item as { value?: unknown }).value);
+        if (t) labels[t] = v ?? "";
+      }
+    }
+  } else if (typeof rawTags === "object" && rawTags !== null) {
+    for (const [k, v] of Object.entries(rawTags)) {
+      labels[k] = asString(v) ?? "";
+    }
+  }
+
   return {
     source: "zabbix",
     key,
+    ...(triggerId ? { triggerId } : {}),
     title: name,
+    message: asString(payload.message),
     severity: ZABBIX_SEVERITY_NAMES[severityCode] ?? asString(payload.severity) ?? "unknown",
     hosts,
     resolved,
-    resolvedAt: resolved ? new Date().toISOString() : null,
+    resolvedAt: resolved ? (rawStarted && !Number.isNaN(Date.parse(rawStarted)) ? new Date(rawStarted).toISOString() : new Date().toISOString()) : null,
     startedAt,
     severityCode: Number.isFinite(severityCode) ? severityCode : null,
-    labels: {},
+    labels,
     url: asString(payload.url),
   };
 }
@@ -179,8 +222,9 @@ export function detectAlertSource(raw: unknown): "zabbix" | "alertmanager" | nul
   if (typeof raw !== "object" || raw === null) return null;
   const payload = raw as Record<string, unknown>;
   const hasEventId = asString(payload.eventid) !== null;
+  const hasTriggerId = asString(payload.triggerid ?? payload.trigger_id ?? payload.triggerId) !== null;
   const hasName = asString(payload.name) !== null;
-  if (hasEventId && hasName) return "zabbix";
+  if ((hasEventId || hasTriggerId) && hasName) return "zabbix";
   const hasAlerts = Array.isArray(payload.alerts);
   const status = asString(payload.status)?.toLowerCase();
   if (hasAlerts || status === "firing" || status === "resolved") return "alertmanager";
@@ -257,16 +301,22 @@ export function routeAssignee(
   routes: AlertRouteRule[],
   defaultAssignee: string = DEFAULT_ALERT_ROUTE_ASSIGNEE,
 ): string {
+  const routeTag = alert.labels?.route?.toLowerCase();
+  if (routeTag === "owner" || routeTag === "adm") {
+    return "adm";
+  }
   return routeMatch(alert, routes)?.assignee ?? defaultAssignee;
 }
 
 /** The first rule matching the alert title, or null (the default route). */
 export function routeMatch(alert: NormalizedAlert, routes: AlertRouteRule[]): AlertRouteRule | null {
   const title = alert.title.toLowerCase();
+  const routeLabel = alert.labels?.route?.toLowerCase();
   for (const rule of routes) {
     const match = rule.match.trim().toLowerCase();
     if (!match || !rule.assignee.trim()) continue;
     if (title.includes(match)) return rule;
+    if (routeLabel && (match === `route=${routeLabel}` || match === `route:${routeLabel}` || match === routeLabel)) return rule;
   }
   return null;
 }

@@ -1,4 +1,6 @@
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@myrmidon/shared";
 import {
@@ -23,8 +25,11 @@ import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsS
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { OwnerActiveChannelSettingsPanel } from "@/components/myrmidon/OwnerActiveChannelSettingsPanel"; // myrmidon(1.7-ACTIVE-CHANNEL)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
+import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
@@ -37,12 +42,13 @@ import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSet
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { RunsQueueSettingsPanel } from "@/components/myrmidon/RunsQueueSettingsPanel"; // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B)
 import { ModelServiceSettingsPanel } from "@/components/myrmidon/ModelServiceSettingsPanel"; // myrmidon(1.7 SETTINGS-TO-UI D)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
-import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel"; // myrmidon(SETTINGS-UI E2.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { VendorNameCheckSettingsPanel } from "@/components/myrmidon/VendorNameCheckSettingsPanel"; // myrmidon(1.7-REBRAND-F)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n";
 import { Trans } from "react-i18next"; // myrmidon(UI-RU)
@@ -52,8 +58,6 @@ import { Trans } from "react-i18next"; // myrmidon(UI-RU)
 // widening keeps the page typechecking before that merge too; it is purely additive
 // and has no runtime effect.
 type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
-
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useTranslation(); // myrmidon(UI-RU)
@@ -160,6 +164,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
           {visibleActionError}
         </div>
       )}
+      <Link className="inline-flex items-center gap-2 text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="system-secrets-link">
+        {t("area.settings-company.instance-general-settings.secretReferencesLink")}
+      </Link>
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
@@ -167,8 +174,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
+      <OwnerActiveChannelSettingsPanel /> {/* myrmidon(1.7-ACTIVE-CHANNEL) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
+      <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
@@ -181,11 +191,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <RunsQueueSettingsPanel /> {/* myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B) */}
       <ModelServiceSettingsPanel /> {/* myrmidon(1.7 SETTINGS-TO-UI D) */}
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
-      <InstanceSecretSettingsPanel /> {/* myrmidon(SETTINGS-UI E2.1) */}
+      <VendorNameCheckSettingsPanel /> {/* myrmidon(1.7-REBRAND-F) */}
 
       {showDeploymentStatus && (
       <section>

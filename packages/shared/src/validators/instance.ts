@@ -12,6 +12,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
+import { modelApiPricingSettingsSchema } from "../myrmidon-model-api-pricing.js"; // OPE-9499: operator-maintained API-equivalent prices
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
@@ -52,6 +53,8 @@ import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // 
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.7-GRD-MODES): the guardrail enforcement modes stored in the same row.
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // myrmidon(F16): the issue-list agent defaults stored in the same general
@@ -74,6 +77,9 @@ import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
 // general settings row (the sweep reads them through this schema).
 import { storedPauseGuardSettingsSchema } from "../myrmidon-pause-guard.js";
+// myrmidon(1.7-REBRAND-F): the vendor-name gate settings stored in the same
+// general settings row (mode + ratchet baseline).
+import { vendorNameCheckSettingsSchema } from "../myrmidon-vendor-name.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys stored
 // in the same general settings row.
 import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
@@ -96,6 +102,8 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
+import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
 import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
 // myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
 import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
@@ -210,6 +218,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // automatically". Lenient: a hand-edited row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-model-menu.ts).
   modelMenu: storedModelMenuSettingsSchema,
+  // OPE-9499: API-equivalent price list for subscription-backed token usage.
+  modelApiPricing: modelApiPricingSettingsSchema.optional(),
   // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle (enabled, idle TTL),
   // changed from /api/myrmidon/bot-disk; absent means "use the environment
   // variable, then the default". Lenient: a row without the key, with unknown
@@ -269,6 +279,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): the guardrail enforcement modes; absent means default (flag).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
@@ -346,6 +358,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/bridge-language; absent means "use the environment force,
   // then English".
   bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
+  ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".
@@ -392,6 +405,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // means the default (10). Same contract comment as the field in
   // packages/shared/src/types/instance.ts.
   blockerRootFanoutAlertLimit: z.number().int().min(1).max(1000).optional(),
+  issueRewakeFreezeThreshold: z.number().int().min(2).max(8).optional(),
   // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
   // how many HTTP processes (`api`) and scheduler processes (`worker`) the
   // deployment asks for. The stored row is accepted as it is, including the
@@ -418,6 +432,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.7-REBRAND-F): the vendor-name gate of the instance — the mode
+  // (ratchet / strict) and the ratchet baseline, changed from the instance
+  // settings page and GET/PATCH /api/myrmidon/vendor-name-check; absent means
+  // the module defaults (ratchet against the count the instance records).
+  vendorNameCheck: vendorNameCheckSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

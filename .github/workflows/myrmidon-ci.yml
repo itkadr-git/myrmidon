@@ -6,9 +6,10 @@ name: Myrmidon CI
 #   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
 #   full - push to main, manual runs, merge queue (always full), PRs labelled
-#          `full-ci` or `review-approved` (the label itself starts a full run:
-#          the owner account has no merge queue, so the approval label is the
-#          "ready to land" gate), and PRs touching
+#          `full-ci` (the label itself starts a full run). Since 30.10 the
+#          `review-approved` label no longer forces the full tier on a PR: the
+#          full tier runs on main after the merge (owner decision, CI capacity),
+#          and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
@@ -20,7 +21,7 @@ name: Myrmidon CI
 
 on:
   pull_request:
-    # `labeled` makes the `review-approved` (and `full-ci`) label start a run
+    # `labeled` makes the `full-ci` label start a run
     # on the same head, which the plan then escalates to the full tier.
     types: [opened, synchronize, reopened, labeled]
   merge_group:
@@ -31,6 +32,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # Superseded runs are cancelled on PRs and on main alike; a cancelled run
@@ -38,11 +40,13 @@ concurrency:
   # merge_group run evicts the group from the queue, so queue runs are never
   # cancelled.
   #
-  # `labeled` only matters for `full-ci` and `review-approved`. A run started
+  # `labeled` only matters for `full-ci`. A run started
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
+  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') && '-label-noop' || '' }}
+  # 31.10: only PR runs cancel each other. A push to main never cancels the main CI in flight: with a 4+ h hosted
+  # queue every auto-merge restarted main CI from the back of the queue and main never got a verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -52,8 +56,8 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
@@ -93,8 +97,14 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
+          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
+          # (full-ci label keeps full). rel/* PRs use the same lowering but escalate back to full above
+          # MAX_FAST_FILES_PER_PACKAGE; other PRs add --pr-light: a package over the limit runs its direct
+          # tests (changed, next to the source, direct importers, shared guards; capped, drops are logged)
+          # instead of going full. main, merge_group and tags never get either flag.
+          PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -109,7 +119,10 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            case "$BASE_REF" in
+              rel/*) args+=(--release-fast) ;;
+              *) if [ "$EVENT" = "pull_request" ] && [ "$PR_FAST" = "true" ]; then args+=(--release-fast --pr-light); fi ;;
+            esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -120,13 +133,39 @@ jobs:
           path: ${{ runner.temp }}/plan.json
           retention-days: 3
 
+  migration-guard:
+    name: migration guard
+    needs: plan
+    if: ${{ github.event_name == 'pull_request' && (needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Run migration collision guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/myrmidon/ci/migration-guard.mjs pr "$HEAD_SHA" "$PR_NUMBER"
+
   typecheck:
     name: typecheck + build
     # typecheck and build share one checkout, install and Rust cache; the build
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -183,6 +222,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: install
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck all workspaces
@@ -198,20 +238,33 @@ jobs:
           pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
 
       - name: Build Runner issue-thread viewer
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'full' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
       - name: Build (runner TypeScript only, no Rust release binary)
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'fast' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'fast' }}
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
           pnpm --filter @myrmidon/paperclip-runner build:typescript
           pnpm -r --filter '!@myrmidon/paperclip-runner' build
+
+      - name: Vendor name in the build — built UI bundle and fresh response snapshots
+        # REBRAND F: the vendor's name stays only in the LICENSE, the third-party
+        # notices and the About attribution line. Ratchet: the visible count may
+        # not grow above scripts/myrmidon/vendor-name/vendor-name-policy.json.
+        # The snapshots are captured afresh here, so the gate reads the bundle and
+        # the server answers of THIS commit, not a stale checked-in copy.
+        run: |
+          set -euo pipefail
+          snapshots="$RUNNER_TEMP/vendor-name-snapshots"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots --snapshots "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
 
   tests-affected:
     name: tests (affected)
@@ -267,7 +320,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -275,9 +328,16 @@ jobs:
         # Same split as the vendor's trusted PR CI: `pnpm test:run` equals the
         # union of the general groups and the serialized server suites.
         include:
-          - { label: "server 1/3", mode: general, group: general-server, shard_index: 0, shard_count: 3 }
-          - { label: "server 2/3", mode: general, group: general-server, shard_index: 1, shard_count: 3 }
-          - { label: "server 3/3", mode: general, group: general-server, shard_index: 2, shard_count: 3 }
+        # general-server: 6 shards balanced by recorded suite cost
+        # (scripts/general-server-shard-durations.json). shard_count must equal
+        # the number of entries; scripts/myrmidon/ci/general-server-shards.test.mjs
+        # checks that the shards cover every suite exactly once.
+          - { label: "server 1/6", mode: general, group: general-server, shard_index: 0, shard_count: 6 }
+          - { label: "server 2/6", mode: general, group: general-server, shard_index: 1, shard_count: 6 }
+          - { label: "server 3/6", mode: general, group: general-server, shard_index: 2, shard_count: 6 }
+          - { label: "server 4/6", mode: general, group: general-server, shard_index: 3, shard_count: 6 }
+          - { label: "server 5/6", mode: general, group: general-server, shard_index: 4, shard_count: 6 }
+          - { label: "server 6/6", mode: general, group: general-server, shard_index: 5, shard_count: 6 }
           - { label: "workspaces-a", mode: general, group: general-workspaces-a }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
           - { label: "serialized 1/2", mode: serialized, shard_index: 0, shard_count: 2 }
@@ -338,7 +398,7 @@ jobs:
     name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 50
     steps:
       - name: Checkout repository
@@ -409,8 +469,8 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -489,9 +549,32 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Brand release audit (DEBRAND gate)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/myrmidon/docs-branding-guard.mjs
+          node scripts/myrmidon/brand-release-audit.mjs --gate
+
       - name: SQL template lint (myrmidon)
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
+
+      - name: i18n guard (repo guard scanner and English catalog key precheck)
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types scripts/myrmidon/i18n/precheck.mts ui/src
+
+      - name: Migration numbers are unique in packages/db/src/migrations
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          d=packages/db/src/migrations
+          dup=$(ls "$d" | grep -E '^[0-9]+_.*\.sql$' | grep -oE '^[0-9]+_' | sort | uniq -d || true)
+          if [ -n "$dup" ]; then
+            echo "::error::duplicate migration numbers (renumber your migration): $dup"
+            ls "$d" | grep -E "^($(echo $dup | tr ' ' '|'))" || true
+            exit 1
+          fi
+          echo "migration numbers unique: $(ls "$d" | grep -cE '^[0-9]+_.*\.sql$') SQL migrations"
 
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
@@ -542,6 +625,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/check-licenses.mjs
 
+      - name: Vendor name — recorded response snapshots (ratchet)
+        # REBRAND F: the same gate as in the build lane, on the snapshot set
+        # committed in the repository (scripts/myrmidon/vendor-name/snapshots).
+        # Runs in every tier, so a change that only touches our own policy or
+        # snapshots is still checked.
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots
+
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
@@ -568,8 +659,8 @@ jobs:
     name: go tools (dockergate + fleetd)
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -664,13 +755,92 @@ jobs:
               go vet ./...
               go test -count=1 ./...
             '
+
+  plugin-readiness:
+    name: plugin readiness timing
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.tier != 'docs' }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_CHECKS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        if: ${{ !cancelled() }}
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin SDK
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
+
+      - name: Measure plugin readiness and reload timing
+        if: ${{ !cancelled() }}
+        env:
+          DATABASE_URL: postgres://postgres:postgrespassword@127.0.0.1:5432/postgres
+          PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+          PORT: 3100
+          PLUGIN_READY_THRESHOLD_SEC: "10"
+        run: |
+          set -euo pipefail
+          node scripts/measure-plugin-readiness.mjs
+
+      - name: Upload plugin readiness timing artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: plugin-readiness-timing
+          path: plugin-readiness-timing.json
+          retention-days: 7
+
   ci-result:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness]
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
@@ -705,13 +875,23 @@ jobs:
     name: report main status
     needs: [ci-result]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
+    # 31.10: reporting must never turn a main run red. The light own-runner pool (vps-ci) has no gh,
+    # so this job failed with exit 127 on green runs and main CI read as failed.
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
       issues: write
     steps:
+      - name: Ensure gh CLI
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          v=2.62.0
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${v}_linux_amd64/bin" >> "$GITHUB_PATH"
       - name: Open, update or close the main-red issue
         env:
           GH_TOKEN: ${{ github.token }}

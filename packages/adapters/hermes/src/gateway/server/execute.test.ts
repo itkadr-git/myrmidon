@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -516,6 +516,105 @@ describe("execute", () => {
   }
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
+
+  it("keeps the provider's terminal error when every configured fallback also fails", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "The server is overloaded. Please retry!" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a", "backup-b"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.model).toBe("primary");
+    expect(result.summary).toBeUndefined();
+  });
+
+  it("serializes configured fallback models in declared order", async () => {
+    const config = { ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a", "backup-b"] } };
+    const body = await runAndReadBody(makeCtx(config));
+    expect(body.fallback_model).toEqual([
+      { provider: "openai", model: "backup-a" },
+      { provider: "openai", model: "backup-b" },
+    ]);
+    const bareConfig = { ...wsBaseConfig, model: "primary", provider: "openai", fallbacks: ["backup-c"] };
+    expect((await runAndReadBody(makeCtx(bareConfig))).fallback_model).toEqual([
+      { provider: "openai", model: "backup-c" },
+    ]);
+  });
+
+  it("dispatches the configured fallback model after an HTTP-200 overload body", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        const run = url.includes("run-primary") ? "The server is (sometimes) overloaded due to high user traffic. Please retry!" : "fallback answer";
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: run })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(bodies[1].model_attempt_id).toContain("fallback:backup-a");
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("backup-a");
+    expect(result.summary).toBe("fallback answer");
+    expect(result.resultJson?.result).toBe("fallback answer");
+  });
+
+  it("suppresses provider error text from the final response when no fallback models are configured", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai" });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream([
+            "event: run.completed",
+            `data: ${JSON.stringify({
+              status: "completed",
+              output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+            })}`,
+            "",
+          ].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary"]);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson?.result).toBe("");
+    expect(result.resultJson?.output).toBe("");
+    expect(result.resultJson?.provider_error_as_content).toBe(true);
+  });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
   // override; heartbeat merges it over the agent card into `ctx.config` before
@@ -1266,6 +1365,179 @@ describe("mapFinalResultForTest", () => {
     expect(result.summary?.endsWith("КОНЕЦ")).toBe(true);
   });
 
+  it("persists only gateway call identifiers and count metadata with usage, not prompt data", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          call_id: "call-456",
+          usage: {
+            model_call_count: 2,
+            litellm_request_ids: ["req-123"],
+            input_tokens: 120,
+            cached_input_tokens: 30,
+            output_tokens: 45,
+          },
+          prompt: "must not be recorded",
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson).toMatchObject({
+      gatewayCallIds: ["call-456"],
+      litellmRequestIds: ["req-123"],
+      modelCallCount: 2,
+      modelCallCountSource: "gateway_count",
+      usage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 45 },
+    });
+    expect(JSON.stringify(result.resultJson)).not.toContain("must not be recorded");
+  });
+
+  it("uses explicit gateway model-call count only when call IDs are absent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: { status: "completed", model_call_count: 3, usage: { input_tokens: 1 } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.modelCallCount).toBe(3);
+    expect(result.resultJson?.gatewayCallIds).toEqual([]);
+  });
+
+  it("prefers an explicit call count and keeps partial ID namespaces independent", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-telemetry",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model_call_count: 7,
+          gateway_call_ids: ["gw-1"],
+          litellm_request_ids: ["gw-1"],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(7);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["gw-1"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["gw-1"]);
+  });
+
+  it("does not infer a count when gateway IDs are partial and LiteLLM IDs are missing", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-ids",
+        status: "completed",
+        payload: { gateway_call_ids: ["gw-1", "gw-2"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBeNull();
+    expect(result.resultJson?.modelCallCountSource).toBe("unknown");
+  });
+
+  it("preserves explicit counts when ID metadata is partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-partial-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["gw-1"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+  });
+
+  it("prefers reported gateway count when identifier namespaces are partial", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-count-partial",
+        status: "completed",
+        payload: { model_call_count: 4, gateway_call_ids: ["call-a"], litellm_request_ids: ["req-a", "req-b"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.gatewayCallIds).toEqual(["call-a"]);
+    expect(result.resultJson?.litellmRequestIds).toEqual(["req-a", "req-b"]);
+  });
+
+  it("uses explicit count carried in usage when terminal envelope lacks one", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-count",
+        status: "completed",
+        payload: { usage: { model_call_count: 4 }, gateway_call_ids: ["call-a"] },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(4);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_count");
+  });
+
+  it("does not infer count by adding IDs from distinct namespaces", () => {
+    const ids = Array.from({ length: 550 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overflow",
+        status: "completed",
+        payload: { gateway_call_ids: ids, litellm_request_ids: ids.map((id) => `req-${id}`) },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.gatewayCallIds).toEqual(ids.slice(0, 500));
+    expect(result.resultJson?.gatewayCallIdsTruncated).toBe(true);
+    expect(result.resultJson?.litellmRequestIds).toEqual(ids.map((id) => `req-${id}`).slice(0, 500));
+    expect(result.resultJson?.litellmRequestIdsTruncated).toBe(true);
+    expect(result.resultJson?.modelCallCount).toBeNull();
+  });
+  it("counts gateway output call entries when the response has no count metadata", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-output-count", status: "completed", payload: {} },
+      outputChunks: ["🔧 Calling gpt-6-luna", "🔧 Calling gpt-6.1-sol"],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.resultJson?.modelCallCount).toBe(2);
+    expect(result.resultJson?.modelCallCountSource).toBe("gateway_metadata");
+  });
+
+  it("keeps explicit count when a gateway call ID list is capped", () => {
+    const ids = Array.from({ length: 125 }, (_, index) => `call-${index}`);
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-count", status: "completed", payload: { model_call_count: 125, gateway_call_ids: ids } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    const resultJson = result.resultJson as Record<string, unknown>;
+    expect(resultJson.modelCallCount).toBe(125);
+    expect((resultJson.gatewayCallIds as string[]).length).toBe(125);
+    expect(resultJson.gatewayCallIdsTruncated).toBe(false);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1366,6 +1638,80 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
     expect(result.errorFamily).toBe("permanent_config_error");
+  });
+
+  it("rejects a completed overloaded response as a retryable failure, never as comment content", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-overloaded",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          model: "gpt-main",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+      configuredModel: "gpt-main",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ result: "", output: "" });
+    expect(warn).toHaveBeenCalledWith("provider_error_as_content", { model: "gpt-main" });
+    warn.mockRestore();
+  });
+
+  it("keeps at least five ordinary short responses out of provider error detection", () => {
+    for (const response of [
+      "Hello.",
+      "Try again tomorrow.",
+      "The server is helpful.",
+      "Quota means a limit.",
+      "Please retry this command later.",
+      "Status: OK | Total items processed: 42",
+      "Task completed successfully | Next step: review",
+    ]) {
+      expect(isProviderErrorAsContent(response)).toBe(false);
+    }
+  });
+
+  it("detects the overloaded HTTP-200 response with a newline", () => {
+    expect(isProviderErrorAsContent("The server is (sometimes) overloaded\ndue to high user traffic. Please retry!")).toBe(true);
+  });
+
+  it("detects the full production composite overloaded response", () => {
+    expect(
+      isProviderErrorAsContent(
+        "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat an overload-like tool result as a provider error", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-tool-output",
+        status: "completed",
+        output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+        payload: {
+          status: "completed",
+          output: "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+          tool_calls: [{ name: "lookup", result: "The server is (sometimes) overloaded due to high user traffic. Please retry!" }],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorFamily).toBeUndefined();
   });
 
   it("keeps a failure without the key-permission signature a plain provider failure", () => {
@@ -3408,5 +3754,228 @@ describe("model input limit (OPE-6168)", () => {
     const { body } = await sentBody({}, huge);
     expect(body.input).toContain("END-OF-TASK");
     expect(body.input).not.toContain("characters omitted");
+  });
+});
+
+describe("OPE-9476: cooldown, structured rate-limits, model response start lifecycle and failed-before-model", () => {
+  const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-key" };
+
+  it("extracts structured cooldown and retry-after from HTTP 429 create response and marks failedBeforeModel", async () => {
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: {
+                message: "No deployments available. All deployments (openai/chatgpt) are in cooldown. Retry after 75s.",
+                type: "rate_limit_error",
+                code: 429,
+                retry_after: 75,
+              },
+            }),
+            {
+              status: 429,
+              headers: {
+                "content-type": "application/json",
+                "retry-after": "75",
+              },
+            },
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeDefined();
+    const diffMs = new Date(result.retryNotBefore!).getTime() - Date.now();
+    expect(diffMs).toBeGreaterThanOrEqual(70_000);
+    expect(diffMs).toBeLessThanOrEqual(80_000);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+  });
+
+  it("marks failedBeforeModel = false when model response started before terminal failure", async () => {
+    const runId = "run-delta-then-fail";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: message.delta\ndata: {"delta":"Hello world"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":"Upstream disconnected"}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.modelResponseStarted).toBe(true);
+    expect(result.resultJson?.failedBeforeModel).toBe(false);
+  });
+
+  it("handles structured LiteLLM cooldown in terminal event before model response starts", async () => {
+    const runId = "run-cooldown-before-model";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":{"message":"RateLimitError: No deployments available","type":"rate_limit_error","code":429,"retry_after":120},"retry_after":120}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeDefined();
+    const diffMs = new Date(result.retryNotBefore!).getTime() - Date.now();
+    expect(diffMs).toBeGreaterThanOrEqual(115_000);
+    expect(diffMs).toBeLessThanOrEqual(125_000);
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+  });
+
+  it("handles real event stream: rate limit failure without retry hint produces no retryNotBefore", async () => {
+    const runId = "run-cooldown-no-hint-stream";
+    const sseBody = [
+      'event: run.started\ndata: {"status":"running"}\n\n',
+      'event: run.failed\ndata: {"status":"failed","error":{"message":"RateLimitError: No deployments available. All deployments in cooldown","type":"rate_limit_error","code":429}}\n\n',
+    ].join("");
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: runId, status: "started" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes(`/v1/runs/${runId}/events`)) {
+        return Promise.resolve(
+          new Response(sseStream(sseBody), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ ...wsBaseConfig, apiBaseUrl: "http://127.0.0.1:8642" });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeModel).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeNull();
+    expect(result.resultJson?.modelResponseStarted).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(true);
+  });
+
+  it("marks failedBeforeModel: false when errorResult is invoked after modelResponseStarted: true", () => {
+    const error = new Error("Gateway stream broke mid-generation");
+    const state = { modelResponseStarted: true };
+    const result = errorResult(error, (t) => t, state);
+
+    expect(result.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.failedBeforeModel).toBe(false);
+    expect(result.resultJson?.modelResponseStarted).toBe(true);
+    expect(result.resultJson?.failed_before_model).toBeUndefined();
+  });
+
+  it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-non-cooldown",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "SyntaxError: Unexpected token in JSON",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-1",
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.cooldown).toBeUndefined();
+    expect(result.errorFamily).not.toBe("provider_quota");
+  });
+
+  it("does not synthesize 60s retryNotBefore when cooldown has no retry hint", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-cooldown-no-hint",
+        status: "failed",
+        payload: {
+          error_code: 429,
+          error: {
+            type: "rate_limit_error",
+            message: "RateLimitError: No deployments available in cooldown",
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-2",
+      strategy: "issue",
+    });
+
+    expect(result.resultJson?.cooldown).toBe(true);
+    expect(result.errorFamily).toBe("provider_quota");
+    // mapFinalResultForTest preserves the adapter's null (no structured hint),
+    // distinct from undefined: null says "cooldown confirmed, no retry hint".
+    expect(result.retryNotBefore).toBeNull();
   });
 });

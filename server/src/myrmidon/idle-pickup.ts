@@ -1,12 +1,13 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { blockerOpenSql } from "./blocker-resolved.js";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidon/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, issueWorkProducts, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidon/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { liveIdlePickupSettings, liveIdleWakeBudget } from "./runs-queue-settings/live.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
 
@@ -100,12 +101,7 @@ const IDLE_PICKUP_BOARD_CANCELLATION_SOURCES = new Set(["board_operator", "reass
 
 /** Interval in seconds; invalid or too-small values fall back to the default. */
 export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_INTERVAL_SEC_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_IDLE_PICKUP_INTERVAL_SEC;
-  return Math.max(MIN_IDLE_PICKUP_INTERVAL_SEC, value);
+  return liveIdlePickupSettings(env).intervalSec;
 }
 
 /**
@@ -113,8 +109,7 @@ export function readIdlePickupIntervalSec(env: NodeJS.ProcessEnv = process.env):
  * unrecognized value keeps it on. Only an explicit off value disables it.
  */
 export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[IDLE_PICKUP_ENABLED_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+  return liveIdlePickupSettings(env).enabled;
 }
 
 /**
@@ -128,12 +123,7 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
-  if (!raw) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  if (!/^\d+$/.test(raw)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) return DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS;
-  return value;
+  return liveIdlePickupSettings(env).recentSuccessWindowMs;
 }
 
 /** Bounded non-negative integer reader shared by the two budget knobs. */
@@ -165,21 +155,7 @@ export interface IdleWakeBudgetSettings {
  * spend the whole window in one pass.
  */
 export function readIdleWakeBudgetSettings(env: NodeJS.ProcessEnv = process.env): IdleWakeBudgetSettings {
-  const perMinute = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BUDGET_PER_MIN_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  const batch = readBoundedInt(
-    env,
-    IDLE_PICKUP_WAKE_BATCH_ENV,
-    DEFAULT_IDLE_PICKUP_WAKE_BATCH,
-    1,
-    MAX_IDLE_PICKUP_WAKE_BUDGET_PER_MIN,
-  );
-  return { perMinute, batch: Math.min(perMinute, batch) };
+  return liveIdleWakeBudget(env);
 }
 
 /**
@@ -365,6 +341,9 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * run in the loop in `idlePickupForAgent`.
  */
 export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+  // Keep idle-pickup candidate SQL prefilter aligned: review stages in_review where agent is currentParticipant
+  const isReviewParticipant =
+    sql`${issues.status} = 'in_review' and ${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent' and ${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agentId}`;
   return db
     .select({
       id: issues.id,
@@ -378,14 +357,16 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
     .where(
       and(
         eq(issues.companyId, companyId),
-        eq(issues.assigneeAgentId, agentId),
-        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
-        // assigned to this agent (by hand or by a gated claim) stays theirs —
-        // the scope applies where a task is handed out (matcher, role queue).
-        isNull(issues.assigneeUserId),
+        or(
+          and(
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          ),
+          isReviewParticipant,
+        ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
-        inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
         // Not blocked by an unresolved blocker: no `blocks` edge whose blocker
         // is anything other than `done`. This mirrors the board's readiness
         // rule (only a done blocker resolves its dependent): an open blocker
@@ -447,10 +428,76 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         // unblock clears a settled hold (settled-holds/human-unblock.ts), and
         // the issue comes back here on the next pass.
         issueHasNoExecutionHold(db),
+        // myrmidon(OPE-7707): do not wake an agent on a task waiting for an
+        // interaction or external unblock (prevents idle pickup looping on pending questions).
+        sql`not exists (
+          select 1
+          from issue_thread_interactions iti
+          where iti.company_id = ${issues.companyId}
+            and iti.issue_id = ${issues.id}
+            and iti.status = 'pending'
+        )`,
+        isNull(issues.unblockDescriptor),
       ),
     )
     .orderBy(asc(issues.createdAt))
     .limit(200);
+}
+
+/**
+ * OPE-10082: Returns true if an issue's review stage is pending for the agent and waiting for CI.
+ * When true, idle pickup should not wake the review participant.
+ */
+export function isReviewPendingWaitingForCi(params: {
+  agentId: string;
+  executionState: unknown;
+  workProductMetadata?: Record<string, unknown> | null;
+  candidateCiState?: unknown;
+}): boolean {
+  const es =
+    params.executionState !== null && typeof params.executionState === "object"
+      ? (params.executionState as Record<string, unknown>)
+      : null;
+  if (!es || es.status !== "pending" || es.currentStageType !== "review") {
+    return false;
+  }
+  const participant =
+    es.currentParticipant !== null && typeof es.currentParticipant === "object"
+      ? (es.currentParticipant as Record<string, unknown>)
+      : null;
+  if (participant && participant.type === "agent" && participant.agentId !== params.agentId) {
+    return false;
+  }
+
+  const candidateCiState =
+    (typeof params.candidateCiState === "string" ? params.candidateCiState : null) ??
+    (typeof es.ciState === "string" ? es.ciState : null) ??
+    (typeof (es.reviewRequest as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.reviewRequest as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof (es.monitor as Record<string, unknown> | null)?.ciState === "string"
+      ? ((es.monitor as Record<string, unknown>).ciState as string)
+      : null) ??
+    (typeof es.ci === "string" ? es.ci : null);
+
+  const wpMeta = params.workProductMetadata;
+  const activeCi =
+    wpMeta?.activeCi !== null && typeof wpMeta?.activeCi === "object"
+      ? (wpMeta.activeCi as Record<string, unknown>)
+      : null;
+  const wpCiState =
+    (typeof wpMeta?.ciState === "string" ? wpMeta.ciState : null) ??
+    (typeof wpMeta?.ci === "string" ? wpMeta.ci : null) ??
+    (typeof activeCi?.state === "string" ? activeCi.state : null) ??
+    (typeof activeCi?.status === "string" ? activeCi.status : null);
+
+  const detectedCiState = (candidateCiState ?? wpCiState)?.toLowerCase();
+  return (
+    detectedCiState === "pending" ||
+    detectedCiState === "unknown" ||
+    detectedCiState === "queued" ||
+    detectedCiState === "in_progress"
+  );
 }
 
 /**
@@ -563,6 +610,27 @@ export async function idlePickupForAgent(
   // order the queued-run start path uses for one agent's runs.
   const ordered = orderIdlePickupCandidates(candidates);
 
+  const candidateIds = ordered.map((c) => c.id);
+  const prProducts =
+    candidateIds.length > 0
+      ? await deps.db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+          })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, agent.companyId),
+              inArray(issueWorkProducts.issueId, candidateIds),
+              eq(issueWorkProducts.type, "pull_request"),
+            ),
+          )
+      : [];
+  const prMetadataByIssueId = new Map(
+    prProducts.map((p) => [p.issueId, p.metadata as Record<string, unknown> | null]),
+  );
+
   // myrmidon(1.6.5 F-26 T5, design §4.3): cooling. A task whose last
   // automatic run ended stale and that has not moved since is not woken again
   // until the exponential window (base*2^(n-1), ceiling 24 h) elapses — this
@@ -585,6 +653,27 @@ export async function idlePickupForAgent(
     }
     if (liveIssueIds.has(candidate.id)) {
       result.alreadyActive += 1;
+      continue;
+    }
+    // OPE-10082: idle_pickup does not wake a review participant for an issue whose
+    // review stage is pending and waiting for CI (ciState pending/unknown).
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prMetadataByIssueId.get(candidate.id),
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      result.alreadyActive += 1;
+      logger.info(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          issueId: candidate.id,
+        },
+        "myrmidon.idle_pickup: skipped review participant wake while review stage is pending and waiting for CI",
+      );
       continue;
     }
     const recentRun = recentRunsByIssueId.get(candidate.id);
@@ -863,6 +952,27 @@ export async function findTopReadyIssueForAgent(
   for (const candidate of orderIdlePickupCandidates(candidates)) {
     if (liveIssueIds.has(candidate.id)) continue;
     if (await hasCoveringWake(db, agent, candidate.id)) continue;
+    const prProduct = await db
+      .select({ metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, agent.companyId),
+          eq(issueWorkProducts.issueId, candidate.id),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (
+      isReviewPendingWaitingForCi({
+        agentId: agent.id,
+        executionState: candidate.executionState,
+        workProductMetadata: prProduct?.metadata as Record<string, unknown> | null,
+        candidateCiState: (candidate as unknown as Record<string, unknown>).ciState,
+      })
+    ) {
+      continue;
+    }
     return candidate;
   }
   return null;
@@ -891,6 +1001,8 @@ export interface IdlePickupSweepResult extends IdlePickupResult {
 }
 
 export interface IdlePickupSweeperDeps extends IdlePickupDeps {
+  /** Retry pending participant reviews before the general assigned-task lane. */
+  pickupReviewForAgent?: (agent: { id: string; companyId: string }) => Promise<{ handled: boolean; woken: number }>;
   /** Invokability check for one agent (evaluateAgentInvokabilityFromDb): false for a paused agent. */
   isAgentInvokable: (agent: {
     id: string;
@@ -928,9 +1040,10 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
       // the environment; the reader already resolved that precedence per key.
       // Without a reader this module keeps reading the environment itself.
       const liveness = deps.readLiveness ? (await deps.readLiveness()).settings : null;
+      const idleSettings = liveness ? null : liveIdlePickupSettings(env);
       const intervalMs =
-        (liveness ? liveness.idlePickupIntervalSec : readIdlePickupIntervalSec(env)) * 1000;
-      const enabled = liveness ? liveness.idlePickupEnabled : readIdlePickupEnabled(env);
+        (liveness ? liveness.idlePickupIntervalSec : idleSettings!.intervalSec) * 1000;
+      const enabled = liveness ? liveness.idlePickupEnabled : idleSettings!.enabled;
       if (!enabled) {
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
@@ -938,11 +1051,11 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
         return { agentsChecked: 0, skippedOverBatch: 0, ...emptyIdlePickupResult() };
       }
       lastSweepAtMs = now.getTime();
-      const envWake = readIdleWakeBudgetSettings(env);
+      const envWake = liveness ? null : liveIdleWakeBudget(env);
       // A pass never spends more of the minute than the minute holds, whichever
       // layer set the two numbers.
-      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake.perMinute;
-      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake.batch, perMinute);
+      const perMinute = liveness ? liveness.idlePickupWakeBudgetPerMin : envWake!.perMinute;
+      const batch = Math.min(liveness ? liveness.idlePickupWakeBatch : envWake!.batch, perMinute);
       // The release path spends the same budget object; handing it the resolved
       // pair keeps both paths on the numbers the operator saved.
       deps.budget?.configure({ perMinute, batch });
@@ -986,6 +1099,12 @@ export function createIdlePickupSweeper(deps: IdlePickupSweeperDeps): IdlePickup
           continue;
         }
         agentsChecked += 1;
+        const review = await deps.pickupReviewForAgent?.(agent);
+        if (review?.handled) {
+          wakesPerCompany.set(agent.companyId, (wakesPerCompany.get(agent.companyId) ?? 0) + review.woken);
+          totals.woken += review.woken;
+          continue;
+        }
         const perAgent = await idlePickupForAgent(deps, agent, {
           // The pass already decided with the resolved settings; handing the
           // decision over keeps the environment from vetoing a stored "on".

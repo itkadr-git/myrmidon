@@ -22,6 +22,7 @@ const apiMock = vi.hoisted(() => ({
   models: vi.fn(),
   updateModels: vi.fn(),
   channels: vi.fn(),
+  litellmChannels: vi.fn(),
 }));
 
 vi.mock("./modelProvidersApi", async (importOriginal) => ({
@@ -86,6 +87,7 @@ beforeEach(() => {
   apiMock.add.mockReset();
   apiMock.rotate.mockReset();
   apiMock.remove.mockReset().mockResolvedValue({ ok: true });
+  apiMock.litellmChannels.mockReset().mockResolvedValue({ channels: [] });
   apiMock.updateModels.mockReset();
 });
 

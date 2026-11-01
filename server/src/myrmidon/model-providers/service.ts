@@ -640,9 +640,9 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
-    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || 0);
+    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
     const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
-    const state = typeof raw.state === "string" ? raw.state : "unknown";
+    const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
     const limitedUntil =
       typeof raw.limited_until === "number"
         ? raw.limited_until
@@ -710,6 +710,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       state === "banned" ||
       state === "token_expired" ||
       Boolean(raw.banned) ||
+      Boolean(raw.isBanned) ||
       Boolean(
         rawUsage.recentErrors?.some(
           (e: any) => e.status === 401 || e.status === 403,
@@ -735,6 +736,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         primaryExhausted ||
         secondaryExhausted);
 
+    const rawModels = Array.isArray(raw.models)
+      ? raw.models
+      : Array.isArray(raw.available_models)
+        ? raw.available_models
+        : Array.isArray(raw.availableModels)
+          ? raw.availableModels
+          : undefined;
+
     return {
       n,
       label,
@@ -742,6 +751,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       state,
       stateRu: mapStateToRu(state),
       plan: raw.plan || rawUsage.plan || null,
+      models: rawModels,
       limitedUntil,
       lastOk,
       windows: {

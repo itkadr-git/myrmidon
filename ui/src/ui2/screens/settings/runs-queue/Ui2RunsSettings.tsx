@@ -23,6 +23,8 @@ import { useCompany } from "@/context/CompanyContext";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2ErrorState, Ui2SkeletonRows } from "../../../components/ui2StateViews";
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
+import { Ui2TaskDrainBlock } from "./Ui2TaskDrainBlock";
+import { Ui2SwarmClaimBlock } from "./Ui2SwarmClaimBlock";
 
 /**
  * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
@@ -497,6 +499,9 @@ export function Ui2RunsSettings() {
         </button>
         {saveMutation.isPending ? <Ui2SkeletonRows rows={1} dense /> : null}
       </div>
+
+      <Ui2TaskDrainBlock />
+      <Ui2SwarmClaimBlock />
     </Ui2Page>
   );
 }

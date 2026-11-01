@@ -230,6 +230,7 @@ export interface AlertRecoveryRecord {
   state: AlertRecoveryState;
   /** How many firing events this task has seen, the first one included. */
   firedCount: number;
+  heldAt: string | null;
   firstFiredAt: string;
   lastFiredAt: string;
   resolvedAt: string | null;
@@ -248,6 +249,7 @@ export const alertRecoveryRecordSchema = z
     issueIdentifier: z.string().nullable().default(null),
     state: z.enum(ALERT_RECOVERY_STATES),
     firedCount: z.number().int().min(1),
+    heldAt: z.string().nullable().default(null),
     firstFiredAt: z.string().min(1),
     lastFiredAt: z.string().min(1),
     resolvedAt: z.string().nullable().default(null),
@@ -312,10 +314,11 @@ export function normalizeAlertHosts(hosts: readonly string[] | null | undefined)
 export function alertRecoveryIdentity(input: {
   source: string;
   trigger: string;
+  triggerId?: string | null;
   hosts?: readonly string[] | null;
 }): string {
   const source = input.source.trim().toLowerCase() || "unknown";
-  const trigger = normalizeAlertTrigger(input.trigger) || "unknown";
+  const trigger = normalizeAlertTrigger(input.triggerId?.trim() || input.trigger) || "unknown";
   const hosts = normalizeAlertHosts(input.hosts);
   return hosts.length ? `${source}:${trigger}:${hosts.join(",")}` : `${source}:${trigger}`;
 }
