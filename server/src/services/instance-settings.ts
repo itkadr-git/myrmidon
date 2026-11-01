@@ -15,6 +15,9 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -275,6 +278,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      timeZone: parsed.data.timeZone ?? DEFAULT_INSTANCE_TIME_ZONE,
+      numberFormat: parsed.data.numberFormat ?? DEFAULT_INSTANCE_NUMBER_FORMAT,
+      dateFormat: parsed.data.dateFormat ?? DEFAULT_INSTANCE_DATE_FORMAT,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
       // myrmidon(WORKSPACE-HYGIENE): the stored workspace quotas survive every general write
@@ -465,6 +471,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    timeZone: DEFAULT_INSTANCE_TIME_ZONE,
+    numberFormat: DEFAULT_INSTANCE_NUMBER_FORMAT,
+    dateFormat: DEFAULT_INSTANCE_DATE_FORMAT,
   };
 }
 
