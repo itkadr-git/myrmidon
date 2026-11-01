@@ -7058,6 +7058,11 @@ export function recoveryService(
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        extraContext: {
+          issueRecovery: true,
+          recoveryMode: "stranded_assigned_issue",
+          ...(latestRun?.id ? { continuationHead: latestRun.id } : {}),
+        },
       });
       if (queued) {
         result.continuationRequeued += 1;

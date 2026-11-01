@@ -29505,21 +29505,29 @@ export function heartbeatService(
       }
     }
 
-    if (opts.failedRunId && reason === "retry_failed_run") {
+    if (opts.failedRunId && (reason === "retry_failed_run" || reason === "issue_continuation_needed")) {
       const failed = await getRun(opts.failedRunId);
-      if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
-          reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
-          !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
-          !["failed", "timed_out"].includes(failed.status) ||
-          (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId) {
+      if (reason === "retry_failed_run" && (
+        opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
+        source !== "on_demand" || triggerDetail !== "manual" ||
+        !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
+        !["failed", "timed_out"].includes(failed.status) ||
+        (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId
+      )) {
         throw conflict("The selected failed run cannot be retried for this task.");
       }
-      if (!activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
+      if (reason === "issue_continuation_needed" && failed && (
+        failed.companyId !== agent.companyId || failed.agentId !== agentId ||
+        (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId
+      )) {
+        throw conflict("The selected failed run cannot be retried for this task.");
+      }
+      if (failed && !activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
         await sweepPendingCleanupLeases({ explicitRetry: {
           companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
         } });
       }
-      if (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner") {
+      if (failed && (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner")) {
         enrichedContextSnapshot.previousRunId = failed.id;
         enrichedContextSnapshot.forceFreshSession = true;
       }
@@ -31304,7 +31312,10 @@ export function heartbeatService(
             const lastRunRows = continuationRecovery
               ? []
               : await tx
-                  .select({ finishedAt: heartbeatRuns.finishedAt })
+                  .select({
+                finishedAt: heartbeatRuns.finishedAt,
+                contextSnapshot: heartbeatRuns.contextSnapshot,
+              })
                   .from(heartbeatRuns)
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
@@ -31322,6 +31333,9 @@ export function heartbeatService(
               ...(lastRunRows[0]?.finishedAt
                 ? [gt(activityLog.createdAt, lastRunRows[0].finishedAt)]
                 : []),
+              ...(readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)
+                ? [ne(activityLog.id, readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)!)]
+                : []),
             ];
             const [latestContinuationEvent] = continuationRecovery
               ? []
@@ -31338,6 +31352,14 @@ export function heartbeatService(
                 event: `${reason}:${agentId}`,
                 head: continuationRevision,
               });
+              enrichedContextSnapshot.continuationEventId = continuationRevision;
+              enrichedContextSnapshot.continuationEventRevision = continuationRevision;
+              payload = {
+                ...(payload ?? {}),
+                issueId,
+                continuationEventId: continuationRevision,
+                continuationEventRevision: continuationRevision,
+              };
               const claimOutcome = await tryClaimContinuationKey(tx as unknown as Db, {
                 companyId: agent.companyId,
                 key: continuationClaimKey,
@@ -31607,6 +31629,9 @@ export function heartbeatService(
                 );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
+              const latestRevision = readNonEmptyString(
+                recentTerminalRuns[0]?.contextSnapshot?.continuationEventId,
+              );
               const newInputRows = lastRunFinishedAt
                 ? await tx
                     .select({ id: activityLog.id })
@@ -31617,6 +31642,7 @@ export function heartbeatService(
                         eq(activityLog.entityType, "issue"),
                         eq(activityLog.entityId, issue.id),
                         gt(activityLog.createdAt, lastRunFinishedAt),
+                        ...(latestRevision ? [ne(activityLog.id, latestRevision)] : []),
                         inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
@@ -31918,7 +31944,10 @@ export function heartbeatService(
             const lastRunRows = isRecovery
               ? []
               : await tx
-                  .select({ finishedAt: heartbeatRuns.finishedAt })
+                  .select({
+                finishedAt: heartbeatRuns.finishedAt,
+                contextSnapshot: heartbeatRuns.contextSnapshot,
+              })
                   .from(heartbeatRuns)
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
@@ -31934,6 +31963,9 @@ export function heartbeatService(
               eq(activityLog.entityType, "issue"),
               eq(activityLog.entityId, issue.id),
               inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+              ...(readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)
+                ? [ne(activityLog.id, readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)!)]
+                : []),
             ];
             if (lastFinishedAt) {
               eventConditions.push(gt(activityLog.createdAt, lastFinishedAt));
@@ -31953,7 +31985,16 @@ export function heartbeatService(
                   .where(and(...eventConditions))
                   .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
 
-            if (!isRecovery && eventRows.length === 0) {
+            const lastRunContinuationRevision = readNonEmptyString(
+              lastRunRows[0]?.contextSnapshot?.continuationEventId,
+            );
+            const selectedEventId =
+              eventRows.find((event) => event.id !== lastRunContinuationRevision)?.id ?? null;
+            const continuationRevision = isRecovery && recoveryParentRunId
+              ? `recovery:${recoveryParentRunId}`
+              : selectedEventId;
+
+            if (!isRecovery && !continuationRevision) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                 reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
@@ -31964,12 +32005,7 @@ export function heartbeatService(
               return { kind: "skipped" as const };
             }
 
-            const eventRevision = eventRows.length > 0 ? eventRows[0]!.id : null;
-            const revision = isRecovery
-              ? eventRevision
-                ? `recovery:${recoveryToken}:${eventRevision}`
-                : `recovery:${recoveryToken}`
-              : eventRevision!;
+            const revision = continuationRevision!;
 
             const alreadyClaimedKey =
               readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) ??
@@ -31994,6 +32030,14 @@ export function heartbeatService(
 
             enrichedContextSnapshot.continuationEventId = revision;
             enrichedContextSnapshot.continuationEventRevision = revision;
+            if (
+              reason === "issue_continuation_needed" &&
+              isRecovery &&
+              !recoveryParentRunId &&
+              continuationRevision.startsWith("recovery:")
+            ) {
+              enrichedContextSnapshot.recoveryParentRunId = recoveryToken;
+            }
             if (recoveryParentRunId) enrichedContextSnapshot.retryOfRunId = recoveryParentRunId;
             const extraRecoveryProps = {
               ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
