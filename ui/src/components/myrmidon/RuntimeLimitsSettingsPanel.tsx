@@ -28,13 +28,20 @@ import {
  * literals and reads their values from the typed `limits` object; their
  * source label falls back to "default" (a source map for them arrives with
  * the shared key promotion).
+ *
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
+ * with part 2's shared key (`maxPerAgentStartSharePercent`, 1..100 or off,
+ * default 15). This panel is merged before part 2 lands, so the field is
+ * carried as a string literal, not a `RunLimitKey` — part 2 promotes it into
+ * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
  */
+const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
 const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
 const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
 
-type PanelLimitKey = RunLimitKey | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
+type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
 
-/** The field ids/draft keys of the panel (the shared keys plus the rc.3 CPU ceiling literals). */
+/** The field ids/draft keys of the panel (the shared keys plus the fair-share and rc.3 CPU ceiling literals). */
 export type { PanelLimitKey };
 
 /** Labels are resolved at call time, not at import, so a language switch applies. */
@@ -75,6 +82,21 @@ const fields = (): Array<{ key: PanelLimitKey; label: string; hint: string; opti
     key: "maxHostLoadPercentPerCore",
     label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostLoadPercentPerCore.label"),
     hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostLoadPercentPerCore.hint"),
+    optional: true,
+  },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3, part B): the deciding ceilings now —
+    // the measured CPU busy percent and, when the operator sets it, the PSI
+    // cpu pressure. The live host line sits next to the busy field.
+    key: CPU_BUSY_KEY,
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuBusyPercent.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuBusyPercent.hint"),
+    optional: true,
+  },
+  {
+    key: CPU_PSI_KEY,
+    label: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuPsiSomeAvg10.label"),
+    hint: i18n.t("area.settings-models-runtime-2.runtime-limits-settings-panel.maxHostCpuPsiSomeAvg10.hint"),
     optional: true,
   },
   {
