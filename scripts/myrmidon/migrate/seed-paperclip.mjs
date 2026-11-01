@@ -671,18 +671,6 @@ export async function seedPaperclip(options = {}) {
     report.counts.documents++;
     report.counts.documentRevisions++;
 
-    await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
-      method: "PUT",
-      body: {
-        title: `Техническая спецификация #${dIdx + 1}`,
-        format: "markdown",
-        body: `# Архитектурная спецификация задачи ${issue.identifier || issue.id}\n\n## 1. Введение\nПервоначальная версия спецификации требований к модулю.\n\n## 2. Границы применения\nПрименяется для внутренних микросервисов платформы.`,
-        changeSummary: "Создание первичной редакции архитектурной спецификации",
-      },
-    });
-    report.counts.documents++;
-    report.counts.documentRevisions++;
-
     const revision2 = await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
       method: "PUT",
       body: {
@@ -695,10 +683,13 @@ export async function seedPaperclip(options = {}) {
     });
     const revision2Id = revision2.data?.latestRevisionId || revision2.data?.revisionId || revision2.data?.id;
     if (!revision2Id) throw new Error(`Document revision 2 for ${issue.id} did not return a revision id`);
+    if (revision2Id === baseRevisionId) {
+      throw new Error(`Document revision 2 for ${issue.id} returned the same revision id as revision 1 (${revision2Id})`);
+    }
     report.counts.documentRevisions++;
 
     // Revision 3
-    await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
+    const revision3 = await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
       method: "PUT",
       body: {
         title: `Техническая спецификация #${dIdx + 1}`,
@@ -708,6 +699,11 @@ export async function seedPaperclip(options = {}) {
         baseRevisionId: revision2Id,
       },
     });
+    const revision3Id = revision3.data?.latestRevisionId || revision3.data?.revisionId || revision3.data?.id;
+    if (!revision3Id) throw new Error(`Document revision 3 for ${issue.id} did not return a revision id`);
+    if (revision3Id === revision2Id) {
+      throw new Error(`Document revision 3 for ${issue.id} returned the same revision id as revision 2 (${revision3Id})`);
+    }
     report.counts.documentRevisions++;
     console.log(`  + Document '${docKey}' created on issue ${issue.id} with 3 revisions`);
   }
@@ -771,6 +767,8 @@ export async function verifySeededData(client, report) {
     comments: 0,
     attachments: 0,
     largeAttachments: 0,
+    documents: 0,
+    documentRevisions: 0,
   };
 
   // 1. Verify Companies
@@ -842,13 +840,28 @@ export async function verifySeededData(client, report) {
     verifiedCounts.comments += comments.length;
   }
 
-  // Document revisions were seeded on the first 5 issues (specification key).
+  // Documents and their revisions were seeded on the first 5 issues
+  // (specification key, 3 revisions each). Count both exactly: the server
+  // must hold exactly as many documents/revisions as the report claims.
+  let verifiedDocuments = 0;
   let verifiedDocumentRevisions = 0;
   for (const sample of report.entities.sampleIssues) {
+    const docRes = await client.request(`/api/issues/${sample.id}/documents`);
+    const documents = Array.isArray(docRes.data) ? docRes.data : [];
+    const specification = documents.find((d) => d.key === "specification") || null;
+    if (!specification) {
+      throw new Error(`Verification failed: issue ${sample.id} has no 'specification' document on the server`);
+    }
+    verifiedDocuments += 1;
+
     const revRes = await client.request(`/api/issues/${sample.id}/documents/specification/revisions`);
     const revisions = Array.isArray(revRes.data) ? revRes.data : [];
+    if (revisions.length !== 3) {
+      throw new Error(`Verification failed: issue ${sample.id} 'specification' document has ${revisions.length} revisions on the server, expected 3`);
+    }
     verifiedDocumentRevisions += revisions.length;
   }
+  verifiedCounts.documents = verifiedDocuments;
   verifiedCounts.documentRevisions = verifiedDocumentRevisions;
 
   console.log("[seed-paperclip] API Verification results:", verifiedCounts);
@@ -863,6 +876,8 @@ export async function verifySeededData(client, report) {
     ["secrets", report.counts.secrets],
     ["issues", report.counts.issues],
     ["issuesWithTitleNeedsGeneration", report.counts.issuesWithTitleNeedsGeneration],
+    ["documents", report.counts.documents],
+    ["documentRevisions", report.counts.documentRevisions],
   ];
   const mismatches = expectations
     .filter(([key, expected]) => verifiedCounts[key] !== expected)
@@ -881,9 +896,6 @@ export async function verifySeededData(client, report) {
   }
   if (verifiedCounts.largeAttachments !== report.counts.largeAttachments) {
     throw new Error(`largeAttachments: local=${report.counts.largeAttachments} server=${verifiedCounts.largeAttachments}`);
-  }
-  if (verifiedCounts.documentRevisions !== report.counts.documentRevisions) {
-    throw new Error(`documentRevisions: local=${report.counts.documentRevisions} server=${verifiedCounts.documentRevisions}`);
   }
 
   return verifiedCounts;

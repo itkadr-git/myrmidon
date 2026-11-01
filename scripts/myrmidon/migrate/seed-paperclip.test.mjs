@@ -4,7 +4,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { parseArgs, readPasswords, PaperclipApiClient, seedPaperclip } from "./seed-paperclip.mjs";
+import { parseArgs, readPasswords, PaperclipApiClient, seedPaperclip, verifySeededData } from "./seed-paperclip.mjs";
 
 describe("seed-paperclip CLI and options parsing", () => {
   it("parses explicit-only defaults without environment fallbacks", () => {
@@ -191,6 +191,15 @@ describe("seedPaperclip mock flow execution", () => {
 
   const capturedAgents = [];
   const capturedIssues = [];
+  const documentCurrentRevision = new Map(); // doc URL -> latest revision id
+  const documentRevisionCounts = new Map(); // doc URL -> revision count
+  const createdCompanies = [];
+  const createdProjects = [];
+  const createdAgents = [];
+  const createdSecrets = [];
+  const createdIssueResponses = [];
+  const createdComments = [];
+  const createdAttachments = [];
 
   it("seeds all required entities with correct counts and payloads", async () => {
     server = http.createServer((req, res) => {
@@ -215,29 +224,98 @@ describe("seedPaperclip mock flow execution", () => {
           res.end(JSON.stringify({ claimed: true, userId: "usr-signin" }));
         } else if (req.url === "/api/companies" && req.method === "POST") {
           companyCounter++;
-          res.end(JSON.stringify({ id: `comp-${companyCounter}`, name: parsed.name, issuePrefix: parsed.issuePrefix }));
+          createdCompanies.push({ id: `comp-${companyCounter}`, name: parsed.name, issuePrefix: parsed.issuePrefix });
+          res.end(JSON.stringify(createdCompanies[companyCounter - 1]));
         } else if (req.url.includes("/projects") && req.method === "POST") {
           projectCounter++;
-          res.end(JSON.stringify({ id: `proj-${projectCounter}`, name: parsed.name }));
+          createdProjects.push({ id: `proj-${projectCounter}`, name: parsed.name, companyId: req.url.split("/")[3] });
+          res.end(JSON.stringify(createdProjects[projectCounter - 1]));
         } else if (req.url.includes("/agents") && req.method === "POST") {
           agentCounter++;
           capturedAgents.push(parsed);
-          res.end(JSON.stringify({ id: `agent-${agentCounter}`, name: parsed.name, appearance: parsed.appearance }));
+          createdAgents.push({ id: `agent-${agentCounter}`, name: parsed.name, appearance: parsed.appearance, companyId: req.url.split("/")[3] });
+          res.end(JSON.stringify(createdAgents[agentCounter - 1]));
         } else if (req.url.startsWith("/api/agents/") && req.method === "PATCH") {
           // Echo the stored appearance back so persistence checks against the API response.
           res.end(JSON.stringify({ id: req.url.split("/")[3], appearance: parsed?.appearance || null }));
         } else if (req.url.includes("/secrets") && req.method === "POST") {
           secretCounter++;
-          res.end(JSON.stringify({ id: `sec-${secretCounter}`, name: parsed.name }));
+          createdSecrets.push({ id: `sec-${secretCounter}`, name: parsed.name, companyId: req.url.split("/")[3] });
+          res.end(JSON.stringify(createdSecrets[secretCounter - 1]));
         } else if (req.url.includes("/attachments") && req.method === "POST") {
           attachmentCounter++;
-          res.end(JSON.stringify({ id: `att-${attachmentCounter}`, byteSize: rawBody.length }));
+          createdAttachments.push({ id: `att-${attachmentCounter}`, byteSize: rawBody.length });
+          res.end(JSON.stringify(createdAttachments[attachmentCounter - 1]));
         } else if (req.url.includes("/comments") && req.method === "POST") {
           commentCounter++;
-          res.end(JSON.stringify({ id: `comm-${commentCounter}`, body: parsed?.body || "" }));
+          createdComments.push({ id: `comm-${commentCounter}`, body: parsed?.body || "", issueId: req.url.split("/")[3] });
+          res.end(JSON.stringify(createdComments[commentCounter - 1]));
         } else if (req.url.includes("/documents/") && req.method === "PUT") {
+          // Emulate the vendor optimistic-concurrency contract (v2026.1012.0):
+          // - creating a new document requires no baseRevisionId;
+          // - updating an existing document REQUIRES baseRevisionId equal to the
+          //   current latestRevisionId, otherwise the server answers 409.
           docCounter++;
-          res.end(JSON.stringify({ id: `doc-${docCounter}`, version: 1 }));
+          const urlKey = req.url;
+          const currentRevisionId = documentCurrentRevision.get(urlKey) || null;
+          if (currentRevisionId && !parsed?.baseRevisionId) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              error: "Document update requires baseRevisionId. GET the current document, read its body and latestRevisionId, then set baseRevisionId to that latestRevisionId when updating.",
+              details: { currentRevisionId },
+            }));
+            return;
+          }
+          if (currentRevisionId && parsed?.baseRevisionId !== currentRevisionId) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              error: "Document update conflict: baseRevisionId does not match the current revision",
+              details: { currentRevisionId, providedRevisionId: parsed?.baseRevisionId },
+            }));
+            return;
+          }
+          const newRevisionId = `rev-${docCounter}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          documentCurrentRevision.set(urlKey, newRevisionId);
+          documentRevisionCounts.set(urlKey, (documentRevisionCounts.get(urlKey) || 0) + 1);
+          res.end(JSON.stringify({
+            id: `doc-${docCounter}`,
+            key: urlKey.split("/").pop(),
+            latestRevisionId: newRevisionId,
+            latestRevisionNumber: documentRevisionCounts.get(urlKey),
+          }));
+        } else if (req.url === "/api/companies" && req.method === "GET") {
+          res.end(JSON.stringify(createdCompanies));
+        } else if (/\/projects$/.test(req.url) && req.method === "GET") {
+          const companyId = req.url.split("/")[3];
+          res.end(JSON.stringify(createdProjects.filter((p) => p.companyId === companyId)));
+        } else if (/\/agents$/.test(req.url) && req.method === "GET") {
+          const companyId = req.url.split("/")[3];
+          res.end(JSON.stringify(createdAgents.filter((a) => a.companyId === companyId)));
+        } else if (/\/secrets$/.test(req.url) && req.method === "GET") {
+          const companyId = req.url.split("/")[3];
+          res.end(JSON.stringify(createdSecrets.filter((s) => s.companyId === companyId)));
+        } else if (/\/issues(\?|$)/.test(req.url) && req.method === "GET") {
+          const companyId = req.url.split("/")[3];
+          const limit = Number(new URL(req.url, "http://localhost").searchParams.get("limit") || 100);
+          const offset = Number(new URL(req.url, "http://localhost").searchParams.get("offset") || 0);
+          const scoped = createdIssueResponses.filter((i) => i.companyId === companyId);
+          res.end(JSON.stringify(scoped.slice(offset, offset + limit)));
+        } else if (/\/comments(\?|$)/.test(req.url) && req.method === "GET") {
+          const issueId = req.url.split("/")[3];
+          res.end(JSON.stringify(createdComments.filter((c) => c.issueId === issueId)));
+        } else if (/\/attachments$/.test(req.url) && req.method === "GET") {
+          res.end(JSON.stringify(createdAttachments));
+        } else if (/\/documents\/specification\/revisions$/.test(req.url) && req.method === "GET") {
+          const count = documentRevisionCounts.get(req.url.replace("/revisions", "")) || 0;
+          res.end(JSON.stringify(Array.from({ length: count }, (_, i) => ({ id: `rev-${i}`, revisionNumber: i + 1 }))));
+        } else if (/\/documents$/.test(req.url) && req.method === "GET") {
+          const issueId = req.url.split("/")[3];
+          const docUrl = `/api/issues/${issueId}/documents/specification`;
+          if (documentRevisionCounts.has(docUrl)) {
+            res.end(JSON.stringify([{ key: "specification", id: `doc-${issueId}` }]));
+          } else {
+            res.end(JSON.stringify([]));
+          }
         } else if (req.url.startsWith("/api/issues/") && req.method === "PATCH") {
           res.end(JSON.stringify({ status: "ok" }));
         } else if (req.url.includes("/issues") && req.method === "POST") {
@@ -246,12 +324,15 @@ describe("seedPaperclip mock flow execution", () => {
           // Emulate vendor behavior: no title -> server derives provisional title
           // and sets titleNeedsGeneration=true; explicit title -> false.
           const serverDerived = !parsed?.title;
-          res.end(JSON.stringify({
+          const issueResponse = {
             id: `iss-${issueCounter}`,
             identifier: `NORD-${issueCounter}`,
             title: parsed?.title || `Issue ${issueCounter}`,
             titleNeedsGeneration: serverDerived,
-          }));
+            companyId: new URL(req.url, "http://localhost").pathname.split("/")[3],
+          };
+          createdIssueResponses.push(issueResponse);
+          res.end(JSON.stringify(issueResponse));
         } else {
           res.end(JSON.stringify({ status: "ok" }));
         }
@@ -282,8 +363,8 @@ describe("seedPaperclip mock flow execution", () => {
       assert.ok(report.counts.issuesWithTitleNeedsGeneration >= 3, "Should seed >= 3 issues with title_needs_generation");
       assert.ok(report.counts.secrets >= 5, "Should seed at least 5 secrets");
       assert.equal(report.counts.users, 2, "Should seed 2 users");
-      assert.ok(report.counts.documents >= 1, "Should seed documents");
-      assert.ok(report.counts.documentRevisions >= 2, "Should seed document revisions");
+      assert.equal(report.counts.documents, 5, "Should seed one document per sample issue");
+      assert.equal(report.counts.documentRevisions, 15, "Should seed exactly 3 revisions per document");
       assert.ok(report.counts.attachments >= 1, "Should seed attachments");
       assert.ok(report.counts.largeAttachments >= 1, "Should seed large attachment > 2MB");
 
@@ -309,6 +390,23 @@ describe("seedPaperclip mock flow execution", () => {
       // The vendor create schema rejects title-generation flags; do not send them.
       assert.ok(capturedIssues.every((iss) => !("titleNeedsGeneration" in iss)));
       assert.ok(capturedIssues.every((iss) => !("title_needs_generation" in iss)));
+
+      // Exercise the verification pass against the same fake server: it must
+      // agree with the report counts (this is the check CI runs with --verify).
+      const verifyClient = new PaperclipApiClient(`http://127.0.0.1:${port}`);
+      const verified = await verifySeededData(verifyClient, report);
+      assert.equal(verified.companies, report.counts.companies);
+      assert.equal(verified.projects, report.counts.projects);
+      assert.equal(verified.agents, report.counts.agents);
+      assert.equal(verified.agentsWithAppearance, report.counts.agentsWithAppearance);
+      assert.equal(verified.secrets, report.counts.secrets);
+      assert.equal(verified.issues, report.counts.issues);
+      assert.equal(verified.issuesWithTitleNeedsGeneration, report.counts.issuesWithTitleNeedsGeneration);
+      assert.equal(verified.comments, report.counts.comments);
+      assert.equal(verified.attachments, report.counts.attachments);
+      assert.equal(verified.largeAttachments, report.counts.largeAttachments);
+      assert.equal(verified.documents, report.counts.documents);
+      assert.equal(verified.documentRevisions, report.counts.documentRevisions);
 
     } finally {
       await new Promise((resolve) => server.close(resolve));
