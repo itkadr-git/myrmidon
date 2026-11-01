@@ -40,6 +40,7 @@ import {
   type TemplateDriftReport,
 } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
+import type { DriverOomEvent } from "./container-oom.js";
 
 export interface FleetRoutingDeps {
   /** The local docker driver (default host). */
@@ -193,6 +194,20 @@ export function fleetRoutingDriver(
     async readBotSkills(botKey: string): Promise<BotSkillDirectory[] | null> {
       const driver = await driverFor(deps, agentOf(botKey));
       return driver.readBotSkills ? driver.readBotSkills(botKey) : null;
+    },
+    async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+      await awaitReady(deps);
+      const drivers = [deps.local, ...resolveFleetMap(deps).values()];
+      const settled = await Promise.allSettled(
+        drivers.map(async (d) => (d.getOomEvents ? d.getOomEvents(sinceNano) : [])),
+      );
+      const events: DriverOomEvent[] = [];
+      for (const res of settled) {
+        if (res.status === "fulfilled" && Array.isArray(res.value)) {
+          events.push(...res.value);
+        }
+      }
+      return events;
     },
   };
   return routed;

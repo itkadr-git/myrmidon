@@ -12,6 +12,7 @@
 // and only then `start` it. A gateway therefore never boots without its profile.
 
 import type { CompiledProfile } from "./types.js";
+import type { DriverOomEvent } from "./container-oom.js";
 
 /** One extra read-only mount a bot gets from the instance-level allowlist
  *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
@@ -248,6 +249,10 @@ export interface BotContainerDriver {
    * leaves it out and its bots keep no back-import.
    */
   readBotSkills?(botKey: string): Promise<BotSkillDirectory[] | null>;
+  /**
+   * myrmidon(OPE-9934): transports OOM events (docker events oom / cgroup memory.events oom_kill).
+   */
+  getOomEvents?(sinceNano?: number): Promise<DriverOomEvent[]>;
 }
 
 /** One skill directory of a bot container: its directory name under

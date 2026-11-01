@@ -69,6 +69,8 @@ import {
   type RateLimiter,
 } from "./dockergate-pacing.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, BotSkillDirectory, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { DriverOomEvent } from "./container-oom.js";
+import { createDockergateEventsClient } from "./dockergate-events-client.js";
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@myrmidon/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
@@ -1869,5 +1871,10 @@ export function dockerBotContainerDriver(
     }
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
+  async function getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+    const client = createDockergateEventsClient({ socketPath });
+    return client.getOomEvents(sinceNano);
+  }
+
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }
