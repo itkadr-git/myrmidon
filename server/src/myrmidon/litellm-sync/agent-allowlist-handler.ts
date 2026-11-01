@@ -38,11 +38,14 @@ export interface AllowlistSyncResult {
 /** The company's model names and enabled state as registered in the gateway. */
 async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
   const rows = await db
-    .select({ name: modelProviderModels.litellmModelName, enabled: modelProviderModels.enabled })
+    .select()
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
     .where(eq(modelProviders.companyId, companyId));
-  return rows.map((row) => ({ name: row.name, enabled: row.enabled }));
+  return rows.map((row: { litellmModelName: string; enabled: boolean }) => ({
+    name: row.litellmModelName,
+    enabled: row.enabled,
+  }));
 }
 
 /**
@@ -101,8 +104,6 @@ export async function updateAgentAllowlistsForCompany(
     }
     attempted += 1;
     try {
-      // An empty gateway list means ALL models. Never turn that into a
-      // restrictive list merely because the board owns some models.
       if (!gateway.getKeyInfo) {
         skipped.push(`gateway-port-without-key-info:${agent.id}`);
         continue;
@@ -114,19 +115,18 @@ export async function updateAgentAllowlistsForCompany(
       }
       const current = keyInfo.models ?? [];
       if (current.length === 0) {
+        // An empty gateway list means ALL models. Never turn that into a
+        // restrictive list merely because the board owns some models.
         skipped.push(`key-all-models:${agent.id}`);
         continue;
       }
+      // Merge: keep models the board does not own (other pools/tenants),
+      // add/revoke only the board-owned ones.
       const ownedNames = new Set(companyModels.map((model) => model.name));
-      const enabledOwned = new Set(models);
       const next = [
         ...current.filter((name) => !ownedNames.has(name)),
-        ...models.filter((name) => !current.includes(name)),
+        ...models,
       ];
-      if (next.length === 0 && enabledOwned.size === 0) {
-        skipped.push(`key-update-would-empty:${agent.id}`);
-        continue;
-      }
       const applied = await gateway.setKeyAllowedModels({ alias, models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);

@@ -30,7 +30,12 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
   /**
    * Synchronize a single model based on its enabled state.
    */
-  async function syncModel(providerId: string, modelName: string, enabled: boolean) {
+  async function syncModel(
+    providerId: string,
+    modelName: string,
+    enabled: boolean,
+    companyId?: string,
+  ) {
     // Fetch the full model record to get the litellm model name
     const modelRecords = await deps.db
       .select()
@@ -66,9 +71,11 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       if (!provider.credentialSecretName) {
         throw new Error(`Provider ${providerId} has no credential secret name`);
       }
+      // The secret NAME never travels to LiteLLM as a value: without a
+      // resolver there is no way to obtain the value, so this is an error.
       const credentialValue = deps.resolveCredential
-        ? await deps.resolveCredential(companyId, provider.credentialSecretName)
-        : provider.credentialSecretName;
+        ? await deps.resolveCredential(companyId ?? provider.companyId, provider.credentialSecretName)
+        : null;
       if (!credentialValue) {
         throw new Error(`Provider ${providerId} credential could not be resolved`);
       }
@@ -126,7 +133,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       throw new Error(`Provider ${providerId} not found in company ${companyId}`);
     }
 
-    await syncModel(providerId, modelName, enabled);
+    await syncModel(providerId, modelName, enabled, companyId);
   }
 
   /**
@@ -184,11 +191,17 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     for (const model of enabledModels) {
       if (!litellmRegisteredModelNames.has(model.litellmModelName)) {
         if (model.provider.credentialSecretName) {
+          const credentialValue = deps.resolveCredential
+            ? await deps.resolveCredential(companyId, model.provider.credentialSecretName)
+            : null;
+          if (!credentialValue) {
+            throw new Error(`Provider ${model.providerId} credential could not be resolved`);
+          }
           await deps.litellm.registerModel({
             litellmModelName: model.litellmModelName,
             providerType: model.provider.type,
             baseUrl: model.provider.baseUrl,
-            credentialSecretName: model.provider.credentialSecretName,
+            credentialValue,
           });
           await trigger?.onModelRegistered?.(model.litellmModelName);
         }
@@ -240,7 +253,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
 
     const credentialValue = deps.resolveCredential
       ? await deps.resolveCredential(companyId, provider.credentialSecretName)
-      : provider.credentialSecretName;
+      : null;
     if (!credentialValue) {
       throw new Error(`Provider ${providerId} credential could not be resolved`);
     }

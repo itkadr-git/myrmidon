@@ -3,7 +3,9 @@
 // myrmidon(1.6.1 MODEL-PROVIDERS B): LiteLLM admin API client.
 //
 // Calls LiteLLM's /model/new, /model/update, /model/delete, /model/info endpoints using the
-// admin key. Never sends credential values - only secret name references.
+// admin key. Credential values are sent as values: LiteLLM encrypts them in its own DB
+// (its secret manager is not configured on our deployments, so `secrets/<name>`
+// references would never resolve).
 
 import { unprocessable } from "../../errors.js";
 import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
@@ -155,7 +157,7 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
           model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
           provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          api_key: input.credentialValue ?? input.credentialSecretName ?? "",
+          api_key: input.credentialValue ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
@@ -178,7 +180,7 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
           model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
           provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          api_key: input.credentialValue ?? input.credentialSecretName ?? "",
+          api_key: input.credentialValue ?? "",
           ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
           ...(input.weight !== undefined ? { weight: input.weight } : {}),
           ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),

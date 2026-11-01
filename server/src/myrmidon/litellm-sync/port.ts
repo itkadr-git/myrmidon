@@ -34,9 +34,9 @@ export interface LitellmSyncPort {
     providerType: string;
     /** The provider's base URL; null means default. */
     baseUrl: string | null;
-    /** The credential value to pass to LiteLLM; LiteLLM encrypts it in its DB. */
+    /** The credential value; LiteLLM encrypts it in its own database. */
     credentialValue?: string;
-    /** @deprecated retained for adapter compatibility; never sent by production wiring. */
+    /** @deprecated retained for adapter compatibility; production wiring sends credentialValue. */
     credentialSecretName?: string;
     /** Priority order of the channel within the model group. */
     order?: number;
