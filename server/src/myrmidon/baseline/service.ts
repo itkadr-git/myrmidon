@@ -294,4 +294,3 @@ export async function computeBaselineTrend(
 
   return points;
 }
-
