@@ -1,3 +1,4 @@
+import type { KnowledgeSuggestion } from "../api/knowledge";
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import type {
   Approval,
@@ -32,6 +33,7 @@ export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
+  | "knowledge"
   | "join_requests"
   | "approvals"
   | "failed_runs"
@@ -72,6 +74,11 @@ export type InboxWorkItem =
       kind: "failed_run";
       timestamp: number;
       run: HeartbeatRun;
+    }
+  | {
+      kind: "knowledge";
+      timestamp: number;
+      suggestion: KnowledgeSuggestion;
     }
   | {
       kind: "join_request";
@@ -168,6 +175,7 @@ const defaultInboxFilterPreferences: InboxFilterPreferences = {
 
 function normalizeInboxCategoryFilter(value: unknown): InboxCategoryFilter {
   return value === "issues_i_touched"
+    || value === "knowledge"
     || value === "join_requests"
     || value === "approvals"
     || value === "failed_runs"
@@ -820,11 +828,13 @@ export function getInboxWorkItems({
   approvals,
   failedRuns = [],
   joinRequests = [],
+  knowledgeSuggestions = [],
 }: {
   issues: Issue[];
   approvals: Approval[];
   failedRuns?: HeartbeatRun[];
   joinRequests?: JoinRequest[];
+  knowledgeSuggestions?: KnowledgeSuggestion[];
 }): InboxWorkItem[] {
   return [
     ...issues.map((issue) => ({
@@ -841,6 +851,11 @@ export function getInboxWorkItems({
       kind: "failed_run" as const,
       timestamp: normalizeTimestamp(run.createdAt),
       run,
+    })),
+    ...knowledgeSuggestions.filter((suggestion) => suggestion.status === "pending").map((suggestion) => ({
+      kind: "knowledge" as const,
+      timestamp: normalizeTimestamp(suggestion.createdAt),
+      suggestion,
     })),
     ...joinRequests.map((joinRequest) => ({
       kind: "join_request" as const,
@@ -867,6 +882,7 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
   "approval",
   "failed_run",
   "join_request",
+  "knowledge",
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
@@ -874,6 +890,7 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
   approval: "Approvals",
   failed_run: "Failed runs",
   join_request: "Join requests",
+  knowledge: "Knowledge",
 };
 
 function resolveIssueAssigneeGroup(
@@ -1187,6 +1204,7 @@ export function getInboxWorkItemKey(item: InboxWorkItem): string {
   if (item.kind === "issue") return `issue:${item.issue.id}`;
   if (item.kind === "approval") return `approval:${item.approval.id}`;
   if (item.kind === "failed_run") return `run:${item.run.id}`;
+  if (item.kind === "knowledge") return `knowledge:${item.suggestion.id}`;
   return `join:${item.joinRequest.id}`;
 }
 
