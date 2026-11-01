@@ -401,6 +401,7 @@ describe("agent auth middleware", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.code).toBe("agent_jwt_run_id_mismatch");
+    expect(res.body.error).toBe("Run ID does not match signed agent JWT run_id");
     expect(activity).toHaveLength(1);
     expect(activity[0]).toMatchObject({
       companyId,

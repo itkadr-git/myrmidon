@@ -406,7 +406,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           url: req.originalUrl,
         });
         next(
-          unprocessable("X-Paperclip-Run-Id does not match signed agent JWT run_id", {
+          unprocessable("Run ID does not match signed agent JWT run_id", {
             code: "agent_jwt_run_id_mismatch",
             claimRunId: claims.run_id,
             headerRunId: normalizedRunIdHeader,
