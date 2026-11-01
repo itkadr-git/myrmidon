@@ -73,11 +73,8 @@ async function extractIssueFacts(
     .where(or(eq(issueRelations.relatedIssueId, issue.id), eq(issueRelations.issueId, issue.id)));
 
   const blockerIds = relations
-    .filter((r: { issueId: string; relatedIssueId: string; type: string }) => r.type === "blocks")
-    .map((r: { issueId: string; relatedIssueId: string }) =>
-      r.relatedIssueId === issue.id ? r.issueId : r.issueId === issue.id ? r.relatedIssueId : "",
-    )
-    .filter(Boolean)
+    .filter((r: { issueId: string; relatedIssueId: string; type: string }) => r.type === "blocks" && r.relatedIssueId === issue.id)
+    .map((r: { issueId: string }) => r.issueId)
     .filter((id, index, ids) => ids.indexOf(id) === index);
   let blockerIssues: Array<{ id: string; status: string; identifier: string | null }> = [];
   if (blockerIds.length > 0) {
