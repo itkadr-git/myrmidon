@@ -9,7 +9,10 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issues,
 } from "@myrmidon/db";
+import { issueExecutionStateSchema } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -35,6 +38,8 @@ describeEmbeddedPostgres("agent service clearError", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(agentTaskSessions);
     await db.delete(agentRuntimeState);
@@ -47,6 +52,84 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await tempDb?.cleanup();
   });
 
+  it("reassigns an agent's assignee, returnAssignee, and currentParticipant work to one least-loaded same-role agent", async () => {
+    const companyId = randomUUID();
+    const terminatedId = randomUUID();
+    const replacementId = randomUUID();
+    const otherEngineerId = randomUUID();
+    const qaId = randomUUID();
+    const returnBackupId = randomUUID();
+    const participantBackupId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Termination reassignment", issuePrefix: `TR${companyId.slice(0, 6).toUpperCase()}` });
+    const agentValues = (id: string, name: string, role: string) => ({
+      id, companyId, name, role, status: "active" as const, adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(agents).values([
+      agentValues(terminatedId, "Departing Engineer", "engineer"),
+      agentValues(replacementId, "Replacement Engineer", "engineer"),
+      agentValues(otherEngineerId, "Busy Engineer", "engineer"),
+      agentValues(qaId, "QA Agent", "qa"),
+      agentValues(returnBackupId, "Return Backup", "engineer"),
+      agentValues(participantBackupId, "Participant Backup", "engineer"),
+    ]);
+    const state = (principal: { type: "agent"; agentId: string }) => ({
+      status: "pending", currentStageId: null, currentStageIndex: null, currentStageType: "review",
+      currentParticipant: principal, returnAssignee: principal, completedStageIds: [], lastDecisionId: null,
+      lastDecisionOutcome: null, monitor: null,
+    });
+    const issueIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issues).values([
+      { id: issueIds[0], companyId, identifier: "TR-1", title: "Assignee", status: "in_progress", assigneeAgentId: terminatedId },
+      { id: issueIds[1], companyId, identifier: "TR-2", title: "Return", status: "in_progress", executionState: state({ type: "agent", agentId: terminatedId }) },
+      { id: issueIds[2], companyId, identifier: "TR-3", title: "Participant", status: "in_progress", executionState: { ...state({ type: "agent", agentId: terminatedId }), returnAssignee: null } },
+      { id: issueIds[3], companyId, identifier: "TR-4", title: "Return backup load", status: "in_progress", assigneeAgentId: returnBackupId },
+      { id: issueIds[4], companyId, identifier: "TR-5", title: "Participant backup load", status: "in_progress", assigneeAgentId: participantBackupId },
+      { id: issueIds[5], companyId, identifier: "TR-6", title: "Other engineer load", status: "in_progress", assigneeAgentId: otherEngineerId },
+      { companyId, identifier: "TR-7", title: "Other engineer load", status: "in_progress", assigneeAgentId: otherEngineerId },
+    ]);
+
+    const initialWorkload = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const initialAgentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const initialLiveEngineers = initialAgentRows.filter((agent) => agent.role === "engineer" && agent.status !== "terminated" && agent.status !== "retired");
+    const initialLoad = (agentId: string) => initialWorkload.filter((row) => row.assigneeAgentId === agentId && row.status !== "done" && row.status !== "cancelled").length;
+    const leastLoadedBeforeTermination = initialLiveEngineers.reduce((best, agent) => initialLoad(agent.id) < initialLoad(best.id) || (initialLoad(agent.id) === initialLoad(best.id) && agent.id.localeCompare(best.id) < 0) ? agent : best);
+    expect(leastLoadedBeforeTermination.id).toBe(replacementId);
+
+    const expectedReplacements = new Map([
+      [issueIds[0], leastLoadedBeforeTermination.id],
+      [issueIds[1], leastLoadedBeforeTermination.id],
+      [issueIds[2], leastLoadedBeforeTermination.id],
+    ]);
+    const replacementNames = new Map(initialAgentRows.map((agent) => [agent.id, agent.name]));
+    await agentService(db).terminate(terminatedId);
+
+    const workload = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const replacementName = replacementNames.get(leastLoadedBeforeTermination.id)!;
+    for (const id of issueIds.slice(0, 3)) {
+      const issue = workload.find((row) => row.id === id)!;
+      const roleAssignment = expectedReplacements.get(id)!;
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, id));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]).toMatchObject({
+        authorType: "system",
+        body: expect.stringContaining(`Terminated agent Departing Engineer was replaced by ${replacementName} for open work.`),
+      });
+      expect(issue.assigneeAgentId).toBe(id === issueIds[0] ? roleAssignment : null);
+      const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
+      if (id === issueIds[0]) {
+        expect(parsed.success).toBe(false);
+        continue;
+      }
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.currentParticipant).toEqual({ type: "agent", agentId: roleAssignment });
+        expect(parsed.data.returnAssignee).toEqual(id === issueIds[1] ? { type: "agent", agentId: roleAssignment } : null);
+      }
+    }
+    const comments = await db.select().from(issueComments).where(eq(issueComments.companyId, companyId));
+    expect(comments).toHaveLength(3);
+    expect(comments.every((comment) => comment.authorType === "system" && comment.body).valueOf()).toBe(true);
+  });
   it("resets converted agent sessions while preserving identity, configuration and run history", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
