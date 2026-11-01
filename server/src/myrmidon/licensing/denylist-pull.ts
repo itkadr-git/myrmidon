@@ -82,6 +82,9 @@ export function startDenyListPuller(options: DenyListPullerOptions = {}): DenyLi
     } finally {
       pulling = null;
     }
+    // Install the timer from the tick itself. Startup and scheduled ticks both
+    // pass through here, so production cannot remain a one-shot puller.
+    if (!stopped && denyListUrl(env())) ensureTimer();
   }
 
   function ensureTimer(): void {

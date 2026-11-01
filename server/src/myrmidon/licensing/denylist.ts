@@ -81,7 +81,10 @@ export async function pullDenyListOnce(
   const parsed = parseDenyList(text, trustedKeys);
   const highest = highestAcceptedDenySerial(env, trustedKeys);
   if (highest !== null && parsed.serial < highest) return { status: "rejected", serial: parsed.serial };
-  if (highest === parsed.serial) return { status: "unchanged", serial: parsed.serial };
+  // A state serial records monotonic history, not whether the current file
+  // still exists. Reinstall an equal serial when the file is missing or corrupt.
+  const current = currentDenyFileSerial(denyListPath(env), trustedKeys);
+  if (current === parsed.serial) return { status: "unchanged", serial: parsed.serial };
   writeDenyListFile(denyListPath(env), text);
   return { status: "updated", serial: parsed.serial };
 }

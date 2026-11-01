@@ -417,6 +417,22 @@ describe("periodic deny-list pull (OPE-9084 L4)", () => {
     expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(serial2.trim() + "\n");
   });
 
+  it("reinstalls an equal serial when the deny-list file is missing", async () => {
+    const { pullDenyListOnce } = await import("./denylist.js");
+    const k = keys();
+    const env: NodeJS.ProcessEnv = {
+      MYR_LICENSE_PATH: path.join(dir, "license.key"),
+      MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
+      MYR_LICENSE_DENY_URL: "https://issuer.example/license.deny.json",
+    };
+    const list = denyFile(k.privateKey, { instance_ids: [INSTALL_ID], serial: 7 });
+    const fetcher = (async () => new Response(list)) as typeof fetch;
+
+    expect(await pullDenyListOnce(env, [k.publicKey], fetcher)).toEqual({ status: "updated", serial: 7 });
+    unlinkSync(env.MYR_LICENSE_DENY_PATH!);
+    expect(await pullDenyListOnce(env, [k.publicKey], fetcher)).toEqual({ status: "updated", serial: 7 });
+    expect(readFileSync(env.MYR_LICENSE_DENY_PATH!, "utf8")).toBe(list.trim() + "\n");
+  });
   it("pullDenyListOnce refuses untrusted signatures and non-2xx answers", async () => {
     const { pullDenyListOnce } = await import("./denylist.js");
     const k = keys();
