@@ -17,21 +17,17 @@ describe("capacity policy dashboard preparation", () => {
     expect(CAPACITY_POLICY_PANELS.filter((panel) => panel.kind === "counter")).toHaveLength(2);
   });
 
-  it("checks the real metric registry and refuses incomplete integration", () => {
+  it("requires every panel metric to be present in the real metric registry", () => {
     const registry: ReadonlySet<string> = new Set(METRIC_FAMILIES);
+    // Unconditional delivery acceptance: every capacity panel must reference
+    // a metric family that is actually registered in METRIC_FAMILIES.
     const panels = resolveCapacityPolicyPanels();
+    expect(panels.every((panel) => registry.has(panel.metric))).toBe(true);
     for (const panel of panels) {
-      expect(panel.sourceStatus).toBe(registry.has(panel.metric) ? "registered" : "unavailable");
+      expect(panel.sourceStatus).toBe("registered");
       expect(panel.missingValue).toBeNull();
     }
-    const missing = panels.filter((panel) => !registry.has(panel.metric));
-    if (missing.length) {
-      expect(assertCapacityPolicySourcesRegistered).toThrow("sources are not registered");
-      for (const panel of missing) expect(assertCapacityPolicySourcesRegistered).toThrow(panel.metric);
-    } else {
-      expect(assertCapacityPolicySourcesRegistered).not.toThrow();
-    }
-    // This verifies fail-closed preparation, not delivery acceptance.
+    expect(assertCapacityPolicySourcesRegistered).not.toThrow();
     // B11 integration must call the assertion and verify real source samples.
   });
 
