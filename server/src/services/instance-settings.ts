@@ -883,7 +883,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
               ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
-              ...preserveCustomLocalesGeneralKey(current.general), // myrmidon(1.7 LOCALE-UPLOAD, OPE-8650)
               // The preserve line above restores the stored value: a patch that
               // carries the key wins, the same rule as DM-PROGRESS.
               ...(patch.bridgeLanguage !== undefined ? { bridgeLanguage: nextGeneral.bridgeLanguage } : {}),
