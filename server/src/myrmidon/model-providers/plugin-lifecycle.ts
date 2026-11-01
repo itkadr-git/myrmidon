@@ -59,7 +59,11 @@ export function registerConnectorsForPlugin(plugin: {
         pluginKey: plugin.pluginKey,
         defaultBaseUrl: d.defaultBaseUrl ?? (d.type === "chatgpt-pool" ? "http://localhost:8895" : null),
         defaultModels: d.defaultModels ?? (d.type === "chatgpt-pool" ? DEFAULT_CHATGPT_POOL_MODELS : undefined),
-        supportsChannels: d.supportsChannels ?? (d.type === "chatgpt-pool"),
+      supportsChannels:
+        d.supportsChannels ??
+        (d.type === "chatgpt-pool" ||
+          d.type === "antigravity-pool" ||
+          d.type === "google-ai-pool"),
       });
     }
     return;

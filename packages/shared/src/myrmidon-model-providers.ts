@@ -29,10 +29,19 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 ] as const;
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 
-/** Statically known provider kinds for type safety. */
+export const POOL_MODEL_PROVIDER_TYPES = [
+  "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
+] as const;
+
+/** Providers whose connector exposes per-account quota windows. */
+export type PoolModelProviderType = (typeof POOL_MODEL_PROVIDER_TYPES)[number];
+
+/** Statically known provider types for type safety. */
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
-  "chatgpt-pool",
+  ...POOL_MODEL_PROVIDER_TYPES,
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 

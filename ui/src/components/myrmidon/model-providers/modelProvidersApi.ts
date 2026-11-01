@@ -22,6 +22,8 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
 ] as const;
 
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];

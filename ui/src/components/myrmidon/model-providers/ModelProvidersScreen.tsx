@@ -485,7 +485,10 @@ function ProviderCard({
   const channelsQueryResult = useQuery({
     queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
     queryFn: () => modelProvidersApi.channels(companyId, provider.id),
-    enabled: provider.type === "chatgpt-pool",
+    enabled:
+      provider.type === "chatgpt-pool" ||
+      provider.type === "antigravity-pool" ||
+      provider.type === "google-ai-pool",
     staleTime: 30_000,
   });
 
@@ -528,8 +531,8 @@ function ProviderCard({
         </div>
       </div>
 
-      {/* ChatGPT Pool: Channels & Limit Windows */}
-      {provider.type === "chatgpt-pool" && (
+      {/* Pool providers: per-account quota windows */}
+      {(provider.type === "chatgpt-pool" || provider.type === "antigravity-pool" || provider.type === "google-ai-pool") && (
         <div className="space-y-3" data-testid={`myrmidon-model-provider-channels-${provider.id}`}>
           {/* Active Role Signals Alert Banner */}
           {channelsQueryResult.data?.signals && channelsQueryResult.data.signals.length > 0 && (
