@@ -11,7 +11,29 @@ function createTestApp(actorType = "board") {
     (req as any).actor = { type: actorType, userId: "user-123" };
     next();
   });
-  app.use("/api", localeUploadRoutes());
+  const service = {
+    validateOnly: async (input: any) => ({
+      valid: true,
+      targetLocale: input.locale,
+      baseLocale: "en",
+      report: { totalCandidateKeys: Object.values(input.catalog).length },
+      errors: [],
+      warnings: [],
+    }),
+    uploadLocale: async (input: any) => ({ ...input, stored: true }),
+    listCustomLocales: async () => [],
+    getCustomLocale: async () => null,
+    deleteCustomLocale: async () => false,
+  } as any;
+  app.use("/api", localeUploadRoutes({} as any, { service }));
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    const details = err.details && typeof err.details === "object" ? err.details : undefined;
+    res.status(err.status || 500).json({
+      error: typeof err.message === "string" && /^[A-Z_]+$/.test(err.message) ? err.message : err.message,
+      message: details?.message || err.message,
+      ...(details?.errors ? { errors: details.errors } : {}),
+    });
+  });
   return app;
 }
 

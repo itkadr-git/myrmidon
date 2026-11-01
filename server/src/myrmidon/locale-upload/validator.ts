@@ -38,7 +38,7 @@ export function formatPath(parts: string[]): string {
 export function findDisallowedPayloads(value: unknown): string[] {
   if (typeof value !== "string") return [];
   const findings: string[] = [];
-  if (/<script\b/i.test(value)) findings.push("<script tag");
+  if (/<script\b/i.test(value)) findings.push("<script");
   if (/\son[a-zA-Z]+\s*=/i.test(value)) findings.push("event-handler attribute");
   if (/\b(?:javascript|data|vbscript)\s*:/i.test(value)) findings.push("javascript:/data: URL");
   return findings;

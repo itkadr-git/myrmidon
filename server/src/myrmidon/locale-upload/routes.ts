@@ -41,7 +41,7 @@ function handleFileUpload(req: Request, res: Response, next: NextFunction) {
 }
 
 export function localeUploadRoutes(
-  db: Db,
+  db: Db = {} as Db,
   options?: LocaleUploadServiceOptions & { service?: LocaleUploadService },
 ): Router {
   const router = Router();

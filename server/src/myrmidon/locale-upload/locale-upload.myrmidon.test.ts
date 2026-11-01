@@ -24,15 +24,15 @@ import {
 function createStatefulMockDb(): any {
   const row: { general: Record<string, unknown> } = { general: {} };
   return {
-    select: () => ({
-      from: () => ({
-        where: () => ({ limit: async () => [{ general: row.general }] }),
+    select: (_selection: unknown) => ({
+      from: (_table: unknown) => ({
+        where: (_condition: unknown) => ({ limit: async (_count: number) => [{ general: row.general }] }),
       }),
     }),
-    insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
-    update: () => ({
+    insert: (_table: unknown) => ({ values: (_value: unknown) => ({ onConflictDoNothing: async () => undefined }) }),
+    update: (_table: unknown) => ({
       set: (patch: { general: Record<string, unknown> }) => ({
-        where: async () => {
+        where: async (_condition: unknown) => {
           row.general = patch.general;
         },
       }),

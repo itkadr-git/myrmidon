@@ -128,7 +128,7 @@ export function parseCatalogJson(
   } catch (err) {
     return {
       catalog: null,
-      error: `Malformed JSON: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Invalid JSON syntax: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
@@ -434,7 +434,7 @@ export function validateCatalogStructure(
         errors.push({
           path: key,
           code: "INVALID_ROOT",
-          message: `Missing required key in strict mode: ${key}`,
+          message: `Missing required base translation key: ${key}`,
         });
       } else {
         warnings.push({
