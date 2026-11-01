@@ -3952,6 +3952,75 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.resultJson?.failed_before_model).toBeUndefined();
   });
 
+  it("uses usage_limit_reached resets_in_seconds instead of a fixed cooldown", () => {
+    const before = Date.now();
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-limit",
+        status: "failed",
+        payload: {
+          error: {
+            type: "usage_limit_reached",
+            message: "Weekly usage limit reached",
+            resets_in_seconds: 3600,
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-usage-limit",
+      strategy: "issue",
+    });
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeTruthy();
+    const delay = new Date(result.retryNotBefore!).getTime() - before;
+    expect(delay).toBeGreaterThanOrEqual(3_599_000);
+    expect(delay).toBeLessThanOrEqual(3_601_000);
+  });
+
+  it("uses the earliest reset from a wham usage window", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-wham-usage",
+        status: "failed",
+        payload: {
+          error: { type: "usage_limit_reached", message: "limit" },
+          usage: { windows: [{ resets_at: "2099-01-01T00:00:00Z" }, { resets_in_seconds: 90 }] },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-wham-usage",
+      strategy: "issue",
+    });
+
+    expect(result.retryNotBefore).toBeTruthy();
+    expect(new Date(result.retryNotBefore!).getTime() - Date.now()).toBeGreaterThanOrEqual(89_000);
+  });
+  it("falls back immediately when run creation reports usage_limit_reached", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "chatgpt-pool/gpt-6-sol", provider: "chatgpt-pool", models: { fallbacks: ["kie/gemini"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        if (bodies.length === 1) {
+          return new Response(JSON.stringify({ error: { type: "usage_limit_reached", resets_in_seconds: 3600 } }), { status: 429 });
+        }
+        return new Response(JSON.stringify({ run_id: "fallback-run", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "reserve" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["chatgpt-pool/gpt-6-sol", "kie/gemini"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("reserve");
+  });
+
   it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {
     const result = mapFinalResultForTest({
       terminal: {
