@@ -1428,7 +1428,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       /cannot mutate another agent's issue|authorization|cross-issue writes need a run|heartbeat run/i,
     );
 
-    const initialPostsCount = endpoint.runtime.posts.length;
+    const initialPostsCount = endpoint.endpoints.get(endpoint.id)!.posts.length;
 
     // Agent closes its own Telegram-born task status-only via PATCH -> 200 done
     const closeRes = await request(agentApp)
@@ -1441,8 +1441,8 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
 
     // Verify channel delivery: pending publications are processed and reach the fake Telegram runtime
     await endpoint.service.processPendingPublications();
-    expect(endpoint.runtime.posts.length).toBeGreaterThan(initialPostsCount);
-    const deliveredPosts = endpoint.runtime.posts.slice(initialPostsCount);
+    expect(endpoint.endpoints.get(endpoint.id)!.posts.length).toBeGreaterThan(initialPostsCount);
+    const deliveredPosts = endpoint.endpoints.get(endpoint.id)!.posts.slice(initialPostsCount);
     expect(
       deliveredPosts.some((post) =>
         post.text.includes(secondBoundTask.identifier) ||
