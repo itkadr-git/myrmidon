@@ -31803,7 +31803,7 @@ export function heartbeatService(
               ? eventRevision
                 ? `recovery:${recoveryToken}:${eventRevision}`
                 : `recovery:${recoveryToken}`
-              : eventRevision;
+              : eventRevision!;
 
             const alreadyClaimedKey =
               readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) ??
