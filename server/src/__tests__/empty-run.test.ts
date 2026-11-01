@@ -4,9 +4,14 @@ import {
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
   getCompanyEmptyRunStats,
+  recordEmptyRunEvent,
+  DEVEFF_EVENT_NO_OP,
+  DEVEFF_EVENT_REPEATED_TOOL_ERROR,
+  DEVEFF_DASHBOARD_SQL_QUERY,
   MAX_CONSECUTIVE_EMPTY_RUNS,
   MAX_REPEATED_TOOL_ERRORS,
 } from "../services/empty-run.js";
+import * as heartbeatEvents from "../services/heartbeat-run-events.js";
 
 describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10096)", () => {
   describe("classifyEmptyRun", () => {
@@ -371,7 +376,6 @@ describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10096)", () => 
         gateResult: { passed: false, gateMet: "none", reason: "Completion gate failed: run ended without commit/PR, status change, or explicit blocker with reason" },
       });
       expect(spy).toHaveBeenCalledWith(mockDb, expect.objectContaining({ eventType: DEVEFF_EVENT_NO_OP, level: "info", payload: expect.objectContaining({ rule: "no_op", gatePassed: false }) }));
-    });
     });
 
     it("calculates 14-day baseline and verifies 30% reduction criterion", async () => {

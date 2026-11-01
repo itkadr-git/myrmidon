@@ -11,6 +11,12 @@ import {
   workspaceOperations,
   agentWakeupRequests,
 } from "@myrmidon/db";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+
+// myrmidon(1.7 DEVEFF, OPE-10096): canonical run-log event types for the
+// empty-run stop rules; schema documented in doc/run-log-events.md.
+export const DEVEFF_EVENT_NO_OP = "run.deveff.no_op";
+export const DEVEFF_EVENT_REPEATED_TOOL_ERROR = "run.deveff.repeated_tool_error";
 
 export type EmptyRunReason =
   | "no_changes_and_no_status_transition"
