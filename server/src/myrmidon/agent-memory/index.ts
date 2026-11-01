@@ -46,8 +46,10 @@ export function myrmidonAgentMemorySettingsRoutes(db: Db, env: NodeJS.ProcessEnv
   const settings = instanceSettingsService(db);
   return agentMemorySettingsRoutes(
     agentMemorySettingsService({
-      getGeneral: () => settings.getGeneral(),
-      updateGeneral: (patch) => settings.updateGeneral(patch),
+      getGeneral: async () => (await settings.getGeneral()) as unknown as Record<string, unknown>,
+      updateGeneral: async (patch) => {
+        await settings.updateGeneral(patch as Parameters<typeof settings.updateGeneral>[0]);
+      },
       env,
     }),
   );
@@ -57,8 +59,10 @@ export function myrmidonAgentMemorySettingsRoutes(db: Db, env: NodeJS.ProcessEnv
 export function myrmidonHindsightModelsRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   const settings = instanceSettingsService(db);
   const adapter = hindsightModelsAdapter({
-    getGeneral: () => settings.getGeneral(),
-    updateGeneral: (patch) => settings.updateGeneral(patch),
+    getGeneral: async () => (await settings.getGeneral()) as unknown as Record<string, unknown>,
+    updateGeneral: async (patch) => {
+      await settings.updateGeneral(patch as Parameters<typeof settings.updateGeneral>[0]);
+    },
     env,
   });
   return hindsightModelsRoutes(adapter);

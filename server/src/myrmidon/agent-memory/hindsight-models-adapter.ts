@@ -40,9 +40,9 @@ export function formatHindsightApiLimitations(): HindsightApiLimitations {
   };
 }
 
-export interface HindsightModelsStorageDeps {
-  getGeneral: () => Promise<Record<string, unknown>>;
-  updateGeneral: (patch: Record<string, unknown>) => Promise<void>;
+export interface HindsightModelsStorageDeps<TGeneral extends object = Record<string, unknown>> {
+  getGeneral: () => Promise<TGeneral>;
+  updateGeneral: (patch: Record<string, unknown>) => Promise<unknown>;
   env?: NodeJS.ProcessEnv;
 }
 
