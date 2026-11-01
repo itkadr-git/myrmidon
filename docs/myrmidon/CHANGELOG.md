@@ -17,20 +17,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.6
 
-### PREDEPLOY-IO throttles the throwaway database copy at the Docker data device
-
-- `predeploy-board-check.sh` now applies `--device-read-bps` and
-  `--device-write-bps` to the throwaway Postgres container. The default is
-  30,000,000 bytes/s (30 MB/s), configurable with
-  `MYRMIDON_PREDEPLOY_IO_RATE`; `pg_restore`, `ANALYZE`, readiness probes and
-  other `docker exec` work run inside that throttled container.
-- The backing device is read from `MYRMIDON_PREDEPLOY_IO_DEVICE` when set;
-  otherwise the script resolves the device carrying DockerRootDir with
-  `findmnt` and fails closed if it cannot identify one. This prevents the
-  13-GB predeploy restore from consuming the board host's disk bandwidth.
-- The dry-run plan prints the effective device and read/write limits. The
-  predeploy argument test asserts both Docker flags.
-
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
 
 - `GET /api/companies/:companyId/agents` no longer returns `adapterConfig`. The
