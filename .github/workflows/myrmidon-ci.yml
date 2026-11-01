@@ -842,16 +842,28 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Check migration numbers against production
-        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: |
           set -euo pipefail
-          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}"
-          head="${{ github.event.pull_request.head.sha || github.sha }}"
-          node scripts/myrmidon/ci/check-deployed-migrations.mjs --base "$base" --head "$head"
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            node scripts/myrmidon/ci/check-deployed-migrations.mjs --base "$BASE" --head "$HEAD"
+          else
+            echo "::warning::base commit unavailable; checking full migration directory"
+            node scripts/myrmidon/ci/check-deployed-migrations.mjs
+          fi
           node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
 
   ci-result:
