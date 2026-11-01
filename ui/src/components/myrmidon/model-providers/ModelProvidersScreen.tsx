@@ -610,6 +610,7 @@ function ProviderCard({
                       <th className="p-2">{t("modelProviders.channels.window5h") || "5h Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.window7d") || "7d Limit Window"}</th>
                       <th className="p-2">{t("modelProviders.channels.lastOk") || "Last OK"}</th>
+                      <th className="p-2">{t("modelProviders.channels.lastError") || "Last error"}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -649,6 +650,12 @@ function ProviderCard({
                             >
                               {ch.stateRu || ch.state}
                             </span>
+                            {ch.limitedUntil && (
+                              <div className="mt-1 text-[10px] text-muted-foreground" data-testid={`myrmidon-pool-channel-reset-${ch.n}`}>
+                                {t("modelProviders.channels.resetIn") || "Resets in"}{" "}
+                                {new Date(ch.limitedUntil * 1000).toLocaleString()}
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             {pWin && pWin.usedPct !== null ? (
@@ -719,6 +726,9 @@ function ProviderCard({
                                   minute: "2-digit",
                                 })
                               : "—"}
+                          </td>
+                          <td className="p-2 text-muted-foreground" title={ch.error || undefined} data-testid={`myrmidon-pool-channel-error-${ch.n}`}>
+                            {ch.error ? ch.error.slice(0, 120) : "—"}
                           </td>
                         </tr>
                       );

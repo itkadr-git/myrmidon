@@ -158,6 +158,7 @@ export interface PoolAccountChannelView {
   models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
+  error?: string | null;
   windows: {
     primary: PoolAccountLimitWindow | null;
     secondary: PoolAccountLimitWindow | null;

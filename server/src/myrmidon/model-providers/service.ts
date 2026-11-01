@@ -42,6 +42,7 @@ import {
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
+import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
@@ -598,12 +599,15 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
     const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
     const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
+    const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
+      ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
+      ...(Array.isArray(raw.usage?.recentErrors) ? raw.usage.recentErrors.map((e: any) => e?.message) : [])]
+      .find((value) => typeof value === "string" && /resets?\s+in\s+/i.test(value));
+    const parsedReset = parseResetAfterText(resetText, now().getTime());
     const limitedUntil =
-      typeof raw.limited_until === "number"
-        ? raw.limited_until
-        : typeof raw.limitedUntil === "number"
-          ? raw.limitedUntil
-          : null;
+      typeof raw.limited_until === "number" ? raw.limited_until
+        : typeof raw.limitedUntil === "number" ? raw.limitedUntil
+          : parsedReset;
     const lastOk =
       typeof raw.last_ok === "number"
         ? raw.last_ok
@@ -727,7 +731,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       },
       isBanned,
       isExhausted,
-      error: raw.error || null,
+      error: latestAccountError(raw),
     };
   }
 
