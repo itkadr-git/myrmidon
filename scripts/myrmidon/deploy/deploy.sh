@@ -145,7 +145,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 # myrmidon(F-05): the journal opens with the exact version of these scripts.
 log_script_version
 
-config="" digest="" expect_version="" expect_commit="" force=0 release_tag=""
+config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason=""
 DRY_RUN=0
 while (($#)); do
   case "$1" in
@@ -154,6 +154,9 @@ while (($#)); do
     --release) release_tag="$2"; shift 2 ;;
     --expect-version) expect_version="$2"; shift 2 ;;
     --expect-commit) expect_commit="$2"; shift 2 ;;
+    --urgent)
+      [[ $# -ge 2 ]] || die "--urgent needs a reason: --urgent \"<why this deploy cannot wait>\""
+      urgent=1; urgent_reason="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --force) force=1; shift ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
@@ -161,8 +164,41 @@ while (($#)); do
   esac
 done
 [[ -n "$digest" || -n "$release_tag" ]] || die "give --digest or --release"
+# myrmidon(DEPLOY-URGENT, OPE-10414): a critical fix ships without the pre-deploy
+# dump and without PREDEPLOY-DB-CHECK — the window does not wait for either. The
+# reason is REQUIRED and goes into the journal and the final line, so an urgent
+# deploy is always attributable to a decision, never anonymous.
+if ((urgent)); then
+  [[ -n "$urgent_reason" ]] || die "--urgent needs a reason: --urgent \"<why this deploy cannot wait>\""
+  log "URGENT deploy (OPE-10414): $urgent_reason"
+fi
 load_config "$config"
+if ((urgent)); then
+  # Urgent mode has a fixed, short drain. A deploy.env value must not silently
+  # turn a critical deploy back into a long wait.
+  MAINTENANCE_DRAIN_GRACE_SEC=30
+  MAINTENANCE_ON_TIMEOUT=interrupt_and_retry
+fi
 require_cmd docker curl jq
+
+urgent_migrations_between() {
+  local old_ref="$1" new_rev="$2" clone old_rev files
+  [[ -n "$old_ref" && -n "$new_rev" ]] || return 0
+  old_rev="$(image_label "$old_ref" org.opencontainers.image.revision 2>/dev/null || true)"
+  [[ -n "$old_rev" ]] || die "cannot inspect the current image revision for --urgent; a database dump is mandatory"
+  [[ "$old_rev" != "$new_rev" ]] || return 0
+  clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "cannot inspect migrations for --urgent: deploy scripts are not in a git clone; dump required"
+  files="$(git -C "$clone" diff --name-only "$old_rev" "$new_rev" -- packages/db/src/migrations 2>/dev/null)" \
+    || die "cannot inspect migrations between $old_rev and $new_rev for --urgent; dump required"
+  if [[ -n "$files" ]]; then
+    while IFS= read -r file; do
+      [[ "$file" =~ ^packages/db/src/migrations/[0-9]{4}_[^/]+\.sql$ ]] || continue
+      printf '%s\n' "$file"
+    done <<<"$files"
+  fi
+}
+
 
 # ONE-DEPLOY: the release manifest (components by digest). With --release the
 # board digest comes from it and a disagreeing --digest is refused.
@@ -584,13 +620,17 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if ((need_window)); then
     plan "1. docker pull $ref"
     plan "2. remember previous image: ${previous_image:-<none>} -> $PREVIOUS_IMAGE_FILE"
-    plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes)"
-    if ((board_changed)) && [[ "${MYRMIDON_PREDEPLOY_CHECK:-1}" == "1" ]]; then
-      plan "3b. prove the image on a copy of the production database BEFORE the window (PREDEPLOY-DB-CHECK, predeploy-board-check.sh): own Postgres restored from the dump, own network, the NEW dockergate next to it; wait for status ok and walk the attention list and the main APIs; a failure stops the deploy here, production untouched"
-    elif ((board_changed)); then
-      plan "3b. PREDEPLOY-DB-CHECK disabled (MYRMIDON_PREDEPLOY_CHECK=0): the image is deployed WITHOUT being proven on a copy of the production database"
+    if ((urgent)); then
+      plan "urgent: steps 3 and 3b skipped; no database dump or PREDEPLOY-DB-CHECK; rollback relies on the VM's nightly backup (reason: $urgent_reason)"
     else
-      plan "3b. board unchanged: nothing to prove on the copy"
+      plan "3. dump database with DUMP_COMMAND into $DUMP_DIR (refuse if smaller than $DUMP_MIN_BYTES bytes)"
+      if ((board_changed)) && [[ "${MYRMIDON_PREDEPLOY_CHECK:-1}" == "1" ]]; then
+        plan "3b. prove the image on a copy of the production database BEFORE the window (PREDEPLOY-DB-CHECK, predeploy-board-check.sh): own Postgres restored from the dump, own network, the NEW dockergate next to it; wait for status ok and walk the attention list and the main APIs; a failure stops the deploy here, production untouched"
+      elif ((board_changed)); then
+        plan "3b. PREDEPLOY-DB-CHECK disabled (MYRMIDON_PREDEPLOY_CHECK=0): the image is deployed WITHOUT being proven on a copy of the production database"
+      else
+        plan "3b. board unchanged: nothing to prove on the copy"
+      fi
     fi
     plan "4. enter maintenance (MAINTENANCE_MODE=$MAINTENANCE_MODE, onTimeout=$MAINTENANCE_ON_TIMEOUT, grace ${MAINTENANCE_DRAIN_GRACE_SEC}s)"
     plan "5. wait for zero running runs (timeout ${RUNS_WAIT_TIMEOUT_SEC}s); onTimeout=$MAINTENANCE_ON_TIMEOUT drains for the grace and then interrupts what is still running (retried after the window closes); on a drain timeout maintenance is lifted and the deploy aborts before the image changes"
@@ -742,6 +782,13 @@ docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
 [[ -n "$expect_version" ]] || expect_version="$(image_label "$ref" org.opencontainers.image.version)"
 [[ -n "$expect_commit" ]] || expect_commit="$(image_label "$ref" org.opencontainers.image.revision)"
 [[ -n "$expect_version" || -n "$expect_commit" ]] || die "image has no version/revision labels; pass --expect-version and --expect-commit"
+if ((urgent)); then
+  urgent_migrations="$(urgent_migrations_between "$previous_image" "$expect_commit")"
+  if [[ -n "$urgent_migrations" ]]; then
+    die "--urgent refuses: new database migrations exist between the current and new images; a database dump is mandatory ($urgent_migrations)"
+  fi
+  log "URGENT deploy: no new database migrations detected; rollback relies on the VM's nightly backup"
+fi
 
 log "2/8 previous image: ${previous_image:-<none>}"
 mkdir -p "$STATE_DIR"
@@ -754,9 +801,14 @@ if [[ -n "$previous_image" && "$previous_image" != "$ref" ]]; then
   printf '%s\n' "$previous_image" >"$PREVIOUS_IMAGE_FILE"
 fi
 
-log "3/8 database dump"
-take_dump "${digest#sha256:}"
-LAST_DUMP_FILE="${LAST_DUMP_FILE:-}"
+if ((urgent)); then
+  LAST_DUMP_FILE=""
+  log "3/8 database dump: SKIPPED (--urgent); rollback relies on the VM's nightly backup"
+else
+  log "3/8 database dump"
+  take_dump "${digest#sha256:}"
+  LAST_DUMP_FILE="${LAST_DUMP_FILE:-}"
+fi
 
 fi
 
@@ -766,7 +818,9 @@ fi
 # with nothing on production changed; the 1.6.3 board instead crashed inside the
 # window on data only production has (an attention card whose key was not a
 # uuid). The check is read-only against production: the dump was already taken.
-if ((board_changed)); then
+# Urgent deploys deliberately skip this check; they have no dump to restore and
+# rely on the VM's nightly backup for rollback.
+if ((board_changed)) && ((urgent == 0)); then
   dockergate_digest="$(sed -n 's/^dockergate=//p' <<<"$component_digests" | head -n1)"
   check_args=(--config "$config" --digest "$digest" --dump "$LAST_DUMP_FILE")
   [[ -n "$dockergate_digest" ]] && check_args+=(--dockergate-digest "$dockergate_digest")
@@ -792,7 +846,11 @@ log "4/8 enter maintenance"
 # drain wait below aborts before the image changes — the message the operator
 # needs is the drain one. In hook mode a broken MAINTENANCE_ENTER_COMMAND stops
 # the deploy here: it must not switch the image into a fleet that is running.
-if ! maintenance_enter "deploy $MYRMIDON_IMAGE@${digest:0:19}"; then
+maintenance_reason="deploy $MYRMIDON_IMAGE@${digest:0:19}"
+if ((urgent)); then
+  maintenance_reason="$maintenance_reason [URGENT: $urgent_reason]"
+fi
+if ! maintenance_enter "$maintenance_reason"; then
   if [[ "$MAINTENANCE_MODE" == "api" ]]; then
     log "WARNING: the maintenance window is not on (the board API did not answer); the drain wait below decides"
   else
@@ -934,7 +992,11 @@ if ((need_window)); then
   if ! post_deploy_fleet_check "$deploy_started_at"; then
     log "DEPLOY DEGRADED: $ref is running and healthy, but the post-deploy check reported problems above; inspect the board now"
   fi
-  log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
+  if ((urgent)); then
+    log "deployed $ref (previous: ${previous:-<none>}, dump: <skipped>, URGENT: $urgent_reason, rollback: VM nightly backup)"
+  else
+    log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
+  fi
 fi
 
 # ONE-DEPLOY: the bot cards. With the window above the config phase already ran
