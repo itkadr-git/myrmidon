@@ -19,7 +19,7 @@ describe("recoverContainerOom", () => {
     getEvents: vi.fn(async () => [event({ kind: "resource.oom", containerId: "container-1" })]),
     getIssue: vi.fn(async () => issue),
     getCandidates: vi.fn(async () => candidates),
-    ensureRecoveryIssue: vi.fn(async (input) => input),
+    ensureRecoveryIssue: vi.fn(async (input: Parameters<ContainerOomRecoveryDeps["ensureRecoveryIssue"]>[0]) => input),
     ...overrides,
   }) as ContainerOomRecoveryDeps;
 
