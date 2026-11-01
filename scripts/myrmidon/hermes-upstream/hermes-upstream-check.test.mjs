@@ -25,9 +25,9 @@ const registry = JSON.parse(fs.readFileSync(REGISTRY, "utf8"));
 const dockerfile = fs.readFileSync(DOCKERFILE, "utf8");
 
 it("registers the async writer-acquire delta with fail-closed markers", () => {
-  const delta = registry.deltas.find((item) => item.id === "20-async-state-db-writer-acquire");
+  const delta = registry.deltas.find((item) => item.id === "21-async-state-db-writer-acquire");
   assert.ok(delta, "delta 20 must be registered without renumbering older deltas");
-  assert.equal(delta.patch, "docker/bot-runtime/patches/20-async-writer-acquire.patch");
+  assert.equal(delta.patch, "docker/bot-runtime/patches/21-async-writer-acquire.patch");
   assert.deepEqual(delta.files, [
     "hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state.py", "hermes_state_registry.py",
     "gateway/session_db_recovery.py", "gateway/session.py", "gateway/session_persistence.py",
