@@ -31,7 +31,7 @@ describe("locale-validator: parseCatalogJson", () => {
   });
 
   it("rejects oversized payload", () => {
-    const res = parseCatalogJson("{"a": "b"}", 5);
+    const res = parseCatalogJson('{"a": "b"}', 5);
     expect(res.catalog).toBeNull();
     expect(res.error).toContain("exceeds maximum limit");
   });
