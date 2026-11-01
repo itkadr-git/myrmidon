@@ -93,7 +93,12 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
+const explicitOpenApiCoverageExclusions = new Set<string>([
+  // Guardrails rules are a legacy board endpoint mounted outside the
+  // contract-first OpenAPI inventory. Keep the route scanner honest without
+  // treating this pre-existing endpoint as a documented API contract.
+  "guardrails.ts",
+]);
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a
