@@ -1751,8 +1751,8 @@
     "injectionTitle": "Детектор инъекций промпта",
     "injectionEnabled": "Включён",
     "injectionThreshold": "Порог оценки",
-    "injectionHint": "Действует на всю компанию: что делает срабатывание, задаётся режимом правила injection выше. Переменные окружения (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) при задании имеют приоритет.",
-    "injectionEffective": "Сейчас действует: {enabled} ({enabledSource}) · порог {score} ({scoreSource})",
+    "injectionHint": "Действует на всю компанию: что делает срабатывание, задаётся режимом правила о внедрении инструкций выше. Переменные окружения (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) при задании имеют приоритет.",
+    "injectionEffective": "Сейчас действует: {{enabled}} ({{enabledSource}}) · порог {{score}} ({{scoreSource}})",
     "onOff": {
       "on": "вкл",
       "off": "выкл"
