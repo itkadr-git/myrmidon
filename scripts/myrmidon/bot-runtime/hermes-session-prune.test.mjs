@@ -11,14 +11,14 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 const ENTRYPOINT = path.join(REPO_ROOT, "docker/bot-runtime/entrypoint.sh");
 
 describe("1.6.6 BOT-DISK hermes session maintenance", () => {
-  it("entrypoint declares run_session_maintenance with timeout 120 before gateway_launch", () => {
+  it("entrypoint declares run_session_maintenance with a bounded, kill-after timeout before gateway_launch", () => {
     const source = fs.readFileSync(ENTRYPOINT, "utf8");
     const maintenanceDef = source.indexOf("run_session_maintenance()");
-    const maintenanceCall = source.indexOf("timeout 120 bash -c 'run_session_maintenance'");
+    const maintenanceCall = source.indexOf(`timeout --signal=TERM --kill-after=10s "\${m_timeout}s" bash -c 'run_session_maintenance'`);
     const gatewayLaunch = source.indexOf('log "phase gateway_launch starting"');
 
     assert.ok(maintenanceDef >= 0, "run_session_maintenance must be defined");
-    assert.ok(maintenanceCall >= 0, "must invoke run_session_maintenance with timeout 120");
+    assert.ok(maintenanceCall >= 0, "must invoke run_session_maintenance with a bounded timeout and --kill-after");
     assert.ok(gatewayLaunch >= 0, "gateway launch must be present");
     assert.ok(maintenanceCall < gatewayLaunch, "session maintenance must run before gateway launch");
   });
