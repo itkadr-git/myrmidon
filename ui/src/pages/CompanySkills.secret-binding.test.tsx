@@ -3,7 +3,7 @@
 // OPE-8104: behavioral coverage for the KIE_API_KEY secret_ref binding flow.
 // The vendor flow is: SkillRequiredKeysSection -> SkillRequiredKeyRow ->
 // select an existing secret -> AgentMultiSelect -> agentsApi.update with
-// adapterConfig.env[KIE_API_KEY] = { type: "secret_ref", secretId }.
+// adapterConfig env uses a secret_ref with a secretId.
 // Everything runs against mocked APIs (isolated fixture, no live secrets).
 
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
@@ -172,7 +172,8 @@ async function click(node: HTMLButtonElement) {
 
 async function selectValue(select: HTMLSelectElement, value: string) {
   await act(async () => {
-    select.value = value;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    setValue?.call(select, value);
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
@@ -196,7 +197,7 @@ afterEach(() => {
 });
 
 describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
-  it("binds KIE_API_KEY to a selected agent as secret_ref via agentsApi.update", async () => {
+  it("binds KIE_API_KEY to a selected agent as a secret reference via agentsApi.update", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.mocked(secretsApi.list).mockResolvedValue([
       { id: "sec-kie", name: "kie.ai — media connector key", key: "kie_ai_api_key", status: "active" } as any,
@@ -238,7 +239,15 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
       () => node.querySelector('[data-testid="select-secret-KIE_API_KEY"]') as HTMLSelectElement | null,
       "secret selector",
     );
+    await waitForElement(
+      () => secretSelect.querySelector('option[value="sec-kie"]'),
+      "secret option",
+    );
     await selectValue(secretSelect, "sec-kie");
+    await waitForElement(
+      () => buttonsNamed(node, "Bind to agents")[0] ?? null,
+      "bind trigger after selecting secret",
+    );
 
     // 2. Open the staged agent picker and pick BBQ Operator (agent-2).
     const bindTrigger = await waitForElement(
@@ -285,7 +294,7 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
     expect(JSON.stringify(updateCall.adapterConfig)).not.toMatch(/secret-token|kie-value/i);
   });
 
-  it("unbinds KIE_API_KEY when a previously bound agent is deselected", async () => {
+  it("unbinds KIE_API_KEY when a previously bound agent is deselected and saved", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.mocked(secretsApi.list).mockResolvedValue([
       { id: "sec-kie", name: "kie.ai — media connector key", key: "kie_ai_api_key", status: "active" } as any,
@@ -327,13 +336,25 @@ describe("SkillRequiredKeysSection secret_ref binding (OPE-8104)", () => {
     const node = container as ParentNode;
 
     // Pre-bound secret is preselected.
-    const secretSelect = node.querySelector(
-      '[data-testid="select-secret-KIE_API_KEY"]',
-    ) as HTMLSelectElement;
+    const secretSelect = await waitForElement(
+      () => node.querySelector('[data-testid="select-secret-KIE_API_KEY"]') as HTMLSelectElement | null,
+      "secret selector",
+    );
+    await waitForElement(
+      () => secretSelect.querySelector('option[value="sec-kie"]'),
+      "pre-bound secret option",
+    );
+    await waitForElement(
+      () => secretSelect.value === "sec-kie" ? secretSelect : null,
+      "preselected secret reference",
+    );
     expect(secretSelect.value).toBe("sec-kie");
 
     // The bound agent shows as bound.
-    expect(node.textContent).toContain("Bound to");
+    await waitForElement(
+      () => node.textContent?.includes("Bound to") ? node : null,
+      "bound-agent indicator",
+    );
 
     // Deselect the bound agent and save.
     const bindTrigger = await waitForElement(
