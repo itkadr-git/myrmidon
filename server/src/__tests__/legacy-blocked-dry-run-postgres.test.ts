@@ -116,7 +116,8 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
         companyId,
         title: "Eligible recovery blocked issue",
         status: "blocked",
-        assigneeUserId: "user-rec-1",
+        assigneeAgentId: agentId,
+        description: "recovery issue is required",
       },
       {
         id: eligibleDecisionId,
@@ -258,11 +259,11 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
 
       const recRow = report.rows.find((r) => r.issueId === eligibleRecId);
       expect(recRow?.class).toBe("recovery");
-      expect(recRow?.proposedOwner).toBe("user-rec-1");
+      expect(recRow?.proposedOwner).toBe(agentId);
 
       const decRow = report.rows.find((r) => r.issueId === eligibleDecisionId);
       expect(decRow?.class).toBe("human_decision");
-      expect(decRow?.proposedOwner).toBe("legacy-blocked-owner");
+      expect(decRow?.proposedOwner).toBeUndefined();
 
       const unkRow = report.rows.find((r) => r.issueId === eligibleUnknownId);
       expect(unkRow?.class).toBe("unknown");

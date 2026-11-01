@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { desc, eq, inArray } from "drizzle-orm";
 import { issueComments, issueRelations, issues } from "../../../packages/db/src/index.js";
+import { createLegacyBlockedImportKey } from "../../../packages/shared/src/legacy-blocked.js";
 import { listLegacyBlocked } from "./inventory.js";
 import {
   classifyLegacyBlocked,
@@ -129,13 +130,9 @@ export async function runLegacyBlockedDryRun(
 
     const proposedOwner =
       (typeof issue.assigneeAgentId === "string" && issue.assigneeAgentId.trim()) ||
-      (typeof issue.assigneeUserId === "string" && issue.assigneeUserId.trim()) ||
-      (typeof issue.responsibleUserId === "string" && issue.responsibleUserId.trim()) ||
-      (typeof issue.createdByAgentId === "string" && issue.createdByAgentId.trim()) ||
-      (typeof issue.createdByUserId === "string" && issue.createdByUserId.trim()) ||
-      "legacy-blocked-owner";
+      (typeof issue.assigneeUserId === "string" && issue.assigneeUserId.trim());
 
-    const proposedSlaMinutes = classification.class === "unknown" ? undefined : 60;
+    const proposedSlaMinutes = classification.class === "recovery" && proposedOwner ? 60 : undefined;
 
     results.push({
       issueId: issue.id,
@@ -143,6 +140,7 @@ export async function runLegacyBlockedDryRun(
       evidence: classification.evidence,
       proposedOwner: classification.class === "unknown" ? undefined : proposedOwner,
       proposedSlaMinutes,
+      importKey: createLegacyBlockedImportKey(issue.id),
     });
   }
 
