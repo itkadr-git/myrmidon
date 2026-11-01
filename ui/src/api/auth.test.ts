@@ -46,7 +46,7 @@ describe("authApi.getSession", () => {
   });
 
   it("returns null for an ordinary local 401", async () => {
-    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(() => false);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(() => null);
     const handleUnauthorized = vi
       .spyOn(authSessionRecovery, "handleUnauthorized")
       .mockReturnValue(false);
