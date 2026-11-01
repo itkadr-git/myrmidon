@@ -206,6 +206,18 @@ describe("agent auth middleware", () => {
     expect(commentWrites).toBe(0);
   });
 
+  it("logs the run and agent context when a signed token cannot be verified", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId } });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-1");
+    const tamperedToken = `${token.slice(0, -1)}${token.endsWith("a") ? "b" : "a"}`;
+    const app = createApp(db, "local_trusted");
+    const res = await request(app).get("/actor").set("Authorization", `Bearer ${tamperedToken}`);
+    expect(res.status).toBe(401);
+  });
+
   it("leaves public MCP gateway bearers for the gateway protocol to validate", async () => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const publicId = `gw_${"a".repeat(32)}`;
