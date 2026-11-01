@@ -19,6 +19,7 @@ export function Ui2Fleet() {
   const { selectedCompanyId } = useCompany();
   const companyId = selectedCompanyId ?? "";
   const query = useQuery({ queryKey: queryKeys.fleet(companyId), queryFn: () => fleetApi.dashboard(companyId), enabled: Boolean(companyId), refetchInterval: 30_000 });
+  const oomQuery = useQuery({ queryKey: [...queryKeys.fleet(companyId), "oom"], queryFn: () => fleetApi.oomSummary(companyId), enabled: Boolean(companyId), refetchInterval: 30_000 });
   // The site badges are an addition to the dashboard: while they load, or if they fail, the rest of the screen stands.
   const sitesQuery = useQuery({ queryKey: queryKeys.fleetSiteOverview(companyId), queryFn: () => fleetApi.sitesOverview(companyId), enabled: Boolean(companyId), refetchInterval: 30_000 });
   const sites = sitesQuery.data?.sites ?? [];
@@ -31,6 +32,10 @@ export function Ui2Fleet() {
   const monitoringError = !data?.ok || sourceErrors.length > 0;
   return <Ui2Page title={t("ui2.screens.fleet.title" as never)} subtitle={t("ui2.screens.fleet.subtitle" as never)}>
     {monitoringError ? <Ui2ErrorState message={t("ui2.screens.fleet.monitoringError" as never)} detail={sourceErrors.join(" · ") || t("ui2.screens.fleet.monitoringUnavailable" as never)} /> : null}
+    {oomQuery.data ? <Ui2Section title={t("ui2.screens.fleet.oom" as never)}>
+      <Ui2Tiles><Ui2Tile label={t("ui2.screens.fleet.oom" as never)} value={oomQuery.data.total24h} hint={`Previous 24h: ${oomQuery.data.previous24h}`} />{oomQuery.data.increaseAlert ? <Ui2Tile label={t("ui2.screens.fleet.oomIncrease" as never)} value="!" /> : null}</Ui2Tiles>
+      <div className="grid gap-4 md:grid-cols-2"><div><h3 className="mb-2 text-sm font-medium">{t("ui2.screens.fleet.oomAgents" as never)}</h3>{oomQuery.data.byAgent.length ? oomQuery.data.byAgent.map((item) => <div className="flex justify-between py-1 text-sm" key={item.agentId}><span>{item.agentName} · {item.role ?? "unknown"}</span><span className="font-mono">{item.count}</span></div>) : <p className="text-sm text-muted-foreground">0</p>}</div><div><h3 className="mb-2 text-sm font-medium">{t("ui2.screens.fleet.oomRoles" as never)}</h3>{oomQuery.data.byRole.length ? oomQuery.data.byRole.map((item) => <div className="flex justify-between py-1 text-sm" key={item.role}><span>{item.role}</span><span className="font-mono">{item.count}</span></div>) : <p className="text-sm text-muted-foreground">0</p>}</div></div>
+    </Ui2Section> : null}
     {data?.blockerPanels ? <Ui2Section title={t("ui2.screens.fleet.blockerDashboard" as never)}>
       <Ui2Tiles>{BLOCKER_DASHBOARD_PANELS.filter((panel) => panel.id !== "root_fanout").map((panel) => {
         const value = panel.id === "blocked_age" ? data.blockerPanels?.blockedAgeSeconds : panel.id === "missing_fields" ? data.blockerPanels?.missingFields : data.blockerPanels?.terminal;
