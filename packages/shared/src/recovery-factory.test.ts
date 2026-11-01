@@ -147,6 +147,7 @@ describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
     workspace_myr_ws: 120,
     devbuild: 120,
     disk_space: 60,
+    "resource.oom": 60,
     operator_action: 120,
     missing_disposition: 60,
     deliberate_wait_without_target: 60,

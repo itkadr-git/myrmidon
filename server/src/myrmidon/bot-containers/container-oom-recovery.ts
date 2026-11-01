@@ -73,7 +73,7 @@ async function recoverContainerOom(
   const owner = resolveRecoveryOwner({ kind: "resource.oom", projectId: issue.projectId, candidates });
   return deps.ensureRecoveryIssue({
     kind: "resource.oom", sourceIssueId: issue.id, dedupeKey: `resource.oom:${run.id}`,
-    owner: owner.owner as { agentId: string }, slaMinutes: owner.slaMinutes, nextCheckAt: owner.nextCheckAt.toISOString(),
+    owner: owner.owner as { agentId: string }, slaMinutes: owner.slaMinutes, nextCheckAt: owner.nextCheckAt,
     evidence: {
       runId: run.id, agentId: run.agentId,
       oomEvents: events.map(({ details }) => details),
