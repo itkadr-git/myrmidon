@@ -195,6 +195,19 @@ default and is re-read on every pass (a PATCH applies without restart):
 | `MYRMIDON_TELEGRAM_DM_LANGUAGE` | TG-LOCALE | unset — the linked board user's Settings → Language choice, English default | Forces one language (`en` or `ru`) for every bridged Telegram DM service text (commands, statuses, refusals, notices) and for the Telegram private-chat command menu, instance-wide. A forced-override knob for the operator: the user's own choice is decided in the interface without a restart (read per message); this variable overrides it everywhere. The Settings → Language screen shows this source when it is set | Unset, blank or not `en`/`ru` (case-insensitive) — no force. Read on every message and every menu registration — no restart |
 | `MYRMIDON_CHANNEL_ACCESS_MODE` | CA-A | `sponsor` | Who may write to the bots in the general channel layer. `allowlist`: an unlinked sender is served only when the board's channel allowlist admits them by channel identity (a board account is optional); everyone else gets one refusal line and the owner/admin gets an access-request card (once per sender per UTC day). Linked board members keep the vendor path either way | `sponsor` — the vendor guest-sponsorship path unchanged, byte for byte; an unreadable value falls back to `sponsor`, never to `allowlist`. Also settable live per message without a restart from the stored channel settings (`channelSettings.channel.channelAccessMode`, the screen or `PATCH /api/myrmidon/channel-settings`); the environment value pins over the stored one |
 
+## 1.6.6 — DEVFLOW: project development process
+
+Projects may opt into the development workflow with the stored `developmentProcess` object. It is configured on the project through the project create/update API and is returned as part of the project object; it is not an instance-wide switch.
+
+| Field | Default | What it does | How to disable / special |
+|---|---|---|---|
+| `developmentProcess` | `null` | Project-scoped development workflow configuration. The object contains `enabled`, `executionPolicy`, and optional `pipelineId`. | `null` or `enabled: false` — the project uses the existing issue-creation defaults and does not inherit this process. |
+| `developmentProcess.enabled` | `false` when absent | Enables applying the configured development process when a new issue is created for the project. | `false` — no project policy is applied. Existing per-issue policy and ordinary project behavior are unchanged. |
+| `developmentProcess.executionPolicy` | none | The normalized execution policy inherited by a new project issue when the issue does not already provide an explicit execution policy. Configure the stages/participants required by the development workflow. | Required by validation when `developmentProcess` is present; it is ignored for inheritance while `enabled` is false. An explicit issue policy takes precedence. |
+| `developmentProcess.pipelineId` | `null` | Optional UUID identifying the pipeline associated with the development workflow. | `null` — no pipeline association; it does not itself enable the workflow. |
+
+The setting is intentionally project-scoped: enabling it on one project does not change issue creation for other projects. When enabled, only newly created issues for that project inherit its normalized execution policy; issues with an explicit policy retain that policy. The project service normalizes the policy when the project is written, and issue creation reads the project setting once before applying the fallback.
+
 ## Track 5 — operations
 
 | Variable | Function | Default | What it does | How to disable / special |
