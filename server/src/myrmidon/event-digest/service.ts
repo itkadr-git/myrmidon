@@ -18,21 +18,57 @@ export const MAX_BUFFERED_EVENTS_PER_AGENT = 200;
 export const MAX_DIGEST_EVENTS = 30;
 export const MAX_DIGEST_PAYLOAD_CHARS = 2_000;
 
-function keepNewest(events: BufferedEvent[]): BufferedEvent[] {
-  return events.length > MAX_BUFFERED_EVENTS_PER_AGENT
-    ? events.slice(events.length - MAX_BUFFERED_EVENTS_PER_AGENT)
-    : events;
+// One entry per (type, issue, comment) — a comment wake that is re-dispatched or coalesced again is the same
+// event, not a new one. The newest occurrence is kept and takes its place in the order.
+function dedupeKey(entry: BufferedEvent): string {
+  const payload = (entry.payload ?? {}) as Record<string, unknown>;
+  const commentId = typeof payload.commentId === "string" ? payload.commentId : "";
+  return commentId ? `${entry.type}|${entry.issueId ?? ""}|${commentId}` : `id|${entry.id}`;
 }
 
+function keepNewest(events: BufferedEvent[]): BufferedEvent[] {
+  const byKey = new Map<string, BufferedEvent>();
+  for (const entry of events) {
+    const key = dedupeKey(entry);
+    byKey.delete(key);
+    byKey.set(key, entry);
+  }
+  const unique = [...byKey.values()];
+  return unique.length > MAX_BUFFERED_EVENTS_PER_AGENT
+    ? unique.slice(unique.length - MAX_BUFFERED_EVENTS_PER_AGENT)
+    : unique;
+}
+
+const MAX_DIGEST_STRING_CHARS = 300;
+
+function compactValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_DIGEST_STRING_CHARS ? `${value.slice(0, MAX_DIGEST_STRING_CHARS)}…` : value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= 3) return "[…]";
+  if (Array.isArray(value)) {
+    const head = value.slice(0, 20).map((item) => compactValue(item, depth + 1));
+    return value.length > 20 ? [...head, `…+${value.length - 20}`] : head;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = compactValue(inner, depth + 1);
+  }
+  return out;
+}
+
+// Identifiers and short fields stay as they are; only long strings, deep nesting and long arrays are cut.
 function compactPayload(payload: BufferedEvent["payload"]): BufferedEvent["payload"] {
   let text: string;
   try {
     text = JSON.stringify(payload ?? {});
   } catch {
-    return { truncated: true };
+    return { truncated: true } as BufferedEvent["payload"];
   }
   if (text.length <= MAX_DIGEST_PAYLOAD_CHARS) return payload;
-  return { truncated: true, preview: text.slice(0, 500) };
+  const compacted = compactValue(payload ?? {}, 0) as BufferedEvent["payload"];
+  return { ...(compacted as Record<string, unknown>), truncated: true } as BufferedEvent["payload"];
 }
 
 /**
@@ -136,11 +172,10 @@ export class EventDigestService {
       this.preparedDigests.delete(agentId);
       return;
     }
-    // Only accumulated (P3/P4) events go back to the buffer: a P0-P2 triggering event was already
-    // handled by its own wake (it coalesced into the running execution) and must not pile up.
-    const restorable = prepared.filter((entry) => isDigestAccumulatedPriority(entry.priority));
+    // Original semantics kept: everything staged goes back. Re-dispatched / coalesced wakes of the same
+    // comment collapse into one entry (dedupe) and the buffer stays bounded, so they no longer pile up.
     const current = this.buffers.get(agentId) ?? [];
-    this.buffers.set(agentId, keepNewest([...restorable, ...current]));
+    this.buffers.set(agentId, keepNewest([...prepared, ...current]));
     this.preparedDigests.delete(agentId);
   }
 

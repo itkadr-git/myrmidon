@@ -523,16 +523,24 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       expect(boundEventDigest(null)).toBeNull();
     });
 
-    it("does not pile coalesced P2 wakes back into the buffer", async () => {
+    it("keeps a skipped wake for later but collapses re-dispatches of the same comment", async () => {
       const agentId = "agent-coalesced";
       const notCreated: WakeupFn = async () => ({ woken: false });
-      for (let i = 0; i < 50; i += 1) {
-        await service.handleAgentEvent(
-          { agentId, type: "issue_commented", payload: { commentId: `c${i}` } },
-          { wakeup: notCreated },
-        );
+      for (let round = 0; round < 40; round += 1) {
+        for (const commentId of ["c1", "c2", "c3"]) {
+          await service.handleAgentEvent(
+            { agentId, issueId: "issue-1", type: "issue_commented", payload: { commentId, body: "z".repeat(5_000) } },
+            { wakeup: notCreated },
+          );
+        }
       }
-      expect(service.getPendingDigest(agentId)).toBeNull();
+      const pending = service.getPendingDigest(agentId);
+      expect(pending?.eventCount).toBe(3);
+      expect(pending?.events.map((entry) => (entry.payload as { commentId?: string }).commentId)).toEqual(["c1", "c2", "c3"]);
+      const first = pending?.events[0]?.payload as { commentId?: string; body?: string; truncated?: boolean };
+      expect(first.commentId).toBe("c1");
+      expect(first.truncated).toBe(true);
+      expect((first.body ?? "").length).toBeLessThanOrEqual(301);
     });
   });
 });
