@@ -180,7 +180,7 @@ export async function geoCheckCommand(
 
   const parsed = geoCheckOptionsSchema.safeParse(rawInput);
   if (!parsed.success) {
-    const errorMsg = `Invalid geo-check options: ${parsed.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`;
+    const errorMsg = `Invalid geo-check options: ${parsed.error.issues.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`;
     if (rawOpts.json) {
       console.error(JSON.stringify({ error: errorMsg, details: parsed.error.format() }));
     } else {

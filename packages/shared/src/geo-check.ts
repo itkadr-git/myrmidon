@@ -19,7 +19,7 @@ export function parseOsRelease(content: string): {
   let versionId = "";
   let prettyName = "";
 
-  for (const line of content.split("\\n")) {
+  for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const eqIdx = trimmed.indexOf("=");
