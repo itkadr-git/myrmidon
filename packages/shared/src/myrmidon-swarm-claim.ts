@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  DEFAULT_CAPACITY_POLICY,
+  capacityPolicySchema,
+  type CapacityPolicy,
+} from "./myrmidon-capacity-policy-schema.js";
 
 /**
  * Per-role task queues with leased claims (myrmidon 1.6, SWARM-CLAIM).
@@ -49,7 +54,11 @@ export const SWARM_CLAIM_ENV_KEYS = {
   leaseTtlSec: "MYRMIDON_SWARM_LEASE_TTL_SEC",
   maxActiveTasks: "MYRMIDON_SWARM_MAX_ACTIVE_TASKS",
   sweepIntervalSec: "MYRMIDON_SWARM_CLAIM_SWEEP_INTERVAL_SEC",
+  capacityPolicy: "MYRMIDON_SWARM_CLAIM_CAPACITY_POLICY",
 } as const;
+
+export const SWARM_CLAIM_CAPACITY_POLICY_ENV = "MYRMIDON_SWARM_CLAIM_CAPACITY_POLICY";
+export const CAPACITY_POLICY_ENABLED_ENV = "MYRMIDON_CAPACITY_POLICY_ENABLED";
 
 export const SWARM_CLAIM_SETTING_KEYS = [
   "enabled",
@@ -196,6 +205,7 @@ export function swarmPriorityRank(priority: string | null | undefined): number {
 
 /** The comparable shape both the queue and the supervisor view order. */
 export interface SwarmQueueCandidate {
+  id?: string;
   issueId: string;
   identifier?: string | null;
   priority: string | null;
@@ -213,6 +223,10 @@ export interface SwarmQueueCandidate {
   failedRunsSinceLastChange?: number | null;
   /** Tie-break: the older the task entered the queue, the earlier it ranks. */
   queuedAt: Date | number | string | null;
+  /** 1.6.6 (P2.12 CAPACITY-POLICY): optional project and caste context for capacity policy. */
+  projectId?: string | null;
+  casteId?: string | null;
+  createdAt?: Date | number | string | null;
 }
 
 function queuedAtMsValue(value: Date | number | string | null | undefined): number {
@@ -530,6 +544,7 @@ export const swarmClaimSettingsSchema = z.preprocess(
       sweepIntervalSec: sweepIntervalSchema,
       p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
       pheromone: pheromoneSchema.default({}),
+      capacityPolicy: capacityPolicySchema.optional(),
     })
     .strict(),
 );
@@ -543,6 +558,7 @@ export const patchSwarmClaimSettingsSchema = z
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
     pheromone: pheromoneSchema.optional(),
+    capacityPolicy: capacityPolicySchema.partial().optional(),
   })
   .strict();
 
@@ -551,7 +567,9 @@ export type SwarmClaimSettingsPatch = z.infer<typeof patchSwarmClaimSettingsSche
 
 export interface ResolvedSwarmClaimSettings {
   settings: SwarmClaimSettings;
-  sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
+  sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource> & {
+    capacityPolicy: SwarmClaimSettingSource;
+  };
 }
 
 /** The single truth for "is this string an explicit on?". A typo must not enable the swarm. */
@@ -571,6 +589,9 @@ export function readSwarmClaimSettingsFromEnv(
   const maxActiveRaw = env[SWARM_CLAIM_ENV_KEYS.maxActiveTasks]?.trim();
   const maxActive = maxActiveRaw ? Number(maxActiveRaw) : Number.NaN;
   const sweep = Number(env[SWARM_CLAIM_ENV_KEYS.sweepIntervalSec]?.trim());
+  const capacityPolicyEnv =
+    parseSwarmClaimEnabled(env[CAPACITY_POLICY_ENABLED_ENV]) ??
+    parseSwarmClaimEnabled(env[SWARM_CLAIM_CAPACITY_POLICY_ENV]);
   return {
     enabled: parseSwarmClaimEnabled(env[SWARM_CLAIM_ENV_KEYS.enabled]) ?? DEFAULT_SWARM_CLAIM_ENABLED,
     leaseTtlSec:
@@ -596,6 +617,9 @@ export function readSwarmClaimSettingsFromEnv(
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
     pheromone: {},
+    ...(capacityPolicyEnv !== null
+      ? { capacityPolicy: { ...DEFAULT_CAPACITY_POLICY, enabled: capacityPolicyEnv } }
+      : {}),
   };
 }
 
@@ -623,6 +647,19 @@ export function resolveSwarmClaimSettings(options: {
   const env = options.env ?? {};
   const stored = normalizeSwarmClaimSettings(options.stored);
   const envSettings = readSwarmClaimSettingsFromEnv(env);
+  const envCapacityEnabled =
+    parseSwarmClaimEnabled(env[CAPACITY_POLICY_ENABLED_ENV]) ??
+    parseSwarmClaimEnabled(env[SWARM_CLAIM_CAPACITY_POLICY_ENV]);
+  const effectiveCapacityPolicy: CapacityPolicy | undefined = stored?.capacityPolicy
+    ? {
+        ...stored.capacityPolicy,
+        ...(envCapacityEnabled !== null ? { enabled: envCapacityEnabled } : {}),
+      }
+    : envCapacityEnabled !== null
+      ? { ...DEFAULT_CAPACITY_POLICY, enabled: envCapacityEnabled }
+      : options.stored === undefined
+        ? DEFAULT_CAPACITY_POLICY
+        : undefined;
   const settings: SwarmClaimSettings = stored
     ? {
         ...envSettings,
@@ -641,13 +678,19 @@ export function resolveSwarmClaimSettings(options: {
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
         pheromone: stored.pheromone ?? {},
+        ...(effectiveCapacityPolicy !== undefined ? { capacityPolicy: effectiveCapacityPolicy } : {}),
       }
-    : envSettings;
+    : {
+        ...envSettings,
+        ...(effectiveCapacityPolicy !== undefined ? { capacityPolicy: effectiveCapacityPolicy } : {}),
+      };
 
   // The source of each key: the override won ("env"), the stored row won
   // ("settings"), or nothing was set and the built-in default applied
   // ("default"). The UI and the supervisor view render exactly this.
-  const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
+  const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource> & {
+    capacityPolicy: SwarmClaimSettingSource;
+  };
   const hasOverride = (name: string) => env[name] !== undefined && env[name]!.trim() !== "";
   sources.enabled = hasOverride(SWARM_CLAIM_ENV_KEYS.enabled)
     ? "env"
@@ -679,6 +722,12 @@ export function resolveSwarmClaimSettings(options: {
   sources.pheromone = stored?.pheromone && Object.keys(stored.pheromone).length > 0
     ? "settings"
     : "default";
+  sources.capacityPolicy =
+    hasOverride(CAPACITY_POLICY_ENABLED_ENV) || hasOverride(SWARM_CLAIM_CAPACITY_POLICY_ENV)
+      ? "env"
+      : stored?.capacityPolicy
+        ? "settings"
+        : "default";
   return { settings, sources };
 }
 
@@ -733,6 +782,19 @@ export function mergeSwarmClaimSettings(
   base: SwarmClaimSettings,
   patch: SwarmClaimSettingsPatch,
 ): SwarmClaimSettings {
+  const mergedPolicy: CapacityPolicy | undefined =
+    patch.capacityPolicy === undefined
+      ? base.capacityPolicy
+      : patch.capacityPolicy === null
+        ? undefined
+        : capacityPolicySchema.parse({
+            ...(base.capacityPolicy ?? DEFAULT_CAPACITY_POLICY),
+            ...patch.capacityPolicy,
+            fairness: { ...(base.capacityPolicy?.fairness ?? DEFAULT_CAPACITY_POLICY.fairness), ...patch.capacityPolicy.fairness },
+            aging: { ...(base.capacityPolicy?.aging ?? DEFAULT_CAPACITY_POLICY.aging), ...patch.capacityPolicy.aging },
+            limits: { ...(base.capacityPolicy?.limits ?? DEFAULT_CAPACITY_POLICY.limits), ...patch.capacityPolicy.limits },
+            starvation: { ...(base.capacityPolicy?.starvation ?? DEFAULT_CAPACITY_POLICY.starvation), ...patch.capacityPolicy.starvation },
+          });
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     leaseTtlSec: patch.leaseTtlSec === undefined ? base.leaseTtlSec : patch.leaseTtlSec,
@@ -745,6 +807,7 @@ export function mergeSwarmClaimSettings(
     // subset wholesale (absent keys fall back to the design default, not to
     // the previous stored value — the panel always submits the full subset).
     pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
+    ...(mergedPolicy !== undefined ? { capacityPolicy: mergedPolicy } : {}),
   };
 }
 

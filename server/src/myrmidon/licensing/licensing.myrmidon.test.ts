@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { computeInitialInstallId, hashToInstallId } from "./install-id.js";
 import { verifyLicense } from "./license.js";
+import { moduleStatuses } from "./client-license.js";
 import { licensingRoutes } from "./routes.js";
 
 const MACHINE_ID = "0123456789abcdef0123456789abcdef";
@@ -102,6 +103,24 @@ describe("verify", () => {
     );
     expect(verifyLicense("nope", MACHINE_ID_INSTALL_ID, 1, pair.publicKey).reason).toBe("bad_format");
     expect(verifyLicense("", MACHINE_ID_INSTALL_ID, 1, pair.publicKey).reason).toBe("no_license");
+  });
+  it("fails closed for an Alibaba image module without a grant", () => {
+    const pair = generateKeyPairSync("ed25519");
+    const license = testLicense(pair.privateKey, {
+      instanceId: MACHINE_ID_INSTALL_ID,
+      modules: ["google-ai"],
+      features: ["core"],
+      expires: null,
+      watermark: "test-only",
+    });
+    const status = moduleStatuses({
+      license: { text: license, source: "file" },
+      installId: MACHINE_ID_INSTALL_ID,
+      nowSeconds: 1,
+      trustedKeys: [pair.publicKey],
+      installed: ["alibaba-image"],
+    }).find((entry) => entry.module === "alibaba-image");
+    expect(status).toMatchObject({ module: "alibaba-image", installed: true, state: "not_granted", reason: "module_not_granted" });
   });
 });
 

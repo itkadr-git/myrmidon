@@ -121,7 +121,6 @@
       "badge": "{{count}} decisions waiting"
     },
     "owner": "Owner",
-    "ownerChannel": "Web · now",
     "commander": {
       "aria": "Tell the Commander (Ctrl K)",
       "placeholder": "Tell the Commander…",
@@ -132,6 +131,7 @@
       "status": "Owner · Web"
     },
     "screens": {
+      "commander": "Command Center",
       "decisions": "Decisions",
       "costs": "Costs",
       "agentOverview": "Agent overview",
@@ -142,7 +142,8 @@
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
       "placeholderLegacyLink": "Continue to the current screen",
       "knowledge": "Knowledge",
-      "regulations": "Regulations"
+      "regulations": "Regulations",
+      "more": "More"
     },
     "settings": {
       "navLabel": "Settings navigation",
@@ -157,6 +158,13 @@
       "castes": "Castes and models",
       "system": "System",
       "language": "Language"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Active · Web",
+        "telegram": "Active · Telegram",
+        "none": "Active · not seen recently"
+      }
     }
   },
   "connectorPanel": {
@@ -412,7 +420,21 @@
       "state": "Стан",
       "window5h": "Вікно 5г",
       "window7d": "Вікно 7д",
-      "lastOk": "Останній OK"
+      "lastOk": "Останній OK",
+      "lastError": "Last error",
+      "resetIn": "Resets in"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {

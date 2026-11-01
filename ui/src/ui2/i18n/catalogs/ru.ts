@@ -7,6 +7,13 @@
 import type { Ui2Catalog } from "./en";
 
 export const ru: Ui2Catalog = {
+  uiSwitch: {
+    label: "Интерфейс",
+    new: "Новая",
+    legacy: "Прежняя",
+    instanceDefault: "По настройке экземпляра",
+    switchTo: "Переключить версию интерфейса",
+  },
   nav: {
     newTask: "Новая задача",
     search: "Поиск",
@@ -214,6 +221,9 @@ export const ru: Ui2Catalog = {
           raiseAndResume: "Поднять и продолжить",
           title: "Инциденты стоимости",
         },
+        forecast: "Прогноз до конца месяца: {{amount}}",
+        unpriced: "Неоценено",
+        unpricedEvents: "{{count}} событий без цены",
         policies: {
           amount: "Сумма",
           empty: "Политик стоимости нет",
@@ -323,6 +333,21 @@ export const ru: Ui2Catalog = {
             settings: "Настройки",
           },
           subtitle: "Как настроен запуск прогонов",
+          swarmClaim: {
+            enable: "Включить самоорганизацию",
+            leaseTtlSec: "TTL аренды задачи (секунды)",
+            loadError: "Не удалось загрузить настройки самоорганизации",
+            maxActiveTasks: "Лимит задач на агента",
+            saveError: "Не удалось сохранить настройки самоорганизации",
+            source: {
+              default: "по умолчанию",
+              env: "задано окружением",
+              settings: "сохранено",
+            },
+            statusLine: "{{queued}} неназначенных задач в ожидании · {{claimed}} захвачено за последний час · {{cancelled}} отменено за последний час",
+            subtitle: "Настройки автоматического подбора и захвата задач",
+            title: "Самоорганизация (swarm-claim)",
+          },
           title: "Прогоны",
         },
         system: {
@@ -359,6 +384,13 @@ export const ru: Ui2Catalog = {
       },
       owner: "Владелец",
       ownerChannel: "Веб",
+      shell: {
+        activeChannel: {
+          web: "Активен · Веб",
+          telegram: "Активен · Telegram",
+          none: "Давно не появлялся",
+        },
+      },
       nests: {
         all: "Все гнёзда",
       },
@@ -398,11 +430,34 @@ export const ru: Ui2Catalog = {
           monitoringUnavailable: "Данные мониторинга недоступны.",
           hosts: "Узлы",
           services: "Сервисы",
-          empty: "Нет данных флота",
+          oom: "Инциденты OOM (24 ч)",
+          oomIncrease: "Инцидентов OOM больше, чем за предыдущие 24 ч",
+          oomAgents: "По агентам",
+          oomRoles: "По ролям",
+          empty: "Нет данных по флоту",
           emptyBody: "Для этой компании не возвращены узлы или сервисы.",
           error: "Данные флота недоступны.",
           metrics: "ЦП {{cpu}}% · память {{memory}}% · диск {{disk}}%",
           states: { running: "Работает", stopped: "Остановлен", unknown: "Неизвестно" },
+        },
+        more: {
+          title: "Ещё",
+          subtitle: "Дополнительные разделы и настройки.",
+          sections: {
+            navigation: "Навигация",
+            appearance: "Внешний вид",
+          },
+          theme: "Тема",
+          themeLight: "Светлая",
+          themeDark: "Тёмная",
+          themeSystem: "Системная",
+          links: {
+            swarm: "Рой",
+            costs: "Расходы",
+            quality: "Качество",
+            settings: "Настройки",
+            agentCard: "Карточка агента",
+          },
         },
       },
   },

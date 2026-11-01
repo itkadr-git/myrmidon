@@ -15,6 +15,8 @@ import { LitellmSyncPort } from "./port.js";
 export interface LitellmSyncServiceDeps {
   db: Db;
   litellm: LitellmSyncPort;
+  /** Resolves a board secret name to its value before sending it to LiteLLM. */
+  resolveCredential?: (companyId: string, secretName: string) => Promise<string | null>;
 }
 
 export interface SyncTrigger {
@@ -28,7 +30,12 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
   /**
    * Synchronize a single model based on its enabled state.
    */
-  async function syncModel(providerId: string, modelName: string, enabled: boolean) {
+  async function syncModel(
+    providerId: string,
+    modelName: string,
+    enabled: boolean,
+    companyId?: string,
+  ) {
     // Fetch the full model record to get the litellm model name
     const modelRecords = await deps.db
       .select()
@@ -60,16 +67,25 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       }
 
       const provider = providerRecords[0];
+      const providerCompanyId = companyId ?? provider.companyId;
 
       if (!provider.credentialSecretName) {
         throw new Error(`Provider ${providerId} has no credential secret name`);
+      }
+      // The secret NAME never travels to LiteLLM as a value: without a
+      // resolver there is no way to obtain the value, so this is an error.
+      const credentialValue = deps.resolveCredential
+        ? await deps.resolveCredential(providerCompanyId, provider.credentialSecretName)
+        : null;
+      if (!credentialValue) {
+        throw new Error(`Provider ${providerId} credential could not be resolved`);
       }
 
       await deps.litellm.registerModel({
         litellmModelName: model.litellmModelName,
         providerType: provider.type,
         baseUrl: provider.baseUrl,
-        credentialSecretName: provider.credentialSecretName,
+        credentialValue,
       });
 
       await trigger?.onModelRegistered?.(model.litellmModelName);
@@ -118,7 +134,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       throw new Error(`Provider ${providerId} not found in company ${companyId}`);
     }
 
-    await syncModel(providerId, modelName, enabled);
+    await syncModel(providerId, modelName, enabled, companyId);
   }
 
   /**
@@ -176,11 +192,17 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     for (const model of enabledModels) {
       if (!litellmRegisteredModelNames.has(model.litellmModelName)) {
         if (model.provider.credentialSecretName) {
+          const credentialValue = deps.resolveCredential
+            ? await deps.resolveCredential(companyId, model.provider.credentialSecretName)
+            : null;
+          if (!credentialValue) {
+            throw new Error(`Provider ${model.providerId} credential could not be resolved`);
+          }
           await deps.litellm.registerModel({
             litellmModelName: model.litellmModelName,
             providerType: model.provider.type,
             baseUrl: model.provider.baseUrl,
-            credentialSecretName: model.provider.credentialSecretName,
+            credentialValue,
           });
           await trigger?.onModelRegistered?.(model.litellmModelName);
         }
@@ -230,6 +252,13 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
       throw new Error(`Provider ${providerId} has no credential secret name`);
     }
 
+    const credentialValue = deps.resolveCredential
+      ? await deps.resolveCredential(companyId, provider.credentialSecretName)
+      : null;
+    if (!credentialValue) {
+      throw new Error(`Provider ${providerId} credential could not be resolved`);
+    }
+
     // Get all enabled models for this provider
     const models = await deps.db
       .select()
@@ -250,7 +279,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
         litellmModelName: model.litellmModelName,
         providerType: provider.type,
         baseUrl: provider.baseUrl,
-        credentialSecretName: provider.credentialSecretName,
+        credentialValue,
       };
       const deployments = registered.filter(
         (r) => r.litellmModelName === model.litellmModelName && r.modelId,
@@ -281,6 +310,13 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     }
   }
 
+  /**
+   * Fetches model groups and routed channels from LiteLLM.
+   */
+  async function listChannels() {
+    return deps.litellm.listChannels();
+  }
+
   return {
     registerPluginModel: async (input: {
       modelName: string;
@@ -304,6 +340,7 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
     reconcileWithLitellm,
     handleProviderCredentialRotation,
     unregisterModels,
+    listChannels,
   };
 }
 

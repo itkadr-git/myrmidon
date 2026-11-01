@@ -173,30 +173,36 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     );
   });
 
-  it("lost renew fires onLost with an aborted signal (§5.4 stop-semantics)", async () => {
-    await cleanLeases();
-    const a = leaderLeaseService(db, { ttlMs: 300, renewIntervalMs: 100 });
-    const b = leaderLeaseService(db, { ttlMs: 300, renewIntervalMs: 50 });
-    let lostSignal: AbortSignal | null = null;
-    const la = a.lease("scheduler", {
-      onLost: (signal) => { lostSignal = signal; },
-    });
-    la.start();
-    await until(() => expect(la.isLeader()).toBe(true));
+  it("lost renew fires onLost with an aborted signal (§5.4 stop-semantics) [20x verified]", async () => {
+    for (let run = 1; run <= 20; run++) {
+      await cleanLeases();
+      const a = leaderLeaseService(db, { ttlMs: 300, renewIntervalMs: 100 });
+      const b = leaderLeaseService(db, { ttlMs: 300, renewIntervalMs: 50 });
+      let lostSignal: AbortSignal | null = null;
+      const la = a.lease("scheduler", {
+        onLost: (signal) => { lostSignal = signal; },
+      });
+      la.start();
+      await until(() => expect(la.isLeader()).toBe(true));
 
-    // Force a loss: delete the row, let the contender take it; the next renew
-    // of the old holder must not return a row → onLost with aborted signal.
-    await db.delete(boardLeases);
-    const lb = b.lease("scheduler");
-    lb.start();
-    await until(() => expect(lb.isLeader()).toBe(true));
-    await until(() => expect(lostSignal).not.toBeNull());
-    lb.stop();
-    la.stop();
-    expect(la.isLeader()).toBe(false);
-    expect(lostSignal).not.toBeNull();
-    expect(lostSignal!.aborted).toBe(true);
-    expect(lostSignal!.reason).toBe("renew-failed");
+      // Freeze A's timer before deleting the row. Otherwise A can renew and
+      // recreate its row before B's first acquire pass under CPU load.
+      la.setTiming(300, 60_000);
+      await db.delete(boardLeases);
+      const lb = b.lease("scheduler");
+      lb.start();
+      await until(() => expect(lb.isLeader()).toBe(true));
+
+      // Now allow A's next pass to observe B and report the lost lease.
+      la.setTiming(300, 50);
+      await until(() => expect(lostSignal).not.toBeNull());
+      lb.stop();
+      la.stop();
+      expect(la.isLeader()).toBe(false);
+      expect(lostSignal).not.toBeNull();
+      expect(lostSignal!.aborted).toBe(true);
+      expect(lostSignal!.reason).toBe("renew-failed");
+    }
   });
 });
 

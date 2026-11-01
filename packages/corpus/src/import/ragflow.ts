@@ -84,16 +84,18 @@ export type CorpusImportChunk = {
   metadata: Record<string, unknown>;
 };
 
+export type ChunkState = {
+  content: string;
+  embedding: number[] | null;
+  embeddingModel: string | null;
+  embeddingDimensions: number | null;
+  embeddingContentHash: string | null;
+};
+
 export type CorpusImportTarget = {
   upsertDataset(dataset: CorpusImportDataset): Promise<void>;
   upsertDocument(document: CorpusImportDocument): Promise<void>;
-  getChunkStates(companyId: string, ids: string[]): Promise<Map<string, {
-    content: string;
-    embedding: number[] | null;
-    embeddingModel: string | null;
-    embeddingDimensions: number | null;
-    embeddingContentHash: string | null;
-  }>>;
+  getChunkStates(companyId: string, ids: string[]): Promise<Map<string, ChunkState>>;
   upsertChunks(chunks: CorpusImportChunk[]): Promise<void>;
   markDocumentReady(companyId: string, documentId: string): Promise<void>;
 };
@@ -329,10 +331,13 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
 
     for (const document of documentsByDataset.get(dataset.id) ?? []) {
       if (!document.id) throw new RagflowApiError(`RAGFlow document in dataset ${dataset.id} is missing an id`);
+      const expectedChunks = expectedChunksByDocument.get(JSON.stringify([dataset.id, document.id])) ?? 0;
       const runState = document.run === undefined || document.run === null ? "" : String(document.run).toUpperCase();
       // The documented completed statuses are textual DONE or numeric 3. Fail closed
       // for missing/unknown values: the importer must never copy a partial RAGFlow index.
-      if (!["DONE", "3"].includes(runState)) {
+      // Zero-chunk documents produce no chunks to index, so uncompleted run states
+      // are permitted when expectedChunks is zero.
+      if (expectedChunks > 0 && !["DONE", "3"].includes(runState)) {
         throw new RagflowApiError(`RAGFlow document ${document.id} is not ready (run=${runState || "unknown"})`);
       }
       const documentId = stableUuid("document", JSON.stringify([options.companyId, dataset.id, document.id]));
@@ -468,7 +473,7 @@ function sourceCount(...values: unknown[]): number | undefined {
   }
   return value;
 }
-function isReusableEmbedding(vector: number[], dimensions: number): boolean {
+export function isReusableEmbedding(vector: number[], dimensions: number): boolean {
   try {
     assertEmbeddingVector(vector, dimensions);
     return isL2Normalized(vector);
@@ -477,7 +482,7 @@ function isReusableEmbedding(vector: number[], dimensions: number): boolean {
   }
 }
 
-function stableUuid(kind: string, value: string): string {
+export function stableUuid(kind: string, value: string): string {
   const bytes = createHash("sha256").update(`myrmidon-ragflow-import:${kind}:${value}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;

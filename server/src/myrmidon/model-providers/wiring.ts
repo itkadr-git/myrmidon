@@ -110,7 +110,14 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
       litellmBaseUrl: gatewaySettings.baseUrl,
       litellmAdminKey: adminKey,
     });
-    return createLitellmSyncService({ db, litellm: client });
+    return createLitellmSyncService({
+      db,
+      litellm: client,
+      resolveCredential: async (ownerCompanyId, secretName) => {
+        const row = await secrets.getByName(ownerCompanyId, secretName);
+        return row ? secrets.resolveSecretValue(ownerCompanyId, row.id, "latest") : null;
+      },
+    });
   }
 
   const deps: ModelProviderRoutesWithSyncDeps = {

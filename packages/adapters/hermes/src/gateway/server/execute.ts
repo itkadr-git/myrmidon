@@ -123,11 +123,12 @@ type ExecutionState = {
    * Initialized at run creation, so a run whose stream never connects still
    * stalls after its full timeoutSec. */
   lastEventAtMs: number;
+  modelResponseStarted: boolean;
   /** Raw tool args are ephemeral and only passed to RunGuard's hash-only signature. */
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
   consecutiveToolErrors: {
     toolName: string;
     count: number;
@@ -843,6 +844,7 @@ function createExecutionState(runId: string): ExecutionState {
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
     lastEventAtMs: Date.now(),
+    modelResponseStarted: false,
     guardToolArguments: new Map(),
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
@@ -1093,7 +1095,7 @@ async function logCompactEvent(input: {
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
 
-    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
       const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
       const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
@@ -1184,6 +1186,14 @@ async function reportRuntimeProgress(input: {
   // ("to avoid churning the live event stream"). Tool/reasoning/approval
   // events are comparatively rare and are still reported immediately.
   let throttleKey = false;
+
+  if (
+    eventName === "message.delta" ||
+    eventName === "message.completed" ||
+    eventName === "reasoning.available"
+  ) {
+    state.modelResponseStarted = true;
+  }
 
   if (eventName === "tool.started" || eventName === "tool.completed") {
     currentToolName = toolNameFromEvent(record);
@@ -1288,6 +1298,25 @@ async function handleEvent(input: {
   }
 
   await reportRuntimeProgress({ ctx, state, eventName, record, redactText });
+
+  const eventRecord = asRecord(parsed);
+  if (
+    eventRecord?.model_response_started === true ||
+    eventRecord?.modelResponseStarted === true ||
+    nonEmpty(eventRecord?.first_token_at) ||
+    nonEmpty(eventRecord?.firstTokenAt) ||
+    eventName === "message.delta" ||
+    eventName === "message.completed" ||
+    eventName === "reasoning.available" ||
+    eventName === "tool.started" ||
+    eventName === "tool.completed" ||
+    eventName === "model.started" ||
+    eventName === "model.response.started" ||
+    eventName === "response.started" ||
+    Boolean(nonEmpty(eventRecord?.delta) ?? nonEmpty(eventRecord?.text_delta))
+  ) {
+    state.modelResponseStarted = true;
+  }
 
   const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
   if (eventName === "message.delta" && delta) {
@@ -1658,6 +1687,89 @@ export function readGatewayFallbackModels(value: unknown): string[] {
   return fallbacks.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
+const LITELLM_DEPLOYMENT_COOLDOWN_RE =
+  /\b(?:no deployments available|deployments are in cooldown)\b/i;
+
+function parseRetryAfterSeconds(value: unknown): number | null {
+  if (typeof value === "number" && !Number.isNaN(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function extractCooldownRetryNotBefore(
+  payload: Record<string, unknown>,
+): string | null {
+  const errorRecord = asRecord(payload.error);
+  const explicitIso = parseRetryAfterToIso(
+    nonEmpty(payload.retry_not_before) ??
+      nonEmpty(payload.retryNotBefore) ??
+      nonEmpty(errorRecord?.retry_not_before) ??
+      nonEmpty(errorRecord?.retryNotBefore),
+  );
+  if (explicitIso) {
+    return explicitIso;
+  }
+  const rawSeconds =
+    payload.retry_after ??
+    payload.retryAfter ??
+    errorRecord?.retry_after ??
+    errorRecord?.retryAfter;
+  const rawMs =
+    payload.retry_after_ms ??
+    payload.retryAfterMs ??
+    errorRecord?.retry_after_ms ??
+    errorRecord?.retryAfterMs;
+  const msToSec = typeof rawMs === "number" ? rawMs / 1000 : null;
+  const retryAfterSec =
+    parseRetryAfterSeconds(rawSeconds) ??
+    (msToSec !== null && msToSec > 0 ? msToSec : null);
+  if (retryAfterSec !== null && retryAfterSec > 0) {
+    return new Date(Date.now() + retryAfterSec * 1000).toISOString();
+  }
+  return null;
+}
+
+function isCooldownOrRateLimit(
+  payload: Record<string, unknown>,
+  errorMessage: string | null,
+): boolean {
+  const errorRecord = asRecord(payload.error);
+  const errorCode = payload.error_code ?? payload.errorCode ?? errorRecord?.code;
+  const errorType = payload.error_type ?? payload.errorType ?? errorRecord?.type;
+  if (
+    errorCode === 429 ||
+    errorCode === "429" ||
+    errorCode === "rate_limit_error" ||
+    errorType === "rate_limit_error" ||
+    errorType === "cooldown_error" ||
+    payload.cooldown === true ||
+    errorRecord?.cooldown === true
+  ) {
+    return true;
+  }
+  return (
+    errorMessage !== null &&
+    LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage)
+  );
+}
+
+function parseRetryAfterToIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+  const date = new Date(trimmed);
+  if (!Number.isNaN(date.getTime())) {
+    return date.toISOString();
+  }
+  return null;
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -1675,6 +1787,7 @@ export function mapFinalResultForTest(input: {
    * gateway answer omits it. Optional so existing test callers that exercise
    * only the result mapping keep their shape. */
   configuredModel?: string | null;
+  modelResponseStarted?: boolean;
   /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
   modelAttemptId?: string | null;
 }): AdapterExecutionResult {
@@ -1700,11 +1813,38 @@ export function mapFinalResultForTest(input: {
   const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
   const modelCallCount = explicitCallCount ?? metadataCallCount;
   const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
-  const errorMessage = mapped.errorCode
-    ? redactText(providerErrorAsContent
-      ? "Provider returned an overload or quota error as successful response content"
-      : extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
-    : null;
+  // A completed turn reports no error. extractErrorMessage() falls back to the
+  // output text, so reading it for a completed turn turned every successful
+  // run into a failed one carrying its own final answer as the error (rc.22,
+  // 01.11). Only a failed, cancelled or protocol-error turn reports a message.
+  const rawErrorMessage = providerErrorAsContent
+    ? "Provider returned an overload or quota error as successful response content"
+    : mapped.errorCode
+      ? extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`
+      : null;
+  const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
+
+  const explicitModelStarted =
+    payload.model_response_started === true ||
+    payload.modelResponseStarted === true ||
+    Boolean(nonEmpty(payload.first_token_at) ?? nonEmpty(payload.firstTokenAt));
+  const explicitModelNotStarted =
+    payload.model_response_started === false ||
+    payload.modelResponseStarted === false;
+
+  const modelResponseStarted = explicitModelStarted
+    ? true
+    : explicitModelNotStarted
+      ? false
+      : (input.modelResponseStarted ??
+        (input.outputChunks.length > 0 ||
+          output.length > 0 ||
+          (usage?.outputTokens ?? 0) > 0));
+
+  const isFailed = input.terminal.status === "failed" || mapped.errorCode !== null;
+  const failedBeforeModel = isFailed && !modelResponseStarted;
+
+  const isCooldown = isCooldownOrRateLimit(payload, errorMessage);
   // myrmidon(RECOVERY-HERMES-GATEWAY): see the signature constant above — a
   // failed turn whose message carries the upstream-connection signature is
   // transient, so it is marked for a bounded retry. Any other failed turn
@@ -1730,7 +1870,14 @@ export function mapFinalResultForTest(input: {
         : mapped.errorCode === "hermes_gateway_run_failed" &&
             classifyInputOverflow(errorMessage)
           ? "input_overflow"
-          : null;
+          : isCooldown
+            ? "provider_quota"
+            : null;
+
+  const retryNotBefore = isCooldown
+    ? extractCooldownRetryNotBefore(payload)
+    : null;
+
   if (providerErrorAsContent) {
     console.warn("provider_error_as_content", { model: extractModel(payload) ?? input.configuredModel ?? "unknown" });
   }
@@ -1746,6 +1893,8 @@ export function mapFinalResultForTest(input: {
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(errorFamily ? { errorFamily } : {}),
+    failedBeforeModel,
+    retryNotBefore,
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     // myrmidon(TG-REPLY-FULL): the summary is the text the chat bridge delivers to
@@ -1779,6 +1928,11 @@ export function mapFinalResultForTest(input: {
       gatewayCallIdsTruncated: payloadCallIds.gatewayCallIdsTruncated,
       litellmRequestIds: payloadCallIds.litellmRequestIds,
       litellmRequestIdsTruncated: payloadCallIds.litellmRequestIdsTruncated,
+      modelResponseStarted,
+      failedBeforeModel,
+      ...(failedBeforeModel ? { failed_before_model: true } : {}),
+      ...(isCooldown ? { cooldown: true } : {}),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
       ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
     },
@@ -1856,6 +2010,61 @@ export async function stopGatewayRunForBoard(input: {
     // auth) is the operator's signal to check the gateway. Either way the
     // board-side cancellation proceeds.
     return { stopped: false };
+  }
+}
+
+/**
+ * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+ * is still alive on the bot gateway, completed, missing (404), or unreachable.
+ */
+export async function probeGatewayRunForBoard(input: {
+  baseUrl: string;
+  apiKey?: string | null;
+  headers?: Record<string, string> | string | null;
+  gatewayRunId: string;
+  timeoutMs?: number;
+}): Promise<{
+  state: "live" | "terminal" | "not_found" | "unreachable";
+  status: string | null;
+  error?: string;
+}> {
+  const baseUrl = normalizeBaseUrl(input.baseUrl);
+  if (!baseUrl) {
+    return { state: "unreachable", status: null, error: "Missing or invalid baseUrl" };
+  }
+  const extraHeaders = parseHeaders(input.headers);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...extraHeaders,
+  };
+  if (input.apiKey) {
+    headers.Authorization = `Bearer ${input.apiKey}`;
+  }
+  const timeoutMs = input.timeoutMs ?? STOP_REQUEST_TIMEOUT_MS;
+  try {
+    const observed = await fetchJson(
+      apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(input.gatewayRunId)}`),
+      {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
+    const status = extractStatus(observed);
+    if (!status) {
+      return { state: "not_found", status: null };
+    }
+    if (TERMINAL_STATUSES.has(status)) {
+      return { state: "terminal", status };
+    }
+    return { state: "live", status };
+  } catch (err) {
+    const hermesError = err as HermesHttpError;
+    if (hermesError && hermesError.status === 404) {
+      return { state: "not_found", status: null };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { state: "unreachable", status: null, error: message };
   }
 }
 
@@ -2019,24 +2228,89 @@ async function settlePredecessorRun(input: {
   return finalStatus !== null;
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+export function errorResult(
+  err: unknown,
+  redactText: TextRedactor = sanitizeSensitiveText,
+  stateOrModelResponseStarted?: ExecutionState | { modelResponseStarted?: boolean } | boolean,
+): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const errorBody = asRecord(hermesError.body);
+  const nestedError = asRecord(errorBody?.error);
+  const bodyErrorMessage =
+    nonEmpty(nestedError?.message) ??
+    nonEmpty(errorBody?.message) ??
+    nonEmpty(errorBody?.detail);
+  const baseMessage = bodyErrorMessage ? redactText(bodyErrorMessage) : redactErrorMessage(err, redactText);
   const errorMessage = code === "hermes_gateway_auth_failed"
-    ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
-    : redactErrorMessage(err, redactText);
+    ? `${baseMessage}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
+    : baseMessage;
+
+  const isCooldown =
+    hermesError.status === 429 ||
+    errorBody?.error_code === 429 ||
+    errorBody?.error_code === "rate_limit_error" ||
+    nestedError?.code === 429 ||
+    nestedError?.code === "rate_limit_error" ||
+    nestedError?.type === "rate_limit_error" ||
+    (errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage));
+  // A plain HTTP 429 is rate limiting, not necessarily a deployment pool
+  // cooldown. Only the explicit LiteLLM deployment signature maps to the
+  // provider-quota family; generic 429s remain transient_upstream.
+  const isDeploymentCooldown =
+    errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
+
+  const rawRetryNotBefore =
+    hermesError.retryNotBefore ??
+    nonEmpty(errorBody?.retry_not_before) ??
+    nonEmpty(errorBody?.retryNotBefore) ??
+    nonEmpty(nestedError?.retry_not_before) ??
+    nonEmpty(nestedError?.retryNotBefore) ??
+    (errorBody?.retry_after ? String(errorBody.retry_after) : null) ??
+    (nestedError?.retry_after ? String(nestedError.retry_after) : null);
+
+  const parsedRetryNotBefore = parseRetryAfterToIso(rawRetryNotBefore);
+
+  const retryNotBefore = parsedRetryNotBefore ?? undefined;
+  // Provider-quota (deployment cooldown) must outrank the generic 429
+  // classification, or every structured cooldown arriving on HTTP 429 would
+  // be misfiled as transient_upstream.
+  const errorFamily =
+    (isDeploymentCooldown || (isCooldown && !hermesError.status)
+      ? "provider_quota"
+      : classified?.family) ??
+    (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
+
+  const modelResponseStarted =
+    typeof stateOrModelResponseStarted === "boolean"
+      ? stateOrModelResponseStarted
+      : Boolean(stateOrModelResponseStarted?.modelResponseStarted);
+  const failedBeforeModel = !modelResponseStarted;
+
   return {
     exitCode: 1,
     signal: null,
     timedOut: false,
     errorCode: code,
-    errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
-    retryNotBefore: hermesError.retryNotBefore ?? null,
+    errorFamily,
+    retryNotBefore,
     errorMessage,
+    failedBeforeModel,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
+    },
+    resultJson: {
+      status: "failed",
+      errorCode: code,
+      errorFamily,
+      errorMessage,
+      retryNotBefore,
+      modelResponseStarted,
+      failedBeforeModel,
+      ...(failedBeforeModel ? { failed_before_model: true } : {}),
+      ...(isCooldown ? { cooldown: true } : {}),
     },
   };
 }
@@ -2112,6 +2386,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_missing",
       errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 
@@ -2123,6 +2402,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
   // myrmidon(H3): pass the URL so the check can trust the fleet's own
@@ -2134,6 +2418,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 
@@ -2145,6 +2434,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_api_key_missing",
       errorMessage: "Hermes gateway adapter requires apiKey.",
+      failedBeforeModel: true,
+      resultJson: {
+        failedBeforeModel: true,
+        failed_before_model: true,
+      },
     };
   }
 
@@ -2610,7 +2904,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
-  void consumeEvents({
+  try {
+    void consumeEvents({
     ctx,
     baseUrl,
     headers: eventHeaders,
@@ -2782,6 +3077,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptBreakdown,
     modelAttemptId: nonEmpty(ctx.config.modelAttemptId),
     configuredModel: nonEmpty(ctx.config.model),
+    modelResponseStarted: state.modelResponseStarted,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
@@ -2811,50 +3107,66 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // status is itself verified termination, so acknowledge cancellation the
   // same way the "cancelled" branch does instead of returning a result the
   // platform's cancelRun will 409 despite the run being genuinely done.
-  if (ctx.signal?.aborted) {
-    return {
-      ...finalResult,
-      resultJson: {
-        ...finalResult.resultJson,
-        executionCancellation: {
-          state: "acknowledged",
-          acknowledgedAt: new Date().toISOString(),
-          forced: false,
+    if (ctx.signal?.aborted) {
+      return {
+        ...finalResult,
+        resultJson: {
+          ...finalResult.resultJson,
+          executionCancellation: {
+            state: "acknowledged",
+            acknowledgedAt: new Date().toISOString(),
+            forced: false,
+          },
         },
-      },
-    };
-  }
-  const isProviderError =
-    finalResult.errorCode === "hermes_gateway_run_failed" &&
-    finalResult.errorFamily === "transient_upstream" &&
-    (Boolean(finalResult.resultJson?.provider_error_as_content) ||
-      finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
+      };
+    }
 
-  const shouldTryFallback =
-    finalResult.errorCode === "hermes_gateway_run_failed" &&
-    finalResult.errorFamily === "transient_upstream" &&
-    fallbackModels.length > 0;
+    const isProviderError =
+      finalResult.errorCode === "hermes_gateway_run_failed" &&
+      finalResult.errorFamily === "transient_upstream" &&
+      (Boolean(finalResult.resultJson?.provider_error_as_content) ||
+        finalResult.errorMessage === "Provider returned an overload or quota error as successful response content");
 
-  if (shouldTryFallback) {
-    await ctx.onLog(
-      "stderr",
-      `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
-    );
-    const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
-    const fallbackResult = await execute({
-      ...ctx,
-      runId: fallbackAttemptId,
-      config: {
-        ...ctx.config,
-        model: fallbackModels[0],
-        models: { fallbacks: fallbackModels.slice(1) },
-        modelAttemptId: fallbackAttemptId,
-      },
-      onDispatch: undefined,
-      onExternalRunId: undefined,
-      onMeta: undefined,
-    });
-    if (fallbackResult.exitCode === 0) return fallbackResult;
+    const shouldTryFallback =
+      finalResult.errorCode === "hermes_gateway_run_failed" &&
+      finalResult.errorFamily === "transient_upstream" &&
+      fallbackModels.length > 0;
+
+    if (shouldTryFallback) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] ${isProviderError ? "provider_error_as_content" : "transient_upstream"}; retrying with configured fallback ${fallbackModels[0]}\n`,
+      );
+      const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+      const fallbackResult = await execute({
+        ...ctx,
+        runId: fallbackAttemptId,
+        config: {
+          ...ctx.config,
+          model: fallbackModels[0],
+          models: { fallbacks: fallbackModels.slice(1) },
+          modelAttemptId: fallbackAttemptId,
+        },
+        onDispatch: undefined,
+        onExternalRunId: undefined,
+        onMeta: undefined,
+      });
+      if (fallbackResult.exitCode === 0) return fallbackResult;
+      if (isProviderError) {
+        return {
+          ...finalResult,
+          summary: undefined,
+          resultJson: {
+            ...finalResult.resultJson,
+            result: "",
+            output: "",
+            provider_error_as_content: true,
+          },
+        };
+      }
+      return fallbackResult;
+    }
+
     if (isProviderError) {
       return {
         ...finalResult,
@@ -2867,21 +3179,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       };
     }
-    return fallbackResult;
-  }
 
-  if (isProviderError) {
-    return {
-      ...finalResult,
-      summary: undefined,
-      resultJson: {
-        ...finalResult.resultJson,
-        result: "",
-        output: "",
-        provider_error_as_content: true,
-      },
-    };
+    return finalResult;
+  } catch (err) {
+    controller.abort();
+    return errorResult(err, redactText, state);
   }
-
-  return finalResult;
 }

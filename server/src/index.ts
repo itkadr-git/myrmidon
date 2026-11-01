@@ -205,7 +205,7 @@ import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./m
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
-import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
+import { createStaleBlockScheduler, createDefaultEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
@@ -227,6 +227,7 @@ import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
 } from "./myrmidon/pending-interaction-wake-sweep.js"; // myrmidon(P12)
+import { createInteractionEscalationSweep } from "./myrmidon/interaction-escalation/index.js"; // myrmidon(P1.8)
 // myrmidon(P11): database backup catch-up
 import { BACKUP_CATCHUP_WINDOW_ENV, readBackupCatchUpSettings, startBackupCatchUp } from "./myrmidon/backup-catch-up.js";
 import {
@@ -1889,6 +1890,21 @@ async function startServerWithDatabaseTeardown(
       logger.error({ err }, "pending interaction wake sweep failed");
     }));
   };
+  // myrmidon(P1.8): periodic escalation sweep for overdue pending interactions
+  const interactionEscalationSweep = createInteractionEscalationSweep({
+    db: db as any,
+    instanceSettings: instanceSettingsService(db),
+  });
+  const scheduleInteractionEscalationSweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(interactionEscalationSweep().then((result) => {
+      if (result.escalated > 0) {
+        logger.info(result, "interaction escalation sweep escalated overdue interactions");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "interaction escalation sweep failed");
+    }));
+  };
   // myrmidon(TASK-PR-SYNC): links each task to the pull requests that deliver it
   // through the work-products surface, refreshes their state from GitHub through
   // the existing resolver, and settles the task (status done, one comment with the
@@ -1936,10 +1952,10 @@ async function startServerWithDatabaseTeardown(
   const scheduleStaleBlockSweep = createStaleBlockScheduler({
     db: db as any,
     track: trackHeartbeatSchedulerWork,
-    // myrmidon(1.6.1 OPE-3983): resolve the recovery-liveness event keys the
-    // internal blocked paths cite from the live issue_recovery_actions rows;
-    // every other key keeps the safe still-set default.
-    isEventStillSet: createRecoveryLivenessEventReader(db as any),
+    // myrmidon(1.6.1 OPE-3983, 1.6.6 OPE-9963): resolve event keys (recovery
+    // incidents, GitHub broker status, stranded disposition) from live tables;
+    // unregistered keys keep the safe still-set default.
+    isEventStillSet: createDefaultEventReader(db as any),
   });
   // myrmidon(1.6.5-F21-B): the periodic owner-card TTL pass — an owner
   // request_confirmation the owner leaves unanswered past
@@ -2349,7 +2365,9 @@ async function startServerWithDatabaseTeardown(
     } catch (err) {
       logger.warn({ err }, "licensing: cannot determine the installation id at startup");
     }
-    await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
+    if (processRoleProfile.runsBackground) {
+      await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
+    }
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     // myrmidon(1.6.6 REMOTE-SITES-T4): the site-monitor lane finalizes the runs of a lost site through the heartbeat service of this process.
     if (heartbeat && processRoleProfile.runsBackground) registerSiteLostRunFinalizer(heartbeat.finalizeSiteLostRun);
@@ -2460,10 +2478,10 @@ async function startServerWithDatabaseTeardown(
           const reattached = await sweepGatewayRunReattach(
             db as any,
             heartbeat,
-            { adoptableControllerBootIds },
+            { adoptableControllerBootIds, isStartup: true },
           );
-          if (reattached.reattached > 0 || reattached.failed > 0) {
-            logger.warn(
+          if (reattached.reattached > 0 || reattached.failed > 0 || reattached.scanned > 0) {
+            logger.info(
               reattached,
               "startup gateway run reattach complete",
             );
@@ -2677,6 +2695,7 @@ async function startServerWithDatabaseTeardown(
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
+        scheduleInteractionEscalationSweep(); // myrmidon(P1.8)
         // myrmidon(TASK-PR-SYNC): swept by its own poll timer, not heartbeat ticks.
         scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
@@ -2891,6 +2910,7 @@ async function startServerWithDatabaseTeardown(
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
+      scheduleInteractionEscalationSweep(); // myrmidon(P1.8)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
       scheduleBoardJanitorSweep(); // myrmidon(BOARD-JANITOR)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)

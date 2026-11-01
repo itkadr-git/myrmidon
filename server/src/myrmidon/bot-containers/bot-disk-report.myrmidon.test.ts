@@ -146,6 +146,12 @@ describe("POST disk-report", () => {
     expect(readBotDiskReports()).toHaveLength(0);
   });
 
+  it("a report with sessionPrune metrics is accepted and stored", async () => {
+    const sessionPrune = { stateDbBytesBefore: 100_000, stateDbBytesAfter: 40_000, deletedSessions: 12 };
+    await request(appFor(agent(BOT_A))).post(URL).send(reportFor(BOT_A, { sessionPrune })).expect(200);
+    expect(readBotDiskReport(BOT_A)!.report.sessionPrune).toEqual(sessionPrune);
+  });
+
   it("two bots do not see each other's reports", async () => {
     await request(appFor(agent(BOT_A))).post(URL).send(reportFor(BOT_A, { imageGeneration: "gen-a" })).expect(200);
     await request(appFor(agent(BOT_B))).post(URL).send(reportFor(BOT_B, { imageGeneration: "gen-b" })).expect(200);

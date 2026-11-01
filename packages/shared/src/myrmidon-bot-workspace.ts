@@ -265,6 +265,9 @@ export const wsDesiredStateSchema = z.object({
     closingMinutes: z.number().int().positive(),
     scratchTtlHours: z.number().int().positive(),
     orphanHours: z.number().int().positive(),
+    npmCacheTtlHours: z.number().int().positive().optional(),
+    uvCacheTtlHours: z.number().int().positive().optional(),
+    terminalOutputTtlHours: z.number().int().positive().optional(),
     /** myrmidon(1.6.5-BOT-DISK-H, rc.9): idle days before a named directory is archived under hard pressure. Optional: an older board omits it (botd uses 7). */
     legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
   }),
@@ -401,9 +404,21 @@ export const wsDiskReportSchema = z.object({
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
   foreignUid: wsReportForeignUidSchema.nullable().optional(),
+  sessionPrune: z.object({
+    stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+    stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+    deletedSessions: z.number().int().nonnegative().optional(),
+  }).nullable().optional(),
   metrics: wsDiskReportMetricsSchema.optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
+
+export const wsReportSessionPruneSchema = z.object({
+  stateDbBytesBefore: z.number().int().nonnegative().nullable().optional(),
+  stateDbBytesAfter: z.number().int().nonnegative().nullable().optional(),
+  deletedSessions: z.number().int().nonnegative().optional(),
+});
+export type WsReportSessionPrune = z.infer<typeof wsReportSessionPruneSchema>;
 
 /** Answer of the report route; `nextReportSec` paces the next botd pass. */
 export const wsDiskReportResponseSchema = z.object({
@@ -514,22 +529,34 @@ export const RUN_WORKSPACE_FALLBACK_DIR = "/scratch";
 export const WS_BOT_DISK_SETTING_DEFAULTS = {
   graceClosingMinutes: 30,
   scratchTtlHours: 24,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
   partitionThresholdPercent: 85,
   partitionRefuseOpenPercent: 90,
   partitionCriticalPercent: 95,
+  sessionRetentionDays: 30,
 } as const;
 
-// myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle fields exported
+// myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle fields exported
 // individually, so `myrmidon-bot-disk.ts` validates the same stored object with
 // the same ranges instead of duplicating them (one source of truth).
 export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
 export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
+export const wsNpmCacheTtlHoursSchema = z.number().int().min(1).max(24 * 365);
+export const wsUvCacheTtlHoursSchema = z.number().int().min(1).max(24 * 365);
+export const wsTerminalOutputTtlHoursSchema = z.number().int().min(1).max(24 * 365);
 export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+export const wsSessionRetentionDaysSchema = z.number().int().min(1).max(3650);
 
 export const wsBotDiskSettingsSchema = z
   .object({
     graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
     scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    npmCacheTtlHours: wsNpmCacheTtlHoursSchema.optional(),
+    uvCacheTtlHours: wsUvCacheTtlHoursSchema.optional(),
+    terminalOutputTtlHours: wsTerminalOutputTtlHoursSchema.optional(),
+    sessionRetentionDays: wsSessionRetentionDaysSchema.optional(),
     legacyPressureIdleDays: z.number().int().min(1).max(90).optional(),
     partitionThresholdPercent: wsPartitionPercentSchema.optional(),
     partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
@@ -574,6 +601,7 @@ export const WS_PROFILE_ENV = {
   botdIntervalSec: "MYRMIDON_BOTD_INTERVAL_SEC",
   graceClosingMinutes: "MYRMIDON_BOTD_GRACE_CLOSING_MINUTES",
   scratchTtlHours: "MYRMIDON_BOTD_SCRATCH_TTL_HOURS",
+  sessionRetentionDays: "MYRMIDON_BOTD_SESSION_RETENTION_DAYS",
   boardUrl: "MYRMIDON_BOTD_BOARD_URL",
   boardKeyEnv: "MYRMIDON_BOTD_BOARD_KEY_ENV",
   hermesPruneEnabled: "MYRMIDON_HERMES_PRUNE_ENABLED",

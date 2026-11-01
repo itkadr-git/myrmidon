@@ -294,7 +294,6 @@
       "owner_paused": "Owner paused"
     },
     "blockedReasons": {
-      "unassigned_blocked_issue_overdue": "Unassigned blocked issue overdue",
       "pending_board_decision": "Pending board decision",
       "pending_user_decision": "Pending user decision",
       "missing_successful_run_disposition": "Pick disposition",
@@ -346,6 +345,7 @@
     "castes": "Agent castes",
     "models": "Models & providers",
     "wipLimit": "WIP limit",
+    "guardrails": "Guardrails",
     "features": "Features",
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
@@ -868,7 +868,7 @@
     "failedToArchive": "Failed to archive organization",
     "policies": "Company policies",
     "feedbackSharing": "Share feedback data",
-    "feedbackSharingHint": "Allow votes and feedback traces from this organization to be shared. Enabling records your consent.",
+    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "responsibleUser": "Responsible user",
     "responsibleUserHint": "Default owner for work that has no assignee.",
     "responsibleUserNone": "Not set",
@@ -914,7 +914,6 @@
     "months_one": "{{count}} month",
     "months_other": "{{count}} months",
     "feedbackSharingTitle": "AI feedback sharing",
-    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "termsOfService": "Read our terms of service",
     "feedbackPrompt": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
     "alwaysAllow": "Always allow",
@@ -1049,18 +1048,6 @@
         "name": "Swarm self-claim and idle wake",
         "description": "Idle agents of a role take ready tasks from the role queue under a lease, and the sweeper wakes free agents next to a non-empty queue."
       },
-      "swarm-scent": {
-        "name": "SWARM scent classifier",
-        "description": "Classifies role caste scent on incoming tasks via LiteLLM evaluations gateway."
-      },
-      "execution-holds": {
-        "name": "Execution holds (HOLD-READY)",
-        "description": "Monitors open tasks held with replay=blocked awaiting recovery reconciliation or operator release."
-      },
-      "github-app-identity": {
-        "name": "GitHub App identity (shared tokens)",
-        "description": "Issues short-lived installation tokens for bots via company GitHub App."
-      },
       "run-admission": {
         "name": "Run admission",
         "description": "Instance-wide limits on concurrent runs, run starts per minute and free memory of the server and the host, so a mass wake cannot exhaust the machine."
@@ -1130,6 +1117,24 @@
     "loading": "Loading the live progress settings...",
     "loadFailed": "Failed to load the live progress settings.",
     "saveFailed": "Saving the live progress settings failed."
+  },
+  "ownerActiveChannel": {
+    "title": "Owner active channel",
+    "description": "Reports and plan answers go to the channel the owner used last: the portal or Telegram. A channel stays active until the owner is silent in it for longer than the threshold. Saving takes effect at the next delivery decision — no server restart.",
+    "currentLabel": "Owner is active in:",
+    "channelWeb": "Portal (Web)",
+    "channelTelegram": "Telegram",
+    "channelNone": "no channel — reports keep their standing rules",
+    "thresholdLabel": "Inactivity threshold, minutes",
+    "thresholdBounds": "{{min}}–{{max}} min",
+    "sourceSettings": "Saved here",
+    "sourceEnv": "Forced by the server environment",
+    "sourceDefault": "Default",
+    "save": "Save threshold",
+    "saving": "Saving...",
+    "loading": "Loading the active-channel settings...",
+    "loadFailed": "Failed to load the active-channel settings.",
+    "saveFailed": "Saving the active-channel settings failed."
   },
   "evalResults": {
     "title": "Reference-task results",
@@ -1591,23 +1596,6 @@
         "cooldownBaseMin": "Enter a whole number from 1 to 1440, or leave it empty for the default",
         "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
       }
-    },
-    "scent": {
-      "title": "SWARM caste scent classifier",
-      "description": "Classifies task castes via LiteLLM evaluations gateway. Applied immediately without server restart.",
-      "loading": "Loading classifier settings...",
-      "model": {
-        "label": "Classifier model",
-        "customMode": "Enter custom",
-        "selectMode": "Select from gateway",
-        "help": "Model used for evaluating issue caste scent via LiteLLM."
-      },
-      "secret": {
-        "label": "API Key Secret",
-        "defaultOption": "(Default / MYRMIDON_EVALS_API_KEY env)",
-        "help": "Company secret holding the evaluations gateway API key."
-      },
-      "save": "Save classifier settings"
     }
   },
   "budgetLimits": {
@@ -1711,6 +1699,63 @@
       "_plugin": "Antigravity",
       "antigravity-sidebar": "Antigravity",
       "antigravity-page": "Antigravity"
+    }
+  },
+  "guardrails": {
+    "title": "Guardrails",
+    "breadcrumb": "Guardrails",
+    "intro": "What a guardrail hit does: flag (journal only, the default), mask (replace the matched text), or block (withhold the answer). Set per company, caste, or agent; a change applies to the next run answer without a restart.",
+    "loading": "Loading the guardrail settings...",
+    "noCompany": "Select a company to edit its guardrails.",
+    "companyTitle": "Company-wide modes",
+    "companyHint": "Applies to every agent without its own or caste override. Inherit removes the override (default: flag).",
+    "casteTitle": "Caste modes",
+    "castePlaceholder": "Caste name",
+    "casteHint": "Type or pick a caste to override its modes; Inherit falls back to the company value.",
+    "agentsTitle": "Per-agent modes",
+    "noAgents": "No agents in this company yet.",
+    "colAgent": "Agent",
+    "colEffective": "Effective (source)",
+    "inherit": "Inherit",
+    "save": "Save guardrails",
+    "saving": "Saving...",
+    "mode": {
+      "flag": "Flag only",
+      "mask": "Mask",
+      "block": "Block"
+    },
+    "rule": {
+      "secret": "Secrets",
+      "pii": "Personal data",
+      "injection": "Prompt injection"
+    },
+    "source": {
+      "agent": "agent",
+      "caste": "caste",
+      "company": "company",
+      "default": "default",
+      "env": "env force"
+    },
+    "journalTitle": "Firing journal",
+    "filterKind": "Kind",
+    "filterSeverity": "Severity",
+    "filterRunId": "Run id",
+    "filterAny": "Any",
+    "colTime": "When",
+    "colSurface": "Surface",
+    "colRun": "Run",
+    "colSnippet": "Snippet",
+    "journalEmpty": "No guardrail events recorded yet.",
+    "journalLoading": "Loading the journal...",
+    "journalError": "Could not load the guardrail journal.",
+    "injectionTitle": "Prompt-injection detector",
+    "injectionEnabled": "Enabled",
+    "injectionThreshold": "Score threshold",
+    "injectionHint": "Applies company-wide: what a hit does is set by the injection rule's mode above. Env override (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) still wins when set.",
+    "injectionEffective": "Effective now: {{enabled}} ({{enabledSource}}) · threshold {{score}} ({{scoreSource}})",
+    "onOff": {
+      "on": "on",
+      "off": "off"
     }
   },
   "ui2.nav.group.plugins": "Plugins"

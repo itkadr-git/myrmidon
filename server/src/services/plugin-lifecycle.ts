@@ -109,6 +109,8 @@ function isValidTransition(from: PluginStatus, to: PluginStatus): boolean {
 export interface PluginLifecycleEvents {
   /** Emitted after a plugin is loaded (installed → ready). */
   "plugin.loaded": { pluginId: string; pluginKey: string };
+  /** Emitted after plugin activation succeeds. */
+  "plugin.ready": { pluginId: string; pluginKey: string };
   /** Emitted after a plugin transitions to ready (enabled). */
   "plugin.enabled": { pluginId: string; pluginKey: string };
   /** Emitted after a plugin is disabled (ready → disabled). */
@@ -512,7 +514,6 @@ export function pluginLifecycleManager(
         ?? `Failed to activate plugin ${loadResult.plugin?.pluginKey ?? pluginId}`,
       );
     }
-
     const loadedPlugin = (loadResult.plugin as PluginRecord) ?? plugin;
     const models = listPluginProviderModels([loadedPlugin]);
     for (const companyId of companyIds) {
@@ -520,6 +521,8 @@ export function pluginLifecycleManager(
       if (models.length > 0) replacePluginProviderModels(companyId, pluginId, models);
       else removePluginProviderModels(companyId, pluginId);
     }
+
+    emitDomain("plugin.ready", { pluginId, pluginKey: loadResult.plugin.pluginKey });
   }
 
   async function rollbackAndRecoverRunningPlugin(

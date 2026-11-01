@@ -11,6 +11,15 @@ import { agentMemoryRoutes } from "./routes.js";
 import { defaultAgentMemoryDeps } from "./service.js";
 import { agentMemorySettingsRoutes, agentMemorySettingsService } from "./settings-routes.js";
 import { instanceSettingsService } from "../../services/index.js";
+import {
+  hindsightModelsAdapter,
+  hindsightModelsDbAdapter,
+  hindsightRoleToGroup,
+  groupToHindsightRole,
+  isHindsightGroup,
+  formatHindsightApiLimitations,
+} from "./hindsight-models-adapter.js";
+import { hindsightModelsRoutes } from "./hindsight-models-routes.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -37,9 +46,34 @@ export function myrmidonAgentMemorySettingsRoutes(db: Db, env: NodeJS.ProcessEnv
   const settings = instanceSettingsService(db);
   return agentMemorySettingsRoutes(
     agentMemorySettingsService({
-      getGeneral: () => settings.getGeneral(),
-      updateGeneral: (patch) => settings.updateGeneral(patch),
+      getGeneral: async () => (await settings.getGeneral()) as unknown as Record<string, unknown>,
+      updateGeneral: async (patch) => {
+        await settings.updateGeneral(patch as Parameters<typeof settings.updateGeneral>[0]);
+      },
       env,
     }),
   );
 }
+
+/** GET/PATCH /api/myrmidon/hindsight/model-groups: Hindsight write/summarize/search model groups adapter. */
+export function myrmidonHindsightModelsRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
+  const settings = instanceSettingsService(db);
+  const adapter = hindsightModelsAdapter({
+    getGeneral: async () => (await settings.getGeneral()) as unknown as Record<string, unknown>,
+    updateGeneral: async (patch) => {
+      await settings.updateGeneral(patch as Parameters<typeof settings.updateGeneral>[0]);
+    },
+    env,
+  });
+  return hindsightModelsRoutes(adapter);
+}
+
+export {
+  hindsightModelsAdapter,
+  hindsightModelsDbAdapter,
+  hindsightModelsRoutes,
+  hindsightRoleToGroup,
+  groupToHindsightRole,
+  isHindsightGroup,
+  formatHindsightApiLimitations,
+};

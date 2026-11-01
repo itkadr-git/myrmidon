@@ -35,14 +35,22 @@ export interface AllowlistSyncResult {
   skipped: string[];
 }
 
-/** The company's enabled model names as registered in the gateway. */
-async function listEnabledModelNames(db: Db, companyId: string): Promise<string[]> {
+/** The company's model names and enabled state as registered in the gateway. */
+async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
   const rows = await db
-    .select({ litellmModelName: modelProviderModels.litellmModelName })
+    .select()
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
-    .where(and(eq(modelProviders.companyId, companyId), eq(modelProviderModels.enabled, true)));
-  return [...new Set(rows.map((row) => row.litellmModelName))];
+    .where(eq(modelProviders.companyId, companyId));
+  return rows.map((row: any) => {
+    // Drizzle returns joined tables under their table keys; keeping the flat
+    // fallback makes this port easy to exercise with lightweight adapters.
+    const model = row.modelProviderModels ?? row;
+    return {
+      name: model.litellmModelName ?? model.modelName,
+      enabled: model.enabled === true,
+    };
+  });
 }
 
 /**
@@ -67,8 +75,10 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
+  const companyModels = await listCompanyModels(db, companyId);
+  const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
   const models = [...new Set([
-    ...(await listEnabledModelNames(db, companyId)),
+    ...enabledNames,
     ...additionalModelNames,
   ])].filter((model) => !removedModelNames.includes(model));
   if (models.length === 0 && !allowEmpty) {
@@ -86,7 +96,9 @@ export async function updateAgentAllowlistsForCompany(
   // key recovers when a real list is applied later).
   const payloadModels = models.length > 0 ? models : [DISABLED_MODEL_SENTINEL];
 
-  // The env carries the secret NAME; the gateway needs the VALUE.
+  // The env carries the secret NAME; the gateway needs the VALUE. Resolve it
+  // before the empty-registry guard so a configured-but-broken deployment is
+  // reported distinctly, while still leaving all keys untouched.
   const adminKey = await agentGatewayKeys.readSecretValue(companyId, settings.adminKeySecret);
   if (!adminKey) {
     return skip("admin-key-secret-unresolved");
@@ -95,7 +107,6 @@ export async function updateAgentAllowlistsForCompany(
   if (!gateway.setKeyAllowedModels) {
     return skip("gateway-port-without-allowlist-support");
   }
-
   const companyAgents = await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
@@ -115,7 +126,38 @@ export async function updateAgentAllowlistsForCompany(
     }
     attempted += 1;
     try {
-      const applied = await gateway.setKeyAllowedModels({ alias, models: payloadModels });
+      if (!gateway.getKeyInfo) {
+        skipped.push(`gateway-port-without-key-info:${agent.id}`);
+        continue;
+      }
+      const keyInfo = await gateway.getKeyInfo({ alias });
+      if (!keyInfo) {
+        skipped.push(`alias-unknown-to-gateway:${agent.id}`);
+        continue;
+      }
+      const current = keyInfo.models ?? [];
+      if (current.length === 0 && !allowEmpty) {
+        // An empty gateway list means ALL models. Never turn that into a
+        // restrictive list merely because the board owns some models. On the
+        // disable path (allowEmpty) we still proceed: the operator asked to
+        // lock the fleet out, and the sentinel below denies every model.
+        skipped.push(`key-all-models:${agent.id}`);
+        continue;
+      }
+      // Merge: keep models the board does not own (other pools/tenants),
+      // add/revoke only the board-owned ones. The disable path (models empty)
+      // subtracts owned and explicitly removed names; a fully-empty result is
+      // replaced by the sentinel so we never send models:[] (which LiteLLM
+      // treats as "remove restrictions"). The enable path adds enabled and
+      // additional names on top of surviving non-board models.
+      const ownedNames = new Set(companyModels.map((model) => model.name));
+      const survivors = current.filter((name) => !ownedNames.has(name) && !removedModelNames.includes(name));
+      const next = models.length > 0
+        ? [...survivors, ...payloadModels]
+        : survivors.length > 0
+          ? survivors
+          : [DISABLED_MODEL_SENTINEL];
+      const applied = await gateway.setKeyAllowedModels({ alias, models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {

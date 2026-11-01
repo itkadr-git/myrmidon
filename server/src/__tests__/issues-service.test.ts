@@ -4407,7 +4407,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(child.blocks.map((relation) => relation.id)).toEqual([parentId]);
     expect(child.blocks[0]).toEqual(expect.objectContaining({
       title: "Parent",
-      status: "todo",
+      status: "blocked",
       priority: "medium",
     }));
     expect(child.blockedBy).toEqual([]);

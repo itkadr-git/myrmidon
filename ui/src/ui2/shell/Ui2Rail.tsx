@@ -5,7 +5,7 @@
 // utilities that carry values are avoided on purpose so check-token-gates
 // never depends on an allowlist for ui2).
 import { useTranslation } from "@/i18n";
-import { useUi2I18n } from "../i18n/Ui2I18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useLocation } from "@/lib/router";
 import { MyrmidonLockup } from "@/components/myrmidon/MyrmidonLockup"; // myrmidon(B1a)
@@ -18,9 +18,11 @@ import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function RailItem({ item, active, badge }: { item: Ui2NavItem; active: boolean; badge?: number }) {
   const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
-  const t = (key: string, values?: Record<string, string | number>) =>
-    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const Icon = item.icon;
   return (
     <span
@@ -83,6 +85,7 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
     <Link
       to={item.to}
       className="myr-ui2__rail-link"
+      aria-current={active ? "page" : undefined}
       style={{ display: "block", textDecoration: "none" }}
     >
       <RailItem item={item} active={active} badge={badge} />
@@ -92,10 +95,14 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
 
 export function Ui2Rail() {
   const { t: tApp } = useTranslation();
-  const { t: tUi2 } = useUi2I18n();
-  const t = (key: string, values?: Record<string, string | number>) =>
-    tUi2(key as never, values) !== key ? tUi2(key as never, values) : tApp(key, values);
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const val = ui2I18n ? ui2I18n.t(key as never, values) : undefined;
+    return val && val !== key ? val : tApp(key, values);
+  };
   const { selectedCompany } = useCompany();
+  // Both siblings consume the canonical attention feed; the same count powers
+  // the "Waiting for me" navigation badge and the Command Center total.
   const attentionCount = useUi2AttentionCount();
   const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
   const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });

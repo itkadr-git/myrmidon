@@ -5,6 +5,10 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useQuery } from "@tanstack/react-query";
+import { accessApi } from "@/api/access";
+import { queryKeys } from "@/lib/queryKeys";
+import { useOptionalCompany } from "@/context/CompanyContext";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
@@ -28,6 +32,8 @@ const items = [
   { value: "autonomy", label: "Autonomy", href: "/company/settings/autonomy" },
   // myrmidon(1.6.1 WIP-LIMIT B): per-agent work-in-progress limit screen
   { value: "wip-limit", label: "WIP limit", href: "/company/settings/wip-limit" },
+  // myrmidon(1.7 GRD-MODES): guardrail enforcement-mode settings screen
+  { value: "guardrails", label: "Guardrails", href: "/company/settings/guardrails" },
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   { value: "review-routing", label: "Review routing", href: "/company/settings/review-routing" },
   // myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen
@@ -159,6 +165,11 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "owner-delivery";
   }
 
+  // myrmidon(1.7 GRD-MODES): the Guardrails settings section
+  if (pathname.includes("/company/settings/guardrails")) {
+    return "guardrails";
+  }
+
   // myrmidon(REVIEW-ROUTING): the review routing settings section
   if (pathname.includes("/company/settings/review-routing")) {
     return "review-routing";
@@ -219,6 +230,7 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   castes: "settingsNav.castes",
   models: "settingsNav.models",
   "wip-limit": "settingsNav.wipLimit",
+  guardrails: "settingsNav.guardrails",
   "review-routing": "settingsNav.reviewRouting",
   // myrmidon(1.6.6 CORPUS E): the knowledge corpus settings tab
   corpus: "settingsNav.corpus",
@@ -234,9 +246,28 @@ export function CompanySettingsNav() {
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
+  const companyContext = useOptionalCompany();
+  const selectedCompanyId = companyContext?.selectedCompanyId;
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+
+  const boardAccessData = boardAccess.data;
+  const membership = boardAccessData?.memberships?.find((m) => m.companyId === selectedCompanyId);
+  const isModelsAdmin =
+    Boolean(boardAccessData?.isInstanceAdmin) ||
+    boardAccessData?.source === "local_implicit" ||
+    membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin" ||
+    (!selectedCompanyId && Boolean(boardAccessData?.memberships?.some((m) => m.membershipRole === "owner" || m.membershipRole === "admin")));
+
   const activeTab = getCompanySettingsTab(location.pathname);
   const visibleItems = items.filter((item) => {
     if (item.value === "import" && isCloud) return false;
+    // myrmidon(1.6.7 OPE-9852): Models & providers tab is visible only to owner and board admins
+    if (item.value === "models" && !isModelsAdmin) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];
     return !hiddenKey || !hiddenSettings.has(hiddenKey);
   });

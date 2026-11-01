@@ -32,8 +32,12 @@ interface GatewayCall {
 }
 
 /** A port recording allowlist updates; an alias can be made to fail. */
-function recordingGateway(failAlias?: string): GatewayKeyAdminPort & { calls: GatewayCall[] } {
+function recordingGateway(
+  failAlias?: string,
+  initialModels: Record<string, string[]> = {},
+): GatewayKeyAdminPort & { calls: GatewayCall[] } {
   const calls: GatewayCall[] = [];
+  const modelLists = new Map<string, string[]>(Object.entries(initialModels));
   return {
     calls,
     async createKey() {},
@@ -41,9 +45,16 @@ function recordingGateway(failAlias?: string): GatewayKeyAdminPort & { calls: Ga
       return true;
     },
     async deleteKey() {},
+    async getKeyInfo({ alias }) {
+      const models = modelLists.get(alias);
+      // A key unknown to the gateway answers null; a known key always answers
+      // its list (empty means ALL models).
+      return models ? { models } : null;
+    },
     async setKeyAllowedModels({ alias, models }) {
       if (alias === failAlias) throw new Error("gateway 500");
       calls.push({ alias, models });
+      modelLists.set(alias, models);
       return true;
     },
   };
@@ -87,24 +98,34 @@ function deps(overrides: Partial<AgentGatewayKeyDeps> & { db: Db }): AgentGatewa
   };
 }
 
-const MODELS = [[{ litellmModelName: "openai/gpt-4o" }, { litellmModelName: "anthropic/claude" }]];
+const MODELS = [
+  [
+    { litellmModelName: "openai/gpt-4o", enabled: true },
+    { litellmModelName: "anthropic/claude", enabled: true },
+  ],
+];
 
 describe("updateAgentAllowlistsForCompany", () => {
   it("sends each agent's key alias the enabled model list", async () => {
-    const gateway = recordingGateway();
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
+    const gateway = recordingGateway(undefined, {
+      [alias]: ["openai/gpt-4o", "anthropic/claude"],
+    });
     const db = scriptedDb([MODELS[0], [{ id: "agent-1", name: "Engineer One" }]]);
     const result = await updateAgentAllowlistsForCompany(
       db,
       deps({ db, gateway: () => gateway, findSecretId: async (_c, name) => (name.startsWith("llm-gateway-key-") ? "id-key" : "id-admin") }),
       "company-a",
     );
-    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
     expect(gateway.calls).toEqual([{ alias, models: ["openai/gpt-4o", "anthropic/claude"] }]);
     expect(result).toEqual({ attempted: 1, updated: 1, skipped: [] });
   });
 
   it("adds lifecycle models and removes only explicitly retired names", async () => {
-    const gateway = recordingGateway();
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
+    const gateway = recordingGateway(undefined, {
+      [alias]: ["openai/gpt-4o", "anthropic/claude"],
+    });
     const db = scriptedDb([MODELS[0], [{ id: "agent-1", name: "Engineer One" }]]);
     const result = await updateAgentAllowlistsForCompany(
       db,
@@ -114,7 +135,6 @@ describe("updateAgentAllowlistsForCompany", () => {
       ["anthropic/claude"],
       true,
     );
-    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
     expect(gateway.calls).toEqual([{ alias, models: ["openai/gpt-4o", "plugin/model"] }]);
     expect(result).toMatchObject({ attempted: 1, updated: 1 });
   });
@@ -133,7 +153,10 @@ describe("updateAgentAllowlistsForCompany", () => {
     // instead. Verified on an isolated instance: sentinel -> 403 for both a
     // previously held and a never-held model; a real list applied afterwards
     // restores the key. See OPE-7257 CHANGES-3.
-    const gateway = recordingGateway();
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
+    const gateway = recordingGateway(undefined, {
+      [alias]: ["openai/gpt-4o", "anthropic/claude"],
+    });
     const db = scriptedDb([MODELS[0], [{ id: "agent-1", name: "Engineer One" }]]);
     const result = await updateAgentAllowlistsForCompany(
       db,
@@ -143,9 +166,41 @@ describe("updateAgentAllowlistsForCompany", () => {
       ["openai/gpt-4o", "anthropic/claude"],
       true,
     );
-    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
     expect(gateway.calls).toEqual([{ alias, models: [DISABLED_MODEL_SENTINEL] }]);
     expect(result).toMatchObject({ attempted: 1, updated: 1 });
+  });
+
+  it("preserves models outside the registry and leaves ALL keys untouched", async () => {
+    const restrictedAlias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Restricted" });
+    const allAlias = agentKeySecretName({ agentId: "agent-2", agentSlug: "All Models" });
+    const gateway = recordingGateway(undefined, {
+      [restrictedAlias]: ["openai/gpt-4o", "kimi/kimi-for-coding", "google/gemini-pro"],
+      [allAlias]: [],
+    });
+    const db = scriptedDb([
+      [
+        { litellmModelName: "openai/gpt-4o", enabled: true },
+        { litellmModelName: "anthropic/claude", enabled: true },
+      ],
+      [
+        { id: "agent-1", name: "Restricted" },
+        { id: "agent-2", name: "All Models" },
+      ],
+    ]);
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({
+        db,
+        gateway: () => gateway,
+        findSecretId: async (_c, name) => (name.startsWith("llm-gateway-key-") ? `id-${name}` : "id-admin"),
+      }),
+      "company-a",
+    );
+    expect(gateway.calls).toEqual([
+      { alias: restrictedAlias, models: ["kimi/kimi-for-coding", "google/gemini-pro", "openai/gpt-4o", "anthropic/claude"] },
+    ]);
+    expect(result).toMatchObject({ attempted: 2, updated: 1 });
+    expect(result.skipped).toContain("key-all-models:agent-2");
   });
 
   it("skips the whole pass when key management is not configured", async () => {
@@ -170,7 +225,8 @@ describe("updateAgentAllowlistsForCompany", () => {
 
   it("one agent's gateway failure never stops the company pass", async () => {
     const failAlias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Bad" });
-    const gateway = recordingGateway(failAlias);
+    const okAlias = agentKeySecretName({ agentId: "agent-2", agentSlug: "Good" });
+    const gateway = recordingGateway(failAlias, { [failAlias]: ["openai/gpt-4o"], [okAlias]: ["openai/gpt-4o"] });
     const db = scriptedDb([
       MODELS[0],
       [
@@ -191,7 +247,6 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result.attempted).toBe(2);
     expect(result.updated).toBe(1);
     expect(result.skipped).toContain(`key-update-failed:${"agent-1"}`);
-    const okAlias = agentKeySecretName({ agentId: "agent-2", agentSlug: "Good" });
     expect(gateway.calls.map((c) => c.alias)).toEqual([okAlias]);
   });
 

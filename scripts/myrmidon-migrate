@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+cd /app/cli
+if [ -x /app/cli/node_modules/.bin/tsx ]; then
+  exec /app/cli/node_modules/.bin/tsx src/index.ts myrmidon:migrate "$@"
+elif [ -x /app/node_modules/.bin/tsx ]; then
+  exec /app/node_modules/.bin/tsx src/index.ts myrmidon:migrate "$@"
+else
+  exec npx tsx src/index.ts myrmidon:migrate "$@"
+fi
