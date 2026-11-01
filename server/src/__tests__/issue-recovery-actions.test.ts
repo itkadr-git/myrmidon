@@ -4112,7 +4112,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: reviewerId,
     });
 
-    const activeActions = await recoveryActionSvc.listActiveForSourceIssue(sourceIssueId);
-    expect(activeActions).toHaveLength(0);
+    const activeActions = await recoveryActionSvc.listActiveForIssues(companyId, [sourceIssueId]);
+    expect(activeActions.get(sourceIssueId)).toBeUndefined();
   });
 });
