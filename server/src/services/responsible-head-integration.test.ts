@@ -490,6 +490,11 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       // Head agent was idle: directly queued
       expect(wakeResult).not.toBeNull();
       expect(wakeResult?.status).toBe("queued");
+      expect(wakeResult?.agentId).toBe(admAgentId);
+      expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
+      expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
+      expect((wakeResult?.contextSnapshot as any)?.issueId).toBe(issueId);
+      expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
 
       const headRuns = await db
         .select()
@@ -501,14 +506,10 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
           ),
         );
 
-      expect(headRuns.length).toBeGreaterThanOrEqual(1);
       const targetRun = headRuns.find(
         (r) => (r.contextSnapshot as any)?.interactionId === interaction.id,
       );
-      expect(targetRun).toBeDefined();
-      expect(targetRun?.responsibleUserId).toBe(ownerUserId);
-      expect((targetRun?.contextSnapshot as any)?.issueId).toBe(issueId);
-      expect((targetRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
+      expect(targetRun?.id).toBe(wakeResult?.id);
 
       // Verify no queued runs for owner or engineer
       const allQueuedRuns = await db
@@ -600,6 +601,10 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
 
       expect(wakeResult).not.toBeNull();
       expect(wakeResult?.status).toBe("queued");
+      expect(wakeResult?.agentId).toBe(admAgentId);
+      expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
+      expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
+      expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
       const headRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -612,9 +617,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       const targetRun = headRuns.find(
         (r) => (r.contextSnapshot as any)?.interactionId === interaction.id,
       );
-      expect(targetRun).toBeDefined();
-      expect(targetRun?.responsibleUserId).toBe(ownerUserId);
-      expect((targetRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
+      expect(targetRun?.id).toBe(wakeResult?.id);
     });
 
     it("queued dispatch: defers wake when head is busy and does not fail with 422 responsible_user_unresolved", async () => {
@@ -712,8 +715,9 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         },
       });
 
-      // Wake is deferred behind active execution
-      expect(wakeResult).toBeNull();
+      // Wake remains queued while an active run exists; the request is retained for dispatch.
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
       const wakeRequests = await db
@@ -836,6 +840,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(queuedRun).toBeDefined();
+      expect(queuedRun?.id).toBe(wakeResult?.id);
       expect(queuedRun?.responsibleUserId).toBe(fallbackOwnerUserId);
       expect((queuedRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
     });
