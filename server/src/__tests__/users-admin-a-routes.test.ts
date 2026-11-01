@@ -336,7 +336,7 @@ describePostgres("users-admin-a routes", () => {
     expect(createdEntry.targetUserId).toBe(subjectId);
     expect(createdEntry.targetUsername).toBe("audit-subject");
     expect(createdEntry.actorId).toBe(admin.userId);
-    expect(createdEntry.actorUsername).toBe("admin");
+    expect(createdEntry.actorUsername).toBe(admin.userId);
 
     // Verify details for role change
     const roleEntry = auditRes.body.audit.find((e: { action: string }) => e.action === "instance.user.role_changed");
