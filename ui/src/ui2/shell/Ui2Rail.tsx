@@ -85,6 +85,7 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
     <Link
       to={item.to}
       className="myr-ui2__rail-link"
+      aria-current={active ? "page" : undefined}
       style={{ display: "block", textDecoration: "none" }}
     >
       <RailItem item={item} active={active} badge={badge} />
@@ -100,6 +101,8 @@ export function Ui2Rail() {
     return val && val !== key ? val : tApp(key, values);
   };
   const { selectedCompany } = useCompany();
+  // Both siblings consume the canonical attention feed; the same count powers
+  // the "Waiting for me" navigation badge and the Command Center total.
   const attentionCount = useUi2AttentionCount();
   const knowledgeAvailable = useKnowledgeAvailable(selectedCompany?.id);
   const { slots: pluginSlots } = usePluginSlots({ slotTypes: ["sidebar"], companyId: selectedCompany?.id });

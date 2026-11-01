@@ -2745,10 +2745,16 @@ async function returnReasonlessDependentsToTodo(
   for (const row of eligible) {
     if (stillHeld.has(row.id)) continue;
     const now = new Date();
+    const metadata = (row.blockerMetadata as Record<string, unknown> | null) ?? null;
+    if (metadata?.blockReason || row.unblockDescriptor) {
+      continue;
+    }
+    const restoredStatus: "in_progress" | "todo" =
+      metadata?.previousStatus === "in_progress" ? "in_progress" : "todo";
     const [moved] = await tx
       .update(issues)
       .set({
-        status: "todo",
+        status: restoredStatus,
         blockerMetadata: null,
         unblockDescriptor: null,
         blockedTransitionAt: null,
@@ -2770,7 +2776,7 @@ async function returnReasonlessDependentsToTodo(
       entityId: row.id,
       details: {
         identifier: row.identifier ?? null,
-        status: "todo",
+        status: restoredStatus,
         previousStatus: "blocked",
         source: "blocked_reason_guard.last_blocker_closed",
         resolvedBlockerIssueId: doneBlocker.id,
@@ -2778,6 +2784,61 @@ async function returnReasonlessDependentsToTodo(
     });
   }
   return returned;
+}
+
+async function syncOpenBlockerStatus(
+  tx: any,
+  companyId: string,
+  issue: typeof issues.$inferSelect,
+): Promise<void> {
+  const readiness = (await listIssueDependencyReadinessMap(tx, companyId, [issue.id])).get(issue.id);
+  const metadata = (issue.blockerMetadata as Record<string, unknown> | null) ?? null;
+  if (readiness?.unresolvedBlockerIssueIds.length && (issue.status === "todo" || issue.status === "in_progress")) {
+    const previousStatus = issue.status;
+    const nextMetadata = {
+      ...metadata,
+      previousStatus,
+    };
+    await tx
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockerMetadata: nextMetadata,
+        blockedTransitionAt: new Date(),
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = "blocked";
+    issue.blockerMetadata = nextMetadata as any;
+    issue.blockedTransitionAt = new Date();
+  } else if (
+    (metadata?.previousStatus === "todo" || metadata?.previousStatus === "in_progress") &&
+    readiness?.isDependencyReady !== false &&
+    !readiness?.unresolvedBlockerIssueIds.length &&
+    issue.status === "blocked" &&
+    !metadata?.blockReason &&
+    !issue.unblockDescriptor &&
+    isAutoUnblockCandidate(issue)
+  ) {
+    const restoredStatus: "in_progress" | "todo" =
+      metadata.previousStatus === "in_progress" ? "in_progress" : "todo";
+    await tx
+      .update(issues)
+      .set({
+        status: restoredStatus,
+        blockerMetadata: null,
+        unblockDescriptor: null,
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = restoredStatus;
+    issue.blockerMetadata = null;
+    issue.blockedTransitionAt = null;
+  }
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -9546,6 +9607,7 @@ export function issueService(db: Db) {
           ],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        await syncOpenBlockerStatus(db, parent.companyId, parent);
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
@@ -10557,6 +10619,7 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          await syncOpenBlockerStatus(tx, companyId, issue);
         }
         if (initialPlan?.trim()) {
           await documentService(tx as unknown as Db).upsertIssueDocument({
@@ -10942,6 +11005,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        commentBody?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10969,6 +11033,19 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      if (
+        existing.status !== "done" &&
+        data.status === "done" &&
+        dbOrTx === db
+      ) {
+        const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+        await assertKnowledgeGateSettled(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          issue: { title: existing.title, description: existing.description },
+          comment: typeof data.commentBody === "string" ? data.commentBody : null,
+        });
+      }
       const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
         && dbOrTx === db
         ? await (async () => {
@@ -11011,6 +11088,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        commentBody: _commentBody,
         ...issueData
       } = data;
       if (
@@ -11567,6 +11645,12 @@ export function issueService(db: Db) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await returnReasonlessDependentsToTodo(tx, updated);
           }
+          if (
+            (updated.status === "todo" || updated.status === "in_progress") &&
+            blockedByIssueIds === undefined
+          ) {
+            await syncOpenBlockerStatus(tx, existing.companyId, updated);
+          }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
           // stops spinning and offers "Run now" again (blocked = stuck on a human).
@@ -11597,6 +11681,8 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          // myrmidon(OPEN-BLOCKER-STATUS): dependency blockers must remove work from wakeable statuses.
+          await syncOpenBlockerStatus(tx, existing.companyId, updated);
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&

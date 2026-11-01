@@ -48,7 +48,9 @@ describe("metrics self-check probe", () => {
     // OPE-9476: failed_before_model counter is in-process state too,
     // the three recovery event counters are in-process port state, and
     // the scent classifier alarm is process-local: all survive broken DB reads.
-    expect(result.families_ok).toBe(1 + 9 + 2 + 4 + 4 + 2 + 2 + 5 + 1 + 3 + 1);
+    // Five legacy-blocked families are safe on pre-migration databases too.
+    // The guardrail trigger counter is process-local as well.
+    expect(result.families_ok).toBe(34);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -62,7 +64,7 @@ describe("metrics self-check probe", () => {
         family !== "swarm_claim_conflicts_total" &&
         family !== "swarm_lease_recovered_total" &&
         family !== "swarm_scent_classifier_alarm" &&
-        family !== "myrmidon_agent_failed_before_model_total" &&
+        family !== "myrmidon_guardrail_triggers_total" &&
         family !== "myrmidon_readiness_ratio" &&
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&
@@ -70,7 +72,9 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_claim_rejection_total" &&
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
-        family !== "myrmidon_recovery_success_total",
+        family !== "myrmidon_recovery_success_total" &&
+        family !== "myrmidon_agent_failed_before_model_total" &&
+        !family.startsWith("legacy_blocked_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

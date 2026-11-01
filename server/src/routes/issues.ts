@@ -42,7 +42,9 @@ import {
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
-// myrmidon(OPE-10045): a final review approval given before the PR is merged.
+// myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
+import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -1529,6 +1531,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "approval_approved",
   "budget.blocked",
   "company.inactive",
+  "deferred_issue_execution_expired",
   "dev_project_queue_empty",
   "email_received",
   "execution_changes_requested",
@@ -3714,6 +3717,7 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   } = {},
 ) {
   const router = Router();
@@ -5051,6 +5055,7 @@ export function issueRoutes(
       // myrmidon(UPSTREAM-13539): the queued-response guard below needs the assignee agent.
       assigneeAgentId?: string | null;
       executionState?: unknown;
+      executionPolicy?: unknown;
       monitorNextCheckAt?: Date | null;
       reviewPolicy?: IssueReviewPolicy | null;
     };
@@ -5144,7 +5149,10 @@ export function issueRoutes(
         : input.updateFields.executionState;
     if (hasReviewExecutionParticipant(nextExecutionState)) return null;
 
-    const nextExecutionPolicy = input.updateFields.executionPolicy;
+    const nextExecutionPolicy =
+      input.updateFields.executionPolicy === undefined
+        ? input.existing.executionPolicy
+        : input.updateFields.executionPolicy;
     if (
       hasScheduledMonitor({
         existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
@@ -5198,7 +5206,9 @@ export function issueRoutes(
         ? input.existing.assigneeAgentId
         : input.updateFields.assigneeAgentId;
     const executionReviewParticipants = summarizeExecutionParticipants(
-      safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(
+        input.updateFields.executionPolicy ?? input.existing.executionPolicy ?? null,
+      ),
       "review",
     );
     if (
@@ -10187,20 +10197,28 @@ export function issueRoutes(
             status: sourceIssueStatus,
           };
           if (!safeHandBack) {
-            await assertInReviewReviewPath({
-              existing: lockedIssue,
-              updateFields,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              actorAgentId: actor.agentId,
-              actorRunId: actor.runId,
-            });
             const executionPolicy = safeNormalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
+            const transitionIssue: IssueRouteSnapshot & {
+              executionReviewParticipantAgentIds?: string[];
+            } = await withDefaultEscalationChain(
+              tx as unknown as Db,
+              lockedIssue,
+              executionPolicy,
+            );
+            const reviewParticipantAgentIds = executionPolicy
+              ? summarizeExecutionParticipants(executionPolicy, "review").flatMap(
+                  (participant) =>
+                    participant.type === "agent" && participant.agentId
+                      ? [participant.agentId]
+                      : [],
+                )
+              : [];
+            transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
             const transition = applyIssueExecutionPolicyTransition({
               // myrmidon(OPE-9031): senior escalation chain for the round limit.
-              issue: await withDefaultEscalationChain(tx as unknown as Db, lockedIssue, executionPolicy),
+              issue: transitionIssue,
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -10213,6 +10231,14 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            await assertInReviewReviewPath({
+              existing: lockedIssue,
+              updateFields,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              actorAgentId: actor.agentId,
+              actorRunId: actor.runId,
+            });
             if (transition.recoveryInteraction) {
               const targetAgentId =
                 lockedIssue.responsibleAgentId &&
@@ -13966,12 +13992,34 @@ export function issueRoutes(
       // on non-exempt statuses are also gated. Non-engineers who already hold the issue
       // may only move it to blocked, todo, or cancelled.
       const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
-      const targetAssigneeAgentId = requestedAssigneeAgentId;
+      // A pending review/approval stage held by its participant hands the issue back to the
+      // stage's return assignee when the participant moves it to in_progress (changes
+      // requested). Gate that assignee, not the reviewer: otherwise every REQUEST CHANGES
+      // by a reviewer on a code task was refused with issue_requires_engineer (01.11).
+      const stageState = existing.executionState as Record<string, unknown> | null;
+      const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
+      const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
+      const stageHandBackAssigneeId =
+        stageState?.status === "pending" &&
+        (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
+        normalizedAssigneeAgentId === undefined &&
+        targetStatus === "in_progress" &&
+        stageParticipant?.type === "agent" &&
+        typeof stageParticipant?.agentId === "string" &&
+        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageReturnAssignee?.type === "agent" &&
+        typeof stageReturnAssignee?.agentId === "string"
+          ? stageReturnAssignee.agentId
+          : null;
+      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      // Only a PATCH that sets the status gates "in_progress on a non-coding role"; an edit that
+      // changes neither status nor assignee (labels, title, a comment) is not refused for the
+      // current holder — GUARD-RETURN returns such holds on its own.
       const movingToOrKeptInCodeInProgress =
-        targetStatus === "in_progress" && targetAssigneeAgentId != null;
+        typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
       if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({
@@ -14497,6 +14545,19 @@ export function issueRoutes(
           delete updateFields.status;
           reviewApprovalPendingMerge = buildReviewApprovalPendingMergeNotice(
             openPullRequest.url,
+          );
+        }
+      }
+      if (transition.decision?.outcome === "changes_requested") {
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+          companyId: existing.companyId,
+          issueId: existing.id,
+        });
+        if (ci.state === "pending" || ci.state === "unknown") {
+          throw unprocessable(
+            ci.state === "pending"
+              ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
           );
         }
       }
@@ -15279,6 +15340,7 @@ export function issueRoutes(
       const postCommitIssueActions: IssuePostCommitAction[] = [];
       const issueUpdateData = {
         ...updateFields,
+        commentBody,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
@@ -15538,6 +15600,19 @@ export function issueRoutes(
             }
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
+            if (lockedTransition.decision?.outcome === "changes_requested") {
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                companyId: lockedExisting.companyId,
+                issueId: lockedExisting.id,
+              });
+              if (ci.state === "pending" || ci.state === "unknown") {
+                throw unprocessable(
+                  ci.state === "pending"
+                    ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                );
+              }
+            }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
               const openBlockers = await tx
@@ -20133,6 +20208,16 @@ export function issueRoutes(
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
+
+        if (updatePatch.status === "done") {
+          const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+          await assertKnowledgeGateSettled(db, {
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+            issue: { title: currentIssue.title, description: currentIssue.description },
+            comment: req.body.body,
+          });
+        }
 
         const sourceTrust =
           actor.actorType === "agent"

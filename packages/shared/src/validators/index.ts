@@ -1,4 +1,11 @@
 export {
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
+  type HaStandbyStatus,
+} from "./ha.js";
+
+export {
   connectionsSearchInputSchema,
   connectionRequestInputSchema,
   completeConnectionIntentSchema,
@@ -1003,3 +1010,5 @@ export * from "./chat-channels.js";
 
 export * from "./email.js";
 export * from "./foraging.js";
+export * from "./ideas.js";
+export * from "./guardrails.js";

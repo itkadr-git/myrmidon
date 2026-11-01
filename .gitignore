@@ -31,6 +31,7 @@ check-*.mjs
 new-agent*.json
 newcompany.json
 seed-*.mjs
+!scripts/myrmidon/migrate/seed-*.mjs
 server/check-*.mjs
 server/seed-*.mjs
 packages/db/seed-*.mjs

@@ -11,6 +11,11 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  agentWakeupRequests,
+  knowledgeItems,
+  knowledgeRevisions,
+  knowledgeSources,
+  issueWorkProducts,
   issueClaims,
   issueRecoveryActions,
   issues,
@@ -47,7 +52,12 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
+    await db.delete(agentWakeupRequests);
     await db.delete(litellmCostEvents);
+    await db.delete(knowledgeSources);
+    await db.delete(knowledgeRevisions);
+    await db.delete(knowledgeItems);
+    await db.delete(issueWorkProducts);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
@@ -110,6 +120,19 @@ describeEmbeddedPostgres("metrics collector", () => {
     });
     return runId;
   }
+
+  it("counts deferred issue executions older than thirty minutes", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await db.insert(agentWakeupRequests).values([
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "cancelled", requestedAt: new Date(NOW.getTime() - 40 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000), createdAt: new Date(NOW.getTime() - 29 * 60_000) },
+    ]);
+    const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
+    expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
+  });
 
   it("reads active recovery age and counts manually seeded addressless actions", async () => {
     const companyId = await seedCompany();
@@ -548,5 +571,160 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(result.families_ok).toBe(METRIC_FAMILIES.length);
     expect(result.scrape_ms).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(result)).not.toContain("company-a");
+  });
+
+  it("knowledge-on-change share counts only closed tasks with a system change, with and without a wiki revision", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    const closedAt = new Date(NOW.getTime() - 24 * 3600 * 1000);
+
+    // A knowledge item + revision, created a day after the merge.
+    const itemId = randomUUID();
+    await db.insert(knowledgeItems).values({
+      id: itemId,
+      companyId,
+      nestId: companyId,
+      kind: "note",
+      slug: "device-overview",
+      title: "Device overview",
+    });
+    const revisionId = randomUUID();
+    await db.insert(knowledgeRevisions).values({
+      id: revisionId,
+      companyId,
+      nestId: companyId,
+      itemId,
+      revisionNumber: 1,
+      content: "# Device overview",
+      createdAt: new Date(NOW.getTime() - 12 * 3600 * 1000),
+    });
+
+    // Task 1: closed with a merged PR (a system change) AND a task-linked
+    // knowledge source — counts in both numerator and denominator.
+    const changedCoveredId = randomUUID();
+    const changedCoveredIdentifier = `OPE-AAA${randomUUID().slice(0, 4).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: changedCoveredId,
+      companyId,
+      identifier: changedCoveredIdentifier,
+      title: "Task 1",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: closedAt,
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: changedCoveredId,
+      type: "pull_request",
+      provider: "github",
+      externalId: "pr-1",
+      title: "PR 1",
+      status: "merged",
+      updatedAt: closedAt,
+    });
+    await db.insert(knowledgeSources).values({
+      id: randomUUID(),
+      companyId,
+      nestId: companyId,
+      revisionId,
+      kind: "task",
+      ref: changedCoveredIdentifier,
+    });
+    // The same revision is also linked to the merged PR for the delay half.
+    await db.insert(knowledgeSources).values({
+      id: randomUUID(),
+      companyId,
+      nestId: companyId,
+      revisionId,
+      kind: "pr",
+      ref: "pr-1",
+    });
+
+    // Task 2: closed with a merged PR but WITHOUT any knowledge source —
+    // denominator only, the gap the metric must expose.
+    const changedBareId = randomUUID();
+    await db.insert(issues).values({
+      id: changedBareId,
+      companyId,
+      identifier: `OPE-BBB${randomUUID().slice(0, 4).toUpperCase()}`,
+      title: "Task 2",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: closedAt,
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: changedBareId,
+      type: "pull_request",
+      provider: "github",
+      externalId: "pr-2",
+      title: "PR 2",
+      status: "merged",
+    });
+
+    // Task 3: closed WITHOUT any merged PR — not a system change, so it must
+    // stay out of the denominator entirely.
+    const unchangedId = randomUUID();
+    const unchangedIdentifier = `OPE-CCC${randomUUID().slice(0, 4).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: unchangedId,
+      companyId,
+      identifier: unchangedIdentifier,
+      title: "Task 3",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: closedAt,
+    });
+    // A task-linked source on the unchanged task must NOT lift the share.
+    await db.insert(knowledgeSources).values({
+      id: randomUUID(),
+      companyId,
+      nestId: companyId,
+      revisionId,
+      kind: "task",
+      ref: unchangedIdentifier,
+    });
+
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    // 1 of 2 changed tasks is covered; the unchanged task is excluded.
+    expect(snapshot.knowledgeOnChangeShare).toBe(0.5);
+    // The revision landed 12h after the PR row's updatedAt (seeded NOW),
+    // so the delay p50/p95 sample the same single delay.
+    expect(snapshot.knowledgeRevisionDelaySecondsP50).toBe(12 * 3600);
+    expect(snapshot.knowledgeRevisionDelaySecondsP95).toBe(12 * 3600);
+  });
+
+  it("knowledge-on-change share renders no sample when no changed tasks closed in the window", async () => {
+    const companyId = await seedCompany();
+    // A closed task without any work product: denominator empty.
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: `OPE-DDD${randomUUID().slice(0, 4).toUpperCase()}`,
+      title: "Task 4",
+      status: "done",
+      priority: "medium",
+      completedAt: new Date(NOW.getTime() - 24 * 3600 * 1000),
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    expect(snapshot.knowledgeOnChangeShare).toBeNull();
+    const text = renderMetricsText(snapshot);
+    expect(text).toContain("# HELP myrmidon_knowledge_on_change_share ");
+    expect(text).not.toContain("myrmidon_knowledge_on_change_share{");
   });
 });
