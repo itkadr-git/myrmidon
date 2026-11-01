@@ -75,7 +75,12 @@ d("backup-lib: vector(1024) and hnsw index", () => {
       const backupResult = await runDatabaseBackup({
         connectionString: sourceDb.connectionString,
         backupDir: tmpDir,
-        retention: { keepLastOnly: true },
+        retention: {
+          dailyDays: 1,
+          weeklyWeeks: 0,
+          monthlyMonths: 0,
+          keepLastOnly: true,
+        },
         backupEngine: "javascript",
       });
 
