@@ -39,5 +39,5 @@ describePostgres("legacy_blocked_import migration", () => {
     await expect(
       db`INSERT INTO "legacy_blocked_import" ("company_id", "import_key", "issue_id", "class") VALUES (${companyId}, 'legacy-1', ${issueId}, 'blocked')`,
     ).rejects.toMatchObject({ code: "23505", constraint_name: "legacy_blocked_import_company_import_key_uq" });
-  }, 120_000);
+  }, 30_000);
 });
