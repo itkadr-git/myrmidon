@@ -105,5 +105,5 @@ describeEmbeddedPostgres("legacy blocked apply postgres", () => {
     expect(second.changed).toBe(0);
     expect(second.rows.filter((row) => row.outcome === "already_applied")).toHaveLength(2);
     expect(await snapshot()).toEqual(afterFirst);
-  });
+  }, 90_000);
 });

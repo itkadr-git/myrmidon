@@ -195,14 +195,14 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
     await db.insert(issueRelations).values([
       {
         companyId,
-        issueId: openBlockerId,
-        relatedIssueId: openBlockedId,
+        issueId: openBlockedId,
+        relatedIssueId: openBlockerId,
         type: "blocks",
       },
       {
         companyId,
-        issueId: resolvedBlockerId,
-        relatedIssueId: eligibleDecisionId,
+        issueId: eligibleDecisionId,
+        relatedIssueId: resolvedBlockerId,
         type: "blocks",
       },
     ]);
