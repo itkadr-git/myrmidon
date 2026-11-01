@@ -69,7 +69,14 @@ vi.mock("@/components/ui/popover", () => ({
 }));
 
 vi.mock("@/components/ui/checkbox", () => ({
-  Checkbox: (props: ComponentProps<"input">) => <input type="checkbox" {...props} />,
+  Checkbox: ({ onCheckedChange, checked, ...props }: ComponentProps<"input"> & { onCheckedChange?: (checked: boolean) => void }) => (
+    <input
+      type="checkbox"
+      {...props}
+      checked={checked}
+      onChange={(event) => onCheckedChange?.(event.target.checked)}
+    />
+  ),
 }));
 
 vi.mock("@/components/AgentIconPicker", () => ({
@@ -92,6 +99,24 @@ vi.mock("../components/MarkdownBody", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const act = reactAct as unknown as (fn: () => Promise<unknown>) => Promise<void>;
+
+const translatedLabels: Record<string, string> = {
+  "area.settings-company.company-skills.bindToAgents": "Bind to agents",
+  "common.save": "Save",
+  "common.cancel": "Cancel",
+};
+
+vi.mock("@/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string, values?: Record<string, unknown>) => {
+      const label = translatedLabels[key];
+      if (label) return label;
+      if (key.endsWith(".selectedShort")) return `${values?.count ?? 0} selected`;
+      if (key.endsWith(".noneSelected")) return "None selected";
+      return key;
+    },
+  }),
+}));
 
 const dummyAgents = [
   {
