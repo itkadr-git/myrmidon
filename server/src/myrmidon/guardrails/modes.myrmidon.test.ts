@@ -300,6 +300,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       company: { pii: "mask" },
       castes: { engineer: { injection: "block" } },
       agents: {},
+      injectionConfig: { enabled: true, scoreThreshold: 0.7 },
     });
     expect(stored).toMatchObject({ company: { pii: "mask" } });
     const reread = await readGuardrailModesSettings(settings);

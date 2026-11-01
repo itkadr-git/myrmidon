@@ -433,6 +433,10 @@ export const en = {
           monitoringUnavailable: "Monitoring data is unavailable.",
           hosts: "Hosts",
           services: "Services",
+          oom: "OOM incidents (24h)",
+          oomIncrease: "OOM incidents increased vs previous 24h",
+          oomAgents: "By agent",
+          oomRoles: "By role",
           empty: "No fleet data",
           emptyBody: "No hosts or services were returned for this company.",
           error: "Fleet data is unavailable.",
@@ -886,7 +890,7 @@ export type Ui2Catalog = {
       placeholderTitle: string;
       placeholderBody: string;
       placeholderLegacyLink: string;
-      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
+      fleet: { title: string; subtitle: string; monitoringError: string; monitoringUnavailable: string; hosts: string; services: string; oom: string; oomIncrease: string; oomAgents: string; oomRoles: string; empty: string; emptyBody: string; error: string; metrics: string; states: { running: string; stopped: string; unknown: string } };
       more: {
         title: string;
         subtitle: string;
