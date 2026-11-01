@@ -122,13 +122,15 @@ function fakeSync(): Mocked<LitellmSyncService> {
 function app(options: {
   sync?: LitellmSyncService | null;
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
+  actor?: unknown;
 } = {}) {
   const getLitellmSync = vi.fn(async () => (options.sync === undefined ? fakeSync() : options.sync));
   const refresh = options.refreshAgentAllowlists ?? vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] }));
+  const actor = options.actor ?? member;
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
-    (req as unknown as { actor: unknown }).actor = member;
+    (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
   server.use(
@@ -265,7 +267,6 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       .expect(200);
   });
 
-<<<<<<< HEAD
   describe("GET /model-providers/litellm/channels (OPE-9853)", () => {
     it("returns channel list when sync is configured", async () => {
       const channelViews = [
@@ -317,7 +318,8 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       expect(res.body.error).not.toContain("pcp_top_secret");
       expect(res.body.error).toContain("<redacted>");
     });
-=======
+  });
+
   it("denies plain company member on read and write (403)", async () => {
     const { server } = app({ sync, actor: plainMember });
     await request(server).get(base).expect(403);
@@ -325,6 +327,5 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       .post(`${base}/provider-1/models`)
       .send({ models: [{ modelName: "model-a", enabled: true }] })
       .expect(403);
->>>>>>> e02077de88 (feat(model-providers): UI scaffold and RBAC guards for owner and board admins (OPE-9852))
   });
 });
