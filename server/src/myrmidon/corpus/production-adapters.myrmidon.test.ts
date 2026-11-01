@@ -266,8 +266,8 @@ run("production corpus adapters", () => {
     // Verify SET LOCAL works inside withTransaction (Alex's review note on PR #1339)
     await sqlExecutor.withTransaction(async (tx) => {
       await tx.query("set local hnsw.ef_search = 120");
-      const ef = await tx.query<{ setting: string }>("show hnsw.ef_search");
-      expect(ef[0]?.setting).toBe("120");
+      const ef = await tx.query<{ ef_search: string }>("select current_setting('hnsw.ef_search', true) as ef_search");
+      expect(ef[0]?.ef_search).toBe("120");
     });
 
     // Verify successful multi-step writes commit atomically
