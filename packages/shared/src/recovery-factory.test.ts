@@ -158,7 +158,7 @@ describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
   };
 
   it("completeness: covers every kind in ISSUE_RECOVERY_ACTION_KINDS with a positive SLA", () => {
-    expect(ISSUE_RECOVERY_ACTION_KINDS.length).toBe(15);
+    expect(ISSUE_RECOVERY_ACTION_KINDS.length).toBe(16);
     for (const kind of ISSUE_RECOVERY_ACTION_KINDS) {
       const minutes = RECOVERY_SLA_MINUTES_BY_KIND[kind];
       expect(typeof minutes).toBe("number");
