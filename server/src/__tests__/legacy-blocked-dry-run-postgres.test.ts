@@ -124,6 +124,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
         companyId,
         title: "Eligible human decision blocked issue",
         status: "blocked",
+        description: "awaiting owner decision before moving forward",
       },
       {
         id: eligibleUnknownId,
