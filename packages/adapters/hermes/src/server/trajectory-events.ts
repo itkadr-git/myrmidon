@@ -19,6 +19,7 @@ export type TrajectoryEventType =
 
 export interface TrajectoryRunStartPayload {
   version: 1;
+  runId: string;
   model: string;
   modelFamily: string;
   provider: string;
@@ -280,6 +281,7 @@ export class TrajectoryTracker {
       stepIndex: this.currentStepIndex,
       payload: {
         version: 1,
+        runId: this.runId,
         model: input.model,
         modelFamily: input.modelFamily,
         provider: input.provider,

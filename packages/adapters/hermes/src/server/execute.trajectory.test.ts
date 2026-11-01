@@ -41,7 +41,7 @@ import { execute } from "./execute.js";
 import * as serverUtils from "@myrmidon/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
-  const onLog = vi.fn(async () => undefined);
+  const onLog = vi.fn(async (..._args: unknown[]) => undefined);
   return {
     ctx: {
       runId: "test-run-1",

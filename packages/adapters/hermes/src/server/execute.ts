@@ -385,9 +385,13 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 // ---------------------------------------------------------------------------
 
 /** Format a trajectory event as a single-line log string. */
-function formatTrajectoryEventLog(event: TrajectoryEvent): string {
+function formatTrajectoryEventLog(
+  event: TrajectoryEvent<Record<string, unknown>>,
+): string {
   return `[myrmidon] trajectory ${event.eventType} ${JSON.stringify(event.payload)}`;
 }
+
+// ── Trajectory tracking helpers ───────────────────────────────────────────
 
 /**
  * Extract tool name and error status from a parsed Hermes stdout line.
@@ -728,7 +732,7 @@ export async function execute(
       modelFamily: detectModelFamily(model, resolvedProvider),
       provider: resolvedProvider,
     });
-    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runStartEvent)}\n`);
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runStartEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
   }
 
   // ── Execute ────────────────────────────────────────────────────────────
@@ -746,7 +750,7 @@ export async function execute(
             args: info.detail,
             inputSummary: info.detail.slice(0, 100),
           });
-          await ctx.onLog("stdout", `${formatTrajectoryEventLog(callEvent)}\n`);
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(callEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
           const { event: resultEvent, stopConditionEvent, isStopConditionTriggered } =
             tracker.recordToolResult({
               toolName: info.toolName,
@@ -754,10 +758,13 @@ export async function execute(
               durationMs: info.duration ? parseFloat(info.duration) * 1000 : 0,
               error: info.isError ? info.detail : undefined,
             });
-          await ctx.onLog("stdout", `${formatTrajectoryEventLog(resultEvent)}\n`);
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(resultEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
           if (isStopConditionTriggered && stopConditionEvent) {
             stopConditionTriggered = true;
-            await ctx.onLog("stdout", `${formatTrajectoryEventLog(stopConditionEvent)}\n`);
+            await ctx.onLog(
+              "stdout",
+              `${formatTrajectoryEventLog(stopConditionEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`,
+            );
           }
         }
       }
@@ -817,7 +824,7 @@ export async function execute(
     const runCompleteEvent = tracker.recordRunComplete({
       status: stopConditionTriggered ? "aborted" : result.exitCode === 0 ? "completed" : "failed",
     });
-    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runCompleteEvent)}\n`);
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runCompleteEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
   }
 
   await ctx.onLog(
