@@ -149,7 +149,7 @@ describe("licenses minted by the module-side `runner issue`", () => {
       "google-ai": ["expired", "bad_signature"],
       antigravity: ["expired", "bad_signature"],
       "chatgpt-pool": ["expired", "bad_signature"],
-      "client-1": ["module_not_granted", "bad_signature"],
+      "client-1": ["expired", "bad_signature"],
     },
     other: {
       "google-ai": ["instance_mismatch", "bad_signature"],
@@ -498,7 +498,11 @@ describe("licensing routes: client side", () => {
   });
 
   it("saves a valid license where the modules read it and reports it as valid", async () => {
-    const res = await request(app(admin, envFor())).post("/api/licensing/license").send({ value: `\n${RUNNER_ISSUED.all}  \n` });
+    // RUNNER_ISSUED.all covers exactly the three older modules; client-1 is
+    // not granted by it, so the board would flag attention if it were installed.
+    const res = await request(app(admin, envFor(), ["antigravity", "chatgpt-pool", "google-ai"]))
+      .post("/api/licensing/license")
+      .send({ value: `\n${RUNNER_ISSUED.all}  \n` });
     expect(res.status).toBe(200);
     expect(readFileSync(licenseFile, "utf8")).toBe(RUNNER_ISSUED.all + "\n");
     expect(res.body.attention).toBe(false);
