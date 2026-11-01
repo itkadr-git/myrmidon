@@ -4,11 +4,16 @@ import {
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
   getCompanyEmptyRunStats,
+  recordEmptyRunEvent,
+  DEVEFF_EVENT_NO_OP,
+  DEVEFF_EVENT_REPEATED_TOOL_ERROR,
+  DEVEFF_DASHBOARD_SQL_QUERY,
   MAX_CONSECUTIVE_EMPTY_RUNS,
   MAX_REPEATED_TOOL_ERRORS,
 } from "../services/empty-run.js";
+import * as heartbeatEvents from "../services/heartbeat-run-events.js";
 
-describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10066)", () => {
+describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10096)", () => {
   describe("classifyEmptyRun", () => {
     it("classifies run as empty when there are no changes, artifacts, or status change", () => {
       const result = classifyEmptyRun({
@@ -354,6 +359,23 @@ describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10066)", () => 
       expect(agent2?.totalRuns).toBe(1);
       expect(agent2?.emptyRuns).toBe(0);
       expect(agent2?.emptyRunRatio).toBe(0);
+      expect(report.dashboardSqlQuery).toBe(DEVEFF_DASHBOARD_SQL_QUERY);
+      expect(report.dashboardSqlQuery).toContain("WITH runs_14d AS");
+      expect(report.dashboardSqlQuery).toContain("run.deveff.no_op");
+      expect(report.dashboardSqlQuery).toContain("run.deveff.repeated_tool_error");
+    });
+  });
+
+  describe("1.7 DEVEFF: recordEmptyRunEvent (OPE-10096)", () => {
+    it("emits run.deveff.no_op event with valid schema when run has no changes", async () => {
+      const mockDb = {} as any;
+      const spy = vi.spyOn(heartbeatEvents, "appendHeartbeatRunEvent");
+      await recordEmptyRunEvent(mockDb, {
+        companyId: "comp-1", runId: "run-123", agentId: "agent-1", issueId: "issue-1",
+        classification: { isEmpty: true, reason: "no_changes_and_no_status_transition", description: "Run produced no file changes, work products, commits, PRs, or status transition" },
+        gateResult: { passed: false, gateMet: "none", reason: "Completion gate failed: run ended without commit/PR, status change, or explicit blocker with reason" },
+      });
+      expect(spy).toHaveBeenCalledWith(mockDb, expect.objectContaining({ eventType: DEVEFF_EVENT_NO_OP, level: "info", payload: expect.objectContaining({ rule: "no_op", gatePassed: false }) }));
     });
 
     it("calculates 14-day baseline and verifies 30% reduction criterion", async () => {

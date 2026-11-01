@@ -49,6 +49,7 @@ const HOME = process.env.MYRMIDON_WS_HOME || "/data/hermes/.myrmidon";
 const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
 const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
 const BASE_DIR = path.join(HOME, "git-base");
+const WORKSPACE_DIR = process.env.MYRMIDON_WS_WORKSPACE_ROOT || "/workspace";
 const ARCHIVE_DIR = path.join(HOME, "archive");
 const ATTENTION_PATH = path.join(HOME, "botd-attention.json");
 const COOLDOWN_PATH = path.join(HOME, "botd-cooldown.json");
@@ -162,17 +163,33 @@ function listArchives() {
     return out;
   }
   for (const n of names) {
-    if (!n.endsWith(".bundle") && !n.endsWith(".dir.tar")) continue;
+    if (!n.endsWith(".bundle") && !n.endsWith(".dir.tar") && !n.endsWith(".jsonl.gz")) continue;
     const p = path.join(ARCHIVE_DIR, n);
     try {
       const st = fs.statSync(p);
-      const m = /^(.+)-\d{8}T\d{6}Z\.(?:bundle|dir\.tar)$/.exec(n);
+      const m = /^(.+)-\d{8}T\d{6}Z\.(?:bundle|dir\.tar|jsonl\.gz)$/.exec(n);
       out.push({ key: m ? m[1] : n, path: p, sizeBytes: st.size, createdAt: st.mtime });
     } catch {
       /* gone */
     }
   }
   return out;
+}
+
+function runGitMigration({ migrationEnabled, gitMigrationMod, idle, log }) {
+  if (!migrationEnabled || !gitMigrationMod || typeof gitMigrationMod.migrateIdleGitRepos !== "function") return;
+  try {
+    const res = gitMigrationMod.migrateIdleGitRepos({
+      baseDir: BASE_DIR,
+      workspacesDir: WORKSPACE_DIR,
+      idle,
+      enabled: migrationEnabled,
+      log,
+    });
+    if (res && res.migrated > 0) log(`botd: git migration repacked ${res.migrated} repos (idle-gated)`);
+  } catch (err) {
+    log(`botd: git migration warning: ${err.message}`);
+  }
 }
 
 async function main() {
@@ -265,6 +282,21 @@ async function main() {
     parts.selfChecks = { reflink: null, gitref: null, wsCli: wsOk };
     parts.foreignUid = foreignUid;
     foreignUid = null;
+    const sessionPrunePath = path.join(HOME, "session-prune.json");
+    let sessionPrune = null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(sessionPrunePath, "utf8"));
+      if (raw && typeof raw === "object") {
+        sessionPrune = {
+          stateDbBytesBefore: typeof raw.stateDbBytesBefore === "number" ? raw.stateDbBytesBefore : null,
+          stateDbBytesAfter: typeof raw.stateDbBytesAfter === "number" ? raw.stateDbBytesAfter : null,
+          deletedSessions: typeof raw.deletedSessions === "number" ? raw.deletedSessions : 0,
+        };
+      }
+    } catch {
+      /* not present or unreadable */
+    }
+    parts.sessionPrune = sessionPrune;
     return { inventory, parts };
   }
 
@@ -342,23 +374,7 @@ async function main() {
     // Repack repositories with alternates when bot is idle, gated by gitMigrationEnabled,
     // serialized across fleet with nice/ionice and durable .repack-migrated marker.
     const migrationEnabled = process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "1" || process.env.MYRMIDON_GIT_MIGRATION_ENABLED === "true";
-    if (migrationEnabled && gitMigrationMod && typeof gitMigrationMod.migrateIdleGitRepos === "function") {
-      try {
-        const isIdle = runProbe ? (runProbe.probe().live === false) : false;
-        const res = gitMigrationMod.migrateIdleGitRepos({
-          baseDir: BASE_DIR,
-          workspacesDir: WORKSPACE_DIR,
-          idle: isIdle,
-          enabled: migrationEnabled,
-          log,
-        });
-        if (res && res.migrated > 0) {
-          log(`botd: git migration repacked ${res.migrated} repos (idle-gated)`);
-        }
-      } catch (err) {
-        log(`botd: git migration warning: ${err.message}`);
-      }
-    }
+    runGitMigration({ migrationEnabled, gitMigrationMod, idle: runProbe ? (runProbe.probe().live === false) : false, log });
   };
 
   const loop = loopMod.createLoop({
@@ -470,4 +486,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createWorkspaceExecutor };
+module.exports = { createWorkspaceExecutor, runGitMigration };

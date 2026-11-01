@@ -128,7 +128,7 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
   consecutiveToolErrors: {
     toolName: string;
     count: number;
@@ -1095,7 +1095,7 @@ async function logCompactEvent(input: {
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
 
-    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
       const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
       const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
@@ -2004,6 +2004,61 @@ export async function stopGatewayRunForBoard(input: {
     // auth) is the operator's signal to check the gateway. Either way the
     // board-side cancellation proceeds.
     return { stopped: false };
+  }
+}
+
+/**
+ * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+ * is still alive on the bot gateway, completed, missing (404), or unreachable.
+ */
+export async function probeGatewayRunForBoard(input: {
+  baseUrl: string;
+  apiKey?: string | null;
+  headers?: Record<string, string> | string | null;
+  gatewayRunId: string;
+  timeoutMs?: number;
+}): Promise<{
+  state: "live" | "terminal" | "not_found" | "unreachable";
+  status: string | null;
+  error?: string;
+}> {
+  const baseUrl = normalizeBaseUrl(input.baseUrl);
+  if (!baseUrl) {
+    return { state: "unreachable", status: null, error: "Missing or invalid baseUrl" };
+  }
+  const extraHeaders = parseHeaders(input.headers);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...extraHeaders,
+  };
+  if (input.apiKey) {
+    headers.Authorization = `Bearer ${input.apiKey}`;
+  }
+  const timeoutMs = input.timeoutMs ?? STOP_REQUEST_TIMEOUT_MS;
+  try {
+    const observed = await fetchJson(
+      apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(input.gatewayRunId)}`),
+      {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
+    const status = extractStatus(observed);
+    if (!status) {
+      return { state: "not_found", status: null };
+    }
+    if (TERMINAL_STATUSES.has(status)) {
+      return { state: "terminal", status };
+    }
+    return { state: "live", status };
+  } catch (err) {
+    const hermesError = err as HermesHttpError;
+    if (hermesError && hermesError.status === 404) {
+      return { state: "not_found", status: null };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { state: "unreachable", status: null, error: message };
   }
 }
 

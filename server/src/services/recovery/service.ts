@@ -157,6 +157,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -533,8 +534,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -2214,8 +2223,12 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
         return null;
       }
     }
@@ -5717,6 +5730,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5739,6 +5826,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -6669,6 +6757,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;

@@ -585,7 +585,7 @@ export function botProfileWiring(
    *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
    *  resolver — so its per-agent cache and secret-stamp validation are the
    *  profile compiler's, not a second set. */
-  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  exportMediaAcl: () => Promise<{ path: string; bots: number; failedResolves: number; skipped: boolean; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;

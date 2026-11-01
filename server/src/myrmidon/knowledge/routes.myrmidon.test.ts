@@ -649,6 +649,23 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     );
   });
 
+  it("OPE-10241: draft write passes title and summary to the module", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/glossary/term/draft`)
+      .send({ content: "valid content with length >= 20 chars", title: "New Title", summary: "New summary" });
+    expect(res.status).toBe(201);
+    expect(deps.module.draft).toHaveBeenCalledWith(
+      "glossary/term",
+      expect.objectContaining({
+        content: "valid content with length >= 20 chars",
+        title: "New Title",
+        summary: "New summary",
+      }),
+      expect.anything(),
+    );
+  });
+
   it("OPE-9762: rollback route invokes module.rollback with target revision", async () => {
     const deps = makeDeps({ grants: true });
     const res = await request(app(deps, agentActor))

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
 import type { Db } from "@myrmidon/db";
@@ -23,6 +23,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
+  issueExecutionStateSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -1218,7 +1219,6 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
-
       await db
         .update(agents)
         .set({
@@ -1235,6 +1235,48 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
 
+      const candidates = await db
+        .select({ id: agents.id, name: agents.name, role: agents.role })
+        .from(agents)
+        .where(and(eq(agents.companyId, existing.companyId), ne(agents.id, id), notInArray(agents.status, ["retired", "terminated"])));
+      const openIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, existing.companyId), notInArray(issues.status, ["done", "cancelled"])));
+      const load = new Map<string, number>();
+      for (const issue of openIssues) if (issue.assigneeAgentId) load.set(issue.assigneeAgentId, (load.get(issue.assigneeAgentId) ?? 0) + 1);
+      const replacement = candidates
+        .filter((candidate) => candidate.role === existing.role)
+        .sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0) || a.id.localeCompare(b.id))[0];
+      if (replacement) {
+        for (const issue of openIssues) {
+          const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
+          const state = parsed.success ? parsed.data : null;
+          const assigneeMatch = issue.assigneeAgentId === id;
+          const participantMatch = state?.currentParticipant?.type === "agent" && state.currentParticipant.agentId === id;
+          const returnMatch = state?.returnAssignee?.type === "agent" && state.returnAssignee.agentId === id;
+          if (!assigneeMatch && !participantMatch && !returnMatch) continue;
+          const nextState = state
+            ? {
+                ...state,
+                currentParticipant: participantMatch ? { type: "agent" as const, agentId: replacement.id } : state.currentParticipant,
+                returnAssignee: returnMatch ? { type: "agent" as const, agentId: replacement.id } : state.returnAssignee,
+              }
+            : undefined;
+          await db.update(issues).set({
+            ...(assigneeMatch ? { assigneeAgentId: replacement.id } : {}),
+            ...(nextState ? { executionState: nextState } : {}),
+            updatedAt: new Date(),
+          }).where(eq(issues.id, issue.id));
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorType: "system",
+            body: `Terminated agent ${existing.name} was replaced by ${replacement.name} for open work.`,
+          });
+          load.set(replacement.id, (load.get(replacement.id) ?? 0) + 1);
+        }
+      }
       return getById(id);
     },
 
