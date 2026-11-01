@@ -46,7 +46,9 @@ describe("metrics self-check probe", () => {
     // The continuation and claim counters are process-local too.
     // The five capacity-dashboard metrics remain available without database reads.
     // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
-    expect(result.families_ok).toBe(34);
+    // OPE-9476: failed_before_model and recovery event counters are process-local.
+    // The two datastore retention metrics (1.6.6 OPE-9967) are process-local too.
+    expect(result.families_ok).toBe(36);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -68,7 +70,8 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_agent_failed_before_model_total" &&
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
-        family !== "myrmidon_recovery_success_total",
+        family !== "myrmidon_recovery_success_total" &&
+        !family.startsWith("myrmidon_datastore_retention_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

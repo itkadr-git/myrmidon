@@ -246,5 +246,13 @@ export const heartbeatRuns = pgTable(
     providerQuotaIdx: index("heartbeat_runs_provider_quota_idx")
       .on(table.companyId, table.agentId, table.createdAt)
       .where(sql`${table.errorCode} = 'provider_quota'`),
+    // myrmidon(1.6.6 OPE-9967): retention compaction scans heartbeat_runs for
+    // terminal runs older than cutoff that carry uncompacted keys.
+    // The partial index keeps the scan off tens of thousands of already compacted runs.
+    ctxCompactPendingIdx: index("heartbeat_runs_ctx_compact_pending_idx")
+      .on(table.companyId, table.createdAt)
+      .where(
+        sql`jsonb_exists(${table.contextSnapshot}, 'executionContinuation') or jsonb_exists(${table.contextSnapshot}, 'paperclipWake') or jsonb_exists(${table.contextSnapshot}, 'paperclipWakeComment') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdownCompact') or jsonb_exists(${table.contextSnapshot}, 'paperclipSessionHandoffMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipContinuationSummary') or jsonb_exists(${table.contextSnapshot}, 'externalChatContinuation')`,
+      ),
   }),
 );

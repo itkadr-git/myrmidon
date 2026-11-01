@@ -264,8 +264,10 @@ describe("prometheus exposition format", () => {
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
     // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
-    // plus failed_before_model = 32, plus the five recovery families = 37, plus deferredIssueExecutionOver30m = 38.
-    expect(sampleLines).toHaveLength(38);
+    // plus failed_before_model = 32, plus the five recovery families = 37,
+    // plus deferredIssueExecutionOver30m = 38, plus two datastore retention
+    // metrics (1.6.6 OPE-9967) = 40.
+    expect(sampleLines).toHaveLength(40);
     expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
@@ -274,7 +276,6 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
     expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
-    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 0');
   });
 
   it("renders myrmidon_runs_queued with reason labels when queued runs have wait reasons", () => {
