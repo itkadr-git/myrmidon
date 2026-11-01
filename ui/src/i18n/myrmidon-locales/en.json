@@ -868,7 +868,7 @@
     "failedToArchive": "Failed to archive organization",
     "policies": "Company policies",
     "feedbackSharing": "Share feedback data",
-    "feedbackSharingHint": "Allow votes and feedback traces from this organization to be shared. Enabling records your consent.",
+    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "responsibleUser": "Responsible user",
     "responsibleUserHint": "Default owner for work that has no assignee.",
     "responsibleUserNone": "Not set",
@@ -914,7 +914,6 @@
     "months_one": "{{count}} month",
     "months_other": "{{count}} months",
     "feedbackSharingTitle": "AI feedback sharing",
-    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "termsOfService": "Read our terms of service",
     "feedbackPrompt": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
     "alwaysAllow": "Always allow",
@@ -1748,7 +1747,16 @@
     "colSnippet": "Snippet",
     "journalEmpty": "No guardrail events recorded yet.",
     "journalLoading": "Loading the journal...",
-    "journalError": "Could not load the guardrail journal."
+    "journalError": "Could not load the guardrail journal.",
+    "injectionTitle": "Prompt-injection detector",
+    "injectionEnabled": "Enabled",
+    "injectionThreshold": "Score threshold",
+    "injectionHint": "Applies company-wide: what a hit does is set by the injection rule's mode above. Env override (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) still wins when set.",
+    "injectionEffective": "Effective now: {enabled} ({enabledSource}) · threshold {score} ({scoreSource})",
+    "onOff": {
+      "on": "on",
+      "off": "off"
+    }
   },
   "ui2.nav.group.plugins": "Plugins"
 }
