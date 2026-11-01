@@ -33,10 +33,23 @@ This runbook defines the operational procedures for the central database warm st
    host replication myr_replicator <standby-host-ip>/32 scram-sha-256
    ```
 3. **Replication Slots**:
-   - `standby_board_slot` (retains WAL segments for cluster standby)
+   - Slot name: `standby_board_slot` (physical, for the entire cluster).
+   - `setup` first validates finite `max_slot_wal_keep_size`, then creates the slot on the primary with `pg_create_physical_replication_slot('standby_board_slot', true)` if absent; `pg_basebackup --slot=standby_board_slot` then consumes the existing slot. Do not use `pg_basebackup -C` here. If an existing slot has uncertain ownership, stop and investigate; do not drop it.
+   - A stopped standby/dead tunnel retains WAL until `max_slot_wal_keep_size` is reached; monitor `check-lag` for retained bytes and `wal_status`.
 4. **Tooling**:
    The management CLI is located at:
    `scripts/myrmidon/standby/standby-ctl.sh` (backed by `standby-ctl.mjs`).
+
+**Mandatory primary-side PostgreSQL settings** (validated by `setup` and `check-lag`, fail-closed):
+```sql
+-- Streaming replication for the warm standby
+ALTER SYSTEM SET wal_level = 'replica';
+-- Bound WAL retention per slot so a stopped standby cannot fill the disk (e.g. 50 GB)
+ALTER SYSTEM SET max_slot_wal_keep_size = '50GB';
+SELECT pg_reload_conf();
+```
+`max_slot_wal_keep_size = -1` (unbounded, the live `myrmidon-pg` default) is rejected by `setup` and reported by `check-lag`; a VM with `/` at 90% capacity must not run an unbounded slot.
+
 
 ---
 
@@ -182,15 +195,24 @@ docker compose up -d myrmidon-board
 
 When `vm-core` is recovered and ready to resume primary service:
 
-1. **Re-sync Primary from Standby**:
-   Use `pg_rewind` or `pg_basebackup` to bring `vm-core` up to date with any writes made during failover on `myr-vm1`.
-2. **Switch Application Back**:
-   Drain active tasks on `myr-vm1`, update `DATABASE_URL` back to `vm-core:5432`, and restart application services.
-3. **Re-arm Standby on `myr-vm1`**:
-   Re-establish warm standby following the restored primary (stops standby, cleans dataDir under explicit force flag, and resynchronizes):
+**Order matters.** The promoted standby on `myr-vm1` holds all writes accepted after failover — it is the source of truth until it is re-synced back to `vm-core`. Never wipe the standby data directory first.
+
+1. **Verify both sides' roles**:
    ```bash
-   scripts/myrmidon/standby/standby-ctl.sh switchback --target all --force
+   # vm-core (recovered) must be in recovery or freshly re-cloned, never a live writer:
+   psql -h <vm-core> -p 5432 -c "SELECT pg_is_in_recovery();"
+   # myr-vm1 standby must still be the active writer (in recovery = f):
+   psql -h 127.0.0.1 -p 5433 -c "SELECT pg_is_in_recovery();"
    ```
+2. **Re-sync Primary from Standby**:
+   Take a fresh `pg_basebackup` of the promoted standby into `vm-core`'s clean data directory (or use `pg_rewind` only when timelines allow). `vm-core` must accept writes only after this sync.
+3. **Switch Application Back**:
+   Drain active tasks on `myr-vm1`, update `DATABASE_URL` back to `vm-core:5432`, restart application services, and verify `http://localhost:3100/healthz`.
+4. **Re-arm Standby on `myr-vm1`** (last step, and only with an explicit data-loss acknowledgement):
+   ```bash
+   scripts/myrmidon/standby/standby-ctl.sh switchback --target all --force --discard-promoted-standby
+   ```
+   The tool refuses (`exit 1`, no destructive action) if the standby is not in recovery — i.e. when it still holds the only copy of post-failover writes — unless `--discard-promoted-standby` is passed explicitly after step 2/3 confirmed `vm-core` is the writer again.
    Standby signals are placed and replication restarts from the active primary.
 
 ---
