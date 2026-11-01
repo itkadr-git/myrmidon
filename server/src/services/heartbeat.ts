@@ -741,6 +741,7 @@ import {
 import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 // myrmidon(WAKE-10.2 / OPE-9657): low-priority wake event accumulation & digest
 import {
+  boundEventDigest,
   classifyEventPriority,
   EVENT_PRIORITY_BY_TYPE,
   isDigestAccumulatedPriority,
@@ -8465,7 +8466,7 @@ export async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    eventDigest: input.contextSnapshot.eventDigest ?? null,
+    eventDigest: boundEventDigest(input.contextSnapshot.eventDigest) ?? null,
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
@@ -29746,6 +29747,9 @@ export function heartbeatService(
       if (stagedDigest) {
         enrichedContextSnapshot.eventDigest = stagedDigest;
       }
+    } else {
+      // A digest carried over from an earlier run snapshot is bounded too (OPE-9657 fix).
+      enrichedContextSnapshot.eventDigest = boundEventDigest(enrichedContextSnapshot.eventDigest);
     }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
