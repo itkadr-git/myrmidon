@@ -898,25 +898,57 @@ run_live_session_maintenance() {
   # held in shell or Python memory. The gateway remains the sole DB writer.
   local archive_dir="${HERMES_HOME}/.myrmidon/archive"
   mkdir -p "$archive_dir"
+  # Page the metadata endpoint because the gateway caps list responses at 100
+  # rows. Selection is local and explicit: the list route exposes recency and
+  # safety flags, while the older_than query is not a gateway API filter.
   local manifest="${archive_dir}/live-sessions-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
   local list_file="${archive_dir}/.sessions.$$"
   local auth=(-H "Authorization: Bearer ${key}")
-  if ! curl -fsS --max-time 30 "${auth[@]}" "${base}/api/sessions?older_than=${retention_days}d" >"$list_file"; then
-    rm -f "$list_file"
-    log "WARNING: session retention list request failed"
-    return 0
-  fi
-  local ids
-  ids="$(python3 - "$list_file" <<'PYEOF'
+  : >"$list_file"
+  local offset=0 page_file page_count
+  while :; do
+    page_file="${list_file}.${offset}"
+    if ! curl -fsS --max-time 30 "${auth[@]}" "${base}/api/sessions?limit=100&offset=${offset}&archived=include&order=recent" >"$page_file"; then
+      rm -f "$list_file" "$page_file"
+      log "WARNING: session retention list request failed"
+      return 0
+    fi
+    cat "$page_file" >>"$list_file"
+    printf '\n' >>"$list_file"
+    page_count="$(python3 - "$page_file" <<'PYEOF'
 import json, sys
 try:
     value=json.load(open(sys.argv[1]))
-    rows=value.get("sessions", value) if isinstance(value, dict) else value
-    for row in rows if isinstance(rows, list) else []:
-        sid=row.get("id") if isinstance(row, dict) else row
-        if isinstance(sid, str) and sid:
-            print(sid)
+    print(len(value.get("sessions", [])) if isinstance(value, dict) else 0)
 except Exception:
+    print(0)
+PYEOF
+)"
+    rm -f "$page_file"
+    [ "$page_count" -lt 100 ] && break
+    offset=$((offset + 100))
+  done
+  local ids
+  ids="$(python3 - "$list_file" "$retention_days" <<'PYEOF'
+import json, sys, time
+cutoff = time.time() - int(sys.argv[2]) * 86400
+try:
+    # Each page is a JSON document concatenated by the shell. Parse pages
+    # independently so a large fleet never becomes one in-memory response.
+    for raw in open(sys.argv[1]):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for row in value.get("sessions", []) if isinstance(value, dict) else []:
+            if not isinstance(row, dict) or row.get("pinned") or row.get("is_active"):
+                continue
+            last_active = row.get("last_active")
+            if isinstance(last_active, (int, float)) and last_active < cutoff:
+                sid = row.get("id")
+                if isinstance(sid, str) and sid:
+                    print(sid)
+except OSError:
     pass
 PYEOF
 )"
