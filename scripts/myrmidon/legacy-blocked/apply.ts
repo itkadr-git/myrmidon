@@ -88,11 +88,10 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
       }
       if (validRow.class === "dependency") {
         if (validRow.oldBlockers.length === 0) return { outcome: "skipped" as const, detail: "No explicit old blockers; retained blocked." };
-        const [liveBlocker] = await tx.select({ id: issues.id }).from(issues).where(and(
+        const [sameCompanyBlocker] = await tx.select({ id: issues.id }).from(issues).where(and(
           inArray(issues.id, validRow.oldBlockers), eq(issues.companyId, source.companyId),
-          inArray(issues.status, ["blocked", "in_progress", "in_review", "todo"]),
         ));
-        if (!liveBlocker) return { outcome: "skipped" as const, detail: "No explicit old blocker is still active; retained blocked." };
+        if (!sameCompanyBlocker) return { outcome: "skipped" as const, detail: "No explicit old blocker exists in the source company; retained blocked." };
       }
 
       let resultIssueId: string | undefined;

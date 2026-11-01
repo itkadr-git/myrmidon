@@ -68,7 +68,7 @@ describeEmbeddedPostgres("legacy blocked apply postgres", () => {
       { id: dependencyId, companyId, identifier: "LBA-2", title: "Dependency source", status: "blocked", priority: "high", assigneeAgentId: ownerId },
       { id: unknownId, companyId, identifier: "LBA-3", title: "Unknown source", status: "blocked", priority: "high", description: "unrecognized condition" },
       { id: terminalId, companyId, identifier: "LBA-4", title: "Terminal source", status: "blocked", priority: "high", assigneeAgentId: ownerId, description: "duplicate" },
-      { id: blockerId, companyId, identifier: "LBA-5", title: "Explicit blocker", status: "in_progress", priority: "high", assigneeAgentId: ownerId },
+      { id: blockerId, companyId, identifier: "LBA-5", title: "Explicit blocker", status: "done", priority: "high", assigneeAgentId: ownerId },
     ]);
     await db.insert(issueRelations).values([
       { companyId, issueId: blockerId, relatedIssueId: dependencyId, type: "blocks" },
