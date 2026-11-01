@@ -229,7 +229,27 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
-    list: (companyId: string) => ["agents", companyId] as const,
+    list: (
+      companyId: string,
+      filters?: {
+        q?: string;
+        status?: string | string[];
+        role?: string;
+        reportsTo?: string;
+      },
+    ) =>
+      // Without filters the key stays the ["agents", companyId] prefix, so invalidating
+      // it after an agent action also refreshes every filtered list (OPE-10146).
+      filters
+        ? ([
+            "agents",
+            companyId,
+            filters.q ?? "",
+            Array.isArray(filters.status) ? filters.status.join(",") : filters.status ?? "",
+            filters.role ?? "",
+            filters.reportsTo ?? "",
+          ] as const)
+        : (["agents", companyId] as const),
     detail: (id: string) => ["agents", "detail", id] as const,
     // myrmidon(PERF-DIET-G): the configuration read an agent-row consumer falls
     // back to once the company list stopped shipping adapterConfig.
@@ -639,6 +659,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    taskDrain: ["instance", "task-drain"] as const,
   },
   health: ["health"] as const,
   cloud: {

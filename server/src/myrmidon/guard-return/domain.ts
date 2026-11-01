@@ -169,69 +169,25 @@ export function findEngineerPr(
  */
 export function hasChangesRequestedVerdict(
   executionState: Record<string, unknown> | null | undefined,
-  comments: CommentSummary[],
 ): boolean {
-  // 1. Scan comments in reverse chronological order (newest first)
-  // to find the strictly last review verdict.
-  for (const c of comments) {
-    // Ignore system comments (e.g. posted by sweep or automation)
-    if (c.authorType === "system") continue;
-    if (!c.body) continue;
+  if (!executionState) return false;
 
-    const text = c.body.trim().toLowerCase();
-
-    const isApproved =
-      text.startsWith("approved") ||
-      text.includes("decision: approved") ||
-      text.includes("verdict: approved") ||
-      text.includes("вердикт: approved") ||
-      text.includes("вердикт: одобрено") ||
-      text.includes("одобрено ревью") ||
-      text.includes("lgtm");
-
-    const isChangesRequested =
-      text.startsWith("request changes") ||
-      text.includes("changes_requested") ||
-      text.includes("changes requested") ||
-      text.includes("decision: changes_requested") ||
-      text.includes("verdict: changes_requested") ||
-      text.includes("вердикт: changes_requested") ||
-      text.includes("замечания ревью") ||
-      text.includes("требуются доработки");
-
-    if (isApproved && !isChangesRequested) {
-      return false;
-    }
-    if (isChangesRequested) {
-      return true;
-    }
+  if (
+    executionState.status === "changes_requested" ||
+    executionState.lastDecisionOutcome === "changes_requested"
+  ) {
+    return true;
   }
 
-  // 2. If no verdict comment was found, consult executionState
-  if (executionState) {
-    if (executionState.lastDecisionOutcome === "approved") return false;
-    if (
-      executionState.status === "changes_requested" ||
-      executionState.lastDecisionOutcome === "changes_requested"
-    ) {
-      return true;
-    }
-    const stages = Array.isArray(executionState.stages)
-      ? (executionState.stages as Array<Record<string, unknown>>)
-      : [];
-    if (stages.length > 0) {
-      const latestStage = stages[stages.length - 1];
-      if (latestStage.lastDecisionOutcome === "approved") return false;
-      if (
-        latestStage.status === "changes_requested" ||
-        latestStage.lastDecisionOutcome === "changes_requested"
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  const stages = Array.isArray(executionState.stages)
+    ? (executionState.stages as Array<Record<string, unknown>>)
+    : [];
+  const latestStage = stages[stages.length - 1];
+  return Boolean(
+    latestStage &&
+      (latestStage.status === "changes_requested" ||
+        latestStage.lastDecisionOutcome === "changes_requested"),
+  );
 }
 
 /**
@@ -317,15 +273,18 @@ export function decideGuardReturn(
     return { action: "skip", reason: `Status ${candidate.status} is not in_progress or in_review` };
   }
 
-  // in_review means the issue is in the review workflow: the review participant is
-  // intentionally a non-coding role, so a plain in_review wait is normal review, not
-  // a stranded task. Bouncing it here would defeat the review stage and caused
-  // repeated guard-return status flips (OPE-9474). Return it only when a reviewer
-  // verdict already demands engineer work (changes_requested).
+  // in_review is normally an active review stage, not a stranded coding task.
+  // Return only when a reviewer has requested changes; preserve the explicit
+  // pending-participant guard from the review-routing flow.
   if (candidate.status === "in_review") {
     const verdictPending = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
-    if (!verdictPending) {
-      return { action: "skip", reason: "in_review without changes_requested verdict: awaiting review" };
+    const isPendingReviewStage =
+      candidate.executionState?.currentStageType === "review" &&
+      (candidate.executionState.status === "pending" ||
+        ((candidate.executionState.currentParticipant as Record<string, unknown> | undefined)?.type === "agent" &&
+          (candidate.executionState.currentParticipant as Record<string, unknown>).agentId === candidate.assigneeAgentId));
+    if (!verdictPending || isPendingReviewStage) {
+      return { action: "skip", reason: isPendingReviewStage ? "Review stage is pending for its current participant" : "in_review without changes_requested verdict: awaiting review" };
     }
   }
 
@@ -336,7 +295,7 @@ export function decideGuardReturn(
 
   // Check qualification: has PR from engineer OR last verdict is changes_requested
   const { hasPr, authorAgentId: prAuthorId } = findEngineerPr(candidate.prWorkProducts, agentMap, runAgentMap);
-  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
+  const isChangesRequested = hasChangesRequestedVerdict(candidate.executionState);
 
   // Check if issue is a dev-project code issue
   const isCode = isDevProjectCodeIssue({

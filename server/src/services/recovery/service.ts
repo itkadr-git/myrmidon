@@ -54,6 +54,7 @@ import {
   activityLog,
   chatConversations,
   companies,
+  externalObjects,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -157,6 +158,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -192,6 +194,7 @@ import {
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
+  isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
@@ -533,8 +536,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -2214,8 +2225,12 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
         return null;
       }
     }
@@ -2269,6 +2284,32 @@ export function recoveryService(
       continuationClaimKey = key;
     }
 
+    const extraContext = { ...(input.extraContext ?? {}) };
+    if (
+      (input.reason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+        input.retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+      !extraContext.executionStage
+    ) {
+      const [issueRow] = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+      const parsed = parseIssueExecutionState(issueRow?.executionState);
+      if (parsed) {
+        extraContext.executionStage = {
+          wakeRole: "reviewer" as const,
+          stageId: parsed.currentStageId ?? null,
+          stageType: parsed.currentStageType ?? null,
+          currentParticipant: parsed.currentParticipant ?? null,
+          returnAssignee: parsed.returnAssignee ?? null,
+          reviewRequest: parsed.reviewRequest ?? null,
+          lastDecisionOutcome: parsed.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        };
+      }
+    }
+
     let queued: typeof heartbeatRuns.$inferSelect | null;
     try {
       queued = await deps.enqueueWakeup(input.agentId, {
@@ -2291,7 +2332,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -2305,7 +2346,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-            ...(input.extraContext ?? {}),
+            ...extraContext,
           },
           "normal_model",
         ),
@@ -4245,6 +4286,8 @@ export function recoveryService(
           `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
           `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
           `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          `${input.ci.rateLimit?.remaining !== null && input.ci.rateLimit?.remaining !== undefined ? `GitHub rate limit remaining=${input.ci.rateLimit.remaining}/${input.ci.rateLimit.limit ?? "unknown"}; ` : ""}` +
+          `${input.ci.rateLimit?.resetEpochSeconds ? `rate limit reset at ${new Date(input.ci.rateLimit.resetEpochSeconds * 1000).toISOString()}; ` : ""}` +
           "the board wakes the reviewer to decide when the wait ends.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
@@ -4339,6 +4382,7 @@ export function recoveryService(
       latestRunId: latestRun.id,
       ciState: ci.state,
       ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      ...(ci.rateLimit ? { rateLimitRemaining: ci.rateLimit.remaining, rateLimitResetEpoch: ci.rateLimit.resetEpochSeconds } : {}),
       pullRequestUrl: ci.pullRequestUrl,
       headSha: ci.headSha,
     };
@@ -4352,13 +4396,17 @@ export function recoveryService(
             issueId: input.issue.id,
             identifier: input.issue.identifier,
             reason: ci.reason ?? null,
+            rateLimitRemaining: ci.rateLimit?.remaining ?? null,
+            rateLimitResetEpoch: ci.rateLimit?.resetEpochSeconds ?? null,
             attempt: decision.attempt,
             maxAttempts: decision.maxAttempts,
           },
           `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
         );
       }
-      const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+      const intervalCheckAt = Date.now() + REVIEW_CI_WAIT_INTERVAL_MS;
+      const resetCheckAt = (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000;
+      const nextCheckAt = new Date(Math.max(intervalCheckAt, resetCheckAt));
       const updated = await scheduleReviewCiWaitMonitor({
         issue: input.issue,
         latestRun,
@@ -4402,6 +4450,18 @@ export function recoveryService(
       entityId: input.issue.id,
       details: activityDetails,
     });
+    const executionStage = state
+      ? {
+          wakeRole: "reviewer" as const,
+          stageId,
+          stageType: state.currentStageType ?? null,
+          currentParticipant: state.currentParticipant ?? null,
+          returnAssignee: state.returnAssignee ?? null,
+          reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        }
+      : null;
     const queued = await enqueueStrandedIssueRecovery({
       issueId: input.issue.id,
       companyId: input.issue.companyId,
@@ -4413,6 +4473,7 @@ export function recoveryService(
       extraContext: {
         currentStageId: stageId,
         currentStageType: state.currentStageType ?? null,
+        ...(executionStage ? { executionStage } : {}),
         reviewRecoveryInstruction:
           `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
         reviewDecisionRetryAttempt: decision.attempt,
@@ -4433,6 +4494,7 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
+    hasPendingCi?: boolean;
   }) {
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
@@ -4456,8 +4518,14 @@ export function recoveryService(
     // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
     // transitions to in_review at the current assignee (review in parallel with CI),
     // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
     if (
       openPrProduct &&
+      isProductiveContinuationRecovery &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
     ) {
       const prCi = await resolvePrCiState(
@@ -4655,6 +4723,30 @@ export function recoveryService(
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
 
+      let hasPendingCi = input.hasPendingCi ?? false;
+      if (!hasPendingCi && openPrProduct) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, input.issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPrProduct.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, input.issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPrProduct.externalId),
+              ),
+            })
+          : null;
+        hasPendingCi = isPendingCiForOpenPr({
+          openPr: openPrProduct,
+          lastComment,
+          contextSnapshot: latestRun?.contextSnapshot,
+          externalPrObject,
+        });
+      }
+
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
@@ -4666,11 +4758,65 @@ export function recoveryService(
           ...input.issue,
           hasOpenPullRequest: Boolean(openPrProduct),
         }),
+        hasPendingCi,
         successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
-      if (autoPolicyDecision.kind === "retry") {
+      if (autoPolicyDecision.kind === "monitor_external_service") {
+        const nextCheckAt = autoPolicyDecision.nextCheckAt
+          ? new Date(autoPolicyDecision.nextCheckAt)
+          : new Date(Date.now() + 10 * 60 * 1000);
+        const previousPolicy = (input.issue.executionPolicy ?? null) as any;
+        const policy = {
+          ...(previousPolicy ?? {
+            mode: "normal" as const,
+            commentRequired: true,
+            stages: [],
+          }),
+          monitor: {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: autoPolicyDecision.notes,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: autoPolicyDecision.serviceName,
+            externalRef: openPrProduct?.url ?? null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          },
+        };
+        const transition = applyIssueMonitorPolicyTransition({
+          issue: input.issue,
+          policy,
+          previousPolicy,
+          requestedStatus: input.issue.status,
+          requestedAssigneePatch: {},
+          actor: { agentId: null, userId: null },
+          monitorExplicitlyUpdated: true,
+        });
+        const updated = await issuesSvc.update(input.issue.id, {
+          ...transition.patch,
+          executionPolicy: policy,
+        });
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: latestRun.id,
+          action: "issue.stranded_autopolicy_monitor_external_service",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier,
+            recoveryCause,
+            serviceName: autoPolicyDecision.serviceName,
+            nextCheckAt: nextCheckAt.toISOString(),
+          },
+        });
+        return updated;
+      } else if (autoPolicyDecision.kind === "retry") {
         // myrmidon(L4): `enqueueWakeup` *throws* (not a falsy return) when the
         // assignee turns out not to be invokable or is over its invocation
         // budget (heartbeat.ts's `conflict(...)` on both checks) — exactly
@@ -5671,6 +5817,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5693,6 +5913,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -6554,6 +6775,19 @@ export function recoveryService(
           continue;
         }
 
+        const executionStage = pendingExecutionState
+          ? {
+              wakeRole: "reviewer" as const,
+              stageId: pendingExecutionState.currentStageId ?? null,
+              stageType: pendingExecutionState.currentStageType ?? null,
+              currentParticipant: pendingExecutionState.currentParticipant ?? null,
+              returnAssignee: pendingExecutionState.returnAssignee ?? null,
+              reviewRequest: pendingExecutionState.reviewRequest ?? null,
+              lastDecisionOutcome: pendingExecutionState.lastDecisionOutcome ?? null,
+              allowedActions: ["approve", "request_changes"],
+            }
+          : null;
+
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
@@ -6566,6 +6800,7 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            ...(executionStage ? { executionStage } : {}),
             // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
               `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
@@ -6609,6 +6844,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;

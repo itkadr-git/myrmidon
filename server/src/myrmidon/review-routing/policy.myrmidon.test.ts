@@ -12,11 +12,13 @@ import {
   excludedReviewerIds,
   evaluateReviewerAvailability,
   hoursSince,
+  isEscalatedReviewStage,
   isReviewOverdue,
   issueNeedsReviewer,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
   type RoutingIssue,
 } from "./policy.js";
@@ -313,6 +315,42 @@ describe("pending review and reassignment", () => {
       wakeRole: "reviewer",
       stageType: "review",
       allowedActions: ["approve", "request_changes"],
+    });
+  });
+
+  describe("isEscalatedReviewStage", () => {
+    it("returns false for a non-escalated review stage", () => {
+      expect(isEscalatedReviewStage(issue())).toBe(false);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 2 } }))).toBe(false);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionState", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 3 } }))).toBe(true);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 4 } }))).toBe(true);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionPolicy stage", () => {
+      const policy = {
+        stages: [{ id: "s", type: "review", changesRequestedCount: 3, participants: [] }],
+      };
+      expect(isEscalatedReviewStage(issue({ executionPolicy: policy }))).toBe(true);
+    });
+
+    it("returns true when escalationReason is review_round_limit", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { escalationReason: "review_round_limit" } }))).toBe(true);
+    });
+  });
+
+  describe("resolveAgentGroupKey", () => {
+    it("uses metadata telegramGroup when provided", () => {
+      expect(resolveAgentGroupKey({ name: "eng-1", metadata: { telegramGroup: "-100123" } })).toBe("-100123");
+    });
+
+    it("derives group from agent name prefix", () => {
+      expect(resolveAgentGroupKey({ name: "adm-dev-eng-24" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "adm-dev-review-8" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "bbq-dev-review-1" })).toBe("bbq");
+      expect(resolveAgentGroupKey({ name: "work-dev-lead-1" })).toBe("work");
     });
   });
 });

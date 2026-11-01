@@ -22,6 +22,8 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
 ] as const;
 
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
@@ -97,6 +99,7 @@ export interface PoolAccountChannelView {
   models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
+  error?: string | null;
   windows: {
     primary: PoolAccountLimitWindow | null;
     secondary: PoolAccountLimitWindow | null;
@@ -104,7 +107,6 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
-  error?: string | null;
 }
 
 export interface PoolAccountRoleSignal {
@@ -126,6 +128,29 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    nextResetAt: number | null;
+  };
+}
+
+export interface LitellmChannelView {
+  id: string | null;
+  group: string;
+  provider: string;
+  providerModel: string;
+  order: number | null;
+  weight: number | null;
+}
+
+export interface LitellmChannelsResponse {
+  channels: LitellmChannelView[];
+  enabled?: boolean;
+  error?: string | null;
+  message?: string | null;
 }
 
 export interface ModelProvidersView {
@@ -163,6 +188,9 @@ export const modelProviderModelsQueryKey = (companyId: string, providerId: strin
 
 export const modelProviderChannelsQueryKey = (companyId: string, providerId: string) =>
   ["myrmidon", "model-providers", companyId, "channels", providerId] as const;
+
+export const litellmChannelsQueryKey = (companyId: string) =>
+  ["myrmidon", "model-providers", companyId, "litellm-channels"] as const;
 
 export const modelProvidersApi = {
   /** GET /providers → { providers, changeLog } (no key values ever). */
@@ -204,6 +232,12 @@ export const modelProvidersApi = {
   channels: (companyId: string, providerId: string) =>
     api.get<ModelProviderChannelsView>(
       `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
+    ),
+
+  /** GET /litellm/channels — model groups and routed channels from LiteLLM. */
+  litellmChannels: (companyId: string) =>
+    api.get<LitellmChannelsResponse>(
+      `${base(companyId)}/litellm/channels`,
     ),
 };
 

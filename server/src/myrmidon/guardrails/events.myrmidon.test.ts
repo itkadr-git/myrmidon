@@ -23,6 +23,8 @@ import {
 } from "./events.js";
 import { myrmidonGuardrailsRoutes } from "./routes.js";
 import { scanGuardrailText } from "./detect.js";
+// myrmidon(1.6.6 GUARDRAILS OPE-10182): the trigger counter the journal ticks
+import { guardrailTriggerMetrics } from "./metrics.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -92,6 +94,7 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): event journal", () => {
   });
 
   it("records one event row and one activity-log line (frozen contract)", async () => {
+    guardrailTriggerMetrics.reset(); // OPE-10182: assert the counter in isolation
     const occurredAt = new Date("2026-01-02T03:04:05.000Z");
     const { id } = await recordGuardrailEvent(db, {
       companyId,
@@ -122,6 +125,10 @@ describeEmbeddedPostgres("myrmidon(1.6-GRD): event journal", () => {
     // neither the journal row nor the activity log keeps the raw address
     expect(JSON.stringify(log[0]!.details)).not.toContain("agent-a@example.com");
     expect(JSON.stringify(log[0]!.details)).toContain("[REDACTED:email]");
+    // myrmidon(1.6.6 GUARDRAILS OPE-10182): the same call ticked the process
+    // counter — flag mode, because the base layer is flag-only
+    expect(guardrailTriggerMetrics.read().pii.flag).toBe(1);
+    expect(guardrailTriggerMetrics.read().pii.mask).toBe(0);
   });
 
   it("redacts shaped secrets and PII passed as snippet, and clamps the length", async () => {
