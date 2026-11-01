@@ -419,7 +419,9 @@
       "state": "Стан",
       "window5h": "Вікно 5г",
       "window7d": "Вікно 7д",
-      "lastOk": "Останній OK"
+      "lastOk": "Останній OK",
+      "lastError": "Last error",
+      "resetIn": "Resets in"
     },
     "litellmChannels": {
       "title": "LiteLLM Model Groups & Channels",
