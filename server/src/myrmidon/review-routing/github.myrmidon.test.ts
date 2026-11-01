@@ -19,6 +19,7 @@ function jsonResponse(body: unknown, ok = true): Response {
 
 function prBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    mergeable: true,
     state: "open",
     draft: false,
     number: 7,
@@ -60,9 +61,9 @@ function resolverFor(
 }
 
 describe("CI state parsing", () => {
-  it("counts success and a status-less repo as green", () => {
+  it("distinguishes pending from failed statuses and treats a status-less repo as green", () => {
     expect(pullRequestCiStateFromStatusPayload({ state: "success" })).toBe("green");
-    expect(pullRequestCiStateFromStatusPayload({ state: "pending", statuses: [] })).toBe("not_green");
+    expect(pullRequestCiStateFromStatusPayload({ state: "pending", statuses: [] })).toBe("pending");
     expect(pullRequestCiStateFromStatusPayload({ statuses: [] })).toBe("green");
     expect(pullRequestCiStateFromStatusPayload({ state: "failure" })).toBe("not_green");
     expect(pullRequestCiStateFromStatusPayload({ state: "error" })).toBe("not_green");
@@ -127,6 +128,7 @@ describe("resolve", () => {
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
       baseRef: "main",
+      mergeable: true,
     });
   });
 
@@ -135,6 +137,7 @@ describe("resolve", () => {
     const head = await resolver.resolve({ companyId: COMPANY, repository: REPO, number: 7 });
     expect(head.fetchFailed).toBe(true);
     expect(head.ci).toBe("unknown");
+    expect(head.mergeable).toBeUndefined();
     expect(head.open).toBe(false);
   });
 

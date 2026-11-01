@@ -56,13 +56,14 @@ function failedHead(repository: string, number: number): PullRequestHeadState {
 
 /**
  * Combined status of a head: "success" and NO statuses at all are green (a
- * repo without CI); pending / failure / error are not green, and neither is
- * anything the resolver could not read.
+ * repo without CI); pending is distinct from failure/error, which are not green.
+ * Anything the resolver could not read is not green.
  */
-export function pullRequestCiStateFromStatusPayload(status: Record<string, unknown>): "green" | "not_green" {
+export function pullRequestCiStateFromStatusPayload(status: Record<string, unknown>): "green" | "pending" | "not_green" {
   const state = asString(status.state);
   if (state === "success") return "green";
-  if (state === "pending" || state === "failure" || state === "error") return "not_green";
+  if (state === "pending") return "pending";
+  if (state === "failure" || state === "error") return "not_green";
   const statuses = Array.isArray(status.statuses) ? status.statuses : null;
   if (statuses !== null && statuses.length === 0) return "green";
   return "not_green";
@@ -152,7 +153,7 @@ export function createGitHubPrHeadResolver(input: {
     });
 
   /** (company|repo|number|headSha) -> the status read for that exact head. */
-  const headCache = new Map<string, { ci: "green" | "not_green"; cachedAtMs: number }>();
+  const headCache = new Map<string, { ci: PullRequestHeadState["ci"]; cachedAtMs: number }>();
 
   function ghHeaders(token: string): Record<string, string> {
     return {
@@ -227,6 +228,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
+        mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : null,
         ...(labels.length > 0 ? { labels } : {}),
       };
 

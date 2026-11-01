@@ -66,6 +66,8 @@ function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
+    listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+    findPrWorkProduct: async () => null,
     listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
@@ -918,6 +920,8 @@ describe("overdue review", () => {
 describe("PR lane (fake store + fake resolver)", () => {
   interface PrFixture {
     candidates: PrCandidateRow[];
+    existingWork?: InReviewIssueRow[];
+    rows: Map<string, InReviewIssueRow>;
     knownRepos: string[];
     routed: PrRoutedTask[];
     openReviewLoad: Map<string, number>;
@@ -928,7 +932,7 @@ describe("PR lane (fake store + fake resolver)", () => {
 
   function prStore(fx: PrFixture): ReviewRoutingStore {
     const base = makeStore({
-      rows: new Map(),
+      rows: fx.rows,
       reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
@@ -940,6 +944,8 @@ describe("PR lane (fake store + fake resolver)", () => {
       listPrCandidates: async () => fx.candidates,
       listKnownPrRepositories: async () => fx.knownRepos,
       listOpenPrRoutingTasks: async () => fx.routed,
+      listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+      findPrWorkProduct: async (_company: string, issueId: string) => fx.existingWork?.some((issue) => issue.id === issueId) ? { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false } : null,
       openPrTaskLoadByAgent: async (_company: string, kind: PrRoutingKind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
       findAgentIdsByGitHubLogin: async () => [],
       createPrRoutingTask: async (input: CreatePrRoutingTaskInput) => {
@@ -965,6 +971,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       ci: "green",
       reviewDecision: null,
       fetchFailed: false,
+      mergeable: true,
       title: "Add routing",
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
@@ -979,6 +986,7 @@ describe("PR lane (fake store + fake resolver)", () => {
   ) {
     const fixture: PrFixture = {
       candidates: [{ repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false }],
+      rows: new Map(),
       knownRepos: [],
       routed: [],
       openReviewLoad: new Map(),
@@ -1032,6 +1040,38 @@ describe("PR lane (fake store + fake resolver)", () => {
     const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
     expect(second.prTasksCreated).toBe(0);
     expect(t.fixture.created).toHaveLength(1);
+  });
+
+  it("does not hand off an existing task when the PR already has a review decision", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({}, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ reviewDecision: "CHANGES_REQUESTED" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(0);
+    expect(t.fixture.rows.get("existing")?.status).toBe("in_progress");
+    expect(t.wakes).toHaveLength(0);
+    expect(t.fixture.created).toHaveLength(0);
+  });
+
+  it("routes eligible existing PR work to a reviewer and moves it into review", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ ci: "pending" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(1);
+    expect(t.fixture.rows.get("existing")).toMatchObject({ status: "in_review", assigneeAgentId: REV_A });
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "existing" })]);
+    expect(t.fixture.created).toHaveLength(0);
   });
 
   it("creates a steward task only on APPROVED", async () => {

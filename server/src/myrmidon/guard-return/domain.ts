@@ -169,16 +169,34 @@ export function findEngineerPr(
  */
 export function hasChangesRequestedVerdict(
   executionState: Record<string, unknown> | null | undefined,
+  comments: CommentSummary[] = [],
 ): boolean {
+  // Comments are newest-first; the latest explicit verdict wins.
+  for (const c of comments) {
+    if (c.authorType === "system" || !c.body) continue;
+    const text = c.body.trim().toLowerCase();
+    const approved =
+      text.startsWith("approved") ||
+      text.includes("decision: approved") ||
+      text.includes("verdict: approved") ||
+      text.includes("lgtm");
+    const changesRequested =
+      text.startsWith("request changes") ||
+      text.includes("changes_requested") ||
+      text.includes("changes requested") ||
+      text.includes("decision: changes_requested") ||
+      text.includes("verdict: changes_requested") ||
+      text.includes("замечания ревью") ||
+      text.includes("требуются доработки");
+    if (approved && !changesRequested) return false;
+    if (changesRequested) return true;
+  }
   if (!executionState) return false;
-
+  if (executionState.lastDecisionOutcome === "approved") return false;
   if (
     executionState.status === "changes_requested" ||
     executionState.lastDecisionOutcome === "changes_requested"
-  ) {
-    return true;
-  }
-
+  ) return true;
   const stages = Array.isArray(executionState.stages)
     ? (executionState.stages as Array<Record<string, unknown>>)
     : [];
@@ -273,14 +291,19 @@ export function decideGuardReturn(
     return { action: "skip", reason: `Status ${candidate.status} is not in_progress or in_review` };
   }
 
-  const isPendingReviewStage =
-    candidate.status === "in_review" &&
-    candidate.executionState?.currentStageType === "review" &&
-    (candidate.executionState.status === "pending" ||
-      (candidate.executionState.currentParticipant as Record<string, unknown> | undefined)?.type === "agent" &&
-        (candidate.executionState.currentParticipant as Record<string, unknown>).agentId === candidate.assigneeAgentId);
-  if (isPendingReviewStage) {
-    return { action: "skip", reason: "Review stage is pending for its current participant" };
+  // in_review is normally an active review stage, not a stranded coding task.
+  // Return only when a reviewer has requested changes; preserve the explicit
+  // pending-participant guard from the review-routing flow.
+  if (candidate.status === "in_review") {
+    const verdictPending = hasChangesRequestedVerdict(candidate.executionState, candidate.comments);
+    const isPendingReviewStage =
+      candidate.executionState?.currentStageType === "review" &&
+      (candidate.executionState.status === "pending" ||
+        ((candidate.executionState.currentParticipant as Record<string, unknown> | undefined)?.type === "agent" &&
+          (candidate.executionState.currentParticipant as Record<string, unknown>).agentId === candidate.assigneeAgentId));
+    if (!verdictPending || isPendingReviewStage) {
+      return { action: "skip", reason: isPendingReviewStage ? "Review stage is pending for its current participant" : "in_review without changes_requested verdict: awaiting review" };
+    }
   }
 
   // Check if current assignee is a non-coding role

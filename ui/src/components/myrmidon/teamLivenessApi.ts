@@ -43,6 +43,7 @@ export interface TeamLivenessMetrics {
   autoResumeExhaustions: number;
   wakes: number;
   stalledRuns: number;
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
 }
 
 export function teamLivenessMetricsKey(companyId: string) {
