@@ -45,7 +45,7 @@ vi.mock("@/components/myrmidon/runtimeLimitsApi", () => ({
 }));
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
-  list: vi.fn(),
+  liveRunsForCompany: vi.fn(),
 }));
 
 vi.mock("@/api/heartbeats", () => ({
@@ -77,6 +77,11 @@ vi.mock("@/context/CompanyContext", () => ({
     currentCompany: { id: "company-1", name: "company-a", issuePrefix: "OPE" },
   }),
 }));
+
+vi.mock("@/lib/router", async () => {
+  const router = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return { ...router };
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -158,11 +163,49 @@ describe("UI-2.0 Settings Sections Regression Suite (OPE-10138)", () => {
     });
 
     mockRuntimeLimitsApi.get.mockResolvedValue({
-      companyMaxActiveRuns: 5,
-      companyMaxQueuedRuns: 10,
-      heartbeatIntervalMs: 5000,
-      heartbeatTimeoutMs: 15000,
+      limits: {
+        maxConcurrentRuns: 5,
+        maxStartsPerMinute: 10,
+        minFreeMemoryMb: null,
+        runMemoryEstimateMb: 1024,
+        minFreeHostMemoryMb: null,
+        maxHostLoadPercentPerCore: 90,
+        maxPerAgentStartSharePercent: null,
+      },
+      sources: {
+        maxConcurrentRuns: "default",
+        maxStartsPerMinute: "default",
+        minFreeMemoryMb: "default",
+        runMemoryEstimateMb: "default",
+        minFreeHostMemoryMb: "default",
+        maxHostLoadPercentPerCore: "default",
+        maxPerAgentStartSharePercent: "default",
+      },
+      hostLoad: {
+        state: "open",
+        thresholdPercent: 90,
+        load1: 19.2,
+        cores: 16,
+        loadPercentPerCore: 120,
+        backgroundPercentPerCore: 115,
+        load15PercentPerCore: 115,
+        loadAboveBackgroundPercent: 5,
+        reason: null,
+        heldSince: null,
+      },
+      queue: {
+        active: 2,
+        limit: 5,
+        queued: 0,
+        oldestQueuedAt: null,
+        oldestQueuedAgentId: null,
+      },
+      memory: {
+        host: { availableMb: 45056, totalMb: 131072 },
+        container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+      },
     });
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockRuntimeLimitsApi.update.mockResolvedValue({});
     mockRuntimeLimitsApi.presets.mockResolvedValue([]);
     mockHeartbeatsApi.list.mockResolvedValue([]);
@@ -268,7 +311,7 @@ describe("UI-2.0 Settings Sections Regression Suite (OPE-10138)", () => {
           expect(text).not.toContain("Something went wrong");
           expect(text).not.toContain("filter is not a function");
           expect(text).not.toContain("Unhandled error");
-          expect(text.trim().length).toBeGreaterThan(0);
+          expect(container.querySelector("section, main, [role='main']")).not.toBeNull();
         });
       }
     });

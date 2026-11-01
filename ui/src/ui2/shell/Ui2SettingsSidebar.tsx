@@ -39,6 +39,7 @@ export function Ui2SettingsSidebar() {
         <NavLink
           key={section.key}
           to={section.path}
+          end={section.key === "general"}
           style={({ isActive }) => ({
             display: "flex",
             alignItems: "center",
