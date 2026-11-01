@@ -108,10 +108,10 @@ describe("LitellmSyncService", () => {
               credentialSecretName: "secret-name-123",
             },
           },
-        ],
         [{ credentialSecretName: "secret-name-123" }],
       ]),
       litellm: port,
+      resolveCredential: async () => "resolved-secret-value",
     });
     port.listRegisteredModels.mockResolvedValue([
       {
@@ -129,7 +129,7 @@ describe("LitellmSyncService", () => {
       litellmModelName: "openai/gpt-4o",
       providerType: "openai",
       baseUrl: "https://api.openai.com/v1",
-      credentialSecretName: "secret-name-123",
+      credentialValue: "resolved-secret-value",
     });
     // Registered in LiteLLM under this company's credential and not enabled
     // in the database: removed.
