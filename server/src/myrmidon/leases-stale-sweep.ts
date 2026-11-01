@@ -4,6 +4,7 @@ import { logger } from "../middleware/logger.js";
 import type { environmentService } from "../services/environments.js";
 import type { environmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { liveRunPipelineSettings } from "./runs-queue-settings/live.js";
 
 /**
  * Stale active environment lease sweep (P1).
@@ -27,12 +28,10 @@ export const STALE_LEASE_SWEEP_FAILURE_REASON = "stale_active_lease_sweep";
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"];
 
-/** Grace window in milliseconds; invalid values fall back to the default. */
+/** Grace window in milliseconds. OPE-4096: resolves live (UI value → env
+ * forced override → default); an explicit env value always wins. */
 export function readStaleLeaseGraceMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[STALE_LEASE_GRACE_ENV]?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_STALE_LEASE_GRACE_MS;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) ? value : DEFAULT_STALE_LEASE_GRACE_MS;
+  return liveRunPipelineSettings(env).staleLeaseGraceMs;
 }
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;

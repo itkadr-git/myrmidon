@@ -10,8 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
 // tests/knowledge-screen/screenshots (uploaded as a CI artifact).
 
 const SIZES = [
+  { width: 2560, height: 1440 },
   { width: 1920, height: 1080 },
   { width: 1366, height: 768 },
+  { width: 390, height: 844 },
 ] as const;
 const SCREENS = [
   { id: "ui2", main: '[data-testid="ui2-main"]' },
@@ -107,8 +109,17 @@ for (const screen of SCREENS) {
 
       // 3. Russian captions.
       const text = await page.locator("body").innerText();
-      for (const caption of ["Знания", "Дерево знаний", "По тексту", "По смыслу", "Ревизия 1", "Обновлено"]) {
+      for (const caption of ["Знания", "По тексту", "По смыслу", "Ревизия 1", "Обновлено"]) {
         expect(text, `caption "${caption}"`).toContain(caption);
+      }
+      // On phones the tree is intentionally collapsed behind its menu trigger.
+      if (size.width <= 390) {
+        const treeToggle = page.getByRole("button", { name: /обзор страниц|browse pages/i });
+        await expect(treeToggle).toBeVisible();
+        await treeToggle.click();
+        await expect(page.getByText("Дерево знаний")).toBeVisible();
+      } else {
+        expect(text).toContain("Дерево знаний");
       }
       for (const english of ["Knowledge tree", "Full text", "Semantic", "Search knowledge", "Updated "]) {
         expect(text, `English caption "${english}" must not appear`).not.toContain(english);
@@ -127,6 +138,12 @@ for (const screen of SCREENS) {
       expect(bodyText).not.toContain("[[");
       await expect(bodyBox.locator("ul li").first()).toBeVisible();
 
+      const horizontal = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(horizontal.scrollWidth, "viewport has no horizontal overflow").toBeLessThanOrEqual(horizontal.clientWidth);
+
       // 1a. The long page scrolls down to its last line.
       const main = page.locator(screen.main);
       const metrics = await main.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight }));
@@ -143,6 +160,11 @@ for (const screen of SCREENS) {
       await main.evaluate((el) => {
         el.scrollTop = 0;
       });
+      const expandAll = page.getByRole("button", { name: /развернуть раздел|expand section/i });
+      const expandCount = await expandAll.count();
+      for (let i = 0; i < expandCount; i++) {
+        await expandAll.nth(i).click();
+      }
       const tree = page.locator('[data-testid="knowledge-tree-scroll"]');
       const treeMetrics = await tree.evaluate((el) => ({
         scroll: el.scrollHeight,

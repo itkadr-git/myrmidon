@@ -53,6 +53,12 @@ services:
       EGRESS_PROXY_POLICY_URL: http://board.example.com:3100/api/myrmidon/bot-egress/policy
       EGRESS_PROXY_POLICY_TOKEN: <shared token>
       EGRESS_PROXY_POLICY_REFRESH_SEC: "30"
+      # Optional. Close a CONNECT tunnel that carried no byte in either direction for this many
+      # seconds (1 to 86400, decimals allowed; the close comes a little after, never before). Each
+      # open tunnel holds two threads, and browsers keep idle HTTPS connections for minutes, so a
+      # proxy near `pids_limit` wants this. A long download is not idle. Unset or 0: tunnels stay
+      # open until one side closes them.
+      # EGRESS_PROXY_TUNNEL_IDLE_SEC: "90"
     volumes:
       - ./config:/config:ro
     tmpfs: ["/tmp:size=16m"]
