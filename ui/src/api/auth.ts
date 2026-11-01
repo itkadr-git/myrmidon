@@ -6,6 +6,7 @@ import {
   type UpdateCurrentUserProfile,
 } from "@myrmidon/shared";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { authSessionRecovery } from "@/lib/auth-session-recovery";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 type AuthErrorBody =
@@ -175,7 +176,13 @@ export const authApi = {
     if (!res.ok) {
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
       if (recovery) return recovery;
-      if (res.status === 401) return null;
+      if (res.status === 401) {
+        const authRecovery = authSessionRecovery.handleUnauthorized(res.status, payload);
+        if (authRecovery) {
+          return new Promise<never>(() => undefined);
+        }
+        return null;
+      }
       throw new Error(`Failed to load session (${res.status})`);
     }
     const direct = toSession(payload);

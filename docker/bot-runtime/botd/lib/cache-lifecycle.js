@@ -11,6 +11,14 @@ import { atomicSafeDrop } from "./archive.js";
 export const CACHE_MAX_AGE_DAYS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function validateRetentionOptions(opts) {
+  const maxAgeDays = opts.maxAgeDays ?? CACHE_MAX_AGE_DAYS;
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0) throw new Error("invalid cache maxAgeDays");
+  const capBytes = opts.capBytes ?? Infinity;
+  if (capBytes !== Infinity && (!Number.isFinite(capBytes) || capBytes < 0)) throw new Error("invalid cache capBytes");
+  return { maxAgeDays, capBytes };
+}
+
 export function safeDropCacheFile(file, cacheRoot) {
   return atomicSafeDrop(file, cacheRoot, "cache");
 }
@@ -36,8 +44,8 @@ function cacheAudit(cacheRoot, record) {
 
 export function cacheRetentionPass(cacheRoot, opts = {}) {
   const now = opts.now || new Date();
-  const maxAgeMs = (opts.maxAgeDays ?? CACHE_MAX_AGE_DAYS) * DAY_MS;
-  const capBytes = opts.capBytes ?? Infinity;
+  const { maxAgeDays, capBytes } = validateRetentionOptions(opts);
+  const maxAgeMs = maxAgeDays * DAY_MS;
 
   if (!fs.existsSync(cacheRoot)) {
     return { ok: true, removed: [], kept: [], remainingBytes: 0 };
@@ -75,7 +83,7 @@ export function cacheRetentionPass(cacheRoot, opts = {}) {
     if (ageMs > maxAgeMs) {
       candidates.push({ name: entry.name, fullPath, sizeBytes: st.size, mtimeMs: st.mtimeMs, ageMs, reason: "age" });
     } else {
-      kept.push({ name: entry.name, sizeBytes: st.size, mtimeMs: st.mtimeMs, reason: "fresh" });
+      kept.push({ name: entry.name, fullPath, sizeBytes: st.size, mtimeMs: st.mtimeMs, reason: "fresh" });
     }
   }
 
