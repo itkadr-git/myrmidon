@@ -102,6 +102,14 @@
       ]
     },
     {
+      "package": "@myrmidon/plugin-stt-gigaam",
+      "kind": "vitest-in-package",
+      "args": [
+        "--config",
+        "./vitest.config.ts"
+      ]
+    },
+    {
       "package": "@myrmidon/plugin-workspace-diff",
       "kind": "vitest-in-package",
       "args": []
