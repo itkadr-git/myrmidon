@@ -19,9 +19,10 @@ async function settle() {
   flushSync(() => {});
 }
 
-async function advance(ms: number) {
-  await vi.advanceTimersByTimeAsync(ms);
+async function waitMs(ms: number) {
+  await new Promise((resolve) => window.setTimeout(resolve, ms));
   flushSync(() => {});
+  await settle();
 }
 
 // React overrides the value setter on controlled inputs; restore the native
@@ -51,7 +52,6 @@ describe("agents fleet screen", () => {
     container = document.createElement("div"); document.body.appendChild(container);
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     mockApi.liveRuns.mockResolvedValue([]);
-    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
   afterEach(() => { root?.unmount(); client.clear(); container.remove(); vi.useRealTimers(); vi.clearAllMocks(); });
   async function renderScreen() {
@@ -88,7 +88,7 @@ describe("agents fleet screen", () => {
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", undefined);
     // Type in the search box; the request fires only after the 300 ms debounce.
     await actAndSettle(() => setInputValue(searchInput(), "alp"));
-    await advance(300);
+    await waitMs(350);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
     // Pick a status; the query key changes and a filtered request goes out.
     await actAndSettle(() => setSelectValue(statusSelect(), "paused"));
@@ -100,10 +100,10 @@ describe("agents fleet screen", () => {
     mockApi.agentsList.mockClear();
     for (const ch of ["a", "l", "p"]) {
       await actAndSettle(() => setInputValue(searchInput(), searchInput().value + ch));
-      await advance(100);
+      await waitMs(100);
     }
     expect(mockApi.agentsList).not.toHaveBeenCalled();
-    await advance(200);
+    await waitMs(200);
     expect(mockApi.agentsList).toHaveBeenCalledTimes(1);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
   });
@@ -111,13 +111,12 @@ describe("agents fleet screen", () => {
     mockApi.agentsList.mockResolvedValue([]);
     await renderScreen();
     await actAndSettle(() => setInputValue(searchInput(), "alp"));
-    await advance(300);
+    await waitMs(350);
     await actAndSettle(() => setSelectValue(statusSelect(), "paused"));
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp", status: "paused" });
     const clearButton = container.querySelector<HTMLButtonElement>("button")!;
     clearButton.click();
-    await advance(300);
-    await settle();
+    await waitMs(350);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", undefined);
   });
   it("renders the filtered result returned by the server", async () => {
@@ -126,8 +125,7 @@ describe("agents fleet screen", () => {
     ]);
     await renderScreen();
     await actAndSettle(() => setInputValue(searchInput(), "alp"));
-    await advance(300);
-    await settle();
+    await waitMs(350);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
     expect(container.textContent).toContain("Alpha");
   });
