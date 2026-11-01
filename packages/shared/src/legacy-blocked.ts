@@ -17,13 +17,6 @@ export const legacyBlockedClassSchema = {
     }
     return { success: false, error: new Error(`Invalid legacy blocked class: ${val}`) };
   },
-  parse(val: unknown): LegacyBlockedClass {
-    const res = legacyBlockedClassSchema.safeParse(val);
-    if (!res.success) {
-      throw res.error;
-    }
-    return res.data;
-  },
 };
 
 export type LegacyBlockedReportRow = {

@@ -180,6 +180,14 @@
         "minimize": "Minimize",
         "resetAll": "Reset all",
         "title": "Motion tweak panel"
+      },
+      "work-mode": {
+        "standard": "Auto mode",
+        "planning": "Plan mode",
+        "ask": "Ask mode",
+        "pendingAskTitle": "Ask mode for this submission. Click to change. The responsible will answer in this thread; no implementation work.",
+        "pendingPlanningTitle": "Plan mode is on for this submission. Click to change.",
+        "pendingStandardTitle": "Auto mode for this submission. Click to change."
       }
     }
   }

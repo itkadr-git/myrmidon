@@ -262,6 +262,7 @@ import {
 } from "../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
+import { recoverContainerOomForRun } from "../myrmidon/bot-containers/container-oom-recovery.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(BOARD-TOOLS-A): run-selection predicates moved with the assignment
 // logic into ./agent-assigned-tools.ts (import there).
@@ -20650,6 +20651,9 @@ export function heartbeatService(
           finalizedRun,
           parseObject(finalizedRun.resultJson),
         )) ?? finalizedRun;
+      await recoverContainerOomForRun(db, finalizedRun.id).catch((error) => {
+        logger.warn({ err: error, runId: finalizedRun.id }, "failed to classify OOM recovery evidence");
+      });
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
