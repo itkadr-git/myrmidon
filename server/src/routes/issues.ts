@@ -15424,7 +15424,7 @@ export function issueRoutes(
                 id,
                 issueUpdateData,
                 tx,
-                undefined,
+                postCommitActivityPublications,
                 postCommitIssueActions,
               )
             : svc.update(id, issueUpdateData, tx);
