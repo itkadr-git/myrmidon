@@ -144,31 +144,36 @@ describe("licenses minted by the module-side `runner issue`", () => {
   // Expected reasons: the module-side verify_license on the same strings
   // (key 1 as the only trust anchor, then key 2 as the only one).
   const expected: Record<keyof typeof RUNNER_ISSUED, Record<(typeof MODULES)[number], [string, string]>> = {
-    all: { "google-ai": ["ok", "bad_signature"], antigravity: ["ok", "bad_signature"], "chatgpt-pool": ["ok", "bad_signature"] },
+    all: { "google-ai": ["ok", "bad_signature"], antigravity: ["ok", "bad_signature"], "chatgpt-pool": ["ok", "bad_signature"], "client-1": ["module_not_granted", "bad_signature"] },
     expired: {
       "google-ai": ["expired", "bad_signature"],
       antigravity: ["expired", "bad_signature"],
       "chatgpt-pool": ["expired", "bad_signature"],
+      "client-1": ["module_not_granted", "bad_signature"],
     },
     other: {
       "google-ai": ["instance_mismatch", "bad_signature"],
       antigravity: ["instance_mismatch", "bad_signature"],
       "chatgpt-pool": ["instance_mismatch", "bad_signature"],
+      "client-1": ["instance_mismatch", "bad_signature"],
     },
     chatgptOnly: {
       "google-ai": ["module_not_granted", "bad_signature"],
       antigravity: ["module_not_granted", "bad_signature"],
       "chatgpt-pool": ["ok", "bad_signature"],
+      "client-1": ["module_not_granted", "bad_signature"],
     },
     withKid: {
       "google-ai": ["ok", "bad_signature"],
       antigravity: ["ok", "bad_signature"],
       "chatgpt-pool": ["module_not_granted", "bad_signature"],
+      "client-1": ["module_not_granted", "bad_signature"],
     },
     key2Antigravity: {
       "google-ai": ["bad_signature", "module_not_granted"],
       antigravity: ["bad_signature", "ok"],
       "chatgpt-pool": ["bad_signature", "module_not_granted"],
+      "client-1": ["bad_signature", "module_not_granted"],
     },
   };
 
