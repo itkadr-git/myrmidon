@@ -304,6 +304,12 @@ import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery
 // myrmidon(1.6.5-F21-A): the wording→decision mapping that writer uses. Same
 // parse as the task-comment hook, so «2) да» means option 2 in either place.
 import { classifyOwnerReplyText } from "../myrmidon/owner-reply/owner-reply-classifier.js";
+import { createOwnerReplyDeps } from "../myrmidon/owner-reply/owner-reply-execution.js";
+import {
+  handleTelegramOwnerReply,
+  loadRepliedInteractionIds,
+  shouldSuppressTelegramOwnerWake,
+} from "../myrmidon/owner-reply/index.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -14660,6 +14666,47 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  async function settleConsumedTelegramOwnerReply(deliveryId: string) {
+    await db.transaction(async (tx) => {
+      const now = new Date();
+      const [delivery] = await tx
+        .select({ id: chatDeliveries.id, state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, deliveryId))
+        .limit(1);
+      if (!delivery || delivery.state === "processed") return;
+      await tx
+        .update(chatActions)
+        .set({
+          status: "cancelled",
+          result: { code: "telegram_owner_reply_consumed" },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatActions.deliveryId, deliveryId),
+            eq(chatActions.kind, "inbound_wakeup"),
+            eq(chatActions.status, "preparing"),
+          ),
+        );
+      await tx
+        .update(chatDeliveries)
+        .set({
+          state: "processed",
+          processedAt: now,
+          redactedError: "telegram_owner_reply_consumed",
+          nextAttemptAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, deliveryId),
+            eq(chatDeliveries.state, "processing"),
+          ),
+        );
+    });
+  }
+
   async function settleRejectedInboundWakeups(onlyDeliveryId?: string) {
     await db
       .update(chatActions)
@@ -17352,6 +17399,46 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
         });
       }
+      // myrmidon(1.6.6-U2-REPLY): the owner's text answer in the standing
+      // Telegram DM closes the card the bot explained there, attributed to the
+      // owner. A reply to a bot message is bound to the cards that message
+      // explained; with no reply, one open card closes and several are asked
+      // about. Never throws; the message still reaches the agent as usual.
+      let telegramOwnerReplyConsumed = false;
+      if (
+        actorUserId &&
+        x8Dm.applies &&
+        endpoint.provider === "telegram" &&
+        !comment.sourceTrust &&
+        comment.body
+      ) {
+        const replyTarget = telegramReplyTargetMessageId(message.raw);
+        const ownerReplyOutcome = await handleTelegramOwnerReply(createOwnerReplyDeps(db), {
+          companyId: endpoint.companyId,
+          ownerUserId: actorUserId,
+          agentId: endpoint.assignedAgentId,
+          text: comment.body,
+          replyCommentId: comment.id,
+          sourceRef: `telegram-delivery:${activeDelivery.id}`,
+          at: comment.createdAt,
+          loadReplied: replyTarget
+            ? () =>
+                loadRepliedInteractionIds(db, {
+                  companyId: endpoint.companyId,
+                  endpointId: endpoint.id,
+                  conversationId: conversation.id,
+                  conversationIssueId: issue.id,
+                  conversationExternalId: conversation.externalThreadId,
+                  agentId: endpoint.assignedAgentId,
+                  replyToProviderMessageId: replyTarget,
+                })
+            : null,
+        });
+        telegramOwnerReplyConsumed = shouldSuppressTelegramOwnerWake(
+          ownerReplyOutcome,
+          Boolean(replyTarget),
+        );
+      }
       // myrmidon(1.7-ACTIVE-CHANNEL): an inbound Telegram DM from a linked
       // owner marks the Telegram channel active for them; the next report
       // decision reads it. Advisory and fire-and-forget — the delivery path
@@ -17431,6 +17518,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // concurrent ingress transaction is a rolled-back, transient refusal:
       // retry it here instead of failing the delivery into a >=2s durable
       // backoff that also burns one of its five attempts.
+      if (telegramOwnerReplyConsumed) {
+        // A reply consumed by the owner-reply door already performed the
+        // authoritative continuation. Do not create a second ordinary X8b
+        // wake for the same Telegram delivery.
+        await settleConsumedTelegramOwnerReply(activeDelivery.id);
+        sendOmissionNotice?.();
+        return;
+      }
       await retryChatControlAdmission(() =>
         acceptInboundWakeup(activeDelivery.id, attachmentResult),
       );
