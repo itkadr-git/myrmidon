@@ -1065,6 +1065,7 @@ case "$url" in
     cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
     if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
   *issues*) cat "$SANDBOX/issues.json" 2>/dev/null || echo '[]' ;;
+  *heartbeat-runs*) cat "$SANDBOX/runs.json" 2>/dev/null || echo '[]' ;;
   *) echo '{"status":"ok"}' ;;
 esac
 `;
@@ -1080,6 +1081,7 @@ esac
         "MAINTENANCE_MODE=api",
         "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
         "MAINTENANCE_EXIT_WAIT_SEC=2",
+        "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
         "",
       ].join("\n"),
     );
@@ -1188,6 +1190,33 @@ esac
     const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
     assert.equal(code, 1);
     assert.match(out, /degraded: maintenance window did not retire after exit/);
+  });
+
+  it("post_deploy_fleet_check passes when the first completed gateway runs succeeded", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "succeeded", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, resultJson: { output: "ok" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /5 successful, 0 failed of first 5 completed hermes_gateway runs/);
+  });
+
+  it("post_deploy_fleet_check degrades when the first five completed gateway runs fail", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "failed", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, errorCode: "adapter_failed", resultJson: { output: "run failed" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC=1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC=1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1, out);
+    assert.match(out, /no successful hermes_gateway runs among the first 5 completed runs/);
+    assert.match(out, /adapter_failed/);
   });
 
   it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {

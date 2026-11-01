@@ -3744,6 +3744,7 @@ const heartbeatRunListColumns = {
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
+  adapterType: heartbeatRuns.adapterType,
   status: heartbeatRuns.status,
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,

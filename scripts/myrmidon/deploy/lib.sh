@@ -737,6 +737,13 @@ wait_for_maintenance_off() {
 # degraded; 0 on a clean check.
 post_deploy_fleet_check() {
   local started_at="$1" rc=0
+  local run_count="${MYRMIDON_DEPLOY_POSTCHECK_RUNS:-5}"
+  local timeout_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC:-600}"
+  local interval_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC:-10}"
+  if [[ ! "$run_count" =~ ^[1-9][0-9]*$ || ! "$timeout_sec" =~ ^[1-9][0-9]*$ || ! "$interval_sec" =~ ^[1-9][0-9]*$ ]]; then
+    log "degraded: invalid MYRMIDON_DEPLOY_POSTCHECK_RUNS settings"
+    return 1
+  fi
   if [[ -z "${BOARD_API_URL:-}" || -z "${BOARD_COMPANY_ID:-}" ]]; then
     log "post-deploy check: BOARD_API_URL/BOARD_COMPANY_ID not set; skipping the fleet check (set them in the deploy env to enable)"
     return 0
@@ -769,6 +776,46 @@ post_deploy_fleet_check() {
     log "post-deploy check: maintenance window still '$mstate' after exit"
     log "degraded: maintenance window did not retire after exit"
     rc=1
+  fi
+  # Observe the first N terminal gateway runs created since deployment.
+  if [[ "${MYRMIDON_DEPLOY_POSTCHECK_RUNS:-5}" != "0" ]]; then
+    local deadline=$((SECONDS + timeout_sec)) runs successes failures failed_codes
+    log "post-deploy check: waiting up to ${timeout_sec}s for ${run_count} completed hermes_gateway run(s)"
+    while :; do
+      runs="$(curl -fsS --max-time 30 "${auth[@]}" \
+        "$BOARD_API_URL/companies/$BOARD_COMPANY_ID/heartbeat-runs?limit=1000" 2>/dev/null)" || runs=""
+      if [[ -z "$runs" ]]; then
+        log "post-deploy check: heartbeat run list unreadable"
+        log "degraded: heartbeat run list unreadable after deploy"
+        rc=1
+        break
+      fi
+      read -r successes failures failed_codes < <(jq -r --arg since "$started_at" --argjson n "$run_count" '
+        [.[] | select(.adapterType == "hermes_gateway" and (.createdAt // .startedAt // "") >= $since and (.status == "succeeded" or .status == "failed"))] | sort_by(.finishedAt // .updatedAt // .createdAt) | .[:$n] |
+        ([.[] | select(.status == "succeeded")] | length),
+        ([.[] | select(.status == "failed")] | length),
+        ([.[] | select(.status == "failed") | (.errorCode // "unknown")] | unique | join("," ) // "none")
+      ' <<<"$runs" 2>/dev/null | paste -sd ' ' -)
+      successes="${successes:-0}"; failures="${failures:-0}"; failed_codes="${failed_codes:-none}"
+      local observed=$((successes + failures))
+      if ((observed >= run_count)); then
+        if ((successes == 0 && failures >= run_count)); then
+          log "post-deploy check: $failures/$run_count completed hermes_gateway runs failed (error codes: $failed_codes)"
+          log "degraded: no successful hermes_gateway runs among the first $run_count completed runs (error codes: $failed_codes)"
+          rc=1
+        else
+          log "post-deploy check: $successes successful, $failures failed of first $run_count completed hermes_gateway runs"
+        fi
+        break
+      fi
+      if ((SECONDS >= deadline)); then
+        log "post-deploy check: only $observed/$run_count completed hermes_gateway runs within ${timeout_sec}s"
+        log "degraded: insufficient completed hermes_gateway runs after deploy"
+        rc=1
+        break
+      fi
+      sleep "$interval_sec"
+    done
   fi
   if ((rc == 0)); then
     log "post-deploy check: no blocked issues in the deploy window, maintenance retired"
