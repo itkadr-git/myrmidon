@@ -1060,7 +1060,7 @@ describe("PR lane (fake store + fake resolver)", () => {
 
   it("routes eligible existing PR work to a reviewer and moves it into review", async () => {
     const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
-    const t = prSetup({}, {
+    const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
       rows: new Map([["existing", task]]),
       existingWork: [task],
       headState: headState({ ci: "pending" }),
