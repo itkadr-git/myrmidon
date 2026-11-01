@@ -317,9 +317,9 @@
       }
     },
     {
-      "id": "19-async-state-db-writer-acquire",
+      "id": "20-async-state-db-writer-acquire",
       "kind": "patch",
-      "patch": "docker/bot-runtime/patches/19-async-writer-acquire.patch",
+      "patch": "docker/bot-runtime/patches/20-async-writer-acquire.patch",
       "files": [
         "hermes_state_dbfile.py",
         "hermes_state_errors.py",
