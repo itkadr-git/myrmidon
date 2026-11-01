@@ -5052,6 +5052,7 @@ export function issueRoutes(
       // myrmidon(UPSTREAM-13539): the queued-response guard below needs the assignee agent.
       assigneeAgentId?: string | null;
       executionState?: unknown;
+      executionPolicy?: unknown;
       monitorNextCheckAt?: Date | null;
       reviewPolicy?: IssueReviewPolicy | null;
     };
@@ -5145,7 +5146,10 @@ export function issueRoutes(
         : input.updateFields.executionState;
     if (hasReviewExecutionParticipant(nextExecutionState)) return null;
 
-    const nextExecutionPolicy = input.updateFields.executionPolicy;
+    const nextExecutionPolicy =
+      input.updateFields.executionPolicy === undefined
+        ? input.existing.executionPolicy
+        : input.updateFields.executionPolicy;
     if (
       hasScheduledMonitor({
         existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
@@ -5199,7 +5203,9 @@ export function issueRoutes(
         ? input.existing.assigneeAgentId
         : input.updateFields.assigneeAgentId;
     const executionReviewParticipants = summarizeExecutionParticipants(
-      safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      safeNormalizeIssueExecutionPolicy(
+        input.updateFields.executionPolicy ?? input.existing.executionPolicy ?? null,
+      ),
       "review",
     );
     if (
@@ -10188,20 +10194,28 @@ export function issueRoutes(
             status: sourceIssueStatus,
           };
           if (!safeHandBack) {
-            await assertInReviewReviewPath({
-              existing: lockedIssue,
-              updateFields,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              actorAgentId: actor.agentId,
-              actorRunId: actor.runId,
-            });
             const executionPolicy = safeNormalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
             );
+            const transitionIssue: IssueRouteSnapshot & {
+              executionReviewParticipantAgentIds?: string[];
+            } = await withDefaultEscalationChain(
+              tx as unknown as Db,
+              lockedIssue,
+              executionPolicy,
+            );
+            const reviewParticipantAgentIds = executionPolicy
+              ? summarizeExecutionParticipants(executionPolicy, "review").flatMap(
+                  (participant) =>
+                    participant.type === "agent" && participant.agentId
+                      ? [participant.agentId]
+                      : [],
+                )
+              : [];
+            transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
             const transition = applyIssueExecutionPolicyTransition({
               // myrmidon(OPE-9031): senior escalation chain for the round limit.
-              issue: await withDefaultEscalationChain(tx as unknown as Db, lockedIssue, executionPolicy),
+              issue: transitionIssue,
               policy: executionPolicy,
               previousPolicy: executionPolicy,
               requestedStatus: sourceIssueStatus,
@@ -10214,6 +10228,14 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            await assertInReviewReviewPath({
+              existing: lockedIssue,
+              updateFields,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              actorAgentId: actor.agentId,
+              actorRunId: actor.runId,
+            });
             if (transition.recoveryInteraction) {
               const targetAgentId =
                 lockedIssue.responsibleAgentId &&
@@ -13955,12 +13977,34 @@ export function issueRoutes(
       // on non-exempt statuses are also gated. Non-engineers who already hold the issue
       // may only move it to blocked, todo, or cancelled.
       const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
-      const targetAssigneeAgentId = requestedAssigneeAgentId;
+      // A pending review/approval stage held by its participant hands the issue back to the
+      // stage's return assignee when the participant moves it to in_progress (changes
+      // requested). Gate that assignee, not the reviewer: otherwise every REQUEST CHANGES
+      // by a reviewer on a code task was refused with issue_requires_engineer (01.11).
+      const stageState = existing.executionState as Record<string, unknown> | null;
+      const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
+      const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
+      const stageHandBackAssigneeId =
+        stageState?.status === "pending" &&
+        (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
+        normalizedAssigneeAgentId === undefined &&
+        targetStatus === "in_progress" &&
+        stageParticipant?.type === "agent" &&
+        typeof stageParticipant?.agentId === "string" &&
+        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageReturnAssignee?.type === "agent" &&
+        typeof stageReturnAssignee?.agentId === "string"
+          ? stageReturnAssignee.agentId
+          : null;
+      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      // Only a PATCH that sets the status gates "in_progress on a non-coding role"; an edit that
+      // changes neither status nor assignee (labels, title, a comment) is not refused for the
+      // current holder — GUARD-RETURN returns such holds on its own.
       const movingToOrKeptInCodeInProgress =
-        targetStatus === "in_progress" && targetAssigneeAgentId != null;
+        typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
       if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({

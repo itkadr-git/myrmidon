@@ -30,6 +30,7 @@ import {
   type GuardrailRule,
   type GuardrailMode,
   type ResolvedGuardrailMode,
+  type ResolvedInjectionConfig,
 } from "@myrmidon/shared";
 
 export interface GuardrailsAgentRow {
@@ -55,6 +56,7 @@ export function GuardrailsScreenView({
   settings,
   agents,
   resolved,
+  injectionResolved,
   onSave,
   pending,
   error,
@@ -63,6 +65,8 @@ export function GuardrailsScreenView({
   agents: GuardrailsAgentRow[];
   /** server-resolved effective modes per agentId (from GET .../resolve) */
   resolved: Record<string, ResolvedGuardrailMode[]>;
+  /** server-resolved effective detector config with its sources (1.6.6 OPE-8319) */
+  injectionResolved: ResolvedInjectionConfig | null | undefined;
   onSave: (settings: GuardrailModesSettings) => void;
   pending: boolean;
   error: string | null;
@@ -73,7 +77,9 @@ export function GuardrailsScreenView({
   const [agentDraft, setAgentDraft] = useState<Record<string, Partial<Record<GuardrailRule, string | null>>> | null>(null);
   const [casteNameDraft, setCasteNameDraft] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [injectionDraft, setInjectionDraft] = useState<GuardrailModesSettings["injectionConfig"] | null>(null);
 
+  const injectionConfig = injectionDraft ?? settings?.injectionConfig ?? { enabled: false, scoreThreshold: 0.6 };
   const currentCompany: Partial<Record<GuardrailRule, string>> = {};
   for (const rule of GUARDRAIL_RULES) {
     const drafted = companyDraft?.[rule];
@@ -95,6 +101,7 @@ export function GuardrailsScreenView({
   const dirty =
     companyDraft !== null ||
     agentDraft !== null ||
+    injectionDraft !== null ||
     (casteDraft !== null && casteDraft !== "") ||
     false;
 
@@ -135,7 +142,7 @@ export function GuardrailsScreenView({
       else agentsNext[agent.agentId] = rules;
     }
     setSaveError(null);
-    onSave({ company, castes: castesNext, agents: agentsNext });
+    onSave({ company, castes: castesNext, agents: agentsNext, injectionConfig });
   };
 
   const shownError = saveError ?? error;
@@ -315,6 +322,52 @@ export function GuardrailsScreenView({
                 {t("guardrails.noAgents")}
               </p>
             )}
+          </div>
+
+          <div className="space-y-2" data-testid="guardrails-injection-config">
+            <h3 className="text-sm font-medium">{t("guardrails.injectionTitle")}</h3>
+            <div className="flex flex-wrap items-end gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  data-testid="guardrails-injection-enabled"
+                  checked={injectionConfig.enabled}
+                  onChange={(event) =>
+                    setInjectionDraft({ ...injectionConfig, enabled: event.target.checked })
+                  }
+                />
+                {t("guardrails.injectionEnabled")}
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                {t("guardrails.injectionThreshold")}
+                <Input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  className="w-24"
+                  data-testid="guardrails-injection-score"
+                  value={injectionConfig.scoreThreshold}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (Number.isFinite(next)) {
+                      setInjectionDraft({ ...injectionConfig, scoreThreshold: Math.min(1, Math.max(0, next)) });
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            {injectionResolved ? (
+              <p className="text-xs text-muted-foreground" data-testid="guardrails-injection-effective">
+                {t("guardrails.injectionEffective", {
+                  enabled: t(`guardrails.onOff.${injectionResolved.enabled ? "on" : "off"}`),
+                  enabledSource: t(`guardrails.source.${injectionResolved.enabledSource}`),
+                  score: injectionResolved.scoreThreshold,
+                  scoreSource: t(`guardrails.source.${injectionResolved.scoreSource}`),
+                })}
+              </p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">{t("guardrails.injectionHint")}</p>
           </div>
 
           <div>

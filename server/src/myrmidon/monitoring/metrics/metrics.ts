@@ -24,6 +24,9 @@ import {
   corpusShadowLog,
   heartbeatRuns,
   agentWakeupRequests,
+  knowledgeRevisions,
+  knowledgeSources,
+  issueWorkProducts,
   issueClaims,
   issues,
   litellmCostEvents,
@@ -62,6 +65,7 @@ import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
+import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
@@ -133,6 +137,8 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_run_duration_seconds",
+  "myrmidon_knowledge_on_change_share",
+  "myrmidon_knowledge_revision_delay_seconds",
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
@@ -173,6 +179,10 @@ export const METRIC_FAMILIES = [
   // often the channel adapter did not answer and the direct path took the call
   // back, per reason (design OPE-6985).
   "myrmidon_adapter_fallback_total",
+
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters by rule
+  // and enforcement mode, process-local like the continuation counters.
+  "myrmidon_guardrail_triggers_total",
 
   // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
   // by path — the adapter and the vendor path that still reads in parallel
@@ -313,6 +323,12 @@ export interface MetricsSnapshotFields {
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
   /**
+   * myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail trigger counters of this
+   * process by rule and mode, read from the in-process registry (no DB).
+   * Absent/null renders HELP/TYPE with no samples.
+   */
+  guardrailTriggers?: GuardrailTriggerCounts | null;
+  /**
    * myrmidon(1.6.6 PROCS-1.5 / OPE-5412): the single-route proxy counters of
    * this process (in-process, no DB). null renders HELP/TYPE with no samples; a
    * present sample renders every route x outcome, zeros included.
@@ -352,6 +368,11 @@ export interface MetricsSnapshotFields {
   corpusShadowRagflowSecondsP95?: number | null;
   corpusShadowModuleSecondsP50?: number | null;
   corpusShadowModuleSecondsP95?: number | null;
+  /** Share of recently completed tasks with a merged system change that have a task-linked knowledge revision. */
+  knowledgeOnChangeShare?: number | null;
+  /** p50/p95 seconds from merged PR work product to PR-linked revision. */
+  knowledgeRevisionDelaySecondsP50?: number | null;
+  knowledgeRevisionDelaySecondsP95?: number | null;
 
   /** OPE-9476: runs that failed before the model emitted output, per agentId. */
   failedBeforeModel?: Record<string, number> | null;
@@ -600,6 +621,44 @@ async function readCorpusShadowLatencies(
   };
 }
 
+/** Knowledge-on-change coverage and revision delay for recently completed work. */
+async function readKnowledgeOnChangeMetrics(db: Db, windowStart: Date): Promise<{ share: number | null; delayP50: number | null; delayP95: number | null }> {
+  const changedRows = await db
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .innerJoin(issueWorkProducts, eq(issueWorkProducts.issueId, issues.id))
+    .where(and(
+      inArray(issues.status, ["done", "cancelled"]),
+      gte(issues.completedAt, windowStart),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "merged"),
+    ));
+  const changed = Array.from(new Map(changedRows.map((row) => [row.id, row])).values());
+  if (changed.length === 0) return { share: null, delayP50: null, delayP95: null };
+  const identifiers = changed.map((row) => row.identifier).filter((value): value is string => Boolean(value));
+  const coveredRows = identifiers.length === 0 ? [] : await db
+    .select({ ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .where(and(eq(knowledgeSources.kind, "task"), inArray(knowledgeSources.ref, identifiers)));
+  const covered = [...new Set(coveredRows.map((row) => row.ref))];
+  const revisions = await db
+    .select({ createdAt: knowledgeRevisions.createdAt, ref: knowledgeSources.ref })
+    .from(knowledgeSources)
+    .innerJoin(knowledgeRevisions, eq(knowledgeRevisions.id, knowledgeSources.revisionId))
+    .where(eq(knowledgeSources.kind, "pr"));
+  const prs = await db
+    .select({ mergedAt: issueWorkProducts.updatedAt, externalId: issueWorkProducts.externalId, url: issueWorkProducts.url })
+    .from(issueWorkProducts)
+    .where(and(eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.status, "merged")));
+  const mergeByRef = new Map<string, Date>();
+  for (const pr of prs) for (const key of [pr.externalId, pr.url]) if (key) mergeByRef.set(key, pr.mergedAt);
+  const delays = revisions
+    .map((row) => { const merged = mergeByRef.get(row.ref); return merged ? (row.createdAt.getTime() - merged.getTime()) / 1000 : null; })
+    .filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  return { share: covered.length / changed.length, delayP50: delays.length ? percentile(delays, 0.5) : null, delayP95: delays.length ? percentile(delays, 0.95) : null };
+}
+
 /** Linear-interpolated percentile of an ascending-sorted sample. */
 export function percentile(sortedValues: number[], q: number): number {
   if (sortedValues.length === 0) throw new Error("percentile of an empty sample");
@@ -778,6 +837,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCorpusShadowLatencies(deps.db, latencyWindowStart),
     { ragflow: { p50: null, p95: null }, module: { p50: null, p95: null } },
   );
+  const knowledgeMetrics = await guarded(
+    "myrmidon_knowledge_on_change_share|myrmidon_knowledge_revision_delay_seconds",
+    () => readKnowledgeOnChangeMetrics(deps.db, new Date(now.getTime() - 7 * 24 * 3600 * 1000)),
+    { share: null, delayP50: null, delayP95: null },
+  );
   const roleQueues = await guarded(
     "myrmidon_role_queue_tasks",
     () => readRoleQueues(deps.db),
@@ -869,6 +933,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as ChannelBridgeFallbackSample[] | null,
   );
 
+  const guardrailTriggers = await guarded(
+    "myrmidon_guardrail_triggers_total",
+    () => Promise.resolve().then(() => guardrailTriggerMetrics.read()),
+    null as GuardrailTriggerCounts | null,
+  );
+
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
   // scrape: an in-process counter that cannot throw today, guarded anyway so a
   // future source cannot kill the scrape — it names its family instead.
@@ -945,6 +1015,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
       corpusShadowModuleSecondsP95: shadowLatencies.module.p95,
+      knowledgeOnChangeShare: knowledgeMetrics.share,
+      knowledgeRevisionDelaySecondsP50: knowledgeMetrics.delayP50,
+      knowledgeRevisionDelaySecondsP95: knowledgeMetrics.delayP95,
       roleQueueTasks: roleQueues,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
@@ -962,6 +1035,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       lanes: laneSample,
 
       adapterFallbacks: fallbackSample,
+      guardrailTriggers,
       singletonProxy: singletonProxySample,
 
       chatIngress,
@@ -1250,6 +1324,11 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ],
     ),
   );
+  blocks.push(familyBlock("myrmidon_knowledge_on_change_share", "Share of recently closed tasks with a knowledge revision.", "gauge", snapshot.knowledgeOnChangeShare != null ? [`myrmidon_knowledge_on_change_share{${R}} ${formatSampleValue(snapshot.knowledgeOnChangeShare)}`] : []));
+  blocks.push(familyBlock("myrmidon_knowledge_revision_delay_seconds", "Delay from merged pull request to knowledge revision.", "summary", [
+    ...(snapshot.knowledgeRevisionDelaySecondsP50 != null ? [`myrmidon_knowledge_revision_delay_seconds{quantile=\"0.5\"} ${formatSampleValue(snapshot.knowledgeRevisionDelaySecondsP50)}`] : []),
+    ...(snapshot.knowledgeRevisionDelaySecondsP95 != null ? [`myrmidon_knowledge_revision_delay_seconds{quantile=\"0.95\"} ${formatSampleValue(snapshot.knowledgeRevisionDelaySecondsP95)}`] : []),
+  ]));
   blocks.push(
     familyBlock(
       "myrmidon_role_queue_tasks",
@@ -1527,6 +1606,28 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ? fallbacks.map(
             (row) =>
               `myrmidon_adapter_fallback_total{reason="${escapeLabelValue(row.reason)}"} ${formatSampleValue(row.count)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6 GUARDRAILS OPE-10182): guardrail triggers by rule and
+  // enforcement mode. Every rule x mode renders whenever the counter was read,
+  // zeros included — "every rule is flag-only since boot" is information, and a
+  // missing series would hide an unwired counter. Process-local, like the
+  // continuation counters: a multi-process deployment sums the roles.
+  const guardrailTriggers = snapshot.guardrailTriggers ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_guardrail_triggers_total",
+      "Guardrail triggers per rule and enforcement mode (flag | mask | block), cumulative since boot.",
+      "counter",
+      guardrailTriggers
+        ? GUARDRAIL_METRIC_RULES.flatMap((rule) =>
+            GUARDRAIL_METRIC_MODES.map(
+              (mode) =>
+                `myrmidon_guardrail_triggers_total{${R},rule="${escapeLabelValue(rule)}",mode="${escapeLabelValue(mode)}"} ${formatSampleValue(guardrailTriggers[rule][mode])}`,
+            ),
           )
         : [],
     ),
