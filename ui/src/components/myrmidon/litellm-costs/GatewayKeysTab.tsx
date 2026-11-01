@@ -444,6 +444,7 @@ function KeyBudgetsCard({ companyId }: { companyId: string }) {
   const { data, isLoading, error } = useQuery({
     queryKey: litellmKeyBudgetsKey(companyId),
     queryFn: () => litellmKeysApi.keyBudgets(companyId),
+    staleTime: 60_000,
   });
 
   return (
@@ -467,7 +468,7 @@ function KeyBudgetsCard({ companyId }: { companyId: string }) {
           <p className="text-sm text-muted-foreground">
             {t("area.costs-budgets-2.gateway-keys-tab.budgets.loading")}
           </p>
-        ) : !data || data.services.length === 0 ? (
+        ) : !data ? (
           <p className="text-sm text-muted-foreground">
             {t("area.costs-budgets-2.gateway-keys-tab.budgets.empty")}
           </p>
@@ -478,6 +479,22 @@ function KeyBudgetsCard({ companyId }: { companyId: string }) {
                 mode: data.signalOnly ? "signal" : "enforce",
               })}
             </div>
+            {data.agents.map((agent) => (
+              <div key={agent.agentId} className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2">
+                <span className="font-medium">{agent.agentName ?? agent.agentId}</span>
+                <span className="text-xs text-muted-foreground">{agent.role ?? "agent"}</span>
+                {agent.budget ? (
+                  <span className="font-medium">${agent.budget.amountUsd?.toFixed(2) ?? "—"}/{agent.budget.periodHours}h</span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">—</span>
+                )}
+              </div>
+            ))}
+            {data.services.length === 0 && data.agents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {t("area.costs-budgets-2.gateway-keys-tab.budgets.empty")}
+              </p>
+            ) : null}
             {data.services.map((service) => (
               <div
                 key={service.serviceId}
@@ -485,15 +502,9 @@ function KeyBudgetsCard({ companyId }: { companyId: string }) {
                 className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2"
               >
                 <span className="font-medium">{service.serviceName}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                  {service.level}
-                </span>
-                <span className="font-medium">
-                  ${service.budget.amountUsd?.toFixed(2) ?? "—"}/{service.budget.periodHours}h
-                </span>
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                  {service.budget.effectiveMode}
-                </span>
+                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{service.level}</span>
+                <span className="font-medium">${service.budget.amountUsd?.toFixed(2) ?? "—"}/{service.budget.periodHours}h</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{service.budget.effectiveMode}</span>
               </div>
             ))}
           </>

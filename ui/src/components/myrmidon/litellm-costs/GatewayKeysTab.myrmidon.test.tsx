@@ -152,6 +152,74 @@ describe("myrmidon(M2-B) gateway keys tab UI rendering", () => {
     expect(agentLink?.textContent).toBe("researcher");
   });
 
+  it("fetches and renders service budgets from the key-budgets API", async () => {
+    vi.spyOn(agentsApi, "list").mockResolvedValue([{ id: "agent-a", name: "coder" }] as never);
+    vi.spyOn(litellmKeysApi, "keys").mockResolvedValue([view({ agentId: "agent-a", present: true })]);
+    vi.spyOn(litellmKeysApi, "fallbacks").mockResolvedValue({ chains: [], cycles: [] });
+    vi.spyOn(litellmKeysApi, "keyBudgets").mockResolvedValue({
+      companyId: "company-1",
+      signalOnly: false,
+      projectionEnabled: true,
+      agents: [],
+      services: [
+        {
+          serviceId: "service-engineering",
+          serviceName: "Engineering",
+          level: "caste",
+          scopeId: "engineering",
+          tag: "myrm-caste-engineering",
+          secretName: null,
+          budget: {
+            amountUsd: 42,
+            periodHours: 24,
+            mode: "block",
+            effectiveMode: "block",
+            caste: "engineering",
+          },
+        },
+      ],
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <GatewayKeysTab companyId="company-1" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="service-budget-service-engineering"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("Engineering");
+    expect(container.textContent).toContain("$42.00/24h");
+    expect(litellmKeysApi.keyBudgets).toHaveBeenCalledWith("company-1");
+  });
+
+  it("shows the key-budget API error without hiding the keys card", async () => {
+    vi.spyOn(agentsApi, "list").mockResolvedValue([{ id: "agent-a", name: "coder" }] as never);
+    vi.spyOn(litellmKeysApi, "keys").mockResolvedValue([view({ agentId: "agent-a", present: true })]);
+    vi.spyOn(litellmKeysApi, "fallbacks").mockResolvedValue({ chains: [], cycles: [] });
+    vi.spyOn(litellmKeysApi, "keyBudgets").mockRejectedValue(new Error("budget API unavailable"));
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <GatewayKeysTab companyId="company-1" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain("budget API unavailable"));
+    expect(container.textContent).toContain("coder");
+  });
+
   it("renders model tags when models allowlist is populated", async () => {
     vi.spyOn(agentsApi, "list").mockResolvedValue([
       { id: "agent-a", name: "coder" } as never,

@@ -8,7 +8,11 @@
 //  3. Errors do not lead to partial saving (atomicity).
 //  4. Never log or leak key secret values (only secret names and hashes).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  mutateBudgetProjectionDocument,
+  readBudgetProjectionSettings,
+} from "../litellm-budget-sync/settings.js";
 import {
   normalizeBudgetProjectionSettings,
   type BudgetProjectionLimit,
@@ -215,6 +219,39 @@ describe("myrmidon(OPE-9859) key budget projection adapter", () => {
     expect(report2.agents[0]!.budget?.mode).toBe("block");
   });
 
+  it("updates the real OPE-8675 instance-settings document through its atomic mutation point", async () => {
+    const initial = normalizeBudgetProjectionSettings({
+      enabled: true,
+      signalOnly: true,
+      limits: [{ level: "caste", scopeId: "engineer", amountUsd: 100, periodHours: 24, mode: "soft" }],
+    });
+    let current = initial;
+    const db = {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+    } as never;
+    const read = vi.spyOn(
+      await import("../litellm-budget-sync/settings.js"),
+      "readBudgetProjectionSettings",
+    );
+    read.mockImplementation(async () => current);
+    const mutate = vi.spyOn(
+      await import("../litellm-budget-sync/settings.js"),
+      "mutateBudgetProjectionDocument",
+    );
+    mutate.mockImplementation(async (_db, _companyId, change) => {
+      const { next, result } = change(current);
+      current = next;
+      return { doc: next, result, changed: true };
+    });
+
+    expect((await readBudgetProjectionSettings(db, COMPANY)).limits[0]?.amountUsd).toBe(100);
+    await mutateBudgetProjectionDocument(db as never, COMPANY, (stored) => ({
+      next: normalizeBudgetProjectionSettings({ ...stored, limits: [{ level: "caste", scopeId: "engineer", amountUsd: 300, periodHours: 24, mode: "block" }] }),
+      result: "updated",
+    }));
+    expect((await readBudgetProjectionSettings(db, COMPANY)).limits[0]?.amountUsd).toBe(300);
+    expect(mutate).toHaveBeenCalledWith(db, COMPANY, expect.any(Function));
+  });
   it("ensures errors during mutation do not lead to partial saving", () => {
     let storedState: BudgetProjectionStoredSettings = normalizeBudgetProjectionSettings({
       signalOnly: true,
