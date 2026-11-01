@@ -805,11 +805,11 @@ import {
   buildSwarmClaimSweeper,
   buildSwarmMatcher,
   invalidateFailedRunsCache,
-  PHEROMONE_EVAPORATING_RUN_STATUSES,
   matchFreedAgent,
   notifySwarmAgentEvent,
   setSwarmEventSink,
 } from "../myrmidon/swarm-claim/index.js";
+import { PHEROMONE_EVAPORATING_RUN_STATUSES } from "../myrmidon/swarm-claim/effective-pheromone.js";
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
