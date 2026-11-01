@@ -50,7 +50,7 @@ describe("metrics self-check probe", () => {
     // the scent classifier alarm is process-local: all survive broken DB reads.
     // Five legacy-blocked families are safe on pre-migration databases too.
     // The guardrail trigger counter is process-local as well.
-    expect(result.families_ok).toBe(34);
+    expect(result.families_ok).toBe(40);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
