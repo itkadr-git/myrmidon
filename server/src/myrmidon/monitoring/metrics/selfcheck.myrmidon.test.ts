@@ -70,6 +70,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_recovery_created_total" &&
         family !== "myrmidon_recovery_deduped_total" &&
         family !== "myrmidon_recovery_success_total" &&
+        family !== "myrmidon_agent_failed_before_model_total" &&
         !family.startsWith("legacy_blocked_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
