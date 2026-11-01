@@ -189,7 +189,6 @@ export function createCardEnvResolver(
     const warnings: string[] = [];
     const bindings: Record<string, unknown> = {};
     for (const [name, binding] of Object.entries(asRecord(agent.adapterConfig.env))) {
-
       if (name === "MEDIA_TOOLS_TOKEN") {
         if (typeof agent.name === "string" && mediaAllowlist.has(agent.name)) {
           bindings[name] = binding;

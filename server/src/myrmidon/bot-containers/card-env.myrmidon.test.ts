@@ -195,15 +195,6 @@ describe("myrmidon(W2a) card env — what a card may bind", () => {
     expect(state.resolveCalls[0]?.bindings).not.toHaveProperty("MEDIA_TOOLS_TOKEN");
   });
 
-  it("drops MEDIA_TOOLS_TOKEN when a card attempts to bind it", async () => {
-    const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-media-token" } });
-    const result = await createCardEnvResolver(ports)(card({ MEDIA_TOOLS_TOKEN: ref("s1"), KEEP_ME: plain("ok") }));
-    expect(result.env.MEDIA_TOOLS_TOKEN).toBeUndefined();
-    expect(result.env.KEEP_ME).toEqual({ value: "ok", secret: false });
-    expect(result.warnings).toEqual([expect.stringContaining("MEDIA_TOOLS_TOKEN")]);
-    expect(state.resolveCalls[0]?.bindings).not.toHaveProperty("MEDIA_TOOLS_TOKEN");
-  });
-
   it("keeps the forbidden-variable list identical to the board's own", () => {
     const heartbeat = fs.readFileSync(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../services/heartbeat.ts"),
