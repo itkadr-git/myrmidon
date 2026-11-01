@@ -56,9 +56,10 @@ export function createLiteLlmAuditService(db: Db): LiteLlmAuditService {
         `${input.action.replace(/_/g, " ")} (${input.category})`;
 
       const canRollback =
-        input.canRollback !== undefined
+        input.category === "models" &&
+        (input.canRollback !== undefined
           ? input.canRollback
-          : sanitizedBefore !== null && Object.keys(sanitizedBefore).length > 0;
+          : sanitizedBefore !== null && Object.keys(sanitizedBefore).length > 0);
 
       const details: Record<string, unknown> = {
         category: input.category,

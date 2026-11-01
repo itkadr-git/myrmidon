@@ -109,7 +109,10 @@ describe("LiteLLM settings audit & rollback (OPE-9857)", () => {
 
       const entry = migrateAuditRecord(row);
       expect(entry.category).toBe("fallbacks");
-      expect(entry.canRollback).toBe(true);
+      // OPE-9857 review: fallbacks and keys are audit-only categories — no
+      // product write path exists for fallbacks and key values are never
+      // stored, so they must never be advertised as rollbackable.
+      expect(entry.canRollback).toBe(false);
       expect(entry.before).toEqual({ fallbacks: { "gpt-4o": ["claude-3-5-sonnet"] } });
       expect(entry.after).toEqual({ fallbacks: { "gpt-4o": ["gemini-1.5-pro"] } });
     });
@@ -160,6 +163,80 @@ describe("LiteLLM settings audit & rollback (OPE-9857)", () => {
           actor: { type: "agent", id: "bot-1" },
         }),
       ).rejects.toThrow("Rollback requires board authorization");
+    });
+
+    it("never advertises fallback or key entries as rollbackable", async () => {
+      const inserted: unknown[] = [];
+      const fakeDb = {
+        insert: () => ({
+          values: (val: unknown) => {
+            inserted.push(val);
+            return {
+              returning: async () => [{ ...(val as object), id: "audit-non-model" }],
+            };
+          },
+        }),
+      } as unknown as Parameters<typeof createLiteLlmAuditService>[0];
+
+      const service = createLiteLlmAuditService(fakeDb);
+      const fallback = await service.record({
+        companyId: "comp-1",
+        category: "fallbacks",
+        action: "litellm_fallbacks_updated",
+        entityId: "fallbacks",
+        actor: { type: "board", id: "user-1" },
+        before: { fallbacks: { "gpt-4o": ["claude-3-5-sonnet"] } },
+        after: { fallbacks: { "gpt-4o": ["gemini-1.5-pro"] } },
+        canRollback: true,
+      });
+      const key = await service.record({
+        companyId: "comp-1",
+        category: "keys",
+        action: "litellm_key_rotated",
+        entityId: "agent-1",
+        actor: { type: "board", id: "user-1" },
+        before: { rotated: false },
+        after: { rotated: true },
+        canRollback: true,
+      });
+
+      expect(fallback.canRollback).toBe(false);
+      expect(key.canRollback).toBe(false);
+      expect(inserted).toHaveLength(2);
+    });
+
+    it("rejects non-model rollback even when a handler is supplied", async () => {
+      const targetEntry = {
+        id: "audit-fallback-1",
+        companyId: "comp-1",
+        actorType: "board",
+        actorId: "user-1",
+        action: "litellm_fallbacks_updated",
+        entityType: "litellm_audit",
+        entityId: "fallbacks",
+        createdAt: new Date("2026-10-02T10:00:00Z"),
+        details: {
+          category: "fallbacks",
+          before: { fallbacks: { "gpt-4o": ["claude-3-5-sonnet"] } },
+          after: { fallbacks: { "gpt-4o": ["gemini-1.5-pro"] } },
+          canRollback: true,
+        },
+      };
+      const fakeDb = {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: async () => [targetEntry] }),
+          }),
+        }),
+      } as unknown as Parameters<typeof createLiteLlmAuditService>[0];
+      const service = createLiteLlmAuditService(fakeDb);
+
+      await expect(
+        service.rollback(
+          { companyId: "comp-1", auditId: "audit-fallback-1", actor: { type: "board", id: "user-1" } },
+          { restoreFallbacks: vi.fn() },
+        ),
+      ).rejects.toThrow("cannot be rolled back");
     });
 
     it("restores previous non-secret state in one action and logs rollback", async () => {

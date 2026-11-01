@@ -106,9 +106,10 @@ export function migrateAuditRecord(raw: RawAuditRow, fallbackCompanyId?: string)
 
   const rawCanRollback = raw.canRollback ?? (details.canRollback as boolean | undefined);
   const canRollback =
-    typeof rawCanRollback === "boolean"
+    category === "models" &&
+    (typeof rawCanRollback === "boolean"
       ? rawCanRollback
-      : isActionRollbackable(action, before);
+      : isActionRollbackable(action, before));
 
   const summary =
     raw.summary ??
