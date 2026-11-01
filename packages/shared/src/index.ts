@@ -1,5 +1,5 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
-export { PRODUCT_NAME } from "./myrmidon-product.js";
+export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
 export {
   LEGACY_BLOCKED_IMPORT_RULE_VERSION,
   createLegacyBlockedImportKey,
@@ -2542,6 +2542,10 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  blockUserSchema,
+  type BlockUserInput,
+  auditQuerySchema,
+  type AuditQueryInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

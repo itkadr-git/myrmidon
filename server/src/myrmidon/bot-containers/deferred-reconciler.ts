@@ -18,7 +18,7 @@
 //    `not_applicable`: the agent is gone or its container is off) removes
 //    the record — the bot is on the new image without a new deploy;
 //  - stuck longer than MYRMIDON_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC (default
-//    3600): the soft timeout — the retry goes WITHOUT the busy gate, i.e.
+//    21600 = 6h): the soft timeout — the retry goes WITHOUT the busy gate, i.e.
 //    applyBotContainerNow runs its own existing pause-and-apply path: it
 //    opens an agent maintenance window, drains the in-flight run to its end
 //    (never interrupts it — OPE-3638), then recreates the container. The
@@ -48,7 +48,7 @@ import {
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 
 export const BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV = "MYRMIDON_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC";
-export const DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC = 3600;
+export const DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC = 21_600;
 const MIN_MAX_WAIT_SEC = 60;
 const MAX_MAX_WAIT_SEC = 86_400;
 
@@ -164,6 +164,14 @@ export async function runDeferredRolloutWatcher(db: Db, deps: DeferredRolloutWat
     // past maxWait the retry goes without the gate and applyBotContainerNow's
     // own pause-and-apply path drains the bot after its current run ends.
     const gated = waitingMs < maxWaitMs;
+    if (!gated) {
+      await record0("error", record.agentId, record.botKey, "deferred bot rollout exceeded its configured wait; forcing scoped R3 reconciliation", {
+        targetImage: record.targetImage,
+        waitedMs: waitingMs,
+        maxWaitSec,
+        operatorEvent: true,
+      });
+    }
     if (gated) {
       let busy: boolean | null = null;
       try {

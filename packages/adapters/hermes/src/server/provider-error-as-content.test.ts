@@ -85,6 +85,18 @@ describe("provider error responses disguised as content", () => {
     expect(isProviderErrorAsContent("Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry!")).toBe(true);
   });
 
+  it("recognizes the OPE-10494 bilingual maintenance / resource-exhaustion reply", () => {
+    // The exact provider text observed 01.11 on adm-architect runs:
+    // Vietnamese half, English half, and the joined pipe form.
+    expect(isProviderErrorAsContent("Tạm bảo trì vì hết tài nguyên…")).toBe(true);
+    expect(isProviderErrorAsContent("Temporarily under maintenance due to resource exhaustion…")).toBe(true);
+    expect(
+      isProviderErrorAsContent(
+        "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…"
+      )
+    ).toBe(true);
+  });
+
   it("keeps short normal model responses as content", () => {
     for (const response of [
       "Hello.",

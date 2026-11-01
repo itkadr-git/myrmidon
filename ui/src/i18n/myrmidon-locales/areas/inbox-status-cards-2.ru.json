@@ -24,6 +24,9 @@
         "title": "Новая карточка"
       },
       "inbox": {
+        "knowledgeReview": "Разбор предложений знаний",
+        "knowledgeLoading": "Загрузка предложений...",
+        "knowledgeLoadFailed": "Не удалось загрузить предложения знаний.",
         "agentErrors_few": "<b>{{count}}</b> агента с ошибками",
         "agentErrors_many": "<b>{{count}}</b> агентов с ошибками",
         "agentErrors_one": "<b>{{count}}</b> агент с ошибками",
