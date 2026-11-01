@@ -7,15 +7,15 @@
  * Compatible with Harbor ATIF (Agent Trajectory Interchange Format) and Myrmidon run-log events.
  */
 
-import crypto from \"node:crypto\";
+import crypto from "node:crypto";
 
 export type TrajectoryEventType =
-  | \"trajectory.run_start\"
-  | \"trajectory.step\"
-  | \"trajectory.tool_call\"
-  | \"trajectory.tool_result\"
-  | \"trajectory.stop_condition\"
-  | \"trajectory.run_complete\";
+  | "trajectory.run_start"
+  | "trajectory.step"
+  | "trajectory.tool_call"
+  | "trajectory.tool_result"
+  | "trajectory.stop_condition"
+  | "trajectory.run_complete";
 
 export interface TrajectoryRunStartPayload {
   version: 1;
@@ -50,7 +50,7 @@ export interface TrajectoryToolResultPayload {
   version: 1;
   callId: string;
   toolName: string;
-  status: \"success\" | \"error\" | \"timeout\";
+  status: "success" | "error" | "timeout";
   durationMs: number;
   error?: string;
   consecutiveErrors: number;
@@ -59,16 +59,16 @@ export interface TrajectoryToolResultPayload {
 
 export interface TrajectoryStopConditionPayload {
   version: 1;
-  condition: \"repeated_tool_error\" | \"repeated_tool_call\" | \"consecutive_no_op\" | \"budget_exceeded\";
+  condition: "repeated_tool_error" | "repeated_tool_call" | "consecutive_no_op" | "budget_exceeded";
   toolName?: string;
   consecutiveFailures?: number;
   message: string;
-  action: \"abort_run\" | \"escalate_blocked\" | \"request_human_input\";
+  action: "abort_run" | "escalate_blocked" | "request_human_input";
 }
 
 export interface TrajectoryRunCompletePayload {
   version: 1;
-  status: \"completed\" | \"failed\" | \"aborted\";
+  status: "completed" | "failed" | "aborted";
   totalSteps: number;
   totalToolCalls: number;
   totalErrors: number;
@@ -91,42 +91,42 @@ export interface TrajectoryEvent<T = Record<string, unknown>> {
  * Standard JSON Schema Draft-07 for Trajectory Events.
  */
 export const TRAJECTORY_EVENT_JSON_SCHEMA = {
-  $schema: \"http://json-schema.org/draft-07/schema#\",
-  title: \"TrajectoryEvent\",
-  type: \"object\",
+  $schema: "http://json-schema.org/draft-07/schema#",
+  title: "TrajectoryEvent",
+  type: "object",
   required: [
-    \"eventId\",
-    \"eventType\",
-    \"timestamp\",
-    \"runId\",
-    \"agentId\",
-    \"companyId\",
-    \"stepIndex\",
-    \"payload\",
+    "eventId",
+    "eventType",
+    "timestamp",
+    "runId",
+    "agentId",
+    "companyId",
+    "stepIndex",
+    "payload",
   ],
   properties: {
-    eventId: { type: \"string\" },
+    eventId: { type: "string" },
     eventType: {
-      type: \"string\",
+      type: "string",
       enum: [
-        \"trajectory.run_start\",
-        \"trajectory.step\",
-        \"trajectory.tool_call\",
-        \"trajectory.tool_result\",
-        \"trajectory.stop_condition\",
-        \"trajectory.run_complete\",
+        "trajectory.run_start",
+        "trajectory.step",
+        "trajectory.tool_call",
+        "trajectory.tool_result",
+        "trajectory.stop_condition",
+        "trajectory.run_complete",
       ],
     },
-    timestamp: { type: \"string\" },
-    runId: { type: \"string\" },
-    agentId: { type: \"string\" },
-    companyId: { type: \"string\" },
-    stepIndex: { type: \"integer\", minimum: 0 },
+    timestamp: { type: "string" },
+    runId: { type: "string" },
+    agentId: { type: "string" },
+    companyId: { type: "string" },
+    stepIndex: { type: "integer", minimum: 0 },
     payload: {
-      type: \"object\",
-      required: [\"version\"],
+      type: "object",
+      required: ["version"],
       properties: {
-        version: { type: \"integer\", enum: [1] },
+        version: { type: "integer", enum: [1] },
       },
     },
   },
@@ -137,12 +137,12 @@ export const TRAJECTORY_EVENT_JSON_SCHEMA = {
  */
 export function validateTrajectoryEvent(event: unknown): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  if (typeof event !== \"object\" || event === null || Array.isArray(event)) {
-    return { valid: false, errors: [\"Event must be a non-null object\"] };
+  if (typeof event !== "object" || event === null || Array.isArray(event)) {
+    return { valid: false, errors: ["Event must be a non-null object"] };
   }
 
   const rec = event as Record<string, unknown>;
-  const required = [\"eventId\", \"eventType\", \"timestamp\", \"runId\", \"agentId\", \"companyId\", \"stepIndex\", \"payload\"];
+  const required = ["eventId", "eventType", "timestamp", "runId", "agentId", "companyId", "stepIndex", "payload"];
   for (const field of required) {
     if (rec[field] === undefined || rec[field] === null) {
       errors.push(`Missing required field: ${field}`);
@@ -150,22 +150,22 @@ export function validateTrajectoryEvent(event: unknown): { valid: boolean; error
   }
 
   const validTypes = [
-    \"trajectory.run_start\",
-    \"trajectory.step\",
-    \"trajectory.tool_call\",
-    \"trajectory.tool_result\",
-    \"trajectory.stop_condition\",
-    \"trajectory.run_complete\",
+    "trajectory.run_start",
+    "trajectory.step",
+    "trajectory.tool_call",
+    "trajectory.tool_result",
+    "trajectory.stop_condition",
+    "trajectory.run_complete",
   ];
-  if (typeof rec.eventType !== \"string\" || !validTypes.includes(rec.eventType)) {
+  if (typeof rec.eventType !== "string" || !validTypes.includes(rec.eventType)) {
     errors.push(`Invalid eventType: ${String(rec.eventType)}`);
   }
 
-  if (typeof rec.stepIndex !== \"number\" || !Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) {
+  if (typeof rec.stepIndex !== "number" || !Number.isInteger(rec.stepIndex) || rec.stepIndex < 0) {
     errors.push(`stepIndex must be a non-negative integer`);
   }
 
-  if (typeof rec.payload !== \"object\" || rec.payload === null || Array.isArray(rec.payload)) {
+  if (typeof rec.payload !== "object" || rec.payload === null || Array.isArray(rec.payload)) {
     errors.push(`payload must be an object`);
   } else {
     const payload = rec.payload as Record<string, unknown>;
@@ -181,12 +181,12 @@ export function validateTrajectoryEvent(event: unknown): { valid: boolean; error
  * Hash input arguments for deterministic repeat comparison.
  */
 function hashToolArgs(args: unknown): string {
-  if (args === undefined || args === null) return \"null\";
+  if (args === undefined || args === null) return "null";
   try {
-    const str = typeof args === \"string\" ? args : JSON.stringify(args);
-    return crypto.createHash(\"sha256\").update(str).digest(\"hex\").slice(0, 16);
+    const str = typeof args === "string" ? args : JSON.stringify(args);
+    return crypto.createHash("sha256").update(str).digest("hex").slice(0, 16);
   } catch {
-    return \"unhashable\";
+    return "unhashable";
   }
 }
 
@@ -251,7 +251,7 @@ export class TrajectoryTracker {
     this.currentStepIndex++;
     return {
       eventId: crypto.randomUUID(),
-      eventType: \"trajectory.step\",
+      eventType: "trajectory.step",
       timestamp: new Date().toISOString(),
       runId: this.runId,
       agentId: this.agentId,
@@ -272,7 +272,7 @@ export class TrajectoryTracker {
   }): TrajectoryEvent<TrajectoryRunStartPayload> {
     return {
       eventId: crypto.randomUUID(),
-      eventType: \"trajectory.run_start\",
+      eventType: "trajectory.run_start",
       timestamp: new Date().toISOString(),
       runId: this.runId,
       agentId: this.agentId,
@@ -314,7 +314,7 @@ export class TrajectoryTracker {
 
     const event: TrajectoryEvent<TrajectoryToolCallPayload> = {
       eventId: crypto.randomUUID(),
-      eventType: \"trajectory.tool_call\",
+      eventType: "trajectory.tool_call",
       timestamp: new Date().toISOString(),
       runId: this.runId,
       agentId: this.agentId,
@@ -324,7 +324,7 @@ export class TrajectoryTracker {
         version: 1,
         callId,
         toolName: input.toolName,
-        inputSummary: input.inputSummary ?? (typeof input.args === \"string\" ? input.args.slice(0, 100) : \"\"),
+        inputSummary: input.inputSummary ?? (typeof input.args === "string" ? input.args.slice(0, 100) : ""),
         argsHash,
         isRepeat,
       },
@@ -340,7 +340,7 @@ export class TrajectoryTracker {
   public recordToolResult(input: {
     toolName: string;
     callId?: string;
-    status: \"success\" | \"error\" | \"timeout\";
+    status: "success" | "error" | "timeout";
     error?: string;
     durationMs?: number;
   }): {
@@ -349,13 +349,13 @@ export class TrajectoryTracker {
     isStopConditionTriggered: boolean;
     stopReason?: string;
   } {
-    const callId = input.callId ?? \"\";
+    const callId = input.callId ?? "";
     const active = callId ? this.activeCalls.get(callId) : null;
     if (callId) this.activeCalls.delete(callId);
 
     const durationMs = input.durationMs ?? (active ? Date.now() - active.startTime : 0);
-    const isError = input.status === \"error\" || input.status === \"timeout\";
-    const argsHash = active?.argsHash ?? \"\";
+    const isError = input.status === "error" || input.status === "timeout";
+    const argsHash = active?.argsHash ?? "";
 
     let consecutiveCount = 0;
     let isRepeatFailure = false;
@@ -363,7 +363,7 @@ export class TrajectoryTracker {
 
     if (isError) {
       this.totalErrors++;
-      const errStr = (input.error ?? \"\").slice(0, 200);
+      const errStr = (input.error ?? "").slice(0, 200);
 
       // Check if previous invocation was an identical failed call
       const recentMatch = this.recentCalls.find(
@@ -404,7 +404,7 @@ export class TrajectoryTracker {
         const message = `Tool '${input.toolName}' failed ${consecutiveCount} times consecutively. Stopping run.`;
         stopConditionEvent = {
           eventId: crypto.randomUUID(),
-          eventType: \"trajectory.stop_condition\",
+          eventType: "trajectory.stop_condition",
           timestamp: new Date().toISOString(),
           runId: this.runId,
           agentId: this.agentId,
@@ -412,11 +412,11 @@ export class TrajectoryTracker {
           stepIndex: this.currentStepIndex,
           payload: {
             version: 1,
-            condition: \"repeated_tool_error\",
+            condition: "repeated_tool_error",
             toolName: input.toolName,
             consecutiveFailures: consecutiveCount,
             message,
-            action: \"abort_run\",
+            action: "abort_run",
           },
         };
       }
@@ -437,7 +437,7 @@ export class TrajectoryTracker {
 
     const event: TrajectoryEvent<TrajectoryToolResultPayload> = {
       eventId: crypto.randomUUID(),
-      eventType: \"trajectory.tool_result\",
+      eventType: "trajectory.tool_result",
       timestamp: new Date().toISOString(),
       runId: this.runId,
       agentId: this.agentId,
@@ -464,12 +464,12 @@ export class TrajectoryTracker {
   }
 
   public recordRunComplete(input: {
-    status: \"completed\" | \"failed\" | \"aborted\";
+    status: "completed" | "failed" | "aborted";
     artifacts?: string[];
   }): TrajectoryEvent<TrajectoryRunCompletePayload> {
     return {
       eventId: crypto.randomUUID(),
-      eventType: \"trajectory.run_complete\",
+      eventType: "trajectory.run_complete",
       timestamp: new Date().toISOString(),
       runId: this.runId,
       agentId: this.agentId,
