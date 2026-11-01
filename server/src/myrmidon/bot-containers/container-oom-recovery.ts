@@ -27,8 +27,8 @@ export type ContainerOomRecoveryDeps = {
     dedupeKey: string;
     owner: { agentId: string };
     slaMinutes: number;
-    nextCheckAt: Date;
-    evidence: { runId: string; agentId: string; oomEvents: unknown[] };
+    nextCheckAt: string;
+    evidence: Record<string, unknown>;
     runbookRef: string;
   }) => Promise<unknown>;
 };
@@ -73,7 +73,7 @@ async function recoverContainerOom(
   const owner = resolveRecoveryOwner({ kind: "resource.oom", projectId: issue.projectId, candidates });
   return deps.ensureRecoveryIssue({
     kind: "resource.oom", sourceIssueId: issue.id, dedupeKey: `resource.oom:${run.id}`,
-    owner: owner.owner, slaMinutes: owner.slaMinutes, nextCheckAt: owner.nextCheckAt,
+    owner: owner.owner as { agentId: string }, slaMinutes: owner.slaMinutes, nextCheckAt: owner.nextCheckAt.toISOString(),
     evidence: {
       runId: run.id, agentId: run.agentId,
       oomEvents: events.map(({ details }) => details),
@@ -81,6 +81,9 @@ async function recoverContainerOom(
     runbookRef: "recovery/resource.oom",
   });
 }
+
+/** Test seam for the orchestration logic; production callers use recoverContainerOomForRun. */
+export const containerOomRecoveryTestUtils = { recoverContainerOom };
 
 /** Converts durable, run-correlated OOM evidence into a deduplicated typed action. */
 export async function recoverContainerOomForRun(db: Db, runId: string) {
