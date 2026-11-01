@@ -157,6 +157,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -533,8 +534,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -2214,8 +2223,12 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
+        if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
         return null;
       }
     }
@@ -6744,6 +6757,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
