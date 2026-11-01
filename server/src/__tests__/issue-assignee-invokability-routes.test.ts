@@ -398,6 +398,44 @@ describe("issue assignee invokability guard", () => {
     },
   );
 
+  it("does not refuse a reviewer's changes-requested hand-back of a pending review stage", async () => {
+    const existing = makeIssue({
+      status: "in_review",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+      executionWorkspacePreference: "reuse_existing",
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: NON_ENGINEER_AGENT_ID },
+        returnAssignee: { type: "agent", agentId: IDLE_AGENT_ID },
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "in_progress", assigneeAgentId: IDLE_AGENT_ID });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_progress" });
+
+    expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
+  });
+
+  it("does not refuse an edit that changes neither status nor assignee of an issue a non-engineer holds", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, title: "Renamed" });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ title: "Renamed" });
+
+    expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
+  });
+
   it("rejects moving a code issue to in_progress when held by a non-engineer", async () => {
     const existing = makeIssue({
       status: "in_review",

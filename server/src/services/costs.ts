@@ -32,8 +32,9 @@ function currentUtcMonthWindow(now = new Date()) {
 async function getMonthlySpendTotal(
   db: Db,
   scope: { companyId: string; agentId?: string | null },
+  now = new Date(),
 ) {
-  const { start, end } = currentUtcMonthWindow();
+  const { start, end } = currentUtcMonthWindow(now);
   const conditions = [
     eq(costEvents.companyId, scope.companyId),
     gte(costEvents.occurredAt, start),
@@ -104,7 +105,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return event;
     },
 
-    summary: async (companyId: string, range?: CostDateRange) => {
+    // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): add unpricedEvents, unpricedTokens, and forecastCents
+    summary: async (companyId: string, range?: CostDateRange, now = new Date()) => {
       const company = await db
         .select()
         .from(companies)
@@ -117,9 +119,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, unpricedEvents, unpricedTokens }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unpricedEvents: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then 1 else 0 end), 0)::integer`,
+          unpricedTokens: sql<number>`coalesce(sum(case when ${costEvents.costStatus} = 'unpriced' then coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0) + coalesce(${costEvents.outputTokens}, 0) else 0 end), 0)::double precision`,
         })
         .from(costEvents)
         .where(and(...conditions));
@@ -130,11 +134,24 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      let forecastCents: number | null = null;
+      const passedDays = now.getUTCDate();
+      if (passedDays >= 2) {
+        const currentMonthSpend = await getMonthlySpendTotal(db, { companyId }, now);
+        if (currentMonthSpend > 0) {
+          const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+          forecastCents = Math.round((currentMonthSpend / passedDays) * daysInMonth);
+        }
+      }
+
       return {
         companyId,
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unpricedEvents: Number(unpricedEvents ?? 0),
+        unpricedTokens: Number(unpricedTokens ?? 0),
+        forecastCents,
       };
     },
 
