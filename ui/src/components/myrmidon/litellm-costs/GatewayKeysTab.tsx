@@ -447,6 +447,21 @@ function KeyBudgetsCard({ companyId }: { companyId: string }) {
     staleTime: 60_000,
   });
 
+  if (error) {
+    return (
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">
+            {t("area.costs-budgets-2.gateway-keys-tab.budgets.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 pb-5">
+          <p className="text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
