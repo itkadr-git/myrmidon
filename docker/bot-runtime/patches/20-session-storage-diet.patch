@@ -1,18 +1,34 @@
 diff --git a/hermes_state_common.py b/hermes_state_common.py
-index 3d36055..b9766bf 100644
+index 3d36055..24c2957 100644
 --- a/hermes_state_common.py
 +++ b/hermes_state_common.py
-@@ -271,6 +271,9 @@ FTS_STORAGE_VERSION = 3
+@@ -259,7 +259,8 @@ AUTO_VACUUM_MIN_FREELIST_RATIO = 0.25
+ #       back EXACTLY what the triggers indexed, so the rank=1
+ #       'integrity-check' probe cannot drift from the stored index (the
+ #       recurring fts5 "checksum mismatch" / leaked-token failures).
+-FTS_STORAGE_VERSION = 3
++#   4 = bound long user wake envelopes in both the base and trigram indexes.
++FTS_STORAGE_VERSION = 4
+
+ # Tool results are often multi-megabyte machine payloads. The base FTS index
+ # stores only a bounded prefix of every tool row; tool rows are skipped by
+@@ -270,11 +271,15 @@ FTS_STORAGE_VERSION = 3
+ # integrity checker and the trigger 'delete'/'update' commands in agreement
  # with the stored index forever.
  FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
-
 +# myrmidon(G1): Large wake envelopes remain in the transcript, not the FTS indexes.
 +FTS_USER_CONTENT_MAX_CHARS = 2_048
-+
+
 
  def _fts_indexed_content_sql(alias: str) -> str:
      return f"""CASE WHEN {alias}.role = 'tool'
-@@ -715,6 +718,8 @@ CREATE VIEW IF NOT EXISTS messages_fts_src AS
+          THEN substr(COALESCE({alias}.content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
++         WHEN {alias}.role = 'user' AND length(COALESCE({alias}.content, '')) > {FTS_USER_CONTENT_MAX_CHARS}
++         THEN substr(COALESCE({alias}.content, ''), 1, {FTS_USER_CONTENT_MAX_CHARS})
+          ELSE {alias}.content END"""
+
+
+@@ -715,6 +720,8 @@ CREATE VIEW IF NOT EXISTS messages_fts_src AS
      SELECT id,
             CASE WHEN role = 'tool'
                  THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
@@ -21,7 +37,7 @@ index 3d36055..b9766bf 100644
                  ELSE content END AS content,
             tool_name, tool_calls
      FROM messages;
-@@ -837,7 +842,9 @@ CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
+@@ -837,7 +844,9 @@ CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
      SELECT m.id, m.role, m.content, m.tool_name
      FROM messages AS m
      JOIN sessions AS s ON s.id = m.session_id
@@ -32,7 +48,7 @@ index 3d36055..b9766bf 100644
 
  CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
      content,
-@@ -848,7 +855,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+@@ -848,7 +857,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
  );
 
  CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
@@ -42,7 +58,7 @@ index 3d36055..b9766bf 100644
     AND EXISTS (SELECT 1 FROM sessions
                 WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL})
     AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-@@ -861,7 +869,8 @@ BEGIN
+@@ -861,7 +871,8 @@ BEGIN
  END;
 
  CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
@@ -52,7 +68,7 @@ index 3d36055..b9766bf 100644
     AND EXISTS (SELECT 1 FROM sessions
                 WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL})
     AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-@@ -885,12 +894,14 @@ WHEN (old.content IS NOT new.content
+@@ -885,12 +896,14 @@ WHEN (old.content IS NOT new.content
  BEGIN
      INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name)
      SELECT 'delete', old.id, old.content, old.tool_name
