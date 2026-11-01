@@ -102,6 +102,7 @@ describe("myrmidon(UI2) route table integration", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "more",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
@@ -139,7 +140,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/fleet")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/fleet")).toHaveLength(1);
-    expect(UI2_PHONE_TABS.some((item) => item.to === "/agents/all")).toBe(true);
+    expect(UI2_PHONE_TABS.some((item) => item.to === "/more")).toBe(true);
   });
 
 
@@ -156,6 +157,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("agent-overview")?.path).toBe("agents/:agentId/overview");
     expect(byKey.get("fleet")?.path).toBe("fleet");
     expect(byKey.get("agents-fleet")?.path).toBe("agents");
+    expect(byKey.get("more")?.path).toBe("more");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
     expect(byKey.get("settings-language")?.path).toBe("company/settings/language");
@@ -163,6 +165,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
+    expect(byKey.get("more")?.legacyPath).toBe("/agents/all");
   });
 
   it("activates exactly one tab at /agents in the six-tab phone grid", () => {
@@ -171,9 +174,14 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.agents"]);
   });
 
-  it("activates only More at /agents/all in the six-tab phone grid", () => {
+  it("activates only More at /more in the six-tab phone grid", () => {
     expect(UI2_PHONE_TABS).toHaveLength(6);
-    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/agents/all"));
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/more"));
+    expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
+  });
+
+  it("activates only More at /{P}/more in the six-tab phone grid", () => {
+    const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, "/ACME/more"));
     expect(active.map((tab) => tab.labelKey)).toEqual(["ui2.nav.more"]);
   });
 

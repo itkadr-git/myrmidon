@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  behaviorSettingRegistry,
+  BehaviorSettingRegistry,
+} from "./myrmidon-behavior-settings-registry.js";
+
+export { behaviorSettingRegistry, BehaviorSettingRegistry };
 
 /**
  * Generic behavior settings registry (myrmidon 1.7, SETTINGS-TO-UI A).
@@ -54,32 +60,11 @@ export interface BehaviorSettingDef<T = unknown> {
   description?: string;
 }
 
-/** Registry of all behavior settings */
-export class BehaviorSettingRegistry {
-  private settings: Map<string, BehaviorSettingDef> = new Map();
 
-  register<T>(definition: BehaviorSettingDef<T>): void {
-    if (this.settings.has(definition.key)) {
-      throw new Error(`Setting with key '${definition.key}' is already registered`);
-    }
-    this.settings.set(definition.key, definition as BehaviorSettingDef);
-  }
 
-  get(key: string): BehaviorSettingDef | undefined {
-    return this.settings.get(key);
-  }
 
-  getAll(): BehaviorSettingDef[] {
-    return Array.from(this.settings.values());
-  }
-
-  getKeys(): string[] {
-    return Array.from(this.settings.keys());
-  }
-}
-
-/** Global registry instance */
-export const behaviorSettingRegistry = new BehaviorSettingRegistry();
+// Runs-queue definitions are registered by the shared barrel after the registry
+// module has initialized, avoiding a circular-import temporal dead zone.
 
 const positiveInteger = (allowZero = false) => (value: unknown): number | null => {
   const num = typeof value === "number" ? value : Number(value);
@@ -87,7 +72,6 @@ const positiveInteger = (allowZero = false) => (value: unknown): number | null =
 };
 const nonEmptyString = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-// An optional text setting: a saved empty string is kept and means "not set".
 const optionalString = (value: unknown): string | null =>
   typeof value === "string" ? value.trim() : null;
 const booleanSetting = (value: unknown): boolean | null => {
@@ -157,7 +141,6 @@ for (const setting of dSettings) {
     validate: setting.validate,
   });
 }
-
 
 export function validateBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;

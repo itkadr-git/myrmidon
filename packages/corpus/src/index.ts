@@ -19,6 +19,18 @@ export { chunkDocumentText } from "./chunking/chunker.js";
 export { createDocumentIngestionPipeline } from "./ingest/embedding-pipeline.js";
 export { createDocumentParserClient } from "./parser/document-parser-client.js";
 export { createHttpDocumentParser } from "./parser/http-document-parser.js";
+export {
+  createDocumentParserAdapterServer,
+  splitTextIntoPages,
+  isUnsupportedFormat,
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_MAX_FILE_BYTES,
+  DEFAULT_CHUNK_MAX_CHARS,
+  type DocumentParserAdapterServer,
+  type DocumentParserAdapterOptions,
+  type DocumentParserAdapterJob,
+  type DocumentParseSubmissionPayload,
+} from "./parser/document-parser-adapter.js";
 export * from "./import/ragflow.js";
 export {
   installPgvectorIntoEmbeddedCluster,
