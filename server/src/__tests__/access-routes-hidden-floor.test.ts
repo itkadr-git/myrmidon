@@ -120,14 +120,14 @@ describe("operator-hidden access admin floor", () => {
     const res = await request(app).get(`/api/admin/users?role=${role}`);
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toBe("Validation error");
+    expect(res.body.error).toBe("Validation error");
   });
 
   it("rejects invalid status filter in the existing error format", async () => {
     const res = await request(app).get("/api/admin/users?status=disabled");
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toBe("Validation error");
+    expect(res.body.error).toBe("Validation error");
   });
 
   it("keeps the routes reachable when the surface is not hidden", async () => {
