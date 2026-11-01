@@ -11,6 +11,30 @@ import {
   isImmediateWakePriority,
 } from "./policy.js";
 
+// myrmidon(OPE-9657 fix, 01.11): the buffer and the delivered digest are bounded. Without a cap a busy
+// agent accumulated 3 812 events (every coalesced P2 wake was rolled back into the buffer), the wake
+// prompt grew to 4-8 M characters and the bot's hermes process was OOM-killed at 2 GB.
+export const MAX_BUFFERED_EVENTS_PER_AGENT = 200;
+export const MAX_DIGEST_EVENTS = 30;
+export const MAX_DIGEST_PAYLOAD_CHARS = 2_000;
+
+function keepNewest(events: BufferedEvent[]): BufferedEvent[] {
+  return events.length > MAX_BUFFERED_EVENTS_PER_AGENT
+    ? events.slice(events.length - MAX_BUFFERED_EVENTS_PER_AGENT)
+    : events;
+}
+
+function compactPayload(payload: BufferedEvent["payload"]): BufferedEvent["payload"] {
+  let text: string;
+  try {
+    text = JSON.stringify(payload ?? {});
+  } catch {
+    return { truncated: true };
+  }
+  if (text.length <= MAX_DIGEST_PAYLOAD_CHARS) return payload;
+  return { truncated: true, preview: text.slice(0, 500) };
+}
+
 export class EventDigestService {
   private buffers = new Map<string, BufferedEvent[]>();
   private preparedDigests = new Map<string, BufferedEvent[]>();
@@ -34,7 +58,7 @@ export class EventDigestService {
     if (isDigestAccumulatedPriority(priority)) {
       const existing = this.buffers.get(event.agentId) ?? [];
       existing.push(buffered);
-      this.buffers.set(event.agentId, existing);
+      this.buffers.set(event.agentId, keepNewest(existing));
     }
 
     return buffered;
@@ -72,10 +96,11 @@ export class EventDigestService {
       return null;
     }
 
-    this.preparedDigests.set(agentId, combined);
+    const bounded = keepNewest(combined);
+    this.preparedDigests.set(agentId, bounded);
     this.buffers.delete(agentId);
 
-    return this.buildDigest(agentId, combined);
+    return this.buildDigest(agentId, bounded);
   }
 
   /**
@@ -95,8 +120,11 @@ export class EventDigestService {
       this.preparedDigests.delete(agentId);
       return;
     }
+    // Only accumulated (P3/P4) events go back to the buffer: a P0-P2 triggering event was already
+    // handled by its own wake (it coalesced into the running execution) and must not pile up.
+    const restorable = prepared.filter((entry) => isDigestAccumulatedPriority(entry.priority));
     const current = this.buffers.get(agentId) ?? [];
-    this.buffers.set(agentId, [...prepared, ...current]);
+    this.buffers.set(agentId, keepNewest([...restorable, ...current]));
     this.preparedDigests.delete(agentId);
   }
 
@@ -195,11 +223,16 @@ export class EventDigestService {
     const oldestEventAt = sorted[0].timestamp;
     const newestEventAt = sorted[sorted.length - 1].timestamp;
 
+    const delivered = sorted
+      .slice(Math.max(0, sorted.length - MAX_DIGEST_EVENTS))
+      .map((entry) => ({ ...entry, payload: compactPayload(entry.payload) }));
+
     return {
       agentId,
       issueId: sorted[sorted.length - 1]?.issueId ?? null,
-      events: sorted,
+      events: delivered,
       eventCount: sorted.length,
+      omittedEventCount: sorted.length - delivered.length,
       oldestEventAt,
       newestEventAt,
     };

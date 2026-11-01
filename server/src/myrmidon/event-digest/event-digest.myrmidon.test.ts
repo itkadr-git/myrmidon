@@ -492,4 +492,33 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
       ]);
     });
   });
+
+  describe("bounded digest (OPE-9657 fix)", () => {
+    it("caps the buffer, the delivered events and large payloads", async () => {
+      const agentId = "agent-flood";
+      const big = { body: "x".repeat(50_000) };
+      for (let i = 0; i < 500; i += 1) {
+        service.recordEvent({ agentId, type: "log", payload: i % 2 === 0 ? big : { i } });
+      }
+      const digest = service.getPendingDigest(agentId);
+      expect(digest?.eventCount).toBe(200);
+      expect(digest?.events).toHaveLength(30);
+      expect(digest?.omittedEventCount).toBe(170);
+      for (const entry of digest?.events ?? []) {
+        expect(JSON.stringify(entry.payload).length).toBeLessThanOrEqual(2_100);
+      }
+    });
+
+    it("does not pile coalesced P2 wakes back into the buffer", async () => {
+      const agentId = "agent-coalesced";
+      const notCreated: WakeupFn = async () => ({ woken: false });
+      for (let i = 0; i < 50; i += 1) {
+        await service.handleAgentEvent(
+          { agentId, type: "issue_commented", payload: { commentId: `c${i}` } },
+          { wakeup: notCreated },
+        );
+      }
+      expect(service.getPendingDigest(agentId)).toBeNull();
+    });
+  });
 });
