@@ -3723,7 +3723,6 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
-    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   } = {},
 ) {
   const router = Router();
