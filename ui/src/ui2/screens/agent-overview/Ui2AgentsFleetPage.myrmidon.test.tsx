@@ -38,6 +38,11 @@ function setSelectValue(select: HTMLSelectElement, value: string) {
   select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+async function actAndSettle(callback: () => void) {
+  flushSync(callback);
+  await settle();
+}
+
 describe("agents fleet screen", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -82,12 +87,11 @@ describe("agents fleet screen", () => {
     await renderScreen();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", undefined);
     // Type in the search box; the request fires only after the 300 ms debounce.
-    setInputValue(searchInput(), "alp");
+    await actAndSettle(() => setInputValue(searchInput(), "alp"));
     await advance(300);
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
     // Pick a status; the query key changes and a filtered request goes out.
-    setSelectValue(statusSelect(), "paused");
-    await settle();
+    await actAndSettle(() => setSelectValue(statusSelect(), "paused"));
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp", status: "paused" });
   });
   it("typing without the debounce delay does not fire a request per keystroke", async () => {
@@ -95,7 +99,7 @@ describe("agents fleet screen", () => {
     await renderScreen();
     mockApi.agentsList.mockClear();
     for (const ch of ["a", "l", "p"]) {
-      setInputValue(searchInput(), searchInput().value + ch);
+      await actAndSettle(() => setInputValue(searchInput(), searchInput().value + ch));
       await advance(100);
     }
     expect(mockApi.agentsList).not.toHaveBeenCalled();
@@ -106,10 +110,9 @@ describe("agents fleet screen", () => {
   it("clearing filters restores the unfiltered request", async () => {
     mockApi.agentsList.mockResolvedValue([]);
     await renderScreen();
-    setInputValue(searchInput(), "alp");
+    await actAndSettle(() => setInputValue(searchInput(), "alp"));
     await advance(300);
-    setSelectValue(statusSelect(), "paused");
-    await settle();
+    await actAndSettle(() => setSelectValue(statusSelect(), "paused"));
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp", status: "paused" });
     const clearButton = container.querySelector<HTMLButtonElement>("button")!;
     clearButton.click();
@@ -122,7 +125,7 @@ describe("agents fleet screen", () => {
       { id: "a", name: "Alpha", role: "lead", status: "active" },
     ]);
     await renderScreen();
-    setInputValue(searchInput(), "alp");
+    await actAndSettle(() => setInputValue(searchInput(), "alp"));
     await advance(300);
     await settle();
     expect(mockApi.agentsList).toHaveBeenLastCalledWith("co1", { q: "alp" });
