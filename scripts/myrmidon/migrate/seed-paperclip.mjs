@@ -891,6 +891,7 @@ export async function main() {
   const report = await seedPaperclip({
     baseUrl: args.baseUrl,
     apiKey: args.apiKey,
+    confirmThrowaway: args.confirmThrowaway,
     passwords,
     concurrency: args.concurrency,
   });
