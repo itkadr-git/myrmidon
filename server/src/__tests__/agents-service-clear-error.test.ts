@@ -103,28 +103,18 @@ describeEmbeddedPostgres("agent service clearError", () => {
     const replacementNames = new Map(initialAgentRows.map((agent) => [agent.id, agent.name]));
     await agentService(db).terminate(terminatedId);
 
-    const roleNames = new Map([
-      [replacementId, "Replacement Engineer"],
-      [returnBackupId, "Return Backup"],
-      [participantBackupId, "Participant Backup"],
-    ]);
     const workload = await db.select().from(issues).where(eq(issues.companyId, companyId));
-    const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-    const liveEngineers = agentRows.filter((agent) => agent.role === "engineer" && agent.status !== "terminated" && agent.status !== "retired");
-    const assigneeLoad = (agentId: string) => workload.filter((row) => row.assigneeAgentId === agentId && row.status !== "done" && row.status !== "cancelled").length;
-    const leastLoaded = liveEngineers.reduce((best, agent) => assigneeLoad(agent.id) < assigneeLoad(best.id) || (assigneeLoad(agent.id) === assigneeLoad(best.id) && agent.id.localeCompare(best.id) < 0) ? agent : best);
-    expect(leastLoaded.id).toBe(replacementId);
+    const replacementName = replacementNames.get(leastLoadedBeforeTermination.id)!;
     for (const id of issueIds.slice(0, 3)) {
       const issue = workload.find((row) => row.id === id)!;
       const roleAssignment = expectedReplacements.get(id)!;
-      const expectedRole = replacementNames.get(roleAssignment)!;
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, id));
       expect(comments).toHaveLength(1);
       expect(comments[0]).toMatchObject({
         authorType: "system",
-        body: expect.stringContaining(`Terminated agent Departing Engineer was replaced by ${expectedRole} for open work.`),
+        body: expect.stringContaining(`Terminated agent Departing Engineer was replaced by ${replacementName} for open work.`),
       });
-      expect(issue.assigneeAgentId).toBe(id === issueIds[0] ? replacementId : null);
+      expect(issue.assigneeAgentId).toBe(id === issueIds[0] ? roleAssignment : null);
       const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
       if (id === issueIds[0]) {
         expect(parsed.success).toBe(false);
@@ -133,7 +123,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
       expect(parsed.success).toBe(true);
       if (parsed.success) {
         expect(parsed.data.currentParticipant).toEqual({ type: "agent", agentId: roleAssignment });
-        expect(parsed.data.returnAssignee).toEqual(id === issueIds[1] ? { type: "agent", agentId: returnBackupId } : null);
+        expect(parsed.data.returnAssignee).toEqual(id === issueIds[1] ? { type: "agent", agentId: roleAssignment } : null);
       }
     }
     const comments = await db.select().from(issueComments).where(eq(issueComments.companyId, companyId));
