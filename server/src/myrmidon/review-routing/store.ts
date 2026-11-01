@@ -822,7 +822,8 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
             typeof metadata[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] === "string"
               ? (metadata[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] as string)
               : (typeof metadata.headSha === "string" ? metadata.headSha : null);
-          if (!taskHeadSha) return true;
+          // Fail-safe: require explicit reviewed head SHA. If missing, do not match.
+          if (!taskHeadSha) continue;
           const a = taskHeadSha.toLowerCase();
           const b = headSha.toLowerCase();
           if (a.startsWith(b) || b.startsWith(a)) return true;
