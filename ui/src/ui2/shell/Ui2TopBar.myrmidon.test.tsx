@@ -135,4 +135,19 @@ describe("myrmidon(HERMES-USAGE-COST) forecast chip", () => {
     expect(text).toContain("$31");
     expect(text).toContain("$100");
   });
+
+  it("renders the unchanged strip values returned by the status endpoint", async () => {
+    const text = await renderWith({
+      colonyActive: 3,
+      colonyTotal: 12,
+      fleetAttention: true,
+      monthSpendCents: 4_200,
+      monthBudgetCents: 12_000,
+      attentionCount: 5,
+    });
+    expect(text).toContain("3/12");
+    expect(text).toContain("$42");
+    expect(text).toContain("$120");
+    expect(text).toContain("5");
+  });
 });
