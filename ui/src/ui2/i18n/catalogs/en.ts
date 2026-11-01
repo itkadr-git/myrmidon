@@ -227,6 +227,9 @@ export const en = {
           raiseAndResume: "Raise and resume",
           title: "Cost incidents",
         },
+        forecast: "Forecast through month-end: {{amount}}",
+        unpriced: "Unpriced",
+        unpricedEvents: "{{count}} events without a price",
         policies: {
           amount: "Amount",
           empty: "No cost policies",

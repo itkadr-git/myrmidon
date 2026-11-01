@@ -221,6 +221,9 @@ export const ru: Ui2Catalog = {
           raiseAndResume: "Поднять и продолжить",
           title: "Инциденты стоимости",
         },
+        forecast: "Прогноз до конца месяца: {{amount}}",
+        unpriced: "Неоценено",
+        unpricedEvents: "{{count}} событий без цены",
         policies: {
           amount: "Сумма",
           empty: "Политик стоимости нет",
