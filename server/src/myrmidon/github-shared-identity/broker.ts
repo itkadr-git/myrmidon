@@ -32,7 +32,7 @@ export async function applyGitHubAppIdentity(
     responsibleUserId: string | null;
     repository: string | null;
   },
-): Promise<{ summary: GitHubCredentialSummary; env: Record<string, string> } | null> {
+): Promise<{ summary: GitHubCredentialSummary; env: Record<string, string>; expiresAt?: string } | null> {
   const secrets = secretService(db);
   const resolution = await resolveGitHubAppCredential(
     db,
@@ -85,6 +85,7 @@ export async function applyGitHubAppIdentity(
           authenticationMode: "managed",
         },
         env: buildGitAuthInvocation(resolution.credential).env,
+        ...(resolution.credential.identitySource === "pat" ? {} : { expiresAt: resolution.expiresAt }),
       };
   }
 }
