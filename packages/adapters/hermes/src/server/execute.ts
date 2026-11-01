@@ -63,6 +63,8 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { renderModelInstructionSection, detectModelFamily } from "./model-instruction-profiles.js";
+import { TrajectoryTracker, type TrajectoryEvent } from "./trajectory-events.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 // myrmidon(P4): run-scoped MCP servers, prompt via stdin, spawn envelope check
 import {
@@ -196,6 +198,10 @@ export function buildPrompt(
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
 
+  const model = cfgString(config.model) || cfgString(ctx.config?.model) || cfgString(context.model) || "";
+  const provider = cfgString(config.provider) || cfgString(ctx.config?.provider) || cfgString(context.provider) || "";
+  const modelDirectivesMarkdown = renderModelInstructionSection(model, provider);
+
   const vars: Record<string, unknown> = {
     agentId: ctx.agent?.id || "",
     agentName,
@@ -220,6 +226,7 @@ export function buildPrompt(
     wakePayloadJson,
     paperclipApiKeyEnv: "PAPERCLIP_API_KEY",
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
+    modelInstructionProfile: modelDirectivesMarkdown,
   };
 
   const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
@@ -230,6 +237,7 @@ export function buildPrompt(
     sessionHandoffMarkdown,
     paperclipTaskMarkdown,
     rendered,
+    modelDirectivesMarkdown,
   ]);
 }
 
@@ -386,6 +394,74 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Trajectory tracking helpers
+// ---------------------------------------------------------------------------
+
+/** Format a trajectory event as a single-line log string. */
+function formatTrajectoryEventLog(
+  event: TrajectoryEvent<Record<string, unknown>>,
+): string {
+  return `[myrmidon] trajectory ${event.eventType} ${JSON.stringify(event.payload)}`;
+}
+
+// ── Trajectory tracking helpers ───────────────────────────────────────────
+
+/**
+ * Extract tool name and error status from a parsed Hermes stdout line.
+ * Returns null when the line is not a tool completion line.
+ */
+function extractToolInfoFromLine(line: string): {
+  toolName: string;
+  isError: boolean;
+  detail: string;
+  duration: string;
+} | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("┊")) return null;
+  const doneMatch = trimmed.match(/^\[done\]\s*┊\s*(.*)$/);
+  if (!doneMatch) return null;
+  const body = doneMatch[1];
+  const durationMatch = body.match(/([\d.]+s)\s*(?:\([\d.]+\))?\s*$/);
+  const duration = durationMatch ? durationMatch[1] : "";
+  const hasError = /\[(?:exit \d+|error|full)\]/.test(body);
+  const withoutDuration = durationMatch
+    ? body.slice(0, body.lastIndexOf(durationMatch[0])).trim()
+    : body;
+  const verbMatch = withoutDuration.match(/^\S+\s+(\S+)\s+(.*)$/);
+  const verb = verbMatch ? verbMatch[1] : withoutDuration;
+  const detail = verbMatch ? verbMatch[2].trim() : "";
+  const nameMap: Record<string, string> = {
+    $: "shell",
+    exec: "shell",
+    terminal: "shell",
+    search: "search",
+    fetch: "fetch",
+    read: "read",
+    write: "write",
+    patch: "patch",
+    plan: "plan",
+    recall: "recall",
+    proc: "process",
+    delegate: "delegate",
+    todo: "todo",
+    memory: "memory",
+    clarify: "clarify",
+    session_search: "recall",
+    code: "execute",
+    execute: "execute",
+    web_search: "search",
+    web_extract: "fetch",
+    read_file: "read",
+    write_file: "write_file",
+    search_files: "search",
+    patch_file: "patch",
+    execute_code: "execute",
+  };
+  const toolName = nameMap[verb.toLowerCase()] || verb || "tool";
+  return { toolName, isError: hasError, detail, duration };
 }
 
 // ---------------------------------------------------------------------------
@@ -657,11 +733,58 @@ export async function execute(
     );
   }
 
+  // ── Initialize trajectory tracker ──────────────────────────────────────
+  const trajectoryEnabled = cfgBoolean(config.trajectoryTracking) !== false;
+  let tracker: TrajectoryTracker | null = null;
+  let stopConditionTriggered = false;
+  if (trajectoryEnabled) {
+    tracker = new TrajectoryTracker({
+      runId: ctx.runId ?? "unknown-run",
+      agentId: ctx.agent?.id ?? "unknown-agent",
+      companyId: ctx.agent?.companyId ?? "unknown-company",
+    });
+    const runStartEvent = tracker.recordRunStart({
+      model,
+      modelFamily: detectModelFamily(model, resolvedProvider),
+      provider: resolvedProvider,
+    });
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runStartEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+  }
+
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
   // Wrap onLog to reclassify benign stderr lines as stdout.
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    if (stream === "stdout" && tracker) {
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const info = extractToolInfoFromLine(line);
+        if (info) {
+          const { event: callEvent } = tracker.recordToolCall({
+            toolName: info.toolName,
+            args: info.detail,
+            inputSummary: info.detail.slice(0, 100),
+          });
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(callEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+          const { event: resultEvent, stopConditionEvent, isStopConditionTriggered } =
+            tracker.recordToolResult({
+              toolName: info.toolName,
+              status: info.isError ? "error" : "success",
+              durationMs: info.duration ? parseFloat(info.duration) * 1000 : 0,
+              error: info.isError ? info.detail : undefined,
+            });
+          await ctx.onLog("stdout", `${formatTrajectoryEventLog(resultEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
+          if (isStopConditionTriggered && stopConditionEvent) {
+            stopConditionTriggered = true;
+            await ctx.onLog(
+              "stdout",
+              `${formatTrajectoryEventLog(stopConditionEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`,
+            );
+          }
+        }
+      }
+    }
     if (stream === "stderr") {
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
@@ -710,6 +833,14 @@ export async function execute(
     await ctx.onLog("stderr", `[hermes] provider_error_as_content model=${model}\n`);
     parsed.errorMessage = "Provider returned an overload or quota error as successful response content";
     parsed.response = undefined;
+  }
+
+  // ── Trajectory run_complete ────────────────────────────────────────────
+  if (tracker) {
+    const runCompleteEvent = tracker.recordRunComplete({
+      status: stopConditionTriggered ? "aborted" : result.exitCode === 0 ? "completed" : "failed",
+    });
+    await ctx.onLog("stdout", `${formatTrajectoryEventLog(runCompleteEvent as unknown as TrajectoryEvent<Record<string, unknown>>)}\n`);
   }
 
   await ctx.onLog(
@@ -761,6 +892,13 @@ export async function execute(
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
     ...(providerErrorAsContent ? { provider_error_as_content: true } : {}),
+    trajectory: tracker
+      ? {
+          stopCondition: stopConditionTriggered ? "repeated_tool_error" : null,
+          totalToolCalls: (tracker as any).totalToolCalls ?? null,
+          totalErrors: (tracker as any).totalErrors ?? null,
+        }
+      : null,
   };
 
   // Store session ID for next run
