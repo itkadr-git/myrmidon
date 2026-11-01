@@ -110,6 +110,54 @@ describe("github operation credentials in-memory cache (OPE-9997)", () => {
     expect(resolveManagedGitHubCredential).toHaveBeenCalledTimes(1);
   });
 
+  it("re-resolves credentials after the expiry safety boundary", async () => {
+    vi.useFakeTimers();
+    vi.mocked(resolveManagedGitHubCredential).mockResolvedValue({
+      credential: {
+        identitySource: "personal",
+        githubIdentity: { login: "expiring-user" },
+        connectionId: "conn-1",
+        grantId: "grant-1",
+        token: "token-expiring",
+        source: "managed_connection",
+        secretName: null,
+        expiresAt: new Date(Date.now() + 6 * 60 * 1000).toISOString(),
+      } as any,
+    } as any);
+
+    await resolveGitHubOperationCredentials(dummyDb, baseInput);
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    await resolveGitHubOperationCredentials(dummyDb, baseInput);
+
+    expect(resolveManagedGitHubCredential).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("denies a cached credential immediately after policy changes from allow to deny", async () => {
+    await resolveGitHubOperationCredentials(dummyDb, baseInput);
+    vi.mocked(allowsGitHubCredentialExport).mockResolvedValue({ allowed: false, reason: "policy denied" });
+
+    await expect(resolveGitHubOperationCredentials(dummyDb, baseInput)).resolves.toMatchObject({
+      status: "unavailable",
+      reason: "policy denied",
+    });
+    expect(resolveManagedGitHubCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not return a cached credential after its connection is revoked", async () => {
+    await resolveGitHubOperationCredentials(dummyDb, baseInput);
+    const where = dummyDb.select().from().where;
+    where.mockResolvedValueOnce([]);
+    vi.mocked(resolveManagedGitHubCredential).mockResolvedValueOnce({
+      configured: true,
+      credential: null,
+      error: "connection revoked",
+    } as any);
+
+    const revoked = await resolveGitHubOperationCredentials(dummyDb, baseInput);
+    expect(revoked.status).not.toBe("available");
+  });
+
   it("re-resolves when identity context responsible user changes (identity steering)", async () => {
     await resolveGitHubOperationCredentials(dummyDb, baseInput);
     expect(resolveManagedGitHubCredential).toHaveBeenCalledTimes(1);
