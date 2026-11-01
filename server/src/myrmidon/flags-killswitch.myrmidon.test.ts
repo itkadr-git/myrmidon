@@ -257,7 +257,8 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_DEVFLOW_NO_MERGES_MS",
     // Edge gateway fetcher (OPE-9642)
     "MYRMIDON_VMEXEC_URL",
-    "MYRMIDON_VMEXEC_TOKEN",    // CHANNEL-ACCESS setting documented in its change fragment.
+    "MYRMIDON_VMEXEC_TOKEN",
+    // CHANNEL-ACCESS setting documented in its change fragment.
     "MYRMIDON_CHANNEL_ACCESS_MODE",
   ]);
 
