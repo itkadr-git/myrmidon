@@ -1,4 +1,5 @@
 -- PERF/OPE-10438: keep swarm failed-run aggregation on narrow indexes.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: the production rollout prebuilds these indexes with CREATE INDEX CONCURRENTLY; this transactional migration is a no-op there and only serves fresh, small databases.
 -- The queue probes recent terminal runs by company/status and then applies the
 -- finished_at window. The issue and activity anti-joins previously had to scan
 -- rows because their existing indexes began with unrelated company columns.
