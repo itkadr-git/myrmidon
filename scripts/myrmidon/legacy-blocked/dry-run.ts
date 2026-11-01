@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, or } from "drizzle-orm";
 import { issueComments, issueRelations, issues } from "../../../packages/db/src/index.js";
+import { createLegacyBlockedImportKey } from "../../../packages/shared/src/legacy-blocked.js";
 import { listLegacyBlocked } from "./inventory.js";
 import {
   classifyLegacyBlocked,
@@ -15,6 +16,12 @@ import {
   type ReconciliationReport,
   type ReconciliationResult,
 } from "./report.js";
+
+const resolvedBlockerStatuses = new Set(["done", "cancelled"]);
+
+function normalized(value: string | undefined): string {
+  return value?.trim().toLowerCase().replace(/[ -]+/g, "_") ?? "";
+}
 
 export type DryRunOptions = {
   outputFile?: string;
@@ -58,13 +65,17 @@ async function extractIssueFacts(
 
   const relations = await db
     .select({
-      blockerIssueId: issueRelations.issueId,
+      issueId: issueRelations.issueId,
+      relatedIssueId: issueRelations.relatedIssueId,
       type: issueRelations.type,
     })
     .from(issueRelations)
-    .where(eq(issueRelations.relatedIssueId, issue.id));
+    .where(or(eq(issueRelations.relatedIssueId, issue.id), eq(issueRelations.issueId, issue.id)));
 
-  const blockerIds = relations.map((r: { blockerIssueId: string }) => r.blockerIssueId).filter(Boolean);
+  const blockerIds = relations
+    .filter((r: { issueId: string; relatedIssueId: string; type: string }) => r.type === "blocks" && r.relatedIssueId === issue.id)
+    .map((r: { issueId: string }) => r.issueId)
+    .filter((id, index, ids) => ids.indexOf(id) === index);
   let blockerIssues: Array<{ id: string; status: string; identifier: string | null }> = [];
   if (blockerIds.length > 0) {
     blockerIssues = await db
@@ -78,22 +89,31 @@ async function extractIssueFacts(
   }
 
   const blockerMap = new Map(blockerIssues.map((b) => [b.id, b]));
-  const links: LegacyBlockedLinkFact[] = relations.map((r: { blockerIssueId: string; type: string }) => {
-    const blocker = blockerMap.get(r.blockerIssueId);
+  const links: LegacyBlockedLinkFact[] = relations.map((r: { issueId: string; relatedIssueId: string; type: string }) => {
+    const blockerIssueId = r.relatedIssueId === issue.id ? r.issueId : r.relatedIssueId;
+    const blocker = blockerMap.get(blockerIssueId);
     return {
       type: "issue" as const,
       relation: r.type,
       status: blocker?.status ?? "unknown",
-      label: blocker?.identifier ?? blocker?.id ?? r.blockerIssueId,
+      label: blocker?.identifier ?? blocker?.id ?? blockerIssueId,
     };
   });
 
+  const activeBlockerIds = blockerIssues
+    .filter((blocker) => !resolvedBlockerStatuses.has(normalized(blocker.status)))
+    .map((blocker) => blocker.id);
+
   return {
     taskStatus: issue.status,
-    latestComments: comments
-      .map((c: { body: unknown }) => (typeof c.body === "string" ? c.body : ""))
-      .filter((b: string) => b.length > 0),
+    latestComments: [
+      ...(typeof issue.description === "string" && issue.description.trim() ? [issue.description.trim()] : []),
+      ...comments
+        .map((c: { body: unknown }) => (typeof c.body === "string" ? c.body : ""))
+        .filter((b: string) => b.length > 0),
+    ],
     links,
+    blockerIds: activeBlockerIds,
   };
 }
 
@@ -129,13 +149,9 @@ export async function runLegacyBlockedDryRun(
 
     const proposedOwner =
       (typeof issue.assigneeAgentId === "string" && issue.assigneeAgentId.trim()) ||
-      (typeof issue.assigneeUserId === "string" && issue.assigneeUserId.trim()) ||
-      (typeof issue.responsibleUserId === "string" && issue.responsibleUserId.trim()) ||
-      (typeof issue.createdByAgentId === "string" && issue.createdByAgentId.trim()) ||
-      (typeof issue.createdByUserId === "string" && issue.createdByUserId.trim()) ||
-      "legacy-blocked-owner";
+      (typeof issue.assigneeUserId === "string" && issue.assigneeUserId.trim());
 
-    const proposedSlaMinutes = classification.class === "unknown" ? undefined : 60;
+    const proposedSlaMinutes = classification.class === "recovery" && proposedOwner ? 60 : undefined;
 
     results.push({
       issueId: issue.id,
@@ -143,6 +159,8 @@ export async function runLegacyBlockedDryRun(
       evidence: classification.evidence,
       proposedOwner: classification.class === "unknown" ? undefined : proposedOwner,
       proposedSlaMinutes,
+      oldBlockers: facts.blockerIds ?? [],
+      importKey: createLegacyBlockedImportKey(issue.id),
     });
   }
 
