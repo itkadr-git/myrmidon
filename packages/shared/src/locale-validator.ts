@@ -112,7 +112,7 @@ export function parseCatalogJson(
     };
   }
 
-  const text = typeof content === "string" ? content : content.toString("utf8");
+  const text = typeof content === "string" ? content : new TextDecoder("utf-8").decode(content);
   try {
     const parsed = JSON.parse(text);
     if (!isPlainObject(parsed)) {
