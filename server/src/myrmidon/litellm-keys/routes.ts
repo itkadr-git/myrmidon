@@ -16,7 +16,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,
   createAgentGatewayKey,
@@ -31,6 +31,7 @@ import {
 import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
 import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
 import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
+import { createLiteLlmAuditService } from "../litellm-audit/service.js";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
@@ -41,6 +42,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const router = Router();
   const env = input.env ?? process.env;
   const settings = () => readGatewayKeySettings(env);
+  const auditService = createLiteLlmAuditService(db);
   const disabled = (res: Response) => {
     res.status(503).json({ error: "LLM gateway key management is not enabled", enabled: false });
   };
@@ -80,6 +82,13 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       ? (req.body.models as unknown[]).map(String)
       : undefined;
     const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models });
+    const actor = getActorInfo(req);
+    await auditService.record({
+      companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
+      actor: { type: actor.actorType, id: actor.actorId }, before: null,
+      after: { agentId, allowedModels: created.view.allowedModels },
+      summary: `Created gateway key for agent ${agentId}`, canRollback: false,
+    });
     // The value is answered exactly once, to the board member who asked for it.
     res.status(201).json({ ...created.view, value: created.value });
   });
@@ -93,7 +102,20 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    res.json(await rotateAgentGatewayKey(input.deps, { companyId, agentId }));
+    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId });
+    const actor = getActorInfo(req);
+    await auditService.record({
+      companyId,
+      category: "keys",
+      action: "litellm_key_rotated",
+      entityId: agentId,
+      actor: { type: actor.actorType, id: actor.actorId },
+      before: { rotated: false },
+      after: { rotated: true, allowedModels: rotated.view.allowedModels },
+      summary: `Rotated gateway key for agent ${agentId}`,
+      canRollback: false,
+    });
+    res.json(rotated);
   });
 
   const handleRevoke = async (req: Request, res: Response) => {

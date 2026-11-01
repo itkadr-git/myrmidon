@@ -38,7 +38,7 @@ import {
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest, HttpError } from "../../errors.js";
-import { assertCompanyAdmin } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import type {
   ModelProviderActivityEntry,
   ModelProviderModelView,
@@ -94,6 +94,8 @@ export interface ModelProviderRoutesWithSyncDeps {
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;
+  /** Optional change-log listing function. */
+  listChangeLog?: (companyId: string) => Promise<unknown[]>;
 }
 
 function bodyOf(req: Request): Record<string, unknown> {
@@ -121,6 +123,11 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   const router = Router();
   const activity = (entry: ModelProviderActivityEntry) =>
     deps.recordActivity ? deps.recordActivity(entry) : Promise.resolve();
+
+  const actorFor = (req: Request) => {
+    const info = getActorInfo(req);
+    return { type: info.actorType, id: info.actorId };
+  };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
     const result = schema.safeParse(body);
@@ -157,7 +164,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     const provider = await deps.service.createProvider({
       companyId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(201).json(provider);
   });
@@ -165,9 +172,11 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAdmin(req, companyId);
+    const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+      changeLog,
     });
   });
 
@@ -181,7 +190,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
         companyId,
         providerId,
         key: body.key,
-        activity: (entry) => activity(entry),
+        activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
       });
       // The credential name the gateway reads is unchanged (part A rotates
       // the store under the same name); re-register the enabled models so the
@@ -197,7 +206,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       companyId,
       providerId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.json(view);
   });
@@ -212,7 +221,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     await deps.service.removeProvider({
       companyId,
       providerId,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     const enabledNames = models.filter((m) => m.enabled).map((m) => m.litellmModelName);
     if (enabledNames.length > 0) {
@@ -242,6 +251,7 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       companyId,
       providerId,
       models: body.models,
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
 
     const toggled = body.models.filter((m) => m.enabled !== undefined);
