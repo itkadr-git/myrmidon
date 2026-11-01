@@ -90,7 +90,7 @@ export async function listUsers(db: Db): Promise<ManagedUser[]> {
     .sort((a, b) => a.email.localeCompare(b.email));
 }
 
-async function getUser(db: Db, userId: string) {
+export async function getUser(db: Db, userId: string) {
   const row = await db
     .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
     .from(authUsers)

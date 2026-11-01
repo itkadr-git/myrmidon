@@ -93,12 +93,15 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
-
+const explicitOpenApiCoverageExclusions = new Set<string>([
+  "audit.ts",
+  // Mounted directly by app.ts; its routes are documented in openapi.ts.
+  "admin-assistant.ts",
+]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
-  // This endpoint is authenticated by the provider signature rather than by a
-  // Paperclip board/agent credential. It intentionally stays out of the public
-  // board API document, while this exact exclusion keeps route coverage honest.
+  // These webhook handlers are mounted outside the scanner's route-file map.
+  // Their provider signatures intentionally keep them out of the public board
+  // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
@@ -137,6 +140,11 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
   "POST /api/myrmidon/companies/{companyId}/knowledge/import",
   "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // admin-assistant routes are mounted directly by app.ts, outside the
+  // scanner's route-file scope; their OpenAPI entries are contract-first here.
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/health",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
 function createApp() {
