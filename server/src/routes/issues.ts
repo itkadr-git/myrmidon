@@ -13915,12 +13915,34 @@ export function issueRoutes(
       // on non-exempt statuses are also gated. Non-engineers who already hold the issue
       // may only move it to blocked, todo, or cancelled.
       const targetStatus = typeof req.body.status === "string" ? req.body.status : existing.status;
-      const targetAssigneeAgentId = requestedAssigneeAgentId;
+      // A pending review/approval stage held by its participant hands the issue back to the
+      // stage's return assignee when the participant moves it to in_progress (changes
+      // requested). Gate that assignee, not the reviewer: otherwise every REQUEST CHANGES
+      // by a reviewer on a code task was refused with issue_requires_engineer (01.11).
+      const stageState = existing.executionState as Record<string, unknown> | null;
+      const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
+      const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
+      const stageHandBackAssigneeId =
+        stageState?.status === "pending" &&
+        (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
+        normalizedAssigneeAgentId === undefined &&
+        targetStatus === "in_progress" &&
+        stageParticipant?.type === "agent" &&
+        typeof stageParticipant?.agentId === "string" &&
+        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageReturnAssignee?.type === "agent" &&
+        typeof stageReturnAssignee?.agentId === "string"
+          ? stageReturnAssignee.agentId
+          : null;
+      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
+      // Only a PATCH that sets the status gates "in_progress on a non-coding role"; an edit that
+      // changes neither status nor assignee (labels, title, a comment) is not refused for the
+      // current holder — GUARD-RETURN returns such holds on its own.
       const movingToOrKeptInCodeInProgress =
-        targetStatus === "in_progress" && targetAssigneeAgentId != null;
+        typeof req.body.status === "string" && targetStatus === "in_progress" && targetAssigneeAgentId != null;
 
       if (isAssigneeChange || movingToOrKeptInCodeInProgress) {
         await assertEngineerForCodeIssue({
