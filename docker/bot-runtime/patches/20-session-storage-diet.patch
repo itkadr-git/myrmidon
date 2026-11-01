@@ -1,0 +1,54 @@
+diff --git a/hermes_state_common.py b/hermes_state_common.py
+--- a/hermes_state_common.py
++++ b/hermes_state_common.py
+@@ -270,6 +270,10 @@
+ # integrity checker and the trigger 'delete'/'update' commands in agreement
+ # with the stored index forever.
+ FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
++
++# Long board wake envelopes are retained for transcript replay but excluded from
++# full-text indexes; session search targets conversational content.
++FTS_USER_CONTENT_MAX_CHARS = 2_048
+
+
+ def _fts_indexed_content_sql(alias: str) -> str:
+@@ -715,6 +719,8 @@
+     SELECT id,
+            CASE WHEN role = 'tool'
+                 THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
++                WHEN role = 'user' AND length(COALESCE(content, '')) > {FTS_USER_CONTENT_MAX_CHARS}
++                THEN substr(COALESCE(content, ''), 1, {FTS_USER_CONTENT_MAX_CHARS})
+                 ELSE content END AS content,
+            tool_name, tool_calls
+     FROM messages;
+@@ -837,7 +843,9 @@
+     SELECT m.id, m.role, m.content, m.tool_name
+     FROM messages AS m
+     JOIN sessions AS s ON s.id = m.session_id
+-    WHERE m.role <> 'tool' AND {fts_trigram_session_sql('s')};
++    WHERE (m.role = 'assistant'
++        OR (m.role = 'user' AND length(COALESCE(m.content, '')) <= {FTS_USER_CONTENT_MAX_CHARS}))
++      AND {fts_trigram_session_sql('s')};
+
+ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
+     content,
+@@ -848,7 +856,8 @@
+ );
+
+ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
+-WHEN new.role <> 'tool'
++WHEN (new.role = 'assistant'
++      OR (new.role = 'user' AND length(COALESCE(new.content, '')) <= {FTS_USER_CONTENT_MAX_CHARS}))
+    AND EXISTS (SELECT 1 FROM sessions
+                WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL})
+    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+@@ -861,7 +870,8 @@
+ END;
+
+ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
+-WHEN old.role <> 'tool'
++WHEN (old.role = 'assistant'
++      OR (old.role = 'user' AND length(COALESCE(old.content, '')) <= {FTS_USER_CONTENT_MAX_CHARS}))
+    AND EXISTS (SELECT 1 FROM sessions
+                WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL})
+    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
