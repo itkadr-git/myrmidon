@@ -135,6 +135,20 @@ describe("admin assistant routes and health collection", () => {
   describe("adminAssistantRoutes endpoints", () => {
     it("requires instance admin for unscoped cluster health", async () => {
       const app = express();
+      app.use((req, _res, next) => {
+        req.actor = {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          userId: null,
+          userEmail: null,
+          source: "agent_key",
+          isInstanceAdmin: false,
+          companyIds: ["company-1"],
+          memberships: [],
+        };
+        next();
+      });
       app.use(adminAssistantRoutes(mockDb({})));
       app.use(errorHandler);
 
@@ -165,14 +179,28 @@ describe("admin assistant routes and health collection", () => {
       expect(res.status).toBe(403);
     });
 
-    it("preserves health collection for a company-scoped request", async () => {
+    it("requires company access for a company-scoped request", async () => {
       const app = express();
+      app.use((req, _res, next) => {
+        req.actor = {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "other-company",
+          userId: null,
+          userEmail: null,
+          source: "agent_key",
+          isInstanceAdmin: false,
+          companyIds: ["other-company"],
+          memberships: [],
+        };
+        next();
+      });
       app.use(adminAssistantRoutes(mockDb({})));
       app.use(errorHandler);
 
       const res = await request(app).get("/companies/company-1/admin-assistant/cluster-health");
 
-      expect(res.status).not.toBe(500);
+      expect(res.status).toBe(403);
     });
 
     it("rejects arbitrary disk paths", async () => {
