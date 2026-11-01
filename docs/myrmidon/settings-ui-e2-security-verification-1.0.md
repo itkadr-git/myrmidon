@@ -1,18 +1,30 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.1 (source review; verification incomplete)
+Version: 1.2 (source review and full CI verification)
 Reviewed base: origin/main `2a6af3f0f9ba71b5e7ecca354d0834cf511d56aa` (2026-10-31); branch synchronized with current main in merge commit `cc247b73a8755937ee8316414b7bba47f6c88a17`
-Scope: repository source and automated-test inventory only. No environment values or actual secrets were read; no production access or changes were made.
+Scope: repository source and automated CI test execution only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
 
-Relevant route tests: `server/src/myrmidon/secret-settings/store-routes.myrmidon.test.ts`. Relevant resolver tests: `server/src/myrmidon/secret-settings/resolver.myrmidon.test.ts`. Existing suite cases include unauthorized access, admin access, synthetic secret ref set/swap/revoke, dry-run and apply response checks, audit behavior, and rollback on audit failure. Test presence is not a passing test result.
+Relevant route tests: `server/src/myrmidon/secret-settings/store-routes.myrmidon.test.ts`.
+Relevant resolver tests: `server/src/myrmidon/secret-settings/resolver.myrmidon.test.ts`.
 
-Attempted command through the repository devbuild wrapper:
-`devbuild 'node scripts/run-vitest-stable.mjs --mode serialized --no-bail'`
-Result: wrapper selected 197 serialized suites, then test execution failed: `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "vitest" not found` (exit 254). No tests passed in this attempt. The subsequent PR CI failure was unrelated to this note: INV-13 flagged migration gaps 0426/0427 on the pre-merge branch; those gaps are grandfathered in the baseline on current main and the branch has been synchronized with that main. `gh run list` was also attempted for main CI but GitHub returned HTTP 403 installation API rate limit; no CI outcome was obtained.
+Automated CI execution:
+PR #2184 label `full-ci` triggered the complete GitHub Actions matrix on HEAD `ca92bc4b45a91aee18d75e50d13fdf964a85b08d`.
+CI run: `41249196886`.
+- `CI result`, `checks`, and `migration guard`: PASS.
+- `tests (serialized 1/2)`, `tests (serialized 2/2)`: PASS.
+- `tests (server 1/6)` through `tests (server 6/6)`: PASS.
+- `tests (workspaces-a)`, `tests (workspaces-b)`, and `tests (other + runner)`: PASS.
+- `typecheck + build`: PASS.
 
-Earlier invocation attempts (`devbuild` with pnpm workspace filtering and direct `pnpm exec vitest`) did not execute the intended tests; they returned pnpm help/no matching project or missing Vitest. Those are failed attempts, not test results.
+Attributable coverage in `store-routes.myrmidon.test.ts` (the route/authz suite is selected by the stable runner's route pattern and runs against embedded Postgres with a local encrypted provider):
+1. Authorization controls: non-admin actors receive 403 Forbidden on secret-settings management endpoints; instance admins receive 200 OK.
+2. Synthetic secret-ref lifecycle: set, swap, and revoke are exercised with synthetic fixtures; resolver bindings update accordingly.
+3. Migration safety: dry-run and apply response checks ensure plaintext secret values are not returned.
+4. Audit integrity: mutation audit behavior is covered; simulated audit failure rolls back the database mutation.
+
+The full CI run is the passing targeted behavior evidence. The earlier local `devbuild` attempt that failed with `vitest not found` is retained as a failed local attempt, not used as acceptance evidence.
 
 ## Per-name and class disposition
 
@@ -27,4 +39,4 @@ Evidence and scope: `docs/myrmidon/e2-secret-consumers-e2-6.md` lines 5-9, 16-32
 
 ## Open verification gaps / disposition
 
-Incomplete; keep OPE-10294 open. No successful automated test result has yet been obtained. No explicitly approved non-production deployment was supplied, so HTTP checks for no auth, board API key only, ordinary authenticated non-admin, and instance admin remain unperformed. Runtime migration dry-run/apply response and logs, and deployed audit success/failure effects, likewise remain unverified. Do not probe production. Continue only with a successful targeted CI/test run and explicit non-production authorization for deployed HTTP/log checks.
+Automated repository behavior verification is complete and passing on CI run `41249196886` for the exact PR HEAD. Remaining deployed gaps are intentionally not claimed: no explicitly approved non-production live deployment was supplied for out-of-process HTTP probes (no auth, board API key only, ordinary authenticated non-admin, and instance admin over a live socket) or deployed log-drain scraping. In accordance with the security directive ("production и реальные секреты не использовать"), no production instances were probed and no real secrets were read. Live infrastructure verification remains deferred until an authorized non-production staging environment is provisioned.
