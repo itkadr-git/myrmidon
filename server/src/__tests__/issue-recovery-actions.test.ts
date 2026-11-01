@@ -4050,11 +4050,20 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       wakePolicy: { type: "manual" },
     });
 
+    const resubmitRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: resubmitRunId,
+      issueId: sourceIssueId,
+      status: "running",
+    });
+
     const app = createApp({
       type: "agent",
       agentId: coderId,
       companyId,
-      runId: randomUUID(),
+      runId: resubmitRunId,
       source: "agent_jwt",
     });
 
