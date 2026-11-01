@@ -320,6 +320,7 @@ jobs:
             --base-url http://127.0.0.1:3100 \
             --confirm-throwaway 127.0.0.1 \
             --passwords-file "$RUNNER_TEMP/seed/passwords.txt" \
+            --concurrency 2 \
             --verify \
             --out "$RUNNER_TEMP/seed/seed-report.json"
 
