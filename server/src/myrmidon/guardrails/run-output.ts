@@ -86,6 +86,7 @@ export async function guardrailsOnRunOutput(
     companyId: input.companyId,
     runId: input.runId,
     issueId: input.issueId,
+    agentId: input.agentId,
     text: input.text,
     now: input.now ?? (() => new Date()),
     env: input.env,
