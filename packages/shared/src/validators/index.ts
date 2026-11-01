@@ -1,4 +1,8 @@
 export {
+  haStandbyStatusSchema,
+} from "./ha.js";
+
+export {
   connectionsSearchInputSchema,
   connectionRequestInputSchema,
   completeConnectionIntentSchema,
