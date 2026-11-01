@@ -683,8 +683,7 @@ export async function seedPaperclip(options = {}) {
     report.counts.documents++;
     report.counts.documentRevisions++;
 
-    // Revision 2
-    await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
+    const revision2 = await client.request(`/api/issues/${issue.id}/documents/${docKey}`, {
       method: "PUT",
       body: {
         title: `Техническая спецификация #${dIdx + 1}`,
@@ -694,6 +693,8 @@ export async function seedPaperclip(options = {}) {
         baseRevisionId,
       },
     });
+    const revision2Id = revision2.data?.latestRevisionId || revision2.data?.revisionId || revision2.data?.id;
+    if (!revision2Id) throw new Error(`Document revision 2 for ${issue.id} did not return a revision id`);
     report.counts.documentRevisions++;
 
     // Revision 3
@@ -704,7 +705,7 @@ export async function seedPaperclip(options = {}) {
         format: "markdown",
         body: `# Архитектурная спецификация задачи ${issue.identifier || issue.id}\n\n## 1. Введение\nФинальная утвержденная редакция требований к модулю с детализацией контрактов API.\n\n## 2. Границы применения\nПрименяется для внутренних микросервисов платформы.\n\n## 3. Модель данных\nВсе входящие структуры валидируются строгой схемой.\n\n## 4. SLA и параметры надёжности\nЦелевой перцентиль p99 времени отклика не превышает 150 мс.`,
         changeSummary: "Финальное утверждение спецификации с показателями SLA",
-        baseRevisionId,
+        baseRevisionId: revision2Id,
       },
     });
     report.counts.documentRevisions++;
