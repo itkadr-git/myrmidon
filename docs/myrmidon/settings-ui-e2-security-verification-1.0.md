@@ -1,7 +1,7 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.6 (source review and full CI verification)
-Reviewed base: origin/main `3c4dcaf4268350a8ee1a918db6712465d17f7523` (2026-11-01); branch synchronized with current main in merge commit `REPLACE_AFTER_COMMIT`
+Version: 1.7 (source review and full CI verification)
+Reviewed base: origin/main `3c4dcaf4268350a8ee1a918db6712465d17f7523` (2026-11-01); branch synchronized with current main in merge commit `68e886989`
 Scope: repository source and automated CI test execution only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
@@ -14,9 +14,9 @@ PR #2184 label `full-ci` triggered the complete GitHub Actions matrix.
 - Passing evidence: run `41249196886` on HEAD `ca92bc4b4`; all server, serialized, workspace, migration, typecheck/build, and checks lanes passed.
 - Later full run `41286731155` on HEAD `8384b08ad` passed most lanes but exposed unrelated upstream failures in continuation-dedupe and agent-memory settings.
 - Exact-head run `41288698880` on HEAD `4d497edd3` passed checks, go tools, migration guard, typecheck/build, all server shards, workspace shard 2, serialized shard 2, and other/runner. It failed only workspace shard 1 on `ui/src/components/Layout.test.tsx > renders a mobile company settings selector on company settings routes` and serialized shard 1 on the unrelated `agent-memory/settings-routes.myrmidon.test.ts` contract mismatch.
-- The agent-memory failure is upstream: the test expects `accessMode`/`enabledRoles`, while shared `applyAgentMemoryPatch` handles only `enabled`, `apiUrl`, `keySecretName`, and model fields. Do not weaken that test or expand the unrelated product contract in this PR.
-- The Layout failure is also outside this PR's files and is tracked against current main. The branch is synchronized with current main at `3c4dcaf4268350a8ee1a918db6712465d17f7523`; no SETTINGS-UI source regression was identified.
-
+- Run `41291124745` on final recorded HEAD `d080be74c103b119fd290ead384fa511196d9559` is FAILURE (14 passed, 3 failed, 6 skipped/running at board's completion snapshot). Failures: serialized 1/2 `agent-memory/settings-routes.myrmidon.test.ts > stores a patch and reports it as in force` (expected object has extra fields); workspaces-a `Layout.test.tsx > renders a mobile company settings selector on company settings routes` (expected null not to be null); workspaces-b `sandbox-callback-bridge.test.ts > drains already-queued requests on stop` timed out at 5 seconds.
+- The first two failures are outside PR files and consistent with pre-existing failures on main: main run `41287914100` at `4e00ba9a3` also failed serialized 1/2 and workspaces-a. Main's CI at exact branch base `3c4dcaf42` was still running when checked; no passing result for those lanes was verified. The sandbox timeout is a flaky timeout failure; earlier CI runs passed this suite. No SETTINGS-UI source regression was identified.
+- Do not weaken unrelated tests or expand product scope in this verification PR. Exact-head CI is not green; review handoff is therefore not eligible until CI is green.
 
 CI must be green on the final pushed head before review handoff.
 
@@ -26,7 +26,7 @@ Attributable coverage in `store-routes.myrmidon.test.ts` (the route/authz suite 
 3. Migration safety: dry-run and apply response checks ensure plaintext secret values are not returned.
 4. Audit integrity: mutation audit behavior is covered; simulated audit failure rolls back the database mutation.
 
-The full CI run is the passing targeted behavior evidence. The earlier local `devbuild` attempt that failed with `vitest not found` is retained as a failed local attempt, not used as acceptance evidence.
+Passing full-CI run `41249196886` executed these suites green on HEAD `ca92bc4b4`; the PR diff itself touches no source under test. The later exact-head failures listed above are all outside this PR's files. The earlier local `devbuild` attempt that failed with `vitest not found` is retained as a failed local attempt, not used as acceptance evidence.
 
 ## Per-name and class disposition
 
