@@ -55,7 +55,6 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
   const dryRun = await runLegacyBlockedDryRun(db);
   const rows: LegacyBlockedApplyRow[] = [];
   let changed = 0;
-  const factory = issueRecoveryActionService(db);
   for (const row of dryRun.report.rows) {
     const parsedReportRow = legacyBlockedReportRowSchema.safeParse(row);
     if (!parsedReportRow.success) {
@@ -108,7 +107,7 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
           eq(agents.id, recoveryOwner.agentId), eq(agents.companyId, source.companyId),
         ));
         if (!validOwner) return { outcome: "skipped" as const, detail: "Recovery owner is not in source company; retained blocked." };
-        const result = await factory.ensureRecoveryIssue({
+        const result = await issueRecoveryActionService(tx).ensureRecoveryIssue({
           kind: recoveryKind,
           sourceIssueId: source.id,
           dedupeKey: buildRecoveryDedupeKey({ kind: recoveryKind, scope: source.companyId, cause: validRow.importKey }),
