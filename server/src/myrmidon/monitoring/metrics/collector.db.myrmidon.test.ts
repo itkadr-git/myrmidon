@@ -11,6 +11,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  agentWakeupRequests,
   issueClaims,
   issueRecoveryActions,
   issues,
@@ -47,6 +48,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
+    await db.delete(agentWakeupRequests);
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
@@ -110,6 +112,19 @@ describeEmbeddedPostgres("metrics collector", () => {
     });
     return runId;
   }
+
+  it("counts deferred issue executions older than thirty minutes", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    await db.insert(agentWakeupRequests).values([
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "cancelled", requestedAt: new Date(NOW.getTime() - 40 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000), runId: randomUUID() },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 31 * 60_000), createdAt: new Date(NOW.getTime() - 31 * 60_000) },
+      { companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedAt: new Date(NOW.getTime() - 29 * 60_000), createdAt: new Date(NOW.getTime() - 29 * 60_000) },
+    ]);
+    const snapshot = await collectMetricsSnapshot({ db, now: () => NOW, errorWindowSec: 3600, latencyWindowSec: 3600 });
+    expect(snapshot.deferredIssueExecutionOver30m).toBe(1);
+  });
 
   it("reads active recovery age and counts manually seeded addressless actions", async () => {
     const companyId = await seedCompany();
