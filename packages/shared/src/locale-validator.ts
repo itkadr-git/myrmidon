@@ -131,10 +131,10 @@ export function parseCatalogJson(
 }
 
 export function extractPlaceholders(text: string): string[] {
-  const doubleMatches = Array.from(text.matchAll(/\\{\\{\\s*([a-zA-Z0-9_.-]+)\\s*\\}\\}/g), (m) => m[1]);
+  const doubleMatches = Array.from(text.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), (m) => m[1]);
   // Also collect single {param} placeholders if not inside {{...}}
-  const withoutDoubles = text.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, "");
-  const singleMatches = Array.from(withoutDoubles.matchAll(/\\{([a-zA-Z0-9_.-]+)\\}/g), (m) => m[1]);
+  const withoutDoubles = text.replace(/\{\{\s*[a-zA-Z0-9_.-]+\s*\}\}/g, "");
+  const singleMatches = Array.from(withoutDoubles.matchAll(/\{([a-zA-Z0-9_.-]+)\}/g), (m) => m[1]);
   return [...new Set([...doubleMatches, ...singleMatches])].sort();
 }
 
@@ -169,9 +169,9 @@ export function flattenCatalog(
 
 function hasDisallowedPayloads(value: string, baseValue?: string): string[] {
   const checks: Array<[boolean, boolean, string]> = [
-    [/<script\\b/i.test(value), Boolean(baseValue && /<script\\b/i.test(baseValue)), "<script tag"],
-    [/\\son[a-zA-Z]+\\s*=/i.test(value), Boolean(baseValue && /\\son[a-zA-Z]+\\s*=/i.test(baseValue)), "event-handler attribute"],
-    [/\\b(?:javascript|data|vbscript)\\s*:/i.test(value), Boolean(baseValue && /\\b(?:javascript|data|vbscript)\\s*:/i.test(baseValue)), "javascript:/data: URL"],
+    [/<script\b/i.test(value), Boolean(baseValue && /<script\b/i.test(baseValue)), "<script tag"],
+    [/\son[a-zA-Z]+\s*=/i.test(value), Boolean(baseValue && /\son[a-zA-Z]+\s*=/i.test(baseValue)), "event-handler attribute"],
+    [/\b(?:javascript|data|vbscript)\s*:/i.test(value), Boolean(baseValue && /\b(?:javascript|data|vbscript)\s*:/i.test(baseValue)), "javascript:/data: URL"],
   ];
 
   return checks
@@ -181,13 +181,13 @@ function hasDisallowedPayloads(value: string, baseValue?: string): string[] {
 
 function checkPlaceholderSyntax(value: string): string | null {
   // Check for unmatched {{ without }}
-  const textWithoutValidDoubles = value.replace(/\\{\\{\\s*[a-zA-Z0-9_.-]+\\s*\\}\\}/g, "");
-  if (/\\{\\{/.test(textWithoutValidDoubles) || /\\}\\}/.test(textWithoutValidDoubles)) {
+  const textWithoutValidDoubles = value.replace(/{{\s*[a-zA-Z0-9_.-]+\s*}}/g, "");
+  if (/{{/.test(textWithoutValidDoubles) || /}}/.test(textWithoutValidDoubles)) {
     return "Unbalanced or malformed double braces {{...}}";
   }
   // Check for unmatched single { without }
-  const textWithoutValidSingles = textWithoutValidDoubles.replace(/\\{[a-zA-Z0-9_.-]+\\}/g, "");
-  if (/\\{/.test(textWithoutValidSingles) || /\\}/.test(textWithoutValidSingles)) {
+  const textWithoutValidSingles = textWithoutValidDoubles.replace(/{[a-zA-Z0-9_.-]+}/g, "");
+  if (/{/.test(textWithoutValidSingles) || /}/.test(textWithoutValidSingles)) {
     return "Unbalanced or malformed single brace {...}";
   }
   return null;
@@ -239,7 +239,7 @@ export function lintStringValue(
   if (baseValue !== undefined) {
     const candPlaceholders = extractPlaceholders(value);
     const basePlaceholders = extractPlaceholders(baseValue);
-    if (candPlaceholders.join("\\u0000") !== basePlaceholders.join("\\u0000")) {
+    if (candPlaceholders.join("\u0000") !== basePlaceholders.join("\u0000")) {
       errors.push({
         path,
         code: "PLACEHOLDER_MISMATCH",
