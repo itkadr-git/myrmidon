@@ -93,10 +93,21 @@ labelling and the protocol conformance notes.
    list its MCP tools; the new tools appear as
    `mcp.<connection-name>…:<tool>`. A call from an ungranted agent is
    denied with `deny_default`.
-6. **Health.** The connection card shows health status and message; a
-   failing service turns the card to "needs attention" but — per fork row
-   P9 — one tool's failure does not hide the connection's other tools, and
-   a slow call does not mark the connection dead.
+6. **Health and availability.** The connection card shows health status and
+   message. An isolated failed remote `tools/call` does not mark the whole
+   connection unhealthy or remove its catalogue. Consecutive transport failures
+   are tracked per connection; a successful response resets the count, and only
+   the failure threshold marks health as error. A JSON-RPC tool error does not
+   change connection health. If a known tool is hidden because the connection is
+   unhealthy, the gateway returns `503 connection_unavailable` with the
+   connection name and health message; disabled connections return
+   `403 mcp_remote_connection_disabled`; `404 tool_not_found` is reserved for
+   names absent from the catalogue. Navigation-like tools (`navigate`, `goto`,
+   `click`, `type`, `fill`, `press`, `reload`, `wait`) default to 45 seconds;
+   other calls default to 10 seconds. The maximum `timeoutMs` is 180 seconds.
+   A connection may override an individual timeout in
+   `config.toolTimeouts["<tool-name>"]` (milliseconds); an explicit call-level
+   `timeoutMs` takes precedence.
 
 ## Secrets rotation
 
