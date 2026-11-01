@@ -93,3 +93,13 @@ does not require host filesystem access. See the fleetd configuration reference 
 - [Automatic rollback by health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)
 - [Stand scenario: kill the gateway mid-run](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/team-liveness-stand-scenario.md)
 - `/metrics`: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «METRICS»
+
+### Run scratch cleanup
+
+The board periodically sweeps orphaned heartbeat-run directories named
+`paperclip-run-*` from the temp directory. It removes only directories with a
+run-marker file older than the configured TTL; unmarked directories are left
+alone. The first sweep runs at startup; the interval defaults to 15 minutes
+and the TTL to 36 hours. Both are read at startup. Removal counts, bytes, and
+remaining volume are exposed on `/metrics`. See the
+[changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-6-6-tmp-hygiene-run-scratch-sweeper.md).
