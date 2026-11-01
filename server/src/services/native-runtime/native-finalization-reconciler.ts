@@ -535,9 +535,10 @@ export async function claimNativeSessionResumptions(input: {
     // Telemetry is best-effort background work; it must not delay claiming
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
-      invalidateFailedRunsCache(terminalRunToEmit.companyId);
-      void emitAgentTaskRun(input.db, terminalRunToEmit);
-      void reportRunFailure(input.db, terminalRunToEmit);
+      const failedRun = terminalRunToEmit as typeof heartbeatRuns.$inferSelect;
+      invalidateFailedRunsCache(failedRun.companyId);
+      void emitAgentTaskRun(input.db, failedRun);
+      void reportRunFailure(input.db, failedRun);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }

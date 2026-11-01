@@ -969,8 +969,9 @@ export async function claimNativeRestartRecoveries(input: {
       } satisfies NativeRestartRecoveryClaim;
     });
     if (terminalRunToReport) {
-      invalidateFailedRunsCache(terminalRunToReport.companyId);
-      void reportRunFailure(input.db, terminalRunToReport);
+      const failedRun = terminalRunToReport as typeof heartbeatRuns.$inferSelect;
+      invalidateFailedRunsCache(failedRun.companyId);
+      void reportRunFailure(input.db, failedRun);
     }
     dispositions.push(disposition);
   }
