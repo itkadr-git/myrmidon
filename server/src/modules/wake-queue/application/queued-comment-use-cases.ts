@@ -100,6 +100,13 @@ export function createEditQueuedComment(deps: {
   issueLock: QueuedCommentIssueLockWriter;
   /** myrmidon(1.7-GRD-MODES): resolves the injection rule mode for the wake's agent. */
   resolveInjectionMode?: (input: { companyId: string; agentId: string }) => Promise<"flag" | "mask" | "block">;
+  /** myrmidon(1.6.6 OPE-8319): effective detector config (env > settings > default). */
+  resolveInjectionConfig?: (input: { companyId: string }) => Promise<{
+    enabled: boolean;
+    scoreThreshold: number;
+    enabledSource: "env" | "settings" | "default";
+    scoreSource: "env" | "settings" | "default";
+  }>;
 }) {
   return async function editQueuedComment(input: EditQueuedCommentInput): Promise<EditQueuedCommentResult> {
     return deps.issueLock.withLockedQueue(
@@ -146,10 +153,13 @@ export function createEditQueuedComment(deps: {
         // neutral placeholder, block replaces it with the refusal notice; the
         // stored comment itself is never altered by any mode.
         let guardrailsPayload = locked.wake.payload; // myrmidon(1.6-GRD)
-        if (guardrailsInjectionEnabled()) { // myrmidon(1.6-GRD)
+        const injectionConfig = deps.resolveInjectionConfig
+          ? await deps.resolveInjectionConfig({ companyId: input.issue.companyId })
+          : { enabled: guardrailsInjectionEnabled(), scoreThreshold: injectionScoreThreshold(), enabledSource: "env" as const, scoreSource: "env" as const };
+        if (injectionConfig.enabled) { // myrmidon(1.6-GRD)
           const { text: wrappedText, scan } = wrapUntrusted( // myrmidon(1.6-GRD)
             maskedBody,
-            injectionScoreThreshold(),
+            injectionConfig.scoreThreshold,
           );
           // myrmidon(1.7-GRD-MODES): resolve the mode OUTSIDE the payload
           // build so the injection flag record carries the enforcement the

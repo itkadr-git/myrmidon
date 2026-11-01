@@ -40,6 +40,11 @@
 
 const DEFAULT_INTERVAL_MS = 300_000;
 const MIN_DELAY_MS = 10_000;
+// BOT-DISK-H LOAD (review 31.10): a pressure pass may run out of turn, but its
+// local-only work must not turn the loop into a 10 s board-polling machine.
+// The whole board cycle (desired poll + disk report) still honours nextReportSec
+// and the failure backoff; pressure only floors the LOCAL pass at 60 s.
+const PRESSURE_MIN_DELAY_MS = 60_000;
 const MAX_DELAY_MS = 3_600_000;
 const EXP_STRETCH = 6; // intervalMs * 2^EXP_STRETCH already exceeds MAX_DELAY_MS at every legal intervalMs
 const JITTER_RATIO = 0.1; // ±10 % (success pauses jitter 0..+10 % — never below the board's cadence)
@@ -75,6 +80,7 @@ export function createLoop(deps) {
   const jitter = deps.jitter ?? (() => Math.random() * 2 - 1);
   const jittered = (delayMs) => Math.round(delayMs * (1 + JITTER_RATIO * jitter()));
   const clamp = (delayMs) => Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, delayMs));
+  const pressurePass = deps.pressurePass ?? (async () => ({ cleanedBytes: 0 }));
 
   let running = null;
   let rerun = false;
@@ -84,6 +90,8 @@ export function createLoop(deps) {
   let failedStreak = 0;
   // the board's nextReportSec after the first accepted report; null until then
   let nextReportSec = null;
+  let lastPressure = "none";
+  let lastPressurePassAt = 0;
   let lastDelayMs = clamp(intervalMs);
 
   const emptyGather = { inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: {} };
@@ -99,16 +107,20 @@ export function createLoop(deps) {
    */
   function computeDelayMs() {
     const cadenceMs = nextReportSec != null ? clamp(nextReportSec * 1000) : null;
+    const pressureFloorMs = lastPressure === "soft" || lastPressure === "hard" ? PRESSURE_MIN_DELAY_MS : 0;
     if (failedStreak > 0) {
       const k = Math.min(failedStreak - 1, EXP_STRETCH);
       const base = clamp(jittered(Math.min(MAX_DELAY_MS, intervalMs * 2 ** k)));
-      return Math.min(MAX_DELAY_MS, cadenceMs == null ? base : Math.max(base, cadenceMs));
+      const floored = cadenceMs == null ? base : Math.max(base, cadenceMs);
+      // Under pressure the LOCAL pass may come sooner (>= 60 s), but the board
+      // cadence and the failure backoff are never shortened by it.
+      return Math.min(MAX_DELAY_MS, Math.max(floored, pressureFloorMs));
     }
     if (cadenceMs != null) {
       const up = 1 + JITTER_RATIO * Math.max(0, jitter()); // never below the cadence
-      return clamp(Math.round(cadenceMs * up));
+      return Math.min(MAX_DELAY_MS, Math.max(Math.round(cadenceMs * up), pressureFloorMs));
     }
-    return clamp(intervalMs);
+    return Math.min(MAX_DELAY_MS, Math.max(clamp(intervalMs), pressureFloorMs));
   }
 
   async function gatherSafe(desiredState) {
@@ -213,6 +225,13 @@ export function createLoop(deps) {
         actions = Array.isArray(planned?.actions) ? planned.actions : [];
         held = Array.isArray(planned?.held) ? planned.held : [];
         plannedOut = { actions, held, pressure: planned?.pressure ?? "none" };
+        lastPressure = plannedOut.pressure ?? desired?.state?.pressure?.level ?? "none";
+        // Out-of-turn LOCAL hygiene on disk pressure (BOT-DISK contract): the
+        // scheduled pass itself invokes the pressure pass; no extra timer and no
+        // board polling — cadence/backoff stay governed by computeDelayMs().
+        if (lastPressure === "soft" || lastPressure === "hard") {
+          void onPressure(lastPressure).catch(() => {});
+        }
       } catch (err) {
         log(`botd loop: rules failed: ${errMessage(err)}`);
         results.push({
@@ -242,6 +261,20 @@ export function createLoop(deps) {
             await deps.retention({ startedAt, desired: desiredOk ? desired.state : null });
           } catch (err) {
             log(`botd loop: archive retention failed: ${errMessage(err)}`);
+          }
+        }
+        if (typeof deps.hygiene === "function") {
+          try {
+            await deps.hygiene({ startedAt, desired: desired.state, pressure: plannedOut?.pressure ?? desired.state?.pressure?.level ?? "none" });
+          } catch (err) {
+            log(`botd loop: hygiene failed: ${errMessage(err)}`);
+          }
+        }
+        if (typeof deps.repack === "function") {
+          try {
+            await deps.repack({ startedAt, pressure: plannedOut?.pressure ?? desired.state?.pressure?.level ?? "none" });
+          } catch (err) {
+            log(`botd loop: git-base repack failed: ${errMessage(err)}`);
           }
         }
         // the pass summary: what the cycle actually touched. Silent when the pass
@@ -303,7 +336,7 @@ export function createLoop(deps) {
       sent = { ok: false, reason: errMessage(err) };
       log(`botd loop: report failed: ${sent.reason}`);
     }
-    if (sent.ok && Number.isFinite(sent.nextReportSec) && sent.nextReportSec > 0) {
+    if (Number.isFinite(sent.nextReportSec) && sent.nextReportSec > 0) {
       nextReportSec = sent.nextReportSec;
     }
     // a pass is good only when the desired state arrived AND the board accepted
@@ -374,5 +407,37 @@ export function createLoop(deps) {
     return running ?? Promise.resolve();
   }
 
-  return { runOnce, trigger, start, stop, getLastDelayMs: () => lastDelayMs };
+  async function onPressure(level) {
+    if (level !== "soft" && level !== "hard") return;
+    lastPressure = level;
+    // Production caller path (ADM review 01.11): the scheduled pass observes
+    // the pressure level and fires the out-of-turn LOCAL hygiene pass, floored
+    // at PRESSURE_MIN_DELAY_MS since the previous pressure pass.
+    const sinceLastPassMs = Date.now() - lastPressurePassAt;
+    if (sinceLastPassMs < PRESSURE_MIN_DELAY_MS) {
+      log(`botd loop: disk pressure (${level}), pressure pass still within the ${PRESSURE_MIN_DELAY_MS / 1000}s floor`);
+      return { cleanedBytes: 0, reason: "floor" };
+    }
+    lastPressurePassAt = Date.now();
+    log(`botd loop: disk pressure (${level}), running local-only hygiene pass`);
+    try {
+      const result = await pressurePass(level);
+      const cleanedBytes = Number(result?.cleanedBytes) || 0;
+      if (cleanedBytes <= 0) {
+        failedStreak += 1;
+        log("botd loop: pressure pass freed 0 bytes; applying backoff");
+      }
+      // A local pressure pass is not a board success and must not clear the
+      // report/desired-poll backoff. It only adds the 60 s local pressure floor.
+      lastDelayMs = computeDelayMs();
+      return result;
+    } catch (err) {
+      failedStreak += 1;
+      lastDelayMs = computeDelayMs();
+      log(`botd loop: pressure hygiene failed: ${errMessage(err)}`);
+      return { cleanedBytes: 0, error: errMessage(err) };
+    }
+  }
+
+  return { runOnce, trigger, start, stop, onPressure, getLastDelayMs: () => lastDelayMs };
 }
