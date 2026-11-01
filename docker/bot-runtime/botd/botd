@@ -193,7 +193,7 @@ function runGitMigration({ migrationEnabled, gitMigrationMod, idle, log }) {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod, repairMod, gitMigrationMod, hygieneMod, repackMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -206,6 +206,8 @@ async function main() {
     import(path.join(__dirname, "lib", "cache.js")),
     tryImport("repair.js"),
     tryImport("git-migration.js"),
+    tryImport("hygiene.js"),
+    tryImport("repack.js"),
   ]);
   guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
   // One attention signal per path per TTL (botd-attention.json); the uid of the
@@ -377,8 +379,69 @@ async function main() {
     runGitMigration({ migrationEnabled, gitMigrationMod, idle: runProbe ? (runProbe.probe().live === false) : false, log });
   };
 
+  // Bot runtime cache hygiene: periodic deletion of stale npm, uv, terminal-output files.
+  // Never touches files open by active processes; runs on every pass and during pressure.
+  const hygiene = async ({ startedAt, desired, pressure }) => {
+    if (!hygieneMod || typeof hygieneMod.cleanCaches !== "function") return;
+    const g = desired?.grace ?? {};
+    const pick = (...vals) => vals.find((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
+    const limits = {
+      npmCacheTtlHours: pick(g.npmCacheTtlHours, Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS)) ?? 48,
+      uvCacheTtlHours: pick(g.uvCacheTtlHours, Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS)) ?? 168,
+      terminalOutputTtlHours: pick(g.terminalOutputTtlHours, Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS)) ?? 24,
+    };
+    await hygieneMod.cleanCaches({
+      now: startedAt ? startedAt.getTime() : Date.now(),
+      limits,
+      pressure,
+      execFile,
+      log,
+    });
+  };
+
+  // Repack git-base bare repos (1.6.6 OPE-10039): daily or when pack count > 20.
+  // Runs git repack -A -d followed by git prune --expire=2.weeks, skips locked repos.
+  const repack = async ({ startedAt, pressure }) => {
+    if (!repackMod || typeof repackMod.repackAllBases !== "function") return;
+    await repackMod.repackAllBases(BASE_DIR, {
+      now: startedAt ? startedAt.getTime() : Date.now(),
+      gitBin: GIT_BIN,
+      pressure,
+      idle: runProbe ? (runProbe.probe().live === false) : false,
+      log,
+    });
+  };
+
+  const pressurePass = async (level) => {
+    const startedAt = new Date();
+    let cleanedBytes = 0;
+    if (hygieneMod && typeof hygieneMod.cleanCaches === "function") {
+      const limits = {
+        npmCacheTtlHours: Number(process.env.MYRMIDON_BOTD_NPM_CACHE_TTL_HOURS) || 48,
+        uvCacheTtlHours: Number(process.env.MYRMIDON_BOTD_UV_CACHE_TTL_HOURS) || 168,
+        terminalOutputTtlHours: Number(process.env.MYRMIDON_BOTD_TERMINAL_OUTPUT_TTL_HOURS) || 24,
+      };
+      const result = await hygieneMod.cleanCaches({
+        now: startedAt.getTime(),
+        limits,
+        pressure: level,
+        execFile,
+        log,
+      });
+      cleanedBytes += Number(result?.cleanedBytes) || 0;
+      cleanedBytes += Number(result?.targets?.["uv-cache"]?.cleanedBytes) || 0;
+    }
+    if (repackMod && typeof repackMod.repackAllBases === "function") {
+      await repackMod.repackAllBases(BASE_DIR, { now: startedAt.getTime(), gitBin: GIT_BIN, pressure: level === "hard" ? "hard" : null, log });
+    }
+    return { cleanedBytes };
+  };
+
   const loop = loopMod.createLoop({
     retention,
+    hygiene,
+    repack,
+    pressurePass,
     desired,
     rules,
     gather,
