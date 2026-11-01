@@ -218,7 +218,10 @@ export function versionIconUrl(url: string, version: string | null): string {
 export function applyIconVersionToHtml(html: string, version: string | null): string {
   if (!version) return html;
   const withHrefs = html.replace(/(\bhref=")([^"]+)(")/g, (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`);
-  return withHrefs.replace(/(\bcontent=")([^"]+)(")/g, (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`);
+  return withHrefs.replace(
+    /(\bcontent=")([^"]+)(")/g,
+    (_m, a: string, url: string, c: string) => `${a}${versionIconUrl(url, version)}${c}`,
+  );
 }
 
 export function renderFaviconLinks(branding: WorktreeUiBranding, version: string | null = null): string {

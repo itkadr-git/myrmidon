@@ -38,6 +38,19 @@ describe("icon URL versioning", () => {
     expect(html).toContain('href="/assets/app.css"');
   });
 
+  it("versions image metadata without changing textual metadata", () => {
+    const html = applyUiBranding(
+      TEMPLATE.replace(
+        "</head>",
+        '<meta name="description" content="A stable product description" />\n<meta property="og:title" content="Myrmidon" />\n<meta property="og:image" content="/android-chrome-512x512.png" />\n</head>',
+      ),
+      { PAPERCLIP_BUILD_VERSION: "1.2.2" },
+    );
+    expect(html).toContain('content="A stable product description"');
+    expect(html).toContain('content="Myrmidon"');
+    expect(html).toContain('content="/android-chrome-512x512.png?v=1.2.2"');
+  });
+
   it("changes the URLs when the version changes", () => {
     const a = applyUiBranding(TEMPLATE, { PAPERCLIP_BUILD_VERSION: "1.2.2" });
     const b = applyUiBranding(TEMPLATE, { PAPERCLIP_BUILD_VERSION: "1.2.3" });
