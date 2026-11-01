@@ -1,7 +1,7 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.4 (source review and full CI verification)
-Reviewed base: origin/main `68232bba7a` (2026-11-01); branch synchronized with current main in merge commit `e01d6eaeb`
+Version: 1.5 (source review and full CI verification)
+Reviewed base: origin/main `4e00ba9a384d0c237055b4298d71078834863c37` (2026-11-01); branch synchronized with current main in merge commit `83ba1e018`
 Scope: repository source and automated CI test execution only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
@@ -10,17 +10,13 @@ Relevant route tests: `server/src/myrmidon/secret-settings/store-routes.myrmidon
 Relevant resolver tests: `server/src/myrmidon/secret-settings/resolver.myrmidon.test.ts`.
 
 Automated CI execution:
-PR #2184 label `full-ci` triggered the complete GitHub Actions matrix on HEAD `ca92bc4b45a91aee18d75e50d13fdf964a85b08d`.
-CI run: `41249196886`.
-- `CI result`, `checks`, and `migration guard`: PASS.
-- `tests (serialized 1/2)`, `tests (serialized 2/2)`: PASS.
-- `tests (server 1/6)` through `tests (server 6/6)`: PASS.
-- `tests (workspaces-a)`, `tests (workspaces-b)`, and `tests (other + runner)`: PASS.
-- `typecheck + build`: PASS.
+PR #2184 label `full-ci` triggered the complete GitHub Actions matrix.
+- Passing evidence: run `41249196886` on HEAD `ca92bc4b4`; all server, serialized, workspace, migration, typecheck/build, and checks lanes passed.
+- Later full run `41286731155` on HEAD `8384b08ad` passed checks, go tools, migration guard, typecheck/build, server shards 2-6, workspace shards, serialized shard 2, and other/runner. It failed server shard 1 on `continuation-dedupe.test.ts > expired key can be claimed again` and serialized shard 1 on the unrelated `agent-memory/settings-routes.myrmidon.test.ts` contract mismatch.
+- The agent-memory failure is upstream: the test expects `accessMode`/`enabledRoles`, while shared `applyAgentMemoryPatch` handles only `enabled`, `apiUrl`, `keySecretName`, and model fields. Do not weaken that test or expand the unrelated product contract in this PR.
+- The continuation-dedupe failure is also outside this PR's files and is being tracked against current main. The branch is synchronized with current main at `4e00ba9a384d0c237055b4298d71078834863c37`; no SETTINGS-UI source regression was identified.
 
-The `agent-memory/settings-routes.myrmidon.test.ts` failure is an upstream test/contract mismatch: the test submits and expects `accessMode`/`enabledRoles`, while shared `applyAgentMemoryPatch` handles only `enabled`, `apiUrl`, `keySecretName`, and model fields, and the stored settings type/schema does not include those access fields. Do not weaken the test or expand this unrelated product contract in this PR; request a separate main fix from the owning team.
-
-Main run `41283862886` on SHA `c4e2bac154ea4c0502d9ee11183dd75151eafe91` also failed both serialized shards: the same agent-memory mismatch and the OpenAPI guardrails route test, despite the merged #2232 fix being present in the source. For exact PR HEAD `3ea68c7cf67a60c5a8c037fff528457858ebdec5`, full CI run `41285963879` is pending at this note revision; CI must be green on the final pushed head before review handoff.
+CI must be green on the final pushed head before review handoff.
 
 Attributable coverage in `store-routes.myrmidon.test.ts` (the route/authz suite is selected by the stable runner's route pattern and runs against embedded Postgres with a local encrypted provider):
 1. Authorization controls: non-admin actors receive 403 Forbidden on secret-settings management endpoints; instance admins receive 200 OK.
