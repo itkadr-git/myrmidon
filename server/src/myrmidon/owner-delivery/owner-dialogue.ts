@@ -139,14 +139,7 @@ export async function loadOpenOwnerDecisions(
     // Cheap audience pre-check: an agent-addressed interaction is never an
     // owner decision; otherwise it must be human_only or name a human.
     if (row.addresseeAgentId !== null) continue;
-    if (
-      row.effectiveResolverPolicy !== "human_only" &&
-      row.addresseeUserId === null &&
-      row.responsibleUserId === null &&
-      row.issueCreatedByUserId === null
-    ) {
-      continue;
-    }
+    if (row.effectiveResolverPolicy !== "human_only" && row.addresseeUserId === null) continue;
     // myrmidon(1.6.5-OWNER-FALLBACK): the shared recipient rule (addressee,
     // responsible, creator, company owners; first with a live DM).
     const recipient = await resolveOwnerDecisionRecipient(

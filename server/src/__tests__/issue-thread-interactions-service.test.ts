@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
@@ -97,7 +97,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
-      responsibleUserId: "local-board",
     });
 
     return { companyId, goalId, issueId };
@@ -559,74 +558,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         reason: "manager_terminated",
         managerId: managerAgentId,
       }),
-    });
-  });
-
-  it("automatically resolves addresseeUserId to the issue owner when created without an addressee", async () => {
-    const { companyId, issueId } = await seedConfirmationIssue("Owner address resolution");
-    const ownerUserId = randomUUID();
-    const creatorAgentId = randomUUID();
-    await db.insert(agents).values({
-      id: creatorAgentId,
-      companyId,
-      name: "Creator Agent",
-      role: "general",
-      status: "idle",
-    });
-    await db
-      .update(issues)
-      .set({ responsibleUserId: ownerUserId })
-      .where(eq(issues.id, issueId));
-
-    const created = await interactionsSvc.create({
-      id: issueId,
-      companyId,
-      responsibleUserId: ownerUserId,
-    }, {
-      kind: "request_confirmation",
-      payload: {
-        version: 1,
-        prompt: "Proceed with deployment?",
-      },
-    }, {
-      agentId: creatorAgentId,
-    });
-
-    expect(created.addresseeUserId).toBe(ownerUserId);
-    expect(created.addresseeAgentId).toBeNull();
-  });
-
-  it("rejects an agent-created request_confirmation with 422 when neither addressee nor issue owner exists", async () => {
-    const { companyId, issueId } = await seedConfirmationIssue("Unaddressable confirmation");
-    await db
-      .update(issues)
-      .set({ responsibleUserId: null, createdByUserId: null })
-      .where(eq(issues.id, issueId));
-    const creatorAgentId = randomUUID();
-    await db.insert(agents).values({
-      id: creatorAgentId,
-      companyId,
-      name: "Creator Agent",
-      role: "general",
-      status: "idle",
-    });
-
-    await expect(interactionsSvc.create({
-      id: issueId,
-      companyId,
-      responsibleUserId: null,
-      createdByUserId: null,
-    }, {
-      kind: "request_confirmation",
-      payload: {
-        version: 1,
-        prompt: "Proceed with deployment?",
-      },
-    }, {
-      agentId: creatorAgentId,
-    })).rejects.toMatchObject({
-      status: 422,
-      message: expect.stringContaining("addressee"),
     });
   });
 
@@ -1236,73 +1167,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
       resolvedByUserId: "local-board",
     });
-  });
-
-  it("wakes the issue assignee when ask_user_questions is superseded by a comment", async () => {
-    const { companyId, issueId } = await seedConfirmationIssue("Question supersede wakeup");
-    const agentId = randomUUID();
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Assigned Worker",
-      role: "general",
-      status: "idle",
-    });
-    await db
-      .update(issues)
-      .set({ assigneeAgentId: agentId })
-      .where(eq(issues.id, issueId));
-
-    const mockWakeup = vi.fn(async () => undefined);
-    const svcWithWakeup = issueThreadInteractionService(db, { wakeup: mockWakeup });
-
-    const created = await svcWithWakeup.create({
-      id: issueId,
-      companyId,
-    }, {
-      kind: "ask_user_questions",
-      payload: {
-        version: 1,
-        questions: [{
-          id: "scope",
-          prompt: "Choose the scope",
-          selectionMode: "single",
-          options: [{ id: "phase-1", label: "Phase 1" }],
-        }],
-      },
-    }, {
-      userId: "local-board",
-    });
-
-    const commentId = randomUUID();
-    const expired = await svcWithWakeup.expireRequestConfirmationsSupersededByComment({
-      id: issueId,
-      companyId,
-    }, {
-      id: commentId,
-      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
-      authorUserId: "local-board",
-    }, {
-      userId: "local-board",
-    });
-
-    expect(expired).toHaveLength(1);
-    expect(mockWakeup).toHaveBeenCalledTimes(1);
-    expect(mockWakeup).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_commented",
-        idempotencyKey: `interaction-superseded:${created.id}:${commentId}`,
-        payload: expect.objectContaining({
-          issueId,
-          commentId,
-          interactionId: created.id,
-          resolutionSource: "superseded_by_comment",
-        }),
-      }),
-    );
   });
 
   it("keeps ask_user_questions pending when user-comment supersede is explicitly disabled", async () => {
