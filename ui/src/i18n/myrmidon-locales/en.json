@@ -1752,7 +1752,7 @@
     "injectionEnabled": "Enabled",
     "injectionThreshold": "Score threshold",
     "injectionHint": "Applies company-wide: what a hit does is set by the injection rule's mode above. Env override (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) still wins when set.",
-    "injectionEffective": "Effective now: {enabled} ({enabledSource}) · threshold {score} ({scoreSource})",
+    "injectionEffective": "Effective now: {{enabled}} ({{enabledSource}}) · threshold {{score}} ({{scoreSource}})",
     "onOff": {
       "on": "on",
       "off": "off"
