@@ -95,6 +95,12 @@ describeEmbeddedPostgres("agent service clearError", () => {
     const leastLoadedBeforeTermination = initialLiveEngineers.reduce((best, agent) => initialLoad(agent.id) < initialLoad(best.id) || (initialLoad(agent.id) === initialLoad(best.id) && agent.id.localeCompare(best.id) < 0) ? agent : best);
     expect(leastLoadedBeforeTermination.id).toBe(replacementId);
 
+    const expectedReplacements = new Map([
+      [issueIds[0], leastLoadedBeforeTermination.id],
+      [issueIds[1], leastLoadedBeforeTermination.id],
+      [issueIds[2], leastLoadedBeforeTermination.id],
+    ]);
+    const replacementNames = new Map(initialAgentRows.map((agent) => [agent.id, agent.name]));
     await agentService(db).terminate(terminatedId);
 
     const roleNames = new Map([
@@ -110,8 +116,8 @@ describeEmbeddedPostgres("agent service clearError", () => {
     expect(leastLoaded.id).toBe(replacementId);
     for (const id of issueIds.slice(0, 3)) {
       const issue = workload.find((row) => row.id === id)!;
-      const roleAssignment = id === issueIds[0] ? replacementId : id === issueIds[1] ? returnBackupId : participantBackupId;
-      const expectedRole = roleNames.get(roleAssignment)!;
+      const roleAssignment = expectedReplacements.get(id)!;
+      const expectedRole = replacementNames.get(roleAssignment)!;
       const originalTitle = id === issueIds[0] ? "TR-1" : id === issueIds[1] ? "TR-2" : "TR-3";
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, id));
       expect(comments).toHaveLength(1);
