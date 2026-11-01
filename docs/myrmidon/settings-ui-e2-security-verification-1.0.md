@@ -1,7 +1,7 @@
 # SETTINGS-UI E2 bounded security verification note
 
-Version: 1.2 (source review and full CI verification)
-Reviewed base: origin/main `2a6af3f0f9ba71b5e7ecca354d0834cf511d56aa` (2026-10-31); branch synchronized with current main in merge commit `cc247b73a8755937ee8316414b7bba47f6c88a17`
+Version: 1.3 (source review and full CI verification)
+Reviewed base: origin/main `6cac429a7bf454ef413f543add040b5ce398bc77` (2026-11-01); branch synchronized with current main in merge commit `fd805cae2`
 Scope: repository source and automated CI test execution only. No environment values or actual secrets were read; no production access or changes were made.
 
 ## Source and test evidence
