@@ -2317,6 +2317,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
