@@ -311,7 +311,7 @@
     311
   ],
   "recorded": "2026-10-09",
-  "note": "historic gaps grandfathered; new gaps/duplicates fail INV-13",
+  "note": "historic gaps grandfathered; new gaps/duplicates fail INV-13; 0429/0430 reserved by open PRs, grandfathered until filled",
   "enforceGapsFrom": 398,
   "gaps": [
     126,
@@ -378,6 +378,9 @@
     378,
     379,
     426,
-    427
+    427,
+    429,
+    430,
+    431
   ]
 }

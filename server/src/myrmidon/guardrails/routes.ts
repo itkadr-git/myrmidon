@@ -27,6 +27,16 @@
 //   POST /api/myrmidon/companies/:companyId/guardrails/validate-regex
 //   POST /api/myrmidon/guardrails/validate-regex
 //
+// myrmidon(1.7-REDACT) (OPE-8659): the redaction modes API.
+//
+//   POST /api/myrmidon/guardrails/redact   { text, entities, mode, ttlMs? }
+//   POST /api/myrmidon/guardrails/restore  { redactionId, text }
+//
+// Reversible mode persists substitutions with a TTL and restores the
+// original while live; irreversible replaces without storing; flag only
+// reports entities. Expired rows are removed by the cleanup started in
+// server/src/index.ts.
+//
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
 import {
@@ -40,6 +50,14 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { listGuardrailEvents } from "./events.js";
 import {
+  redactText,
+  restoreText,
+  drizzleRedactionStore,
+  type DetectedRedactionEntity,
+  type RedactionMode,
+  type RedactionStore,
+} from "./entities/redaction.js";
+import {
   readGuardrailModesSettings,
   writeGuardrailModesSettings,
 } from "./modes-settings.js";
@@ -51,14 +69,56 @@ import { badRequest } from "../../errors.js";
 
 export interface GuardrailRoutesDeps {
   db: Db;
+  store?: RedactionStore;
 }
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 
-export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesDeps> = {}) {
+export function myrmidonGuardrailsRoutes(db: Db, deps: Partial<GuardrailRoutesDeps> = {}) {
   const router = Router();
+  const store = deps.store ?? drizzleRedactionStore(db);
   const settings = instanceSettingsService(db);
+
+  // --- redaction (1.7-REDACT, OPE-8659) -------------------------------------
+
+  router.post("/myrmidon/guardrails/redact", async (req, res) => {
+    const { text, entities, mode, ttlMs } = req.body as {
+      text?: unknown;
+      entities?: unknown;
+      mode?: unknown;
+      ttlMs?: unknown;
+    };
+    if (typeof text !== "string" || !Array.isArray(entities) || !["reversible", "irreversible", "flag"].includes(mode as string)) {
+      res.status(400).json({ error: "text, entities, and a supported mode are required" });
+      return;
+    }
+    const normalized = entities.filter((entity): entity is DetectedRedactionEntity => {
+      if (!entity || typeof entity !== "object") return false;
+      const value = entity as Record<string, unknown>;
+      return typeof value.type === "string" && typeof value.value === "string" && typeof value.start === "number" && typeof value.end === "number";
+    });
+    if (normalized.length !== entities.length) {
+      res.status(400).json({ error: "entities must contain type, value, start, and end" });
+      return;
+    }
+    const ttl = ttlMs === undefined ? undefined : Number(ttlMs);
+    if (ttl !== undefined && (!Number.isFinite(ttl) || ttl <= 0)) {
+      res.status(400).json({ error: "ttlMs must be a positive number" });
+      return;
+    }
+    const result = await redactText(text, normalized, mode as RedactionMode, store, { ttlMs: ttl });
+    res.json(result);
+  });
+
+  router.post("/myrmidon/guardrails/restore", async (req, res) => {
+    const { redactionId, text } = req.body as { redactionId?: unknown; text?: unknown };
+    if (typeof redactionId !== "string" || typeof text !== "string") {
+      res.status(400).json({ error: "redactionId and text are required" });
+      return;
+    }
+    res.json({ text: await restoreText(store, redactionId, text) });
+  });
 
   // --- settings (1.7-GRD-MODES) --------------------------------------------
 

@@ -338,3 +338,5 @@ export { corpusShadowLog } from "./corpus_shadow_log.js";
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 // myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";
