@@ -128,7 +128,7 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10066) */
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
   consecutiveToolErrors: {
     toolName: string;
     count: number;
@@ -1095,7 +1095,7 @@ async function logCompactEvent(input: {
     const preview = popToolPreview(state, name);
     await ctx.onLog("stdout", formatCompactToolCompletedLine(record, name, preview));
 
-    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10066)
+    // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
     if (toolHasError(record)) {
       const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
       const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
@@ -1813,9 +1813,15 @@ export function mapFinalResultForTest(input: {
   const metadataCallCount = parseModelCallCount(payload) ?? parseOutputCallCount(input.outputChunks);
   const modelCallCount = explicitCallCount ?? metadataCallCount;
   const modelCallCountSource = explicitCallCount !== null ? "gateway_count" : metadataCallCount !== null ? "gateway_metadata" : "unknown";
+  // A completed turn reports no error. extractErrorMessage() falls back to the
+  // output text, so reading it for a completed turn turned every successful
+  // run into a failed one carrying its own final answer as the error (rc.22,
+  // 01.11). Only a failed, cancelled or protocol-error turn reports a message.
   const rawErrorMessage = providerErrorAsContent
     ? "Provider returned an overload or quota error as successful response content"
-    : extractErrorMessage(payload) ?? (mapped.errorCode ? `Hermes run ${input.terminal.status}` : null);
+    : mapped.errorCode
+      ? extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`
+      : null;
   const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
 
   const explicitModelStarted =
