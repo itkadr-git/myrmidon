@@ -128,9 +128,11 @@ case "$*" in
           prev="$a"
         done
         img="$(printf '%s' "$body" | jq -r '.adapterConfig.container.image')"
-        jq --arg id "$id" --arg img "$img" \
-          'map(if .id == $id then .adapterConfig.container.image = $img else . end)' \
+        jq --arg id "$id" --argjson block "$(printf '%s' "$body" | jq -c '.adapterConfig.container')" \
+          'map(if .id == $id then .adapterConfig.container = $block else . end)' \
           "$SANDBOX/agents.json" > "$SANDBOX/agents.json.new" && mv "$SANDBOX/agents.json.new" "$SANDBOX/agents.json"
+        # A failed apply after the new container became healthy is represented by
+        # a post-failure fact showing the target image, just like the real status API.
         jq -c --arg id "$id" 'first(.[] | select(.id == $id))' "$SANDBOX/agents.json"
         exit 0 ;;
     esac
@@ -142,6 +144,10 @@ case "$*" in
     # fact-check fixtures — a container that did NOT follow its card).
     id=""
     for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
+    if [ -e "$SANDBOX/healthy-target-after-failure" ] && { [ -e "$SANDBOX/apply-fails" ] || [ "$(cat "$SANDBOX/apply-async" 2>/dev/null)" = failed ]; }; then
+      img="$(jq -r --arg id "$id" 'first(.[] | select(.id == $id) | .adapterConfig.container.image)' "$SANDBOX/agents.json")"
+      jq -cn --arg img "$img" '{container: {state: "running", image: $img}}'; exit 0
+    fi
     if [ -e "$SANDBOX/container-facts.json" ]; then
       fact="$(jq -c --arg id "$id" '.[$id] // empty' "$SANDBOX/container-facts.json")"
       if [ -n "$fact" ]; then
@@ -289,6 +295,7 @@ function sandbox({
   // asyncStaleImage: the container keeps a stale image after "succeeded".
   applyAsync = null,
   asyncStaleImage = false,
+  healthyTargetAfterFailure = false,
   botImagesMissing = false,
   sshFails = false,
   // F-04 fact-check fixtures: { botId: {state, image} } answered by the fake
@@ -313,6 +320,7 @@ function sandbox({
   for (const id of applyStillLeaving) fs.writeFileSync(path.join(dir, `apply-still-leaving-${id}`), "");
   if (applyAsync) fs.writeFileSync(path.join(dir, "apply-async"), applyAsync);
   if (asyncStaleImage) fs.writeFileSync(path.join(dir, "apply-stale-image"), "");
+  if (healthyTargetAfterFailure) fs.writeFileSync(path.join(dir, "healthy-target-after-failure"), "");
   if (containerFacts) fs.writeFileSync(path.join(dir, "container-facts.json"), JSON.stringify(containerFacts));
 
   // Registry answers: board, components, and the three bot images.
@@ -1023,6 +1031,20 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.match(patches[1], /"enabled":true/);
   });
 
+  it("a failed apply after the target container is healthy keeps the card on that target", () => {
+    const id = uuid(1);
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      applyAsync: "failed",
+      healthyTargetAfterFailure: true,
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.notEqual(code, 0, out);
+    assert.equal(cardImage(sb, id), `${BOT}@${HERMES}`);
+    assert.match(out, /container runs the release image; the card stays/);
+    assert.equal((calls(sb).match(/-X PATCH/g) ?? []).length, 1, "do not PATCH card back when container is healthy on target");
+  });
+
   it("a failed apply job reverts the card while the container is off the release image", () => {
     const sb = sandbox({
       agents: [{ id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "idle" }],
@@ -1032,6 +1054,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.notEqual(code, 0);
     assert.match(out, /apply job-1 failed: docker pull exploded/);
+    assert.match(out, /card is back on its previous image/);
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${OLD_DEV}`);
   });
 
@@ -1040,9 +1063,10 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
       agents: [{ id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "idle" }],
       applyAsync: "failed",
     });
-    const { code } = run(sb, "bot-image-rollout.sh", ARGS);
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.notEqual(code, 0);
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
+    assert.match(out, /container runs the release image; the card stays/);
   });
 
   it("a failed apply in the force stage reverts the card too", () => {
