@@ -172,6 +172,7 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
+  // myrmidon(1.7 UI-2.0 COSTS-SUMMARY): summary returns unpricedEvents, unpricedTokens, and forecastCents
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
