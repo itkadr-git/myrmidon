@@ -1230,15 +1230,15 @@
     {
       "idx": 178,
       "version": "7",
-      "when": 1784241827832,
-      "tag": "0178_summary_slots",
+      "when": 1784241826832,
+      "tag": "0177_activity_log_responsible_user",
       "breakpoints": true
     },
     {
       "idx": 178,
       "version": "7",
-      "when": 1784241826832,
-      "tag": "0177_activity_log_responsible_user",
+      "when": 1784241827832,
+      "tag": "0178_summary_slots",
       "breakpoints": true
     },
     {
@@ -2577,6 +2577,27 @@
       "version": "7",
       "when": 1793323805002,
       "tag": "0432_clean_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1793323806000,
+      "tag": "0433_legacy_blocked_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 434,
+      "version": "7",
+      "when": 1793323806001,
+      "tag": "0434_blocked_tasks_with_open_blockers",
+      "breakpoints": true
+    },
+    {
+      "idx": 435,
+      "version": "7",
+      "when": 1793323806002,
+      "tag": "0435_undated_event_block_due_at",
       "breakpoints": true
     }
   ]

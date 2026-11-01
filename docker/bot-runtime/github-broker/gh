@@ -255,6 +255,49 @@ function reportAuthStatus(result) {
   return true;
 }
 
+function isPrCreate(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "pr" && args[i + 1] === "create") return true;
+  }
+  return false;
+}
+
+function sanitizePrCreateBase(args) {
+  const result = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-B" || arg === "--base") {
+      const val = args[i + 1];
+      if (val && val.startsWith("bot/")) {
+        process.stderr.write(`paperclip: base branch '${val}' is a bot branch; changing base to 'main'\n`);
+        result.push(arg, "main");
+        i++;
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("--base=")) {
+      const val = arg.slice("--base=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write(`paperclip: base branch '${val}' is a bot branch; changing base to 'main'\n`);
+        result.push("--base=main");
+      } else {
+        result.push(arg);
+      }
+    } else if (arg.startsWith("-B=")) {
+      const val = arg.slice("-B=".length);
+      if (val.startsWith("bot/")) {
+        process.stderr.write(`paperclip: base branch '${val}' is a bot branch; changing base to 'main'\n`);
+        result.push("-B=main");
+      } else {
+        result.push(arg);
+      }
+    } else {
+      result.push(arg);
+    }
+  }
+  return result;
+}
+
 async function main() {
   const env = { ...process.env };
   const capability = (env.PAPERCLIP_GITHUB_BROKER_TOKEN || "").trim();
@@ -297,7 +340,11 @@ async function main() {
   }
   // Only this invocation and its children inherit the resolved token.
   env.PATH = originalPath.join(path.delimiter);
-  const child = spawn(executable, process.argv.slice(2), { env, stdio: "inherit" });
+  let childArgs = process.argv.slice(2);
+  if (isPrCreate(childArgs)) {
+    childArgs = sanitizePrCreateBase(childArgs);
+  }
+  const child = spawn(executable, childArgs, { env, stdio: "inherit" });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
   child.once("error", () => { process.stderr.write("paperclip: gh could not start.\n"); process.exitCode = 1; });
   child.once("exit", (code, signal) => { process.exitCode = code === null ? 128 : code; });

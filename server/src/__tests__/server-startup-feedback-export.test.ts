@@ -762,6 +762,7 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(reconcileSafeNativeReplacements).not.toHaveBeenCalled();
       expect(intervals).not.toContain(EXECUTION_RECONCILIATION_INTERVAL_MS);
+      expect(intervals).not.toContain(5000); // maintenance tick (MYRMIDON_MAINTENANCE_TICK_SEC default)
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).not.toHaveBeenCalled();

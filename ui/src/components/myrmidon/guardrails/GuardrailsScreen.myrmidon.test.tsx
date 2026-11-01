@@ -42,6 +42,7 @@ const SETTINGS: GuardrailModesSettings = {
   company: { secret: "mask" },
   castes: { engineer: { injection: "block" } },
   agents: { "agent-a": { pii: "block" } },
+  injectionConfig: { enabled: true, scoreThreshold: 0.65 },
 };
 
 const RESOLVED: Record<string, ResolvedGuardrailMode[]> = {
@@ -63,6 +64,7 @@ function renderView(overrides: Partial<Parameters<typeof GuardrailsScreenView>[0
     settings: SETTINGS,
     agents: AGENTS,
     resolved: RESOLVED,
+    injectionResolved: null,
     onSave,
     pending: false,
     error: null,

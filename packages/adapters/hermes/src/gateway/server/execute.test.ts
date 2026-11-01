@@ -1538,6 +1538,23 @@ describe("mapFinalResultForTest", () => {
     expect(resultJson.gatewayCallIdsTruncated).toBe(false);
   });
 
+  it("keeps a completed run with output free of an error message", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-completed",
+        status: "completed",
+        payload: { status: "completed", output: "Задача сделана, PR открыт." },
+      },
+      outputChunks: ["Задача сделана, PR открыт."],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
