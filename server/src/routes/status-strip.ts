@@ -57,7 +57,10 @@ export function statusStripRoutes(db: Db) {
         const until = dismissal.kind === "snooze"
           ? toTimestamp(dismissal.snoozedUntil)
           : toTimestamp(dismissal.dismissedAt);
-        if (until > 0) dismissedAtByKey.set(dismissal.itemKey, dismissal.kind === "snooze" && until > now.getTime() ? Number.MAX_SAFE_INTEGER : until);
+        if (until > 0) dismissedAtByKey.set(
+          dismissal.itemKey,
+          dismissal.kind === "snooze" && until > now.getTime() ? Number.MAX_SAFE_INTEGER : until,
+        );
       }
     }
     const [agentRows, runRows, failedRuns, approvalsCount, decisionsCount, interactionsCount, cost] = await Promise.all([
@@ -75,7 +78,7 @@ export function statusStripRoutes(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.companyId, companyId))
         .groupBy(heartbeatRuns.status),
-      db.select({ count: sql<number>`count(*)::integer` })
+      db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt, status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
         .where(and(
@@ -84,8 +87,7 @@ export function statusStripRoutes(db: Db) {
           not(eq(agents.status, "terminated")),
           inArray(heartbeatRuns.status, ["failed", "timed_out"]),
           gte(heartbeatRuns.createdAt, dayStart),
-        ))
-        .then((rows) => Number(rows[0]?.count ?? 0)),
+        )),
       db.select({ id: approvals.id, updatedAt: approvals.updatedAt })
         .from(approvals)
         .where(and(
@@ -116,13 +118,16 @@ export function statusStripRoutes(db: Db) {
       else if (row.status === "paused") colony.paused += count;
       else if (row.status === "error") colony.error += count;
     }
-    const runs = { running: 0, queued: 0, failedToday: 0 };
+    const failedToday = (failedRuns as Array<{ id: string; createdAt: Date | string }>).filter((run) => {
+      const dismissedAt = dismissedAtByKey.get(`run:${run.id}`);
+      return dismissedAt === undefined || toTimestamp(run.createdAt) > dismissedAt;
+    }).length;
+    const runs = { running: 0, queued: 0, failedToday };
     for (const row of runRows) {
       const count = Number(row.count);
       if ((ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) runs.running += count;
       else if ((QUEUED_RUN_STATUSES as readonly string[]).includes(row.status)) runs.queued += count;
     }
-    runs.failedToday = failedRuns;
     res.json({
       colony,
       runs,
