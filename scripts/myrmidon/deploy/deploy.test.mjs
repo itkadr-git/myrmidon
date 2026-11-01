@@ -31,7 +31,7 @@ case "$1" in
             # image_label: the label comes from the sandbox file, as before.
             cat "$SANDBOX/label-version"; exit 0 ;;
           *org.opencontainers.image.revision*)
-            case "$*" in *"sha256:aaaaaaaa"*) cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision" ;; *) cat "$SANDBOX/label-revision" ;; esac
+            if [[ "$*" == *"sha256:aaaaaaaa"* ]]; then cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision"; else cat "$SANDBOX/label-revision"; fi
             exit 0 ;;
         esac
         # ROLLBACK-LOCAL: a plain inspect asks whether the image is on the
@@ -55,6 +55,13 @@ case "$1" in
         esac ;;
     esac ;;
   buildx)
+    echo "docker buildx $*" >> "$SANDBOX/calls.log"
+      if [[ "$*" == *"imagetools inspect"* ]]; then
+        if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
+          jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
+        fi
+        cat "$SANDBOX/imagetools.json"; exit 0
+      fi
     # RELEASE-GATE: the same registry answers the component repositories. A
     # digest-format inspect gets the component digest file; the board and every
     # CI check get the image JSON (with labels).
@@ -138,13 +145,14 @@ const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
   health,
+  newRevision = COMMIT,
   // PREDEPLOY-DB-CHECK: what the throwaway COPY of the production database
   // answers on /api/health. Green by default, so only the tests about the
   // pre-window check have to think about it.
   predeployHealth,
   dumpBytes = 2048,
   labelVersion = VERSION,
-  labelRevision = COMMIT,
+  labelRevision = newRevision,
   oldRevision = COMMIT,
   current = OLD,
   currentImage,
@@ -198,6 +206,15 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  const oldLabelRevision =
+    newRevision === "0123456789abcdef0123456789abcdef01234568"
+      ? "fedcba9876543210fedcba9876543210fedcba98"
+      : labelRevision;
+  fs.writeFileSync(path.join(dir, "label-revision"), oldLabelRevision);
+  fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
+  if (newRevision !== null) {
+    fs.writeFileSync(path.join(dir, "imagetools.json"), JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: { ...labels, "org.opencontainers.image.revision": newRevision } } }));
+  } else fs.rmSync(path.join(dir, "imagetools.json"), { force: true });
   if (composeConfigFails) fs.writeFileSync(path.join(dir, "compose-config-fails"), "");
   // RELEASE-GATE: component registry answers for the same commit.
   fs.writeFileSync(
@@ -225,7 +242,7 @@ function sandbox({
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
   fs.writeFileSync(path.join(dir, "old-label-revision"), `${oldRevision}\n`);
-  fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
+  if (migrationFiles) fs.writeFileSync(path.join(dir, "migration-files"), migrationFiles);
   if (localImages.length > 0) fs.writeFileSync(path.join(dir, "local-images"), localImages.join("\n") + "\n");
   if (localTags) fs.writeFileSync(path.join(dir, "local-tags"), localTags);
   if (localIds) fs.writeFileSync(path.join(dir, "local-ids"), localIds);
@@ -262,6 +279,7 @@ function sandbox({
     [
       `COMPOSE_DIR=${composeDir}`,
       "COMPOSE_SERVICE=server",
+      "MYRMIDON_IMAGE=ghcr.io/itkadr-git/myrmidon",
       "HEALTH_URL=http://127.0.0.1:3100/api/health",
       "HEALTH_TIMEOUT_SEC=2",
       "POLL_INTERVAL_SEC=1",
@@ -731,12 +749,18 @@ describe("deploy.sh", () => {
     assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
   });
 
-  it("urgent refuses when migrations are present", () => {
-    const sb = sandbox({ oldRevision: "fedcba9876543210fedcba9876543210fedcba98", migrationFiles: "packages/db/src/migrations/0433_urgent.sql\n" });
+  it("urgent refuses when migrations are present before dry-run exits", () => {
+    const sb = sandbox({
+      newRevision: "0123456789abcdef0123456789abcdef01234568",
+      oldRevision: "fedcba9876543210fedcba9876543210fedcba98",
+      migrationFiles: "packages/db/src/migrations/0433_urgent.sql\\n",
+    });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
-    assert.notEqual(code, 0);
+    assert.notEqual(code, 0, out);
     assert.match(out, /new database migrations exist/);
     assert.match(out, /database dump is mandatory/);
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.equal(fs.existsSync(path.join(sb.dir, "dumps")), false);
   });
 
   it("dry run says the drain timeout lifts maintenance", () => {

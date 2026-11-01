@@ -183,7 +183,8 @@ require_cmd docker curl jq
 
 urgent_migrations_between() {
   local old_ref="$1" new_rev="$2" clone old_rev files
-  [[ -n "$old_ref" && -n "$new_rev" ]] || return 0
+  [[ -n "$new_rev" ]] || die "cannot inspect the new image revision for --urgent; a database dump is mandatory"
+  [[ -n "$old_ref" ]] || die "cannot inspect the current image for --urgent; a database dump is mandatory"
   old_rev="$(image_label "$old_ref" org.opencontainers.image.revision 2>/dev/null || true)"
   [[ -n "$old_rev" ]] || die "cannot inspect the current image revision for --urgent; a database dump is mandatory"
   [[ "$old_rev" != "$new_rev" ]] || return 0
@@ -588,6 +589,19 @@ deploy_disk_precheck deploy.sh
 # its own precheck and its own end-of-run image cleanup (deploy.sh runs them).
 export MYRMIDON_DEPLOY_DISK_PRECHECK_DONE=1
 
+# myrmidon(DEPLOY-URGENT): the migration guard is read-only, so it runs BEFORE
+# the dry-run exit too — a dry run reports the same refusal the real run would
+# give, and the real run refuses BEFORE its first pull. The new revision comes
+# from the registry check (CI_IMAGE_REVISION); --expect-commit, when given,
+# wins. At equal revisions (a forced redeploy) there is nothing new to apply.
+if ((urgent)) && ((board_changed)); then
+  urgent_migrations="$(urgent_migrations_between "$previous_image" "${expect_commit:-${CI_IMAGE_REVISION:-}}")"
+  if [[ -n "$urgent_migrations" ]]; then
+    die "--urgent refuses: new database migrations exist between the current and new images; a database dump is mandatory ($urgent_migrations)"
+  fi
+  log "URGENT deploy: no new database migrations between ${previous_image:-<none>} and $ref; rollback relies on the VM's nightly backup"
+fi
+
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan:"
   plan "0. image check passed (read-only): $ref is in the registry, commit ${CI_IMAGE_REVISION:0:12} is on origin/main or a myr-v* tag"
@@ -782,13 +796,6 @@ docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref"
 [[ -n "$expect_version" ]] || expect_version="$(image_label "$ref" org.opencontainers.image.version)"
 [[ -n "$expect_commit" ]] || expect_commit="$(image_label "$ref" org.opencontainers.image.revision)"
 [[ -n "$expect_version" || -n "$expect_commit" ]] || die "image has no version/revision labels; pass --expect-version and --expect-commit"
-if ((urgent)); then
-  urgent_migrations="$(urgent_migrations_between "$previous_image" "$expect_commit")"
-  if [[ -n "$urgent_migrations" ]]; then
-    die "--urgent refuses: new database migrations exist between the current and new images; a database dump is mandatory ($urgent_migrations)"
-  fi
-  log "URGENT deploy: no new database migrations detected; rollback relies on the VM's nightly backup"
-fi
 
 log "2/8 previous image: ${previous_image:-<none>}"
 mkdir -p "$STATE_DIR"
