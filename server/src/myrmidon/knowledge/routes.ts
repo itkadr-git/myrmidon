@@ -41,6 +41,7 @@
 //      state machine) still apply on top.
 
 import express, { Router, type Request, type Response } from "express";
+import { createHash } from "node:crypto";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeApproveSchema,
@@ -334,10 +335,20 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     try {
       const items = await mod.listItems({
         kind: query.kind,
-        status: query.status as KnowledgeItemStatus | undefined,
+        // The default catalogue is the published tree. Drafts and archived
+        // records remain available through an explicit status filter.
+        status: (query.status ?? "published") as KnowledgeItemStatus,
         folderPrefix: query.space,
       });
-      res.json({ items: items.slice(0, query.limit ?? 50) });
+      const body = JSON.stringify({ items: query.limit ? items.slice(0, query.limit) : items });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -348,7 +359,15 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_read");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ revisions: await mod.listRevisions(itemIdOrSlug(req)) });
+      const body = JSON.stringify({ revisions: await mod.listRevisions(itemIdOrSlug(req)) });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -373,7 +392,15 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_backlinks");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ backlinks: await mod.backlinks(itemIdOrSlug(req)) });
+      const body = JSON.stringify({ backlinks: await mod.backlinks(itemIdOrSlug(req)) });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -390,7 +417,21 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const idOrSlug = itemIdOrSlug(req);
       const item = await mod.get(idOrSlug);
       if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
-      res.json({ item });
+      // Return the complete published read model in one request. The UI can
+      // render immediately without separately loading revisions and backlinks.
+      const [revisions, backlinks] = await Promise.all([
+        mod.listRevisions(idOrSlug),
+        mod.backlinks(idOrSlug),
+      ]);
+      const body = JSON.stringify({ item: { ...item, revisions, backlinks } });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
