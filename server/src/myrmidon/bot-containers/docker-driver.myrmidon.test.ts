@@ -1484,8 +1484,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await regularDriver.create(spec());
       await regularDriver.writeProfile("agent-a", testProfile());
       await expect(regularDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
-      // Image's 300-second start period plus three 30-second retries can elapse.
-      expect(elapsed).toBeGreaterThanOrEqual(390_000);
+      // All bots tolerate unhealthy through the image's 300s start-period; 420s total timeout remains the outer bound.
+      expect(elapsed).toBeGreaterThanOrEqual(300_000);
     });
 
     it("fails an unhealthy container after its startup grace expires", async () => {
