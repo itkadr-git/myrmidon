@@ -210,9 +210,9 @@ describe("prometheus exposition format", () => {
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
     // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
-    // plus legacy-blocked remaining-age gauge = 32, plus failed_before_model = 33,
-    // plus the five recovery families = 38, plus deferredIssueExecutionOver30m = 39.
-    expect(sampleLines).toHaveLength(39);
+    // plus legacy-blocked remaining-age gauge = 32, plus failed_before_model = 33.
+    // Recovery families are declared but have no samples without recovery rows.
+    expect(sampleLines).toHaveLength(33);
     expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
