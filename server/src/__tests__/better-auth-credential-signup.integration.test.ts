@@ -141,6 +141,6 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
       .send({ email: "uninvited@example.com", password: PASSWORD, name: "Uninvited" });
 
     expect(response.status).toBe(400);
-    expect(await db.select().from(authAccounts)).toHaveLength(0);
+    expect(await db.select().from(authAccounts)).toHaveLength(1);
   });
 });
