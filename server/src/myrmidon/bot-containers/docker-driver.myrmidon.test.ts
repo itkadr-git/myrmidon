@@ -1425,11 +1425,44 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(bot()?.state).toBe("running");
     });
 
-    it("fails an unhealthy non-developer container without startup grace", async () => {
-      await driver.create(spec());
-      await driver.writeProfile("agent-a", testProfile());
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
       daemon.options.healthOnStart = "unhealthy";
-      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("fails an unhealthy container after its startup grace expires", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const unhealthyDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await unhealthyDriver.create(spec());
+      await unhealthyDriver.writeProfile("agent-a", testProfile());
+      await expect(unhealthyDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      expect(elapsed).toBeGreaterThanOrEqual(30_000);
     });
 
     it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {

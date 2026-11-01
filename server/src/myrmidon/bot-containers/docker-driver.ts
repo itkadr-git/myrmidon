@@ -1814,14 +1814,9 @@ export function dockerBotContainerDriver(
       const health = info.State?.Health?.Status;
       if (state === "running" && health === "healthy") return;
       if (state === "running" && health === "unhealthy") {
-        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
-        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
-        if (healthGrace > 0) {
-          unhealthySince ??= monotonicClock();
-          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
-        } else {
-          throw new Error(`${name} reports unhealthy after start`);
-        }
+        unhealthySince ??= monotonicClock();
+        const healthGrace = Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS);
+        if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
       } else {
         unhealthySince = undefined;
       }
