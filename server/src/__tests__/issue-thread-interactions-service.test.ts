@@ -369,6 +369,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       {
         ...input,
         resolverPolicy: "board_only",
+        addresseeAgentId: undefined,
+        addresseeUserId: "board-user",
         idempotencyKey: "addressed:board-only",
       },
       { agentId: creatorAgentId },

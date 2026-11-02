@@ -3651,6 +3651,15 @@ export function issueThreadInteractionService(
           actor.agentId === issueContextRow?.assigneeAgentId
         ) {
           recipientCandidate = { serviceQueue: "default" };
+        } else if (
+          normalizedData.kind === "suggest_tasks" ||
+          normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "request_confirmation"
+        ) {
+          // Legacy agent-created interactions are handled by the board queue
+          // when no concrete owner can be inferred. Human-only interactions
+          // already returned through the strict user-recipient branch above.
+          recipientCandidate = { serviceQueue: "default" };
         }
       }
 
