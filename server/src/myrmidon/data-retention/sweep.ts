@@ -154,8 +154,9 @@ export interface DataRetentionSweepDeps {
    * audit trail otherwise.
    */
   logThrottled: (details: Record<string, unknown>) => Promise<void>;
-  /**
-   * Test hook: overrides the pass throttle
+  /** One storage-aware cleanup pass for closed-task git bundles. */
+  gitBundleCleanup?: () => Promise<unknown>;
+  /** Test hook: overrides the pass throttle.
    * (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS by default; 0 runs every call).
    */
   minPassIntervalMs?: number;
@@ -547,7 +548,11 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       results[group.key] = await runGroup(group, cutoff);
     }
 
+    const bundleCleanup = deps.gitBundleCleanup
+      ? await deps.gitBundleCleanup().catch(() => undefined)
+      : undefined;
     const didWork =
+      (bundleCleanup !== undefined) ||
       results.runs.deleted > 0 ||
       results.activity.deleted > 0 ||
       results.access.deleted > 0;

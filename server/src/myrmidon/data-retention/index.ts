@@ -37,9 +37,15 @@ import {
   writeDataRetentionLastRun,
 } from "./settings.js";
 import { createDataRetentionSweep, type DataRetentionSweep } from "./sweep.js";
+import { createClosedTaskGitBundleCleanup } from "./git-bundle-cleanup.js";
+import { getStorageService } from "../../storage/index.js";
 
 export { dataRetentionService } from "./service.js";
 export type { DataRetentionService } from "./service.js";
+export {
+  createClosedTaskGitBundleCleanup,
+} from "./git-bundle-cleanup.js";
+export type { GitBundleCleanupResult } from "./git-bundle-cleanup.js";
 export { createDataRetentionSweep } from "./sweep.js";
 export type { DataRetentionSweep, DataRetentionSweepResult } from "./sweep.js";
 export {
@@ -147,6 +153,10 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
         logger.warn({ err }, "data retention sweep-throttled log failed");
       }
     },
+    gitBundleCleanup: createClosedTaskGitBundleCleanup({
+      db,
+      storage: getStorageService(),
+    }),
   });
 
   const service = dataRetentionService({
