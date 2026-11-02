@@ -45,6 +45,7 @@ vi.mock("@/components/myrmidon/runtimeLimitsApi", () => ({
 }));
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
+  list: vi.fn(),
   liveRunsForCompany: vi.fn(),
 }));
 
