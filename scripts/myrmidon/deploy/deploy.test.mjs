@@ -339,7 +339,7 @@ const sbCanonical = (render) => render(UNIT_TEMPLATE);
 function pathWithoutGit(sb) {
   const tools = path.join(sb.dir, "tools");
   fs.mkdirSync(tools, { recursive: true });
-  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk"]) {
+  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir"]) {
     const found = process.env.PATH.split(":")
       .map((d) => path.join(d, name))
       .find((f) => fs.existsSync(f));
@@ -349,7 +349,7 @@ function pathWithoutGit(sb) {
 }
 
 function run(sb, script, args, input, extraEnv = {}) {
-  const searchPath = `${sb.bin}:${pathWithoutGit(sb).split(":").slice(1).join(":")}`;
+  const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
     env: { ...process.env, BASH_ENV: "", ENV: "", PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
