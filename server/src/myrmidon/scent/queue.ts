@@ -25,6 +25,7 @@ import { createCasteStore } from "../castes/store.js";
 import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@myrmidon/shared";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
 import { baseStrengthFromGeneral, createScentService, scentSettingsFromGeneral } from "./service.js";
+import { checkScentHealth } from "./health.js";
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
@@ -54,6 +55,15 @@ export interface ScentQueuePorts {
   now?: () => number;
   /** Test hook: observe queue diagnostics without coupling to the logger module. */
   logActivity?: (db: Db, entry: Parameters<typeof logActivity>[1]) => Promise<unknown>;
+  /** Test hook: replace hourly stats query in tests. */
+  getHourlyStats?: (
+    db: Db,
+    companyId: string,
+  ) => Promise<{
+    lastSuccessAt: Date | null;
+    attemptsLastHour: number;
+    successesLastHour: number;
+  }>;
 }
 
 export async function resolveScentSecret(
@@ -164,6 +174,10 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
       logger.error({ err, agentId }, "scent queue: agent classification failed");
     });
   }
+
+  await checkScentHealth(db, companyId, ports).catch((err) => {
+    logger.error({ err, companyId }, "scent health check failed");
+  });
 }
 
 /** One pass over every company. Exported for tests. */
