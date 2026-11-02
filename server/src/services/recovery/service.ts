@@ -1089,7 +1089,7 @@ async function resolvePrCiState(
   companyId: string,
   prProduct: typeof issueWorkProducts.$inferSelect,
   resolver?: PullRequestHeadResolver,
-): Promise<{ ci: "green" | "not_green"; headSha: string | null }> {
+): Promise<{ ci: "green" | "not_green" | "pending"; headSha: string | null }> {
   const metadata = parseObject(prProduct.metadata);
   if (metadata) {
     if (metadata.ci === "green" || metadata.ci === "not_green") {

@@ -138,6 +138,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_deferred_issue_execution_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
+  "myrmidon_empty_runs_total",
   "myrmidon_run_duration_seconds",
   "myrmidon_knowledge_on_change_share",
   "myrmidon_knowledge_revision_delay_seconds",
@@ -285,6 +286,8 @@ export interface MetricsSnapshotFields {
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
   runsFailedWindow: number;
+  /** Successful empty-response runs in the error window, by agent. */
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
   /** p50/p95 of finished run durations inside the latency window (seconds). */
   runDurationSecondsP50: number | null;
   runDurationSecondsP95: number | null;
@@ -539,6 +542,33 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   };
 }
 
+async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ agentId: string; count: number }>> {
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "succeeded"),
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from issue_work_products
+          where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from activity_log
+          where activity_log.run_id = ${heartbeatRuns.id}
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
+        )`,
+        gte(heartbeatRuns.finishedAt, windowStart),
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+  return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
 export async function readAgentFailedBeforeModel(
   db: Db,
@@ -564,6 +594,7 @@ export async function readAgentFailedBeforeModel(
   } catch {
     return {};
   }
+
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -909,6 +940,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
+  const emptyRunsByAgent = await guarded(
+    "myrmidon_empty_runs_total",
+    () => readEmptyRunsByAgent(deps.db, errorWindowStart),
+    [] as Array<{ agentId: string; count: number }>,
+  );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
   // and names the six families, never kills the scrape.
@@ -1022,6 +1058,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       deferredIssueExecutionOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
+      emptyRunsByAgent,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
       corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
@@ -1289,6 +1326,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Failed heartbeat runs inside the scrape error window.",
       "gauge",
       [`myrmidon_runs_failed_window{${R}} ${formatSampleValue(snapshot.runsFailedWindow)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_empty_runs_total",
+      "Successful empty-response heartbeat runs in the scrape error window, by agent.",
+      "gauge",
+      snapshot.emptyRunsByAgent.map(({ agentId, count: total }) =>
+        `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
     ),
   );
   blocks.push(
