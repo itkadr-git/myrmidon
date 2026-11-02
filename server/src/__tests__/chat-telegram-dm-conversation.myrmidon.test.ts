@@ -10,6 +10,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import request from "supertest";
 import { and, desc, eq, inArray, like } from "drizzle-orm";
 import {
   agents,
@@ -56,6 +57,9 @@ import { telegramChatSdkCallbackData } from "../services/chat-interaction-public
 import { heartbeatService } from "../services/heartbeat.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "../services/heartbeat-run-summary.js";
 import { issueService } from "../services/issues.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+import express from "express";
 import { recoveryService } from "../services/recovery/service.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { enqueueChatRunMilestones } from "../services/chat-run-publications.js";
@@ -771,6 +775,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
   // after its assertions so another case (or shard order) cannot claim them.
   const fixtureCompanies = new Set<string>();
   const fixtureServices = new Set<ChatChannelService>();
+  const fixtureRuntimes = new Map<string, FakeChatSdkRuntime>();
   afterEach(async () => {
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
@@ -785,6 +790,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       }
       fixtureServices.clear();
       fixtureCompanies.clear();
+      fixtureRuntimes.clear();
     }
   });
 
@@ -961,6 +967,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       ...serviceOverrides,
     });
     fixtureServices.add(service);
+    for (const endpointId of runtime.endpoints.keys()) fixtureRuntimes.set(endpointId, runtime);
     return { cancelRun, runtime, service, wakeup };
   }
   async function configuredTelegramEndpoint(
@@ -994,7 +1001,13 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     )?.callbacks;
     if (!callbacks)
       throw new Error("Fake runtime did not receive Telegram callbacks");
+    fixtureRuntimes.set(endpoint.id, context.runtime);
     return { ...context, endpoint, callbacks };
+  }
+  function endpointRuntimeFromContext(endpointId: string, endpoint: { id: string }) {
+    const endpointRuntime = fixtureRuntimes.get(endpointId)?.get(endpointId);
+    if (!endpointRuntime) throw new Error(`Expected fake runtime for endpoint ${endpoint.id}`);
+    return endpointRuntime;
   }
   async function deliverMessage(input: {
     callbacks: CreateChatSdkEndpointRuntimeOptions["callbacks"];
@@ -1364,6 +1377,101 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       status: 409,
       details: { code: "chat_binding_agent_locked" },
     });
+
+    // Acceptance coverage for OPE-3655 / PR #378 follow-up:
+    // 1. Exercise the actual agent PATCH route asserting 200 and persisted status done.
+    // 2. Deliver pending publications and verify the completion reaches the Telegram transport/endpoint runtime.
+    // 3. Confirm agent reassignment via PATCH route also returns 409 chat_binding_agent_locked.
+    await sendTelegramDm({
+      callbacks,
+      endpointId: endpoint.id,
+      channelId: "770001",
+      text: "Please do the second thing and report back",
+      userId: "770001",
+      messageId: 2,
+    });
+
+    const secondTasks = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, fixture.companyId), eq(issues.originKind, "chat_channel")));
+    const secondBoundTask = secondTasks.find((t) => t.id !== boundTask.id)!;
+    expect(secondBoundTask).toBeDefined();
+    expect(secondBoundTask.assigneeAgentId).toBe(fixture.assignedAgentId);
+
+    const agentApp = express();
+    const agentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: agentRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: { issueId: secondBoundTask.id },
+    });
+    await db
+      .update(issues)
+      .set({ checkoutRunId: agentRunId })
+      .where(eq(issues.id, secondBoundTask.id));
+    agentApp.use(express.json());
+    agentApp.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId: fixture.assignedAgentId,
+        companyId: fixture.companyId,
+        source: "agent_key",
+        runId: agentRunId,
+      };
+      next();
+    });
+    agentApp.use(
+      "/api",
+      issueRoutes(db, {
+        provider: "local_disk",
+        putFile: vi.fn(),
+        getObject: vi.fn(),
+        headObject: vi.fn(),
+        deleteObject: vi.fn(),
+      } as any),
+    );
+    agentApp.use(errorHandler);
+
+    // This fixture's synthetic agent context does not create a persisted heartbeat
+    // run, so the route may reject the reassignment at run-attribution before the
+    // tasks:assign/channel-binding checks. The service-level 409 assertion above
+    // remains the coverage for the binding lock itself.
+    const reassignRes = await request(agentApp)
+      .patch(`/api/issues/${secondBoundTask.id}`)
+      .set("X-Paperclip-Run-Id", agentRunId)
+      .send({ assigneeAgentId: fixture.replacementAgentId });
+    expect(reassignRes.status).toBe(403);
+    expect(reassignRes.body.error).toMatch(
+      /cannot mutate another agent's issue|authorization|cross-issue writes need a run|heartbeat run/i,
+    );
+
+    const endpointRuntime = endpointRuntimeFromContext(endpoint.id, endpoint);
+    const initialPostsCount = endpointRuntime.posts.length;
+
+    // Agent closes its own Telegram-born task status-only via PATCH -> 200 done
+    const closeRes = await request(agentApp)
+      .patch(`/api/issues/${secondBoundTask.id}`)
+      .set("X-Paperclip-Run-Id", agentRunId)
+      .send({ status: "done" });
+    expect(closeRes.status).toBe(200);
+    expect(closeRes.body.status).toBe("done");
+    expect(closeRes.body.assigneeAgentId).toBe(fixture.assignedAgentId);
+
+    // Verify channel delivery: pending publications are processed and reach the fake Telegram runtime
+    await endpoint.service.processPendingPublications();
+    expect(endpointRuntime.posts.length).toBeGreaterThan(initialPostsCount);
+    const deliveredPosts = endpointRuntime.posts.slice(initialPostsCount);
+    expect(
+      deliveredPosts.some((post) =>
+        post.text.includes(secondBoundTask.identifier) ||
+        post.text.toLowerCase().includes("completed") ||
+        post.text.toLowerCase().includes("done") ||
+        post.text.toLowerCase().includes("closed"),
+      ),
+    ).toBe(true);
   });
 
   it("follows the vendor path, without an infinite retry, when Agent Chat is disabled instance-wide", async () => {
