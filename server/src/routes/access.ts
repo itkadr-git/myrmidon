@@ -4726,33 +4726,47 @@ export function accessRoutes(
       ? await db
           .select({
             principalId: companyMemberships.principalId,
+            status: companyMemberships.status,
+            membershipRole: companyMemberships.membershipRole,
           })
           .from(companyMemberships)
           .where(
             and(
               eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.status, "active"),
               inArray(companyMemberships.principalId, userIds),
             ),
           )
       : [];
+    const matchingUserIds = new Set(
+      memberships
+        .filter((membership) =>
+          (query.role === undefined || membership.membershipRole === query.role) &&
+          (query.status === undefined || membership.status === query.status),
+        )
+        .map((membership) => membership.principalId),
+    );
+    const usersByMembership = query.role !== undefined || query.status !== undefined
+      ? filteredUsers.slice(0, 50).filter((user) => matchingUserIds.has(user.id))
+      : filteredUsers.slice(0, 50);
     const membershipCountByUserId = new Map<string, number>();
     for (const membership of memberships) {
+      if (membership.status !== "active") continue;
       membershipCountByUserId.set(
         membership.principalId,
         (membershipCountByUserId.get(membership.principalId) ?? 0) + 1,
       );
     }
+    const resultUserIds = usersByMembership.slice(0, 50).map((user) => user.id);
     const adminIds = new Set(
       await Promise.all(
-        userIds.map(async (userId) =>
+        resultUserIds.map(async (userId) =>
           (await access.isInstanceAdmin(userId)) ? userId : null,
         ),
       ).then((values) => values.filter((value): value is string => Boolean(value))),
     );
 
     res.json(
-      filteredUsers.slice(0, 50).map((user) => ({
+      usersByMembership.slice(0, 50).map((user) => ({
         ...toUserProfile(user),
         isInstanceAdmin: adminIds.has(user.id),
         activeCompanyMembershipCount:

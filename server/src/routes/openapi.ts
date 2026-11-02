@@ -1696,13 +1696,25 @@ function applyDocumentFixups(document: any): any {
             ? { actor: "board" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
-            : authLevel === "runtime_tools"
-              ? { actor: "runtime_tools", heartbeatBound: true }
-              : authLevel === "authenticated"
-                ? { actor: "board_or_agent" }
-                : { actor: "public" };
+              : authLevel === "runtime_tools"
+                ? { actor: "runtime_tools", heartbeatBound: true }
+                : authLevel === "authenticated"
+                  ? { actor: "board_or_agent" }
+                  : { actor: "public" };
 
       const key = operationKey(method, path);
+      if (
+        key === "GET /api/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/health" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health"
+      ) {
+        operation["x-paperclip-authorization"] = {
+          actor: "board_or_agent",
+          companyScopedQuery: true,
+          unscoped: { actor: "board", instanceAdmin: true },
+        };
+      }
+
       if (authLevel !== "public") {
         const responses = (operation.responses ??= {}) as Record<
           string,
@@ -5541,7 +5553,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     query: z.object({ path: z.string().optional(), diskPath: z.string().optional() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -5556,7 +5568,7 @@ registry.registerPath({
       diskPath: z.string().optional(),
     }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -5571,7 +5583,7 @@ registry.registerPath({
       diskPath: z.string().optional(),
     }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Guardrails ──────────────────────────────────────────────────────────────
@@ -6901,7 +6913,18 @@ registry.registerPath({
   path: "/api/companies/{companyId}/heartbeat-runs",
   tags: ["runs"],
   summary: "List heartbeat runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z
+      .object({
+        agentId: z.string().optional(),
+        limit: z.string().optional(),
+        summary: z.string().optional(),
+        wakeReason: z.string().optional(),
+        hasResult: z.string().optional(),
+      })
+      .optional(),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
