@@ -3630,13 +3630,12 @@ export function issueThreadInteractionService(
         ) {
           recipientCandidate = { agentId: issueContextRow.createdByAgentId };
         } else if (
-          normalizedData.kind !== "connection_intent" &&
           (normalizedData.kind === "request_confirmation" ||
             ((normalizedData.kind === "suggest_tasks" ||
               normalizedData.kind === "ask_user_questions") &&
               policy.effectiveResolverPolicy !== "human_only")) &&
-          normalizedData.payload.toolAction === undefined &&
-          normalizedData.payload.secretProposal === undefined
+          !("toolAction" in normalizedData.payload) &&
+          !("secretProposal" in normalizedData.payload)
         ) {
           // Legacy agent-created interactions are handled by the board queue
           // when no concrete owner can be inferred. Human-only interactions
