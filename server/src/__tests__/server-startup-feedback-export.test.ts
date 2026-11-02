@@ -60,7 +60,9 @@ const {
   existingSettingsRows,
   connectionDeliverySweepPendingMock,
   questionResponseDeliverySweepPendingMock,
+  providerUsageDeliverySweepMock,
 } = vi.hoisted(() => {
+  const providerUsageDeliverySweepMock = vi.fn(async () => ({ delivered: 0, failed: 0 }));
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
@@ -213,6 +215,7 @@ const {
     existingSettingsRows,
     connectionDeliverySweepPendingMock,
     questionResponseDeliverySweepPendingMock,
+    providerUsageDeliverySweepMock,
   };
 });
 
@@ -331,7 +334,7 @@ vi.mock("../myrmidon/browser-bridge/index.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   providerUsageService: vi.fn(() => ({
-    deliverPendingWarnings: vi.fn(async () => ({ delivered: 0, failed: 0 })),
+    deliverPendingWarnings: providerUsageDeliverySweepMock,
   })),
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
@@ -510,6 +513,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existingSettingsRows.length = 0;
+    providerUsageDeliverySweepMock.mockClear();
     delete process.env.MYRMIDON_PROCESS_ROLE;
     delete process.env.PAPERCLIP_PROCESS_ROLE;
     delete process.env.DATABASE_URL;
@@ -769,10 +773,37 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(connectionDeliverySweepPendingMock).not.toHaveBeenCalled();
       expect(questionResponseDeliverySweepPendingMock).not.toHaveBeenCalled();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
       else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
+    }
+  });
+
+  it("delivers provider usage warnings on heartbeat scheduler ticks only for background roles", async () => {
+    process.env.PAPERCLIP_PROCESS_ROLE = "all";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+    ) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+
+    try {
+      await startServer();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+      expect(intervalCallback).toBeDefined();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(providerUsageDeliverySweepMock).toHaveBeenCalledTimes(1);
+    } finally {
+      setIntervalSpy.mockRestore();
     }
   });
 

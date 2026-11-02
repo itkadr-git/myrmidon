@@ -2688,6 +2688,7 @@ async function startServerWithDatabaseTeardown(
         }
 
         if (heartbeatSchedulerStopped) return;
+        scheduleProviderUsageWarningDelivery();
         scheduleExternalObjectRefreshSweep(new Date());
 
         if (heartbeatSchedulerStopped) return;
@@ -2916,7 +2917,6 @@ async function startServerWithDatabaseTeardown(
     // the enabled path does.
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
-      scheduleProviderUsageWarningDelivery();
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
