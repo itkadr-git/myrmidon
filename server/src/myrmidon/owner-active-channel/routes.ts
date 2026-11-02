@@ -38,6 +38,17 @@ export function ownerActiveChannelRoutes(_db: Db, service: OwnerActiveChannelSer
     res.json(await service.read(requested || selfUserId));
   });
 
+  router.get("/myrmidon/owner/channels", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const selfUserId = req.actor.userId;
+    if (!selfUserId) throw badRequest("A board user identity is required");
+    const requested = typeof req.query.userId === "string" ? req.query.userId.trim() : "";
+    if (requested && requested !== selfUserId) {
+      assertInstanceAdmin(req);
+    }
+    res.json(await service.readChannels(requested || selfUserId));
+  });
+
   router.patch(
     "/myrmidon/owner/active-channel",
     validate(patchOwnerActiveChannelSchema),

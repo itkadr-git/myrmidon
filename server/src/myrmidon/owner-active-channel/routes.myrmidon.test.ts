@@ -84,6 +84,7 @@ function harness(options: HarnessOptions = {}) {
 }
 
 const URL = "/api/myrmidon/owner/active-channel";
+const CHANNELS_URL = "/api/myrmidon/owner/channels";
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET the active channel", () => {
@@ -145,6 +146,59 @@ describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET the active channel", () => {
     const empty = await request(adminApp).get(`${URL}?userId=ghost`).expect(200);
     expect(empty.body.channel).toBeNull();
     expect(empty.body.lastActiveAt).toEqual({ web: null, telegram: null });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+});
+
+describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET owner channel list", () => {
+  it("returns the canonical empty list and never errors when no activity exists", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: {} });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: null, active: false },
+        { channel: "telegram", lastSeenAt: null, active: false },
+      ],
+    });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("returns both channels from the shared activity source and exposes no secrets", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const web = minutesAgo(10);
+    const telegram = minutesAgo(130);
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: { web, telegram } });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: web, active: true },
+        { channel: "telegram", lastSeenAt: telegram, active: false },
+      ],
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/token|secret|chat.?id|bot/i);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("requires board organization access and instance admin for another userId", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({ activity: {} });
+    await request(withActor(outsider)).get(CHANNELS_URL).expect(403);
+    await request(withActor(member)).get(`${CHANNELS_URL}?userId=user-z`).expect(403);
+    const adminResponse = await request(withActor(admin))
+      .get(`${CHANNELS_URL}?userId=user-z`)
+      .expect(200);
+    expect(adminResponse.body.userId).toBe("user-z");
+    expect(adminResponse.body.channels).toEqual([
+      { channel: "web", lastSeenAt: null, active: false },
+      { channel: "telegram", lastSeenAt: null, active: false },
+    ]);
     invalidateOwnerActiveChannelSettingsCache();
   });
 });
