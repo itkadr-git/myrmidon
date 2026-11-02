@@ -61,8 +61,22 @@ export async function enrichWithPoolModels(
         let fallbackModels: string[] | null = null;
 
         for (const ch of channels) {
-          // Banned accounts do not provide available models
-          if (ch.isBanned || ch.state === "banned") {
+          // Banned or quota-exhausted accounts are out of rotation until their
+          // reset window. Do not advertise their models as pool-backed; otherwise
+          // model selection can route a fresh request back to a known-exhausted
+          // account before the provider refreshes its channel state.
+          const limitedWindows = [ch.windows.primary, ch.windows.secondary].some(
+            (window) =>
+              window?.limitReached === true &&
+              (window.resetsAt === null || window.resetsAt > Date.now() / 1000),
+          );
+          if (
+            ch.isBanned ||
+            ch.state === "banned" ||
+            ch.isExhausted ||
+            (ch.limitedUntil !== null && ch.limitedUntil > Date.now() / 1000) ||
+            limitedWindows
+          ) {
             continue;
           }
 
