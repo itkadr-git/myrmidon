@@ -32,7 +32,7 @@ export function InstanceAccess() {
 
   const usersQuery = useQuery({
     queryKey: queryKeys.access.adminUsers(search),
-    queryFn: () => accessApi.searchAdminUsers(search),
+    queryFn: () => accessApi.searchAdminUsers({ query: search }),
   });
 
   const companiesQuery = useQuery({
