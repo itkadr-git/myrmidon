@@ -1106,6 +1106,30 @@ describe("releaseIssueExecution", () => {
     expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
   });
 
+  it("does not run immediate recovery for a terminal issue after a continuation failure", async () => {
+    const terminalIssue = { ...ISSUE, status: "done" };
+    const transaction = createFakeTransaction({
+      findIssue: vi.fn(async () => terminalIssue),
+      findInvokableAgent: vi.fn(async () => null),
+      isImmediateRecoverySourceBlocked: vi.fn(async () => true),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, {
+        ...RUN,
+        status: "failed",
+        errorCode: "setup_failed",
+        conversationContinuation: true,
+      }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.isImmediateRecoverySourceBlocked).not.toHaveBeenCalled();
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+  });
+
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => null),

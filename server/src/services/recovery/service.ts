@@ -5958,6 +5958,16 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      // The candidate list is a snapshot. A continuation may have been closed
+      // after it was read; never reconcile or escalate a terminal issue from
+      // that stale snapshot.
+      const [currentIssue] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+        .limit(1);
+      if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {

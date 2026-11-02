@@ -600,6 +600,12 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
+  const currentIssue = await transaction.findIssue({ companyId: issue.companyId, issueId: issue.id });
+  if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  issue = currentIssue;
+  if (issue.status === "blocked") return { outcome: { kind: "released" }, postCommitEffects };
   const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
     issue.conversationAgentId && issue.conversationUserId &&
     issue.conversationState === "waiting" && issue.status === "in_review"
