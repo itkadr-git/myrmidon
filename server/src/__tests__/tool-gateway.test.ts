@@ -2724,8 +2724,12 @@ rl.on("line", (line) => {
         (entry) => entry.catalogEntryId === remoteTool.catalogEntry.id,
       );
       expect(tool?.parametersSchema).toEqual({
-        a: { type: "object", properties: { b: { type: "boolean" }, y: { type: "number" } } },
-        z: { type: "string", description: "last" },
+        type: "object",
+        required: ["z", "a"],
+        properties: {
+          a: { type: "object", properties: { b: { type: "boolean" }, y: { type: "number" } } },
+          z: { type: "string", description: "last" },
+        },
       });
       expect(tool?.providerMetadata).toMatchObject({
         inputSchema: tool?.parametersSchema,
