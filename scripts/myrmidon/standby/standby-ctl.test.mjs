@@ -399,7 +399,7 @@ test("setupStandby fails if WAL receiver stream is not active (walReceivers === 
 
   const res = setupStandby(
     "board",
-    { replicatorPassword: "test_secret" },
+    { replicatorPassword: "test_secret", readinessAttempts: 3, readinessDelayMs: 0 },
     { runner: mockRunner, fsOps: mockFs }
   );
   assert.equal(res.success, false);
@@ -599,6 +599,10 @@ test("runCli commands output structured JSON and return correct exit codes", () 
   let failoverPromoted = false;
   const mockRunner = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "pg_ctl" && args[0] === "promote") {
+      failoverPromoted = true;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
     if (sql.includes("pg_promote")) {
       failoverPromoted = true;
       return { exitCode: 0, stdout: "", stderr: "" };

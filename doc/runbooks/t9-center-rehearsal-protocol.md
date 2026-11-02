@@ -103,11 +103,18 @@ scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
 **Execution flow**:
 1. Basebackup snapshot of `/srv/standby/myrmidon-pg/data` into ephemeral `/srv/standby/drill-cluster`.
 2. Startup of ephemeral PostgreSQL instance on port `5533`.
-3. Execution of `SELECT pg_promote()`.
+3. Execution of `pg_ctl promote -D <drillDir>` (D3: SQL `pg_promote()` requires superuser; the `paperclip` role lacks it. `pg_ctl promote` runs as the OS user that owns the data directory).
 4. Verification that `SELECT pg_is_in_recovery()` returns `f` (false).
 5. Smoke verification: `SELECT 1` on `paperclip` and `myrmidon_hindsight`.
-6. Ephemeral instance shutdown and directory cleanup.
+6. Ephemeral instance shutdown and directory cleanup (skipped with `--keep-drill` for fleet-visibility checks, D6).
 7. Verification that measured RTO <= 1800s.
+
+**Optional — keep drill alive for board/fleet verification (D6)**:
+```bash
+scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --keep-drill --drill-port=5533
+docker compose -f scripts/myrmidon/standby/docker-compose.standby.yml up -d myrmidon-board
+curl -s http://127.0.0.1:3101/healthz
+```
 
 **Expected JSON output**:
 ```json
@@ -131,9 +138,15 @@ scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
 ```
 
 ### Step 3: Fleet Visibility Check
-Launch Myrmidon Board application container from the release image:
+Launch Myrmidon Board application container from the release image (D6: drill-only service, port 3101, scheduler and outbound channels disabled):
 ```bash
 docker compose -f scripts/myrmidon/standby/docker-compose.standby.yml up -d myrmidon-board
-curl -s http://127.0.0.1:3100/healthz
+curl -s http://127.0.0.1:3101/healthz
 ```
 Verify via API or UI that all 13 worker bots on `myr-vm1` report healthy heartbeats to the restored board instance.
+
+To clean up the drill board and drill cluster afterwards:
+```bash
+docker compose -f scripts/myrmidon/standby/docker-compose.standby.yml rm -sf myrmidon-board
+scripts/myrmidon/standby/standby-ctl.sh rehearse --target all  # without --keep-drill, or rm -rf drill dir manually
+```

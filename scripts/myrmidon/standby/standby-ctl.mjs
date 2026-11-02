@@ -275,6 +275,7 @@ export function generateStandbyConfig(target = "board", overrides = {}) {
 
 /**
  * Generates pg_basebackup command array and string.
+ * Supports --max-rate and --checkpoint passthrough for large clusters (D1).
  */
 export function generateBasebackupCommand(target = "board", overrides = {}) {
   const isBoard = target === "board";
@@ -299,8 +300,12 @@ export function generateBasebackupCommand(target = "board", overrides = {}) {
     "-Xs",
     "-R",
     `--slot=${replSlot}`,
-    "--checkpoint=fast",
+    `--checkpoint=${overrides.checkpoint || "fast"}`,
   ];
+
+  if (overrides.maxRate) {
+    args.push(`--max-rate=${overrides.maxRate}`);
+  }
 
   return {
     executable: "pg_basebackup",
@@ -372,8 +377,8 @@ export function planRehearsal(target = "board", overrides = {}) {
     drillDir,
     drillPort,
     step1_snapshot: `pg_basebackup -h 127.0.0.1 -p ${standbyPort} -U ${replUser} -D ${drillDir} -Fp -Xs -R`,
-    step2_startEphemeral: `pg_ctl start -D ${drillDir} -o "-p ${drillPort} -c listen_addresses=127.0.0.1"`,
-    step3_promote: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -c "SELECT pg_promote();"`,
+    step2_startEphemeral: `pg_ctl start -D ${drillDir} -o "-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16"`,
+    step3_promote: `pg_ctl promote -D ${drillDir}`,
     step4_verify: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -t -A -c "SELECT pg_is_in_recovery();"`,
     step5_smokeTest: `psql -h 127.0.0.1 -p ${drillPort} -U ${boardUser} -d ${boardDb} -c "SELECT 1;" && psql -h 127.0.0.1 -p ${drillPort} -U ${hindsightUser} -d ${hindsightDb} -c "SELECT 1;"`,
     step6_stopClean: `pg_ctl stop -D ${drillDir} -m immediate`,
@@ -557,8 +562,10 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
   }
 
   // 3. Run pg_basebackup with PGPASSFILE in environment
+  // D1: configurable timeout — 45 GB cluster at ~100 MB/s needs ~8 min; default 3600s (1 h).
+  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 3600000;
   const baseRes = runner(basebackup.executable, basebackup.args, {
-    timeoutMs: 300000,
+    timeoutMs: setupBasebackupTimeoutMs,
     env: {
       ...process.env,
       PGPASSFILE: hostPassfilePath,
@@ -613,15 +620,31 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
 
   // 4. Wait for PostgreSQL readiness before checking replication. A large base
   // backup can leave the container alive but not accepting connections yet.
-  const readinessAttempts = options.readinessAttempts || 12;
+  // D4: configurable attempts + sleep between attempts; under role `paperclip`
+  // pg_stat_wal_receiver can return NULL rows, which must not be treated as
+  // "streaming inactive" until the retry budget is exhausted.
+  const readinessAttempts = options.readinessAttempts ?? 30;
+  const readinessDelayMs = options.readinessDelayMs ?? 5000;
   let verifyRes = { exitCode: 1, stdout: "", stderr: "standby not ready" };
+  let lastReadinessErr = null;
   for (let attempt = 0; attempt < readinessAttempts; attempt++) {
     verifyRes = queryPostgres(
       "SELECT pg_is_in_recovery()::text, count(*)::text FROM pg_stat_wal_receiver WHERE status = 'streaming';",
       { host: DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
       runner
     );
-    if (verifyRes.exitCode === 0 && verifyRes.stdout?.trim()) break;
+    if (verifyRes.exitCode === 0 && verifyRes.stdout?.trim()) {
+      const parts = verifyRes.stdout.trim().split("\n")[0].split("|");
+      const rec = parts[0] === "t" || parts[0] === "true";
+      const wr = parseInt(parts[1] || "0", 10);
+      if (rec && wr > 0) break;
+      lastReadinessErr = `in_recovery=${rec} wal_receivers=${wr}`;
+    } else {
+      lastReadinessErr = verifyRes.stderr || verifyRes.stdout || "no response";
+    }
+    if (attempt < readinessAttempts - 1) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readinessDelayMs);
+    }
   }
 
   // 5. Verify standby recovery and streaming receiver
@@ -650,7 +673,7 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
       inRecovery: true,
       walReceivers: 0,
       streamingActive: false,
-      error: "WAL streaming receiver is not active in pg_stat_wal_receiver (status != 'streaming'). Verify replication credentials and connectivity.",
+      error: `WAL streaming receiver is not active in pg_stat_wal_receiver (status != 'streaming'). Last readiness state: ${lastReadinessErr || "unknown"}. Verify replication credentials and connectivity.`,
     };
   }
 
@@ -920,8 +943,18 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
     }
   }
 
-  // 1. Promote standby
-  const promoteRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+  // 1. Promote standby (D3: use pg_ctl promote — paperclip role lacks pg_promote() privilege)
+  // pg_ctl runs as the OS user that owns the data directory (typically postgres), bypassing
+  // the SQL privilege requirement entirely.
+  const promoteTimeoutMs = options.promoteTimeoutMs || 120000;
+  const dataDir = options.dataDir || (isBoard
+    ? options.boardDataDir || DEFAULT_CONFIG.boardDataDir
+    : options.hindsightDataDir || DEFAULT_CONFIG.hindsightDataDir);
+  let promoteRes = runner("pg_ctl", ["promote", "-D", dataDir], { timeoutMs: promoteTimeoutMs });
+  // Fall back to SQL pg_promote() only if pg_ctl binary is unavailable or returns ENOENT.
+  if (promoteRes.exitCode !== 0 && (promoteRes.stderr || "").includes("ENOENT")) {
+    promoteRes = queryPostgres(plan.promoteSql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
+  }
   if (promoteRes.exitCode !== 0) {
     return {
       success: false,
@@ -930,15 +963,19 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
     };
   }
 
-  // 2. Poll until pg_is_in_recovery() returns false
+  // 2. Poll until pg_is_in_recovery() returns false (D4: bounded delay between attempts)
   let promoted = false;
-  const maxAttempts = options.maxVerifyAttempts || 10;
+  const maxAttempts = options.maxVerifyAttempts ?? 10;
+  const verifyDelayMs = options.verifyDelayMs ?? 2000;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const vRes = queryPostgres(plan.verifySql, { host: "127.0.0.1", port: standbyPort, user: dbUser, db: dbName }, runner);
     const val = (vRes.stdout || "").trim();
     if (val === "f" || val === "false") {
       promoted = true;
       break;
+    }
+    if (attempt < maxAttempts - 1) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, verifyDelayMs);
     }
   }
 
@@ -1126,7 +1163,43 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     return { success: false, target, error: `Failed to create drill dir: ${err.message}` };
   }
 
-  // 1. Snapshot from standby
+  // Resolve credentials for drill snapshot (D5): same resolution as setupStandby.
+  const replPassword =
+    options.replicatorPassword !== undefined
+      ? options.replicatorPassword
+      : DEFAULT_CONFIG.replicatorPassword;
+  const credentialPath =
+    options.credentialPath ||
+    options.passfilePath ||
+    DEFAULT_CONFIG.credentialPath ||
+    DEFAULT_CONFIG.passfilePath;
+  let drillPassfilePath = credentialPath;
+  if (!drillPassfilePath) {
+    drillPassfilePath = path.join(path.dirname(drillDir), ".pgpass");
+  }
+  if (replPassword) {
+    try {
+      const passDir = path.dirname(drillPassfilePath);
+      if (!fsOps.existsSync(passDir)) {
+        fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
+      }
+      const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
+      const primaryPort = resolvePrimaryPort(options, target);
+      fsOps.writeFileSync(
+        drillPassfilePath,
+        `127.0.0.1:${standbyPort}:*:${replUser}:${replPassword}\n${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`,
+        { mode: 0o600 }
+      );
+      if (fsOps.chmodSync) {
+        fsOps.chmodSync(drillPassfilePath, 0o600);
+      }
+    } catch (err) {
+      return { success: false, target, error: `Failed to create drill passfile at ${drillPassfilePath}: ${err.message}` };
+    }
+  }
+
+  // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
+  const basebackupTimeoutMs = options.basebackupTimeoutMs || 3600000; // 1h default for 45GB
   const snapRes = runner("pg_basebackup", [
     "-h", "127.0.0.1",
     "-p", String(standbyPort),
@@ -1135,25 +1208,37 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     "-Fp",
     "-Xs",
     "-R",
-  ]);
+  ], {
+    timeoutMs: basebackupTimeoutMs,
+    env: {
+      ...process.env,
+      PGPASSFILE: drillPassfilePath,
+    },
+  });
   if (snapRes.exitCode !== 0) {
     try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
     return { success: false, target, error: `Drill snapshot failed: ${snapRes.stderr || snapRes.stdout}` };
   }
 
-  // 2. Start ephemeral postgres instance on drillPort
-  const startRes = runner("pg_ctl", ["start", "-D", drillDir, "-o", `-p ${drillPort} -c listen_addresses=127.0.0.1`]);
+  // 2. Start ephemeral postgres instance on drillPort (D2: max_connections + max_worker_processes; D1: timeout)
+  const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000; // 2m for start/stop
+  const startRes = runner("pg_ctl", [
+    "start",
+    "-D", drillDir,
+    "-o",
+    `-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16`,
+  ], { timeoutMs: pgCtlTimeoutMs });
   if (startRes.exitCode !== 0) {
     try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
     return { success: false, target, error: `Drill pg_ctl start failed: ${startRes.stderr || startRes.stdout}` };
   }
 
-  // 3. Promote drill instance
-  const promoteRes = queryPostgres("SELECT pg_promote();", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+  // 3. Promote drill instance (D3: use pg_ctl promote — paperclip role lacks pg_promote() privilege)
+  const promoteRes = runner("pg_ctl", ["promote", "-D", drillDir], { timeoutMs: pgCtlTimeoutMs });
   if (promoteRes.exitCode !== 0) {
-    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
+    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
     try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
-    return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr}` };
+    return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr || promoteRes.stdout}` };
   }
 
   // 4. Verify drill recovery false
@@ -1163,11 +1248,14 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
   const hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
 
-  // 6. Clean stop and removal
-  runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"]);
-  try {
-    fsOps.rmSync(drillDir, { recursive: true, force: true });
-  } catch {}
+  // 6. Clean stop and removal (skip cleanup when --keep-drill is set, D6)
+  const keepDrill = options.keepDrill === true;
+  if (!keepDrill) {
+    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
+    try {
+      fsOps.rmSync(drillDir, { recursive: true, force: true });
+    } catch {}
+  }
 
   const durationMs = Date.now() - startTime;
   const durationSeconds = Math.round(durationMs / 1000);
@@ -1212,6 +1300,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     durationSeconds,
     targetRtoSeconds: DEFAULT_CONFIG.rtoTargetSeconds,
     rtoOk,
+    ...(keepDrill ? { keepDrill: true, drillDir, drillPort } : {}),
     ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
   };
 }

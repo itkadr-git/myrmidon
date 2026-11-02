@@ -20,9 +20,35 @@ services:
       -c hot_standby=on
       -c restore_command='cp /srv/backups/wal/%f %p'
       -c hot_standby_feedback=on
+      -c max_connections=200
+      -c max_worker_processes=16
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -p 5432 -U paperclip && psql -U paperclip -d paperclip -c 'SELECT pg_is_in_recovery();' | grep -q t"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # D6: board service for rehearsal drill verification.
+  # Runs only during rehearse --keep-drill; points at the ephemeral drill
+  # postgres on host port 5533. No scheduler, no outgoing channels.
+  myrmidon-board:
+    image: ghcr.io/itkadr-git/myrmidon:latest
+    container_name: myrmidon-board-drill
+    restart: "no"
+    ports:
+      - "127.0.0.1:3101:3100"
+    environment:
+      DATABASE_URL: "postgres://paperclip:${PAPERCLIP_DB_PASSWORD:-paperclip}@host.docker.internal:5533/paperclip"
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_DISABLE_SCHEDULER: "true"
+      PAPERCLIP_DISABLE_OUTBOUND: "true"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      myrmidon-pg-standby:
+        condition: service_healthy

@@ -8,8 +8,8 @@ This runbook defines the operational procedures for the central database warm st
 
 - **Primary Site (`vm-core`)**:
   - Hosts single production PostgreSQL 18 cluster `myrmidon-pg` on port `5432`.
-  - Contains both `paperclip` board database (~6.6 GB) and `myrmidon_hindsight` vector database (~16 GB).
-  - Configured with `wal_level = replica`, `archive_mode = on`, continuous WAL streaming to replication slot `standby_board_slot`.
+  - Contains both `paperclip` board database (~13 GB) and `myrmidon_hindsight` vector database (~19 GB); total cluster ~45 GB.
+  - Configured with `wal_level = logical`, `archive_mode = off`, continuous WAL streaming to replication slot `standby_board_slot`.
 - **Standby Site (`myr-vm1`)**:
   - Connected to `vm-core` via secure IPsec tunnel.
   - Hosts a single warm standby PostgreSQL cluster in isolated directory and port:
@@ -40,12 +40,24 @@ This runbook defines the operational procedures for the central database warm st
    The management CLI is located at:
    `scripts/myrmidon/standby/standby-ctl.sh` (backed by `standby-ctl.mjs`).
 
+5. **Host prerequisites (D8, standby host `myr-vm1`)**:
+   - `node` (any supported LTS) to run `standby-ctl.mjs`.
+   - PostgreSQL 18 client binaries on the host: `psql`, `pg_basebackup`, `pg_ctl` (the same major version as the primary, PG 18).
+   - Run as a non-root OS user that owns the standby data directory and the docker socket group. `pg_ctl` (promote/start/stop) refuses to run as root, and `pg_basebackup`/`psql` invocations from `standby-ctl.sh` inherit that user.
+   - Docker with the `pgvector/pgvector:pg18` image pre-pulled (no on-host image build — board image comes from CI per release policy).
+
 **Mandatory primary-side PostgreSQL settings** (validated by `setup` and `check-lag`, fail-closed):
+
+> **D7 note (02.11, ADM):** production runs `wal_level=logical` and `archive_mode=off`,
+> both fixed in the container `command` line — `ALTER SYSTEM` is overridden by the
+> command line and would need a restart. Do NOT change them; streaming replication
+> works with `logical`. Only the slot retention bound below is managed via ALTER SYSTEM.
+
 ```sql
--- Streaming replication for the warm standby
-ALTER SYSTEM SET wal_level = 'replica';
--- Bound WAL retention per slot so a stopped standby cannot fill the disk (e.g. 50 GB)
-ALTER SYSTEM SET max_slot_wal_keep_size = '50GB';
+-- Streaming replication works with the live wal_level=logical — no wal_level change needed.
+-- Bound WAL retention per slot so a stopped standby cannot fill the disk.
+-- D7: root fs has ~40 GB free — use 6 GB, not 50 GB.
+ALTER SYSTEM SET max_slot_wal_keep_size = '6GB';
 SELECT pg_reload_conf();
 ```
 `max_slot_wal_keep_size = -1` (unbounded, the live `myrmidon-pg` default) is rejected by `setup` and reported by `check-lag`; a VM with `/` at 90% capacity must not run an unbounded slot.
