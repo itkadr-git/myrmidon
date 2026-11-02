@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -1663,12 +1663,31 @@ describe("worktree helpers", () => {
       const priorEntries = journal.entries.slice(0, -1);
       const priorMigrations = path.join(tempRoot, "prior-migrations");
       fs.mkdirSync(path.join(priorMigrations, "meta"), { recursive: true });
-      fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
+      const priorJournal = { ...journal, entries: priorEntries };
+      fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify(priorJournal));
+      const priorMigrationHashes: string[] = [];
       for (const entry of priorEntries) {
-        fs.copyFileSync(new URL(`${entry.tag}.sql`, migrationsRoot), path.join(priorMigrations, `${entry.tag}.sql`));
+        const sourcePath = new URL(`${entry.tag}.sql`, migrationsRoot);
+        const sql = fs.readFileSync(sourcePath, "utf8");
+        priorMigrationHashes.push(createHash("sha256").update(sql).digest("hex"));
+        // Drizzle applies migrations in a transaction; concurrent index creation
+        // from the prior schema must be non-concurrent in this isolated fixture.
+        fs.writeFileSync(
+          path.join(priorMigrations, `${entry.tag}.sql`),
+          sql.replace(/\bINDEX\s+CONCURRENTLY\b/gi, "INDEX"),
+        );
       }
       const sourceDbClient = createDb(sourceDb.connectionString);
       await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
+      const migrationRows = await sourceDbClient.$client.unsafe<Array<{ id: number; hash: string }>>(
+        'SELECT "id", "hash" FROM "drizzle"."__drizzle_migrations" ORDER BY "id"',
+      );
+      expect(migrationRows).toHaveLength(priorEntries.length);
+      await sourceDbClient.$client.unsafe(
+        'UPDATE "drizzle"."__drizzle_migrations" SET "hash" = CASE "id"' +
+          migrationRows.map((row, index) => ` WHEN ${row.id} THEN '${priorMigrationHashes[index]!}'`).join("") +
+          ' ELSE "hash" END',
+      );
       await seedValidWorktreeSource(sourceDb.connectionString);
       await sourceDbClient.$client.unsafe(`
         WITH pair AS (
