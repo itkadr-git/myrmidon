@@ -49,6 +49,7 @@ const apiPrefixes: Record<string, string> = {
   "file-resources.ts": "/api",
   "folders.ts": "/api",
   "goals.ts": "/api",
+  "ha.ts": "/api/ha",
   "health.ts": "/api/health",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
@@ -92,12 +93,15 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
-
+const explicitOpenApiCoverageExclusions = new Set<string>([
+  "audit.ts",
+  // Mounted directly by app.ts; its routes are documented in openapi.ts.
+  "admin-assistant.ts",
+]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
-  // This endpoint is authenticated by the provider signature rather than by a
-  // Paperclip board/agent credential. It intentionally stays out of the public
-  // board API document, while this exact exclusion keeps route coverage honest.
+  // These webhook handlers are mounted outside the scanner's route-file map.
+  // Their provider signatures intentionally keep them out of the public board
+  // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
@@ -136,6 +140,11 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
   "POST /api/myrmidon/companies/{companyId}/knowledge/import",
   "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // admin-assistant routes are mounted directly by app.ts, outside the
+  // scanner's route-file scope; their OpenAPI entries are contract-first here.
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/health",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
 function createApp() {
@@ -784,6 +793,24 @@ describe("openapi routes", () => {
     }
     expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
     expect(replacement.responses["422"]).toBeDefined();
+  });
+
+  it("documents admin-assistant health authorization and error responses", () => {
+    const { spec } = loadSpecRoutes();
+    for (const path of [
+      "/api/companies/{companyId}/admin-assistant/cluster-health",
+      "/api/admin-assistant/cluster-health",
+      "/api/admin-assistant/health",
+    ]) {
+      const operation = spec.paths[path].get;
+      expect(operation.responses["401"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toMatchObject({
+        actor: "board_or_agent",
+        companyScopedQuery: true,
+        unscoped: { actor: "board", instanceAdmin: true },
+      });
+    }
   });
 
   it("documents auth and reviewed response-code invariants", () => {

@@ -34,8 +34,10 @@ export interface LitellmSyncPort {
     providerType: string;
     /** The provider's base URL; null means default. */
     baseUrl: string | null;
-    /** The name of the secret that holds the credential (not the value itself). */
-    credentialSecretName: string;
+    /** The credential value; LiteLLM encrypts it in its own database. */
+    credentialValue?: string;
+    /** @deprecated retained for adapter compatibility; production wiring sends credentialValue. */
+    credentialSecretName?: string;
     /** Priority order of the channel within the model group. */
     order?: number;
     /** Routing weight for load balancing. */
@@ -61,7 +63,10 @@ export interface LitellmSyncPort {
     litellmModelName: string;
     providerType: string;
     baseUrl: string | null;
-    credentialSecretName: string;
+    /** The credential value to pass to LiteLLM; LiteLLM encrypts it in its DB. */
+    credentialValue?: string;
+    /** @deprecated retained for adapter compatibility; never sent by production wiring. */
+    credentialSecretName?: string;
     /** Priority order of the channel within the model group. */
     order?: number;
     /** Routing weight for load balancing. */

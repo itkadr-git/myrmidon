@@ -3,6 +3,7 @@
 // New contracts go here or in packages/shared/src/myrmidon/, sorted alphabetically.
 // Regenerate with: node scripts/generate-shared-exports.mjs
 
+export * from "../validators/audit.js";
 export * from "../blocker-graph.js";
 export * from "../continuation-key.js";
 export * from "../interaction-routing.js";
@@ -17,6 +18,7 @@ export * from "../myrmidon-architect-data.js";
 export * from "../myrmidon-attention-feed.js";
 export * from "../myrmidon-autonomy.js";
 export * from "../myrmidon-base-skills.js";
+export * from "../myrmidon-behavior-settings-registry.js";
 export * from "../myrmidon-behavior-settings.js";
 export * from "../myrmidon-board-processes.js";
 export * from "../myrmidon-bot-disk-partition.js";
@@ -61,8 +63,8 @@ export * from "../myrmidon-long-task-context.js";
 export * from "../myrmidon-model-api-pricing.js";
 export * from "../myrmidon-model-menu.js";
 export * from "../myrmidon-model-providers.js";
-export * from "../myrmidon-owner-delivery.js";
 export * from "../myrmidon-owner-active-channel.js";
+export * from "../myrmidon-owner-delivery.js";
 export * from "../myrmidon-parallel-helpers.js";
 export * from "../myrmidon-pause-guard.js";
 export * from "../myrmidon-plugin-entitlement.js";
@@ -88,7 +90,9 @@ export * from "../myrmidon-telegram-dm-progress.js";
 export * from "../myrmidon-telegram-notify.js";
 export * from "../myrmidon-tool-policy-cache.js";
 export * from "../myrmidon-ui2-i18n.js";
+export * from "../myrmidon-vendor-name.js";
 export * from "../myrmidon-wip-limit.js";
 export * from "../myrmidon-workspace-hygiene.js";
 export * from "../recovery-factory.js";
 export * from "./ideas.js";
+export * from "../validators/user-block.js";

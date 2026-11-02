@@ -57,7 +57,8 @@ export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
  */
 export const ORPHAN_WAKE_GRACE_SEC = 600;
 
-/** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
+/** In-flight idle-pickup attempts keyed by company and agent. */
+const idlePickupInFlight = new Map<string, Promise<IdlePickupResult>>();
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
 /**
@@ -508,6 +509,26 @@ export function isReviewPendingWaitingForCi(params: {
  * once. Returns the outcome counts; the caller decides whether to log them.
  */
 export async function idlePickupForAgent(
+  deps: IdlePickupDeps,
+  agent: { id: string; companyId: string },
+  options: {
+    excludeIssueId?: string | null;
+    behaviorEnabled?: boolean;
+  } = {},
+): Promise<IdlePickupResult> {
+  const key = `${agent.companyId}:${agent.id}`;
+  const existing = idlePickupInFlight.get(key);
+  if (existing) return existing;
+  const attempt = idlePickupForAgentImpl(deps, agent, options);
+  idlePickupInFlight.set(key, attempt);
+  try {
+    return await attempt;
+  } finally {
+    if (idlePickupInFlight.get(key) === attempt) idlePickupInFlight.delete(key);
+  }
+}
+
+async function idlePickupForAgentImpl(
   deps: IdlePickupDeps,
   agent: { id: string; companyId: string },
   options: {

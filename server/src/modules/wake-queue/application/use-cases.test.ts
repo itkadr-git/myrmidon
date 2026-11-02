@@ -583,14 +583,15 @@ describe("releaseIssueExecution", () => {
   });
 
   it.each([
-    { label: "skips mismatched reviewer continuation", agentRole: "reviewer", issueRole: "engineer", promoted: false },
-    { label: "allows matching engineer continuation", agentRole: "engineer", issueRole: "engineer", promoted: true },
-    { label: "allows continuation when issue role is null", agentRole: "reviewer", issueRole: null, promoted: true },
-  ])("$label", async ({ agentRole, issueRole, promoted }) => {
+    { label: "skips mismatched reviewer continuation", agentRole: "reviewer", issueRole: "engineer", promoted: false, wakeReason: "issue_continuation_needed" },
+    { label: "allows matching engineer continuation", agentRole: "engineer", issueRole: "engineer", promoted: true, wakeReason: "issue_continuation_needed" },
+    { label: "allows continuation when issue role is null", agentRole: "reviewer", issueRole: null, promoted: true, wakeReason: "issue_continuation_needed" },
+    { label: "skips mismatched max-turn retry continuation", agentRole: "reviewer", issueRole: "engineer", promoted: false, wakeReason: "max_turns_continuation_retry" },
+  ])("$label", async ({ agentRole, issueRole, promoted, wakeReason }) => {
     const candidate = wakeCandidate({
       id: "wake-role-check",
-      reason: "issue_continuation_needed",
-      wakeReason: "issue_continuation_needed",
+      reason: wakeReason,
+      wakeReason,
     });
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn()

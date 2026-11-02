@@ -86,6 +86,10 @@ type Options struct {
 	// DiskHost is how GET /myrmidon/disk (A14) looks at the host: statfs, the
 	// quota command and the project table. Zero fields mean the real host.
 	DiskHost disk.Deps
+	// Oom is the store of OOM events (A19). Nil uses a default in-memory store.
+	Oom *OomStore
+	// DisableOomLoop disables the background listener for docker events. Tests set it.
+	DisableOomLoop bool
 }
 
 // DiskQuota is what the disk routes need of the quota code (disk.Quota).
@@ -104,6 +108,7 @@ type Gate struct {
 	now     func() time.Time
 	lstat   policy.LstatFunc
 	disk    disk.Deps
+	oom     *OomStore
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -165,6 +170,10 @@ func New(opt Options) (*Gate, error) {
 		replySem: make(chan struct{}, 32),
 		lockWait: config.Sec(lim.UpstreamStopSec) + 5*time.Second,
 		bots:     map[string]*botState{},
+		oom:      opt.Oom,
+	}
+	if g.oom == nil {
+		g.oom = NewOomStore(1000)
 	}
 	g.st.Store(newRuntime(cfg, opt.ConfigHash))
 	g.auth = peer.New(peer.Options{
@@ -338,6 +347,10 @@ func (g *Gate) Serve(ctx context.Context, ln net.Listener) error {
 	go func() { defer wg.Done(); g.heartbeatLoop(loops, config.Sec(lim.ResolvePollSec)) }()
 	go func() { defer wg.Done(); g.statsLoop(loops) }()
 	go func() { defer wg.Done(); g.callersLoop(loops) }()
+	if !g.opt.DisableOomLoop {
+		wg.Add(1)
+		go func() { defer wg.Done(); g.oomLoop(loops) }()
+	}
 	defer func() { stop(); wg.Wait() }()
 
 	done := make(chan error, 1)

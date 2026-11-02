@@ -73,6 +73,18 @@ export interface BaselineMetricsReport {
   source: BaselineSource;
   byProject: BaselineMetricRow[];
   byRole: BaselineMetricRow[];
+  overall?: BaselineMetricRow;
+}
+
+export interface BaselineTrendPoint {
+  weekStart: string;
+  weekEnd: string;
+  tasksCompleted: number;
+  cycleTimeMedianHours: number | null;
+  reviewTimeMedianHours: number | null;
+  returnRate: number;
+  runsPerTask: number;
+  costPerTask: number;
 }
 
 export interface BaselineDifference {
@@ -129,6 +141,13 @@ export const baselineApi = {
     const qs = params.toString();
     return api.get<BaselineComparisonResult>(`${compareBase(companyId)}${qs ? `?${qs}` : ""}`);
   },
+  trend: (companyId: string, weeks?: number) => {
+    const params = new URLSearchParams();
+    if (weeks !== undefined) params.set("weeks", String(weeks));
+    const qs = params.toString();
+    const trendBase = `/myrmidon/companies/${encodeURIComponent(companyId)}/baseline/trend`;
+    return api.get<BaselineTrendPoint[]>(`${trendBase}${qs ? `?${qs}` : ""}`);
+  },
 };
 
 export const baselineMetricsKey = (companyId: string, from?: string, to?: string) =>
@@ -136,6 +155,9 @@ export const baselineMetricsKey = (companyId: string, from?: string, to?: string
 
 export const baselineCompareKey = (companyId: string, from?: string, to?: string) =>
   ["myrmidon", "baseline", "compare", companyId, from ?? null, to ?? null] as const;
+
+export const baselineTrendKey = (companyId: string, weeks?: number) =>
+  ["myrmidon", "baseline", "trend", companyId, weeks ?? null] as const;
 
 /** 503 body while the server-side part is not enabled: "not enabled" style. */
 export function isNotEnabledError(err: unknown): boolean {

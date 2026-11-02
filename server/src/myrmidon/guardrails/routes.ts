@@ -43,7 +43,7 @@ import {
   readGuardrailModesSettings,
   writeGuardrailModesSettings,
 } from "./modes-settings.js";
-import { loadGuardrailModes } from "./modes.js";
+import { loadGuardrailModes, resolveInjectionConfigForCompany } from "./modes.js";
 import { resolveGuardrailMode } from "@myrmidon/shared";
 import { GUARDRAIL_RULES } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
@@ -65,7 +65,11 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
   router.get("/myrmidon/companies/:companyId/guardrails/settings", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await readGuardrailModesSettings(settings));
+    const [stored, injection] = await Promise.all([
+      readGuardrailModesSettings(settings),
+      resolveInjectionConfigForCompany({ db, companyId, env: process.env }),
+    ]);
+    res.json({ ...stored, injectionConfigResolved: injection });
   });
 
   router.put(
@@ -76,6 +80,7 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
       assertCompanyAccess(req, companyId);
       assertBoard(req);
       const stored = await writeGuardrailModesSettings(settings, req.body as GuardrailModesSettings);
+      const injectionConfigResolved = await resolveInjectionConfigForCompany({ db, companyId, env: process.env });
       const info = getActorInfo(req);
       await logActivity(db, {
         companyId,
@@ -91,7 +96,7 @@ export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesD
           agentCount: Object.keys(stored.agents).length,
         },
       });
-      res.json(stored);
+      res.json({ ...stored, injectionConfigResolved });
     },
   );
 

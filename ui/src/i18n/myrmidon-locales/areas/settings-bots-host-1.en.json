@@ -64,6 +64,7 @@
         "fieldRuns": "Run history",
         "fieldActivity": "Activity log",
         "fieldAccess": "Access audit logs",
+        "fieldLiteLLM": "LiteLLM cost events",
         "fieldDays": "{{label}}, days",
         "invalidDays": "Enter a whole number of days (0 or more)",
         "never": "never",

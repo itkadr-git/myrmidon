@@ -3390,7 +3390,7 @@ export function agentRoutes(
     }
     const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      : await listAdapterModels(modelAdapterType, companyId);
     const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
@@ -5806,6 +5806,20 @@ function getActorIdentityPart(req: Request): string {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    if (typeof patchData.budgetMonthlyCents === "number") {
+      const actorUserId = req.actor.type === "agent" ? null : (req.actor.userId ?? null);
+      await budgets.upsertPolicy(
+        agent.companyId,
+        {
+          scopeType: "agent",
+          scopeId: agent.id,
+          amount: patchData.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        actorUserId,
+      );
     }
 
     await logActivity(db, {
