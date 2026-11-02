@@ -166,6 +166,7 @@ describe("releaseIssueExecution", () => {
       });
       const queue = [candidate];
       const transaction = createFakeTransaction({
+        findIssue: vi.fn(async () => ({ ...ISSUE, status: scenario === "parent_open" ? "in_progress" : "done" })),
         findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
         isCompletedDelegationMention: vi.fn(async () => scenario !== "mixed_comments"),
         getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [originalCommentIds[0]], containedSelfAuthoredComment: false })),
@@ -275,7 +276,9 @@ describe("releaseIssueExecution", () => {
         }),
       ];
       const transaction = createFakeTransaction({
+        findIssue: vi.fn(async () => ({ ...ISSUE, status: "done" })),
         findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+        getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: ["original-comment"], containedSelfAuthoredComment: false })),
       });
       const host = createFakeHost();
       const release = createReleaseIssueExecution({
@@ -565,6 +568,7 @@ describe("releaseIssueExecution", () => {
     const claimOrder: string[] = [];
     const queue = [wakeCandidate({ id: "wake-earliest" }), wakeCandidate({ id: "wake-latest" })];
     const transaction = createFakeTransaction({
+      findIssue: vi.fn(async () => ({ ...ISSUE, status: "in_progress" })),
       findNextDeferredWake: vi.fn(async () => {
         const next = queue.shift() ?? null;
         if (next) claimOrder.push(next.id);
@@ -920,6 +924,7 @@ describe("releaseIssueExecution", () => {
     })];
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      findIssue: vi.fn(async () => ({ ...ISSUE, status: scenario === "cancelled_live" ? "cancelled" : "done" })),
       getQueuedCommentLiveness: vi.fn(async () => ({
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
