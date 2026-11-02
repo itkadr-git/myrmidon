@@ -26,7 +26,7 @@ import {
   recordInteractionContinuationOutbox,
 } from "./interaction-continuation-outbox.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
-import type { RequestConfirmationSecretProposalPayload } from "@myrmidon/shared";
+import type { RequestConfirmationPayload, RequestConfirmationSecretProposalPayload } from "@myrmidon/shared";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1009,7 +1009,11 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
     const proposal = { id: payload.proposalId, companyId: seeded.company.id,
       interactionId: seeded.interaction.id, originIssueId: seeded.issue.id };
     await db.update(issueThreadInteractions).set({
-      continuationPolicy: "wake_assignee", payload: { secretProposal: payload },
+      continuationPolicy: "wake_assignee", payload: {
+        version: 1,
+        prompt: "Approve secret proposal?",
+        secretProposal: payload,
+      } satisfies RequestConfirmationPayload,
     }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
 
     // Rollback test:
@@ -1044,7 +1048,11 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
     const proposal = { id: payload.proposalId, companyId: seeded.company.id,
       interactionId: seeded.interaction.id, originIssueId: seeded.issue.id };
     await db.update(issueThreadInteractions).set({
-      continuationPolicy: "wake_assignee", payload: { secretProposal: payload },
+      continuationPolicy: "wake_assignee", payload: {
+        version: 1,
+        prompt: "Approve secret proposal?",
+        secretProposal: payload,
+      } satisfies RequestConfirmationPayload,
     }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
 
     // 1. Transaction records intent
