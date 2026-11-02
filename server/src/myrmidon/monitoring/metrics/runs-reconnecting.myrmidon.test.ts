@@ -50,7 +50,6 @@ function makeProjection(
     maxAttempts: 3,
     recoveryOwner: null,
     nextAction: null,
-    permittedActions: [],
   };
 }
 

@@ -4,7 +4,7 @@
 // Watchdog and metrics for heartbeat runs hanging in reconnecting phase.
 
 import type { Db } from "@myrmidon/db";
-import { heartbeatRuns, issueCreateIdempotencyKeys, issues } from "@myrmidon/db";
+import { agents, heartbeatRuns, issueCreateIdempotencyKeys, issues } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
 import type { ExecutionProjection } from "@myrmidon/shared";
 import {
@@ -13,6 +13,7 @@ import {
   projectExecution,
 } from "../../../services/execution-projection.js";
 import type { AlertRecoveryAlert } from "../alert-recovery/domain.js";
+import { alertRecoveryRuntime } from "../alert-recovery/index.js";
 
 export const KNOWN_EXECUTION_PHASES = [
   "working",
@@ -410,17 +411,6 @@ export function createRunsReconnectingWatchdog(
 }
 
 export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog {
-  let alertRecoverySvc: any = null;
-  const getAlertRecoveryService = async () => {
-    if (!alertRecoverySvc) {
-      const { buildAlertRecoveryService } = await import(
-        "../alert-recovery/service.js"
-      );
-      alertRecoverySvc = buildAlertRecoveryService(db);
-    }
-    return alertRecoverySvc;
-  };
-
   return createRunsReconnectingWatchdog({
     listLiveRuns: async () => {
       return await db
@@ -432,7 +422,6 @@ export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog 
           createdAt: heartbeatRuns.createdAt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           lastOutputAt: heartbeatRuns.lastOutputAt,
-          lastEventAt: heartbeatRuns.lastEventAt,
           updatedAt: heartbeatRuns.updatedAt,
         })
         .from(heartbeatRuns)
@@ -442,22 +431,28 @@ export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog 
       return await executionProjectionsForRuns(db, companyId, runIds, now);
     },
     sendAlertEvent: async (event) => {
-      const svc = await getAlertRecoveryService();
-      await svc.ingest(event);
+      await alertRecoveryRuntime(db).ingest(event);
     },
     resolveAlertAssignee: async (companyId) => {
       try {
-        const { resolveActorByRole } = await import(
-          "../../../services/role-resolver.js"
-        );
-        const actor = await resolveActorByRole(db, companyId, "devops");
-        return actor?.agentId ?? null;
+        const row = await db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(
+            and(
+              eq(agents.companyId, companyId),
+              eq(agents.role, "devops"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        return row?.id ?? null;
       } catch {
         return null;
       }
     },
     createAlert: async (companyId, task) => {
-      const { issueService } = await import("../../../services/issue.js");
+      const { issueService } = await import("../../../services/issues.js");
       const svc = issueService(db);
       const created = (await svc.create(companyId, {
         title: task.title,
@@ -488,7 +483,7 @@ export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog 
       if (!row || row.status === "done" || row.status === "cancelled") {
         return false;
       }
-      const { issueService } = await import("../../../services/issue.js");
+      const { issueService } = await import("../../../services/issues.js");
       const svc = issueService(db);
       await svc.update(row.issueId, {
         status: "done",
