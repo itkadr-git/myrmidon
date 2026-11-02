@@ -3,7 +3,8 @@ import { Router, type Request, type Response } from "express";
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, heartbeatRuns, issues } from "@myrmidon/db";
-import { assertCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
+import { badRequest } from "../errors.js";
 
 export type HealthStatus = "healthy" | "warning" | "critical";
 
@@ -58,7 +59,11 @@ export interface CollectClusterHealthOptions {
  * Uses Node.js fs.statfs POSIX syscall.
  */
 export async function measureDiskSpaceSafe(targetPath?: string): Promise<ClusterHealthDiskUsage> {
-  const dir = targetPath || process.env.MYRMIDON_DATA_DIR || process.cwd() || "/";
+  const dataDir = process.env.MYRMIDON_DATA_DIR || process.cwd() || "/";
+  const dir = targetPath || dataDir;
+  if (targetPath && targetPath !== dataDir) {
+    throw badRequest("diskPath must be the configured data directory");
+  }
   try {
     const stats = await fs.statfs(dir);
     const totalBytes = Number(stats.blocks) * Number(stats.bsize);
@@ -275,8 +280,12 @@ export function adminAssistantRoutes(db: Db): Router {
 
   async function handleClusterHealth(req: Request, res: Response) {
     const companyId = (req.params.companyId || req.query.companyId) as string | undefined;
-    if (companyId && req.params.companyId) {
+    if (req.params.companyId) {
+      assertCompanyAccess(req, companyId as string);
+    } else if (companyId) {
       assertCompanyAccess(req, companyId);
+    } else {
+      assertInstanceAdmin(req);
     }
 
     const diskPath = (req.query.path || req.query.diskPath) as string | undefined;
