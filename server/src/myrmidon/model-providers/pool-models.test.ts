@@ -160,6 +160,17 @@ describe("enrichWithPoolModels (1.6.6 OPE-9932)", () => {
         channels: [
           {
             n: 1,
+            label: "active-acc",
+            state: "active",
+            isBanned: false,
+            isExhausted: false,
+            limitedUntil: null,
+            lastOk: null,
+            windows: { primary: null, secondary: null },
+            models: ["shared-model", "active-only-model"],
+          },
+          {
+            n: 2,
             label: "exhausted-acc",
             state: "rate_limited",
             isBanned: false,
