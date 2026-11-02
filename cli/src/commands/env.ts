@@ -37,7 +37,7 @@ function defaultStorageBaseDir(): string {
   return resolveDefaultStorageDir(resolvePaperclipInstanceId());
 }
 
-export async function envCommand(opts: { config?: string; revealSecrets?: boolean }): Promise<void> {
+export async function envCommand(opts: { config?: string }): Promise<void> {
   p.intro(pc.bgCyan(pc.black(" myrmidon env ")));
 
   const configPath = resolveConfigPath(opts.config);
@@ -76,7 +76,7 @@ export async function envCommand(opts: { config?: string; revealSecrets?: boolea
         default: "default",
         missing: "missing",
       }[entry.source];
-      const displayValue = opts.revealSecrets ? entry.value : maskEnvValue(entry.key, entry.value);
+      const displayValue = maskEnvValue(entry.key, entry.value);
       p.log.message(
         `${pc.cyan(entry.key)} ${status.padEnd(7)} ${pc.dim(`[${sourceNote}] ${entry.note}`)}${entry.source === "missing" ? "" : ` ${pc.dim("=>")} ${pc.white(quoteShellValue(displayValue))}`}`,
       );
@@ -90,7 +90,7 @@ export async function envCommand(opts: { config?: string; revealSecrets?: boolea
   const uniqueRows = uniqueByKey(exportRows);
   const exportBlock = uniqueRows
     .map((row) => {
-      const val = opts.revealSecrets ? row.value : maskEnvValue(row.key, row.value);
+      const val = maskEnvValue(row.key, row.value);
       return `export ${row.key}=${quoteShellValue(val)}`;
     })
     .join("\n");
@@ -101,9 +101,7 @@ export async function envCommand(opts: { config?: string; revealSecrets?: boolea
 
   p.note(
     exportBlock || "No values detected. Set required variables manually.",
-    opts.revealSecrets
-      ? "Deployment export block"
-      : "Deployment export block (secrets masked; use --reveal-secrets to show)",
+    "Deployment export block (secrets masked)",
   );
 
   if (missingRequired.length > 0) {

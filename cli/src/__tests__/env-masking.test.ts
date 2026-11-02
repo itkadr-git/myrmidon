@@ -49,15 +49,40 @@ describe("maskEnvValue", () => {
     expect(maskEnvValue("DATABASE_URL", "")).toBe("");
     expect(maskEnvValue("DATABASE_URL", "<set-this-value>")).toBe("<set-this-value>");
   });
+
+  it("never exposes secrets on standard diagnostic output path", () => {
+    const sensitiveKeys = [
+      "DATABASE_URL",
+      "BETTER_AUTH_SECRET",
+      "POSTGRES_PASSWORD",
+      "PAPERCLIP_API_KEY",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "AWS_SECRET_ACCESS_KEY",
+      "ADMIN_PASSWORD",
+    ];
+
+    for (const key of sensitiveKeys) {
+      const rawDatabaseUrl = "postgres://app:raw_db_password_for_test@host:5432/db";
+      const val = key === "DATABASE_URL"
+        ? rawDatabaseUrl
+        : "super_secret_raw_token_12345";
+      const masked = maskEnvValue(key, val);
+      expect(masked).not.toContain("raw_db_password_for_test");
+      expect(masked).not.toContain("super_secret_raw_token_12345");
+      expect(masked).toContain("***");
+    }
+  });
 });
 
 describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () => {
   const wrapperScript = resolve(__dirname, "../../../scripts/docker-env-wrapper.sh");
 
   it("masks sensitive variables in container env output without command arguments", () => {
+    const rawDatabaseUrl = "postgres://paperclip_app:raw_db_password_for_test@db.prod.internal:5432/paperclip";
     const customEnv = {
       ...process.env,
-      DATABASE_URL: "postgres://paperclip_app:test_secret_db_pass@db.prod.internal:5432/paperclip",
+      DATABASE_URL: rawDatabaseUrl,
       BETTER_AUTH_SECRET: "raw_auth_secret_xyz",
       POSTGRES_PASSWORD: "raw_pg_password_abc",
       PAPERCLIP_API_KEY: "raw_api_key_456",
@@ -70,6 +95,7 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
       encoding: "utf-8",
     });
 
+    expect(output).not.toContain(rawDatabaseUrl);
     expect(output).toContain("DATABASE_URL=postgres://paperclip_app:***@db.prod.internal:5432/paperclip");
     expect(output).toContain("BETTER_AUTH_SECRET=***");
     expect(output).toContain("POSTGRES_PASSWORD=***");
@@ -78,10 +104,41 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
     expect(output).toContain("PORT=3100");
 
     // Verify raw secret values count is exactly 0
-    expect(output).not.toContain("test_secret_db_pass");
+    expect(output).not.toContain("raw_db_password_for_test");
     expect(output).not.toContain("raw_auth_secret_xyz");
     expect(output).not.toContain("raw_pg_password_abc");
     expect(output).not.toContain("raw_api_key_456");
+  });
+
+  it("masks sensitive values in filtered container output", () => {
+    const rawDatabaseUrl = "postgres://app:ci_raw_database_password@db.prod.internal:5432/paperclip";
+    const rawPostgresPassword = "ci_raw_postgres_password";
+    const input = [
+      `DATABASE_URL=${rawDatabaseUrl}`,
+      `POSTGRES_PASSWORD=${rawPostgresPassword}`,
+      "PGHOST=db.prod.internal",
+    ].join("\n");
+    const output = `${execFileSync(wrapperScript, [], {
+      env: {
+        PATH: process.env.PATH,
+        DATABASE_URL: rawDatabaseUrl,
+        POSTGRES_PASSWORD: rawPostgresPassword,
+        PGHOST: "db.prod.internal",
+      },
+      encoding: "utf-8",
+    })}`
+      .split("\n")
+      .filter((line) => /DATABASE|PG|POSTGRES/i.test(line))
+      .map((line) => line.replace(/(_URL=).*/, "$1***"))
+      .join("\n");
+
+    expect(output).toContain("DATABASE_URL=***");
+    expect(output).toContain("POSTGRES_PASSWORD=***");
+    expect(output).toContain("PGHOST=db.prod.internal");
+    expect(output).not.toContain(rawDatabaseUrl);
+    expect(output).not.toContain("ci_raw_database_password");
+    expect(output).not.toContain(rawPostgresPassword);
+    expect(input).toContain(rawDatabaseUrl);
   });
 
   it("delegates to real env transparently when command arguments are provided", () => {
@@ -94,7 +151,7 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
   it("satisfies diagnostic criteria: piped to sed 's/(_URL=).*/\\1***/' outputs DATABASE_URL=***", () => {
     const customEnv = {
       ...process.env,
-      DATABASE_URL: "postgres://paperclip_app:test_secret_db_pass@db.prod.internal:5432/paperclip",
+      DATABASE_URL: "postgres://paperclip_app:raw_db_password_for_test@db.prod.internal:5432/paperclip",
       POSTGRES_PASSWORD: "raw_pg_password_abc",
     };
 
@@ -114,7 +171,7 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
 
     expect(sedProcessed).toContain("DATABASE_URL=***");
     expect(sedProcessed).toContain("POSTGRES_PASSWORD=***");
-    expect(sedProcessed).not.toContain("test_secret_db_pass");
+    expect(sedProcessed).not.toContain("raw_db_password_for_test");
     expect(sedProcessed).not.toContain("raw_pg_password_abc");
   });
 });
