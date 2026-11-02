@@ -173,6 +173,34 @@ describe("pickReviewer", () => {
     });
     expect(none).toBeNull();
   });
+
+  it("prefers idle reviewers before least loaded and excludes lapsed reviewer", () => {
+    const list: ReviewerCandidate[] = [
+      { id: REV_A, role: "reviewer", load: 2, status: "idle", invokable: true },
+      { id: REV_B, role: "reviewer", load: 1, status: "active", invokable: true },
+      { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 0, status: "idle", invokable: true },
+    ];
+    // ccc is idle with lowest load:
+    const picked1 = pickReviewer({ candidates: list, excluded: new Set(), maxLoad: 5 });
+    expect(picked1?.id).toBe("cccccccc-0000-4000-8000-000000000001");
+
+    // When ccc is excluded (e.g. lapsed/previous reviewer):
+    // REV_A is idle (load 2) and REV_B is active (load 1). Idle REV_A is preferred over active REV_B.
+    const picked2 = pickReviewer({
+      candidates: list,
+      excluded: new Set(["cccccccc-0000-4000-8000-000000000001"]),
+      maxLoad: 5,
+    });
+    expect(picked2?.id).toBe(REV_A);
+
+    // When both ccc and REV_A are excluded:
+    const picked3 = pickReviewer({
+      candidates: list,
+      excluded: new Set(["cccccccc-0000-4000-8000-000000000001", REV_A]),
+      maxLoad: 5,
+    });
+    expect(picked3?.id).toBe(REV_B);
+  });
 });
 
 describe("evaluateReviewerAvailability", () => {
@@ -237,6 +265,12 @@ describe("overdue", () => {
     expect(isReviewOverdue({ since, now, afterHours: 24 })).toBe(true);
     expect(isReviewOverdue({ since, now, afterHours: 25 })).toBe(false);
     expect(isReviewOverdue({ since, now, afterHours: 0 })).toBe(false);
+  });
+  it("supports afterMinutes config", () => {
+    const since = new Date("2026-01-02T11:45:00Z");
+    expect(isReviewOverdue({ since, now, afterMinutes: 15 })).toBe(true);
+    expect(isReviewOverdue({ since, now, afterMinutes: 16 })).toBe(false);
+    expect(isReviewOverdue({ since, now, afterMinutes: 0 })).toBe(false);
   });
 });
 
