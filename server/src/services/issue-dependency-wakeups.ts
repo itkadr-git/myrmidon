@@ -13,7 +13,12 @@ const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
   "claimed",
+  "running",
+  "retrying",
+  "scheduled_retry",
+  "coalesced",
   "completed",
+  "succeeded",
 ] as const;
 
 // A wake counts as "still in flight" for these statuses. The `completed` status
@@ -25,6 +30,9 @@ const IN_FLIGHT_DEPENDENCY_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
   "claimed",
+  "running",
+  "retrying",
+  "scheduled_retry",
 ] as const;
 
 const IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET = new Set<string>(IDEMPOTENT_DEPENDENCY_WAKE_STATUSES);
