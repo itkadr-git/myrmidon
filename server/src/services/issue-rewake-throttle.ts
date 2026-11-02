@@ -57,6 +57,11 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_continuation_needed",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",
+  // myrmidon(OPE-10582 п.2): автоматические пробуждения, которые образуют
+  // холостые петли «агент будится по своей же задаче без прогресса».
+  "swarm_matched",
+  "idle_pickup",
+  "issue_disposition_repair",
 ]);
 
 /**

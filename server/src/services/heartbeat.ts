@@ -31132,11 +31132,27 @@ export function heartbeatService(
           // claimed running run. If zero rows matched, leave
           // `activeExecutionRun` populated so the defer path runs
           // normally against the now-running holder.
+          // myrmidon(OPE-10582 п.1): не отменять прогон участника этапа ревью
+          // (currentParticipant), даже если он не assignee. Иначе idle-pickup
+          // ставит прогон review-участнику, а охранник тут же его отменяет —
+          // бесконечный цикл холостых пробуждений.
+          const isReviewStageParticipant = (() => {
+            if (issue.status !== "in_review") return false;
+            const es = issue.executionState as Record<string, unknown> | null;
+            if (!es || typeof es !== "object") return false;
+            const cp = es.currentParticipant as Record<string, unknown> | null;
+            return (
+              cp?.type === "agent" &&
+              cp?.agentId === activeExecutionRun?.agentId
+            );
+          })();
+
           if (
             activeExecutionRun &&
             activeExecutionRun.status !== "running" &&
             issue.assigneeAgentId &&
-            activeExecutionRun.agentId !== issue.assigneeAgentId
+            activeExecutionRun.agentId !== issue.assigneeAgentId &&
+            !isReviewStageParticipant
           ) {
             const cancelled = await tx
               .update(heartbeatRuns)
