@@ -1,12 +1,11 @@
 import { and, eq, isNull, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { issueRelations, issueThreadInteractions, issues, type Db } from "../../../packages/db/src/index.js";
-import { blockerOpenCondition } from "../../../server/src/myrmidon/blocker-resolved.js";
 
 /**
- * List blocked issues with no live blocker, pending interaction, child, or
- * blocker metadata. The transaction is marked read-only before the query so
- * this inventory cannot change board state.
+ * List blocked issues with no pending interaction, child, or blocker metadata.
+ * Existing blocker relations are retained as classification evidence so legacy
+ * dependencies can be migrated to typed metadata instead of being omitted.
  */
 export async function listLegacyBlocked(db: Db) {
   const blockingIssues = alias(issues, "legacy_blocking_issue");
@@ -25,7 +24,6 @@ export async function listLegacyBlocked(db: Db) {
           eq(blockingIssues.companyId, issues.companyId),
           eq(issueRelations.relatedIssueId, issues.id),
           eq(issueRelations.type, "blocks"),
-          blockerOpenCondition(blockingIssues.status),
         ),
       );
     const pendingInteraction = tx
