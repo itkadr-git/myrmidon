@@ -781,8 +781,35 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it("delivers provider usage warnings on heartbeat scheduler ticks only for background roles", async () => {
-    process.env.PAPERCLIP_PROCESS_ROLE = "all";
+  it("does not deliver provider usage warnings on heartbeat ticks for API-only roles", async () => {
+    process.env.MYRMIDON_PROCESS_ROLE = "api";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+    ) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+
+    try {
+      await startServer();
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+      expect(intervalCallback).toBeDefined();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(providerUsageDeliverySweepMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.MYRMIDON_PROCESS_ROLE;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("delivers provider usage warnings from heartbeat ticks for background role", async () => {
+    process.env.MYRMIDON_PROCESS_ROLE = "worker";
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
       heartbeatSchedulerIntervalMs: 30000,
@@ -803,6 +830,7 @@ describe("startServer feedback export wiring", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(providerUsageDeliverySweepMock).toHaveBeenCalledTimes(1);
     } finally {
+      delete process.env.MYRMIDON_PROCESS_ROLE;
       setIntervalSpy.mockRestore();
     }
   });
