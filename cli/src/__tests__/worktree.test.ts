@@ -1671,12 +1671,37 @@ describe("worktree helpers", () => {
           .split("--> statement-breakpoint")
           .map((statement) => statement.trim())
           .filter((statement) => statement.length > 0);
-        for (const statement of statements) {
-          await sourceDbClient.$client.unsafe(statement);
-        }
-        await sourceDbClient.$client.unsafe(
-          `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+        const requiresNonTransactional = statements.some((statement) =>
+          /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+            statement.replace(/^\s*--.*$/gm, "").trim(),
+          ),
         );
+        if (requiresNonTransactional) {
+          for (const statement of statements) {
+            await sourceDbClient.$client.unsafe(statement);
+          }
+          await sourceDbClient.$client.unsafe(
+            `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+          );
+        } else {
+          await sourceDbClient.$client.unsafe("BEGIN");
+          try {
+            for (const statement of statements) {
+              await sourceDbClient.$client.unsafe(statement);
+            }
+            await sourceDbClient.$client.unsafe(
+              `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+            );
+            await sourceDbClient.$client.unsafe("COMMIT");
+          } catch (error) {
+            try {
+              await sourceDbClient.$client.unsafe("ROLLBACK");
+            } catch {
+              // ignore rollback failure
+            }
+            throw error;
+          }
+        }
       }
       await seedValidWorktreeSource(sourceDb.connectionString);
       await sourceDbClient.$client.unsafe(`
