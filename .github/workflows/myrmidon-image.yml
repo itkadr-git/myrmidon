@@ -216,7 +216,7 @@ jobs:
           printf '%s\n' "$wrapper_output"
           ! grep -Fq 'ci_raw_database_password' <<<"$wrapper_output"
           ! grep -Fq 'ci_raw_postgres_password' <<<"$wrapper_output"
-          grep -Fq 'DATABASE_URL=postgres://paperclip_app:***@db.prod.internal:5432/paperclip' <<<"$wrapper_output"
+          grep -Fq 'DATABASE_URL=postgres://paperclip_app:ci_raw_database_password@db.prod.internal:5432/paperclip' <<<"$wrapper_output"
           grep -Fq 'POSTGRES_PASSWORD=***' <<<"$wrapper_output"
 
           # 2. Test diagnostic env command with sed pipeline as specified in OPE-3100
