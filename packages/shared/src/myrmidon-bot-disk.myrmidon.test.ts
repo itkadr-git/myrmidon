@@ -1,7 +1,6 @@
-// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 16 stored keys of
-// `general.botDisk` survive every PATCH. Before this part the five
-// workspace-lifecycle numbers (closing grace, scratch TTL, the three partition
-// percents) lived only under `wsBotDiskSettingsSchema` and were not part of the
+// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 20 stored keys of
+// `general.botDisk` survive every PATCH. Before this part the workspace-lifecycle numbers
+// lived only under `wsBotDiskSettingsSchema` and were not part of the
 // patch schema, so a patch of any layout key rewrote the object without them.
 
 import { describe, expect, it } from "vitest";
@@ -20,6 +19,10 @@ const BASE = {
   idleTtlMs: 3_600_000,
   graceClosingMinutes: 45,
   scratchTtlHours: 12,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
+  sessionRetentionDays: 30,
   partitionThresholdPercent: 80,
   partitionRefuseOpenPercent: 88,
   partitionCriticalPercent: 97,
@@ -35,20 +38,22 @@ const BASE = {
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 16 distinct keys", () => {
+  it("the three key groups are 20 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(16);
+    expect(new Set(all).size).toBe(20);
   });
 
-  it("the canonical schema accepts all 16 keys", () => {
+  it("the canonical schema accepts all 20 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 
-  it("the patch schema accepts the five workspace-lifecycle keys", () => {
+  it("the patch schema accepts the workspace-lifecycle keys", () => {
     expect(patchBotDiskSettingsSchema.safeParse({ graceClosingMinutes: 30 }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ sessionRetentionDays: 14 }).success).toBe(true);
     expect(patchBotDiskSettingsSchema.safeParse({ partitionCriticalPercent: null }).success).toBe(true);
     // Out of range still fails: the same ranges wsBotDiskSettingsSchema uses.
     expect(patchBotDiskSettingsSchema.safeParse({ graceClosingMinutes: 1 }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ sessionRetentionDays: 0 }).success).toBe(false);
     expect(patchBotDiskSettingsSchema.safeParse({ partitionThresholdPercent: 40 }).success).toBe(false);
   });
 
@@ -57,10 +62,11 @@ describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
     expect(merged).toEqual({ ...BASE, pnpmStoreDir: "/scratch/.store" });
   });
 
-  it("a patch of one workspace-lifecycle key keeps the other four", () => {
+  it("a patch of one workspace-lifecycle key keeps the other eight", () => {
     const merged = mergeBotDiskSettings(BASE as never, { scratchTtlHours: 6 });
     expect(merged.scratchTtlHours).toBe(6);
     expect(merged.graceClosingMinutes).toBe(45);
+    expect(merged.sessionRetentionDays).toBe(30);
     expect(merged.partitionThresholdPercent).toBe(80);
     expect(merged.partitionRefuseOpenPercent).toBe(88);
     expect(merged.partitionCriticalPercent).toBe(97);

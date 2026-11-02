@@ -1,0 +1,83 @@
+name: Myrmidon REDACT
+
+# 1.7: standalone sensitive data masking and guardrails service (tools/redact, docs/myrmidon/redact.md)
+# Image: ghcr.io/itkadr-git/myrmidon-redact
+# On pull requests: runs unit tests and checks image builds.
+# Publishing happens on main and on myr-v* tags.
+
+on:
+  push:
+    branches: [main]
+    tags: ["myr-v*"]
+    paths:
+      - "tools/redact/**"
+      - ".github/workflows/myrmidon-redact.yml"
+  pull_request:
+    paths:
+      - "tools/redact/**"
+      - ".github/workflows/myrmidon-redact.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: myrmidon-redact-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build and test
+    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run unit tests and benchmarks
+        run: |
+          PYTHONPATH=tools/redact/src python -m unittest discover -s tools/redact/tests -v
+
+      - name: Compute version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/myr-v* ]]; then
+            tag="${GITHUB_REF#refs/tags/myr-}"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "::error::release tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N, got ${GITHUB_REF#refs/tags/}"
+              exit 1
+            fi
+            echo "image_tag=${tag#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Test Docker stage
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: tools/redact
+          file: tools/redact/Dockerfile
+          target: test
+          push: false
+
+      - name: Build service image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: tools/redact
+          file: tools/redact/Dockerfile
+          target: service
+          push: false

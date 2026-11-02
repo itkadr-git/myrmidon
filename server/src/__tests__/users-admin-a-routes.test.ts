@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { authSessions, authUsers, boardApiKeys, createDb, userPasswordSetTokens } from "@myrmidon/db";
+import { authSessions, authUsers, boardApiKeys, companies, createDb, userPasswordSetTokens } from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { createBoardApiToken, hashBearerToken } from "../services/board-auth.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -62,6 +62,7 @@ describePostgres("users-admin-a routes", () => {
     process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-users-admin-routes-");
     db = createDb(tempDb.connectionString);
+    await db.insert(companies).values({ name: "Users Admin Test Company", issuePrefix: "UAT" });
     const config = {
       deploymentMode: "authenticated", deploymentExposure: "private", authBaseUrlMode: "explicit",
       authPublicBaseUrl: ORIGIN, authDisableSignUp: false, allowedHostnames: ["127.0.0.1"], port: 41998,
@@ -240,5 +241,125 @@ describePostgres("users-admin-a routes", () => {
     expect((await request(app).patch(`/api/myrmidon/users-admin-a/users/${created.body.id}`).send({ blocked: false })).status).toBe(200);
     expect((await call(first)).status).toBe(401);
     expect((await call(await issue())).status).toBe(200);
+  });
+
+  it("changes user role and prevents self-demotion or demoting the last admin", async () => {
+    const app = appFor(db, admin);
+    const created = await request(app)
+      .post("/api/myrmidon/users-admin-a/users")
+      .send({ username: "role-target", name: "Target", password: PASSWORD, role: "member" });
+    expect(created.status).toBe(201);
+    expect(created.body.role).toBe("member");
+
+    // Promote to instance_admin
+    const promoted = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${created.body.id}`)
+      .send({ role: "instance_admin" });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.role).toBe("instance_admin");
+
+    // Verify in user list
+    const listRes = await request(app).get("/api/myrmidon/users-admin-a/users");
+    const found = listRes.body.users.find((u: { id: string }) => u.id === created.body.id);
+    expect(found.role).toBe("instance_admin");
+
+    // Demote back to member
+    const demoted = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${created.body.id}`)
+      .send({ role: "member" });
+    expect(demoted.status).toBe(200);
+    expect(demoted.body.role).toBe("member");
+
+    // Self-demotion is rejected
+    const selfDemote = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${admin.userId}`)
+      .send({ role: "member" });
+    expect(selfDemote.status).toBe(409);
+    expect(selfDemote.body.message).toMatch(/cannot demote yourself/i);
+  });
+
+  it("records audit log for user management actions and supports filtering and deduplication", async () => {
+    const app = appFor(db, admin);
+    const anon = appFor(db, anonymous);
+    const memberApp = appFor(db, member);
+
+    // Forbidden for non-admin
+    expect((await request(anon).get("/api/myrmidon/users-admin-a/audit")).status).toBe(403);
+    expect((await request(memberApp).get("/api/myrmidon/users-admin-a/audit")).status).toBe(403);
+
+    // Create user -> logs instance.user.created
+    const created = await request(app)
+      .post("/api/myrmidon/users-admin-a/users")
+      .send({ username: "audit-subject", name: "Audit Subject", password: PASSWORD, role: "member" });
+    expect(created.status).toBe(201);
+    const subjectId = created.body.id;
+
+    // Block user -> logs instance.user.blocked
+    const blocked = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${subjectId}`)
+      .send({ blocked: true });
+    expect(blocked.status).toBe(200);
+
+    // Unblock user -> logs instance.user.unblocked
+    const unblocked = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${subjectId}`)
+      .send({ blocked: false });
+    expect(unblocked.status).toBe(200);
+
+    // Change role -> logs instance.user.role_changed
+    const roleChanged = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${subjectId}`)
+      .send({ role: "instance_admin" });
+    expect(roleChanged.status).toBe(200);
+
+    // Reset password -> logs instance.user.password_reset
+    const reset = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${subjectId}`)
+      .send({ resetPassword: true });
+    expect(reset.status).toBe(200);
+
+    // Query audit log filtered by subjectId
+    const auditRes = await request(app)
+      .get(`/api/myrmidon/users-admin-a/audit?userId=${subjectId}`);
+    expect(auditRes.status).toBe(200);
+    expect(Array.isArray(auditRes.body.audit)).toBe(true);
+
+    const actions = auditRes.body.audit.map((item: { action: string }) => item.action);
+    expect(actions).toContain("instance.user.created");
+    expect(actions).toContain("instance.user.blocked");
+    expect(actions).toContain("instance.user.unblocked");
+    expect(actions).toContain("instance.user.role_changed");
+    expect(actions).toContain("instance.user.password_reset");
+
+    // Verify actor and target enrichment
+    const createdEntry = auditRes.body.audit.find((e: { action: string }) => e.action === "instance.user.created");
+    expect(createdEntry.targetUserId).toBe(subjectId);
+    expect(createdEntry.targetUsername).toBe("audit-subject");
+    expect(createdEntry.actorId).toBe(admin.userId);
+    expect(createdEntry.actorUsername).toBe(admin.userId);
+
+    // Verify details for role change
+    const roleEntry = auditRes.body.audit.find((e: { action: string }) => e.action === "instance.user.role_changed");
+    expect(roleEntry.details.previousRole).toBe("member");
+    expect(roleEntry.details.newRole).toBe("instance_admin");
+
+    // Verify filtering by action
+    const actionFilterRes = await request(app)
+      .get(`/api/myrmidon/users-admin-a/audit?userId=${subjectId}&action=instance.user.role_changed`);
+    expect(actionFilterRes.status).toBe(200);
+    expect(actionFilterRes.body.audit.length).toBe(1);
+    expect(actionFilterRes.body.audit[0].action).toBe("instance.user.role_changed");
+
+    // Verify filtering by actor
+    const actorFilterRes = await request(app)
+      .get(`/api/myrmidon/users-admin-a/audit?actorId=${admin.userId}`);
+    expect(actorFilterRes.status).toBe(200);
+    expect(actorFilterRes.body.audit.length).toBeGreaterThanOrEqual(5);
+
+    // Verify limit parameter
+    const limitRes = await request(app)
+      .get(`/api/myrmidon/users-admin-a/audit?userId=${subjectId}&limit=2`);
+    expect(limitRes.status).toBe(200);
+    expect(limitRes.body.audit.length).toBe(2);
   });
 });

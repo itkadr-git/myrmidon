@@ -22,7 +22,22 @@ import type { LitellmSyncService } from "../litellm-sync/service.js";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const KEY_VALUE = "sk-tes...1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
 
 const providerView = (id: string): ModelProviderView => ({
   id,
@@ -100,19 +115,22 @@ function fakeSync(): Mocked<LitellmSyncService> {
     reconcileWithLitellm: vi.fn(async () => {}),
     handleProviderCredentialRotation: vi.fn(async () => {}),
     unregisterModels: vi.fn(async () => {}),
+    listChannels: vi.fn(async () => []),
   } as unknown as Mocked<LitellmSyncService>;
 }
 
 function app(options: {
   sync?: LitellmSyncService | null;
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
+  actor?: unknown;
 } = {}) {
   const getLitellmSync = vi.fn(async () => (options.sync === undefined ? fakeSync() : options.sync));
   const refresh = options.refreshAgentAllowlists ?? vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] }));
+  const actor = options.actor ?? member;
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
-    (req as unknown as { actor: unknown }).actor = member;
+    (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
   server.use(
@@ -247,5 +265,67 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       .post(`${base}/provider-1/models`)
       .send({ models: [{ modelName: "model-a", enabled: false }] })
       .expect(200);
+  });
+
+  describe("GET /model-providers/litellm/channels (OPE-9853)", () => {
+    it("returns channel list when sync is configured", async () => {
+      const channelViews = [
+        {
+          id: "c-1",
+          group: "gpt-4o",
+          provider: "openai",
+          providerModel: "gpt-4o-mini",
+          order: 1,
+          weight: 5,
+        },
+      ];
+      sync.listChannels.mockResolvedValueOnce(channelViews);
+      const { server } = app({ sync });
+
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(200);
+
+      expect(res.body).toEqual({
+        enabled: true,
+        channels: channelViews,
+      });
+    });
+
+    it("returns enabled: false when sync is null", async () => {
+      const { server } = app({ sync: null });
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(200);
+
+      expect(res.body.enabled).toBe(false);
+      expect(res.body.channels).toEqual([]);
+    });
+
+    it("masks secret tokens in error responses", async () => {
+      sync.listChannels.mockRejectedValueOnce(
+        new Error("LiteLLM upstream failed with sk-live-secret-key-123456 and Bearer pcp_top_secret"),
+      );
+      const { server } = app({ sync });
+
+      const res = await request(server)
+        .get(`${base}/litellm/channels`)
+        .expect(502);
+
+      expect(res.body.enabled).toBe(true);
+      expect(res.body.channels).toEqual([]);
+      expect(res.body.error).not.toContain("sk-live-secret-key-123456");
+      expect(res.body.error).not.toContain("pcp_top_secret");
+      expect(res.body.error).toContain("<redacted>");
+    });
+  });
+
+  it("denies plain company member on read and write (403)", async () => {
+    const { server } = app({ sync, actor: plainMember });
+    await request(server).get(base).expect(403);
+    await request(server)
+      .post(`${base}/provider-1/models`)
+      .send({ models: [{ modelName: "model-a", enabled: true }] })
+      .expect(403);
   });
 });

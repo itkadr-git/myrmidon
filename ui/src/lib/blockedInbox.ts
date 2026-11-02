@@ -14,6 +14,7 @@ export type BlockedReasonVariant =
   | "owner_paused";
 
 const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> = {
+  unassigned_blocked_issue_overdue: "needs_attention",
   pending_board_decision: "needs_decision",
   pending_user_decision: "needs_decision",
   missing_successful_run_disposition: "needs_decision",
@@ -47,6 +48,7 @@ export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
 };
 
 const REASON_LABELS: Record<IssueBlockedInboxReason, string> = {
+  unassigned_blocked_issue_overdue: "Unassigned blocked issue overdue",
   pending_board_decision: "Pending board decision",
   pending_user_decision: "Pending user decision",
   missing_successful_run_disposition: "Pick disposition",

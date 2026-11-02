@@ -607,6 +607,10 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     });
     it.each([false, true])("runs real process turns and resets without replaying pre-Stop queued input (queued=%s)", async (queuedBeforeStop) => {
+      const previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+      if (previousJwtSecret === undefined) {
+        process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+      }
       const runtimeCompany = randomUUID();
       const runtimeAgent = randomUUID();
       await db
@@ -751,6 +755,11 @@ const support = await getEmbeddedPostgresTestSupport();
       } finally {
         await new Promise<void>((resolve) => listener.close(() => resolve()));
         await rm(cwd, { recursive: true, force: true });
+        if (previousJwtSecret === undefined) {
+          delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+        } else {
+          process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+        }
       }
     }, 30000);
     it("parks successful native interaction-only turns without consuming unrelated or stale gates", async () => {

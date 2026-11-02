@@ -26,6 +26,7 @@ import {
   type SubIssueProgressSummary,
 } from "../lib/issue-detail-subissues";
 import { groupBy } from "../lib/groupBy";
+import { groupIssuesByTopic } from "../lib/issue-grouping";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -155,7 +156,7 @@ export type BoardColumnPageSize = KanbanColumnPageSize;
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "topic" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   showDateGroupSeparators: boolean;
@@ -205,7 +206,7 @@ function normalizeIssueViewState(value: unknown): IssueViewState {
       ? parsed.sortField as IssueSortField
       : defaultViewState.sortField,
     sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
-    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "none"].includes(parsed.groupBy ?? "")
+    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "topic", "none"].includes(parsed.groupBy ?? "")
       ? parsed.groupBy as IssueViewState["groupBy"]
       : defaultViewState.groupBy,
     viewMode: parsed.viewMode === "board" ? "board" : "list",
@@ -260,10 +261,11 @@ function getIssueColumnsStorageKey(key: string): string {
 
 function loadIssueCollectionPreferences(
   location: TaskCollectionPreferenceLocation,
+  defaultGroupBy?: IssueViewState["groupBy"],
 ) {
   return loadTaskCollectionPreferences<IssueViewState, InboxIssueColumn>({
     ...location,
-    defaultViewState: defaultViewState,
+    defaultViewState: defaultGroupBy ? { ...defaultViewState, groupBy: defaultGroupBy } : defaultViewState,
     defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
     normalizeViewState: normalizeIssueViewState,
     normalizeColumns: (value) => normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
@@ -471,6 +473,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  defaultGroupBy?: IssueViewState["groupBy"];
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -713,7 +716,8 @@ function StreamlinedIssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
-  showProgressSummary = false,
+  defaultGroupBy,
+  showProgressSummary,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
   hasMoreIssues = false,
@@ -789,7 +793,7 @@ function StreamlinedIssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
   const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
   if (initialPreferencesRef.current === null) {
-    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
+    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation, defaultGroupBy);
   }
   const initialPreferences = initialPreferencesRef.current;
 
@@ -816,7 +820,7 @@ function StreamlinedIssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      const preferences = loadIssueCollectionPreferences(preferenceLocation);
+      const preferences = loadIssueCollectionPreferences(preferenceLocation, defaultGroupBy);
       setViewState(getInitialWorkspaceViewState(preferences, initialAssignees, initialWorkspaces, defaultSortField));
       setVisibleIssueColumns(preferences.columns);
     }
@@ -1326,6 +1330,9 @@ function StreamlinedIssuesList({
           items: groups[key]!,
         }));
     }
+    if (viewState.groupBy === "topic") {
+      return groupIssuesByTopic(filtered, labels, t("tasks.noTopicGroup"));
+    }
     // assignee
     const groups = groupBy(
       filtered,
@@ -1346,6 +1353,7 @@ function StreamlinedIssuesList({
     filtered,
     issueFilterWorkspaceContext,
     viewState.groupBy,
+    labels,
     agents,
     agentName,
     currentUserId,
@@ -1619,7 +1627,7 @@ function StreamlinedIssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
+  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     const groupKey = group?.key;
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -1631,6 +1639,13 @@ function StreamlinedIssuesList({
         else defaults.assigneeAgentId = groupKey;
       }
       else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
+      else if (viewState.groupBy === "topic" && groupKey !== "__no_topic") {
+        if (groupKey.startsWith("title_topic:")) {
+          defaults.title = `[${group?.label ?? groupKey.slice("title_topic:".length)}] `;
+        } else {
+          defaults.labelIds = [groupKey];
+        }
+      }
       else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
         const representativeIssue = group?.items.find((issue) =>
           issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
@@ -1673,7 +1688,7 @@ function StreamlinedIssuesList({
 
   const createActionLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.createWithLabel", { label: createIssueLabel }) : t("tasks.createAction");
   const createButtonLabel = createIssueLabel ? t("area.issue-threads-runs-2.issues-list.newWithLabel", { label: createIssueLabel }) : t("nav.newTask"); // myrmidon(UI-RU)
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
+  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
 
@@ -1950,6 +1965,7 @@ function StreamlinedIssuesList({
                     ["project", t("tasks.groupBy.project")],
                     ["workspace", t("tasks.groupBy.workspace")],
                     ["parent", t("tasks.groupBy.parent")],
+                    ["topic", t("tasks.groupBy.topic")],
                     ["none", t("tasks.groupBy.none")],
                   ] as const)
                     .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")

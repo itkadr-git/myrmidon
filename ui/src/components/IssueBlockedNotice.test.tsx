@@ -16,6 +16,13 @@ import { deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 import { ToastProvider } from "../context/ToastContext";
 
 const retryNowMock = vi.hoisted(() => vi.fn());
+const mockBlockerGraphRoots = vi.hoisted(() => vi.fn());
+
+vi.mock("@/api/blocker-graph", () => ({
+  blockerGraphApi: {
+    roots: mockBlockerGraphRoots,
+  },
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
@@ -85,6 +92,12 @@ function buildRetryResponse(outcome: IssueRetryNowOutcome) {
 beforeEach(() => {
   dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(SYSTEM_NOW);
   retryNowMock.mockReset();
+  mockBlockerGraphRoots.mockReset();
+  mockBlockerGraphRoots.mockResolvedValue({
+    roots: [],
+    limit: 50,
+    generatedAt: new Date().toISOString(),
+  });
 });
 
 afterEach(() => {
@@ -119,6 +132,14 @@ function render(element: ReactElement) {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => root?.render(withProviders(element)));
+  return container;
+}
+
+function renderBare(element: ReactElement) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => root?.render(<MemoryRouter>{element}</MemoryRouter>));
   return container;
 }
 
@@ -925,6 +946,331 @@ describe("IssueBlockedNotice", () => {
       expect(chip?.getAttribute("data-recovery-state")).toBe("needed");
       expect(chip?.textContent).toContain("Recovery needed");
       expect(deriveRecoveryCardState(exhaustedAction)).toBe("needed");
+    });
+
+    it("renders root fan-out line and link when fan-out > 1", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+          rootFanout={{
+            rootIssueId: "terminal-root-1",
+            rootIdentifier: "OPE-X",
+            dependentCount: 5,
+          }}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).not.toBeNull();
+      expect(row!.textContent).toContain("OPE-X");
+      expect(row!.textContent).toContain("5");
+      const link = row!.querySelector("a");
+      expect(link).not.toBeNull();
+      expect(link!.textContent).toBe("OPE-X");
+      expect(link!.getAttribute("href")).toBe("/issues/terminal-root-1");
+    });
+
+    it("renders root fan-out line when provided via terminalBlockers on direct blocker", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+              terminalBlockers: [
+                {
+                  id: "terminal-1",
+                  identifier: "OPE-ROOT-42",
+                  title: "Root blocker",
+                  status: "in_progress",
+                  priority: "high",
+                  assigneeAgentId: "agent-2",
+                  assigneeUserId: null,
+                },
+              ],
+            },
+          ]}
+          rootFanouts={[
+            {
+              rootIssueId: "terminal-1",
+              rootIdentifier: "OPE-ROOT-42",
+              rootStatus: "in_progress",
+              dependentCount: 3,
+              dependents: ["blocker-1"],
+              oldestBlockedAt: null,
+              hasMissingFields: false,
+            },
+          ]}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).not.toBeNull();
+      expect(row!.textContent).toContain("OPE-ROOT-42");
+      expect(row!.textContent).toContain("3");
+      const link = row!.querySelector("a");
+      expect(link).not.toBeNull();
+      expect(link!.getAttribute("href")).toBe("/issues/terminal-1");
+    });
+
+    it("renders root fan-out line when provided via blockerAttention.terminalBlocker", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+          blockerAttention={{
+            state: "needs_attention",
+            reason: "attention_required",
+            unresolvedBlockerCount: 1,
+            coveredBlockerCount: 0,
+            stalledBlockerCount: 0,
+            attentionBlockerCount: 1,
+            sampleBlockerIdentifier: "OPE-ROOT-10",
+            sampleStalledBlockerIdentifier: null,
+            terminalBlocker: {
+              id: "terminal-attn",
+              identifier: "OPE-ROOT-10",
+              title: "Terminal root in attention",
+            },
+          }}
+          rootFanouts={[
+            {
+              rootIssueId: "terminal-attn",
+              rootIdentifier: "OPE-ROOT-10",
+              rootStatus: "in_progress",
+              dependentCount: 8,
+              dependents: ["blocker-1"],
+              oldestBlockedAt: null,
+              hasMissingFields: false,
+            },
+          ]}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).not.toBeNull();
+      expect(row!.textContent).toContain("OPE-ROOT-10");
+      expect(row!.textContent).toContain("8");
+    });
+
+    it("renders root fan-out line resolved from rootFanouts matched by blockerAttention terminalBlocker", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+          blockerAttention={{
+            state: "needs_attention",
+            reason: "attention_required",
+            unresolvedBlockerCount: 1,
+            coveredBlockerCount: 0,
+            stalledBlockerCount: 0,
+            attentionBlockerCount: 1,
+            sampleBlockerIdentifier: "OPE-FAN-5",
+            sampleStalledBlockerIdentifier: null,
+            terminalBlocker: {
+              id: "root-2",
+              identifier: "OPE-FAN-5",
+              title: "Fanout root",
+            },
+          }}
+          rootFanouts={[
+            {
+              rootIssueId: "root-2",
+              rootIdentifier: "OPE-FAN-5",
+              rootStatus: "in_progress",
+              dependentCount: 7,
+              dependents: ["issue-blocked-1"],
+              oldestBlockedAt: null,
+              hasMissingFields: false,
+            },
+          ]}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).not.toBeNull();
+      expect(row!.textContent).toContain("OPE-FAN-5");
+      expect(row!.textContent).toContain("7");
+      const link = row!.querySelector("a");
+      expect(link).not.toBeNull();
+      expect(link!.textContent).toBe("OPE-FAN-5");
+      expect(link!.getAttribute("href")).toBe("/issues/root-2");
+    });
+
+    it("does not render root fan-out line when fan-out is 1 or less", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+          rootFanout={{
+            rootIdentifier: "OPE-X",
+            dependentCount: 1,
+          }}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).toBeNull();
+    });
+
+    it("does not render root fan-out line without fan-out data", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).toBeNull();
+    });
+
+    it("does not render root fan-out line when rootFanouts contains multiple roots but none match the current task or blockers", () => {
+      const node = render(
+        <IssueBlockedNotice
+          issueId="issue-current-1"
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-1",
+              identifier: "PAP-500",
+              title: "Direct blocker",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: "agent-1",
+              assigneeUserId: null,
+            },
+          ]}
+          rootFanouts={[
+            {
+              rootIssueId: "unrelated-root-1",
+              rootIdentifier: "OPE-UNRELATED-1",
+              rootStatus: "in_progress",
+              dependentCount: 15,
+              dependents: ["other-task-1", "other-task-2"],
+              oldestBlockedAt: null,
+              hasMissingFields: false,
+            },
+            {
+              rootIssueId: "unrelated-root-2",
+              rootIdentifier: "OPE-UNRELATED-2",
+              rootStatus: "todo",
+              dependentCount: 8,
+              dependents: ["other-task-3"],
+              oldestBlockedAt: null,
+              hasMissingFields: false,
+            },
+          ]}
+        />,
+      );
+
+      const row = node.querySelector('[data-testid="issue-blocked-notice-root-fanout"]');
+      expect(row).toBeNull();
+    });
+
+    it("renders safely without throwing when QueryClientProvider is absent in React tree", () => {
+      let node: HTMLElement | null = null;
+      expect(() => {
+        node = renderBare(
+          <IssueBlockedNotice
+            issueId="issue-no-provider"
+            companyId="company-1"
+            issueStatus="blocked"
+            blockers={[
+              {
+                id: "blocker-1",
+                identifier: "PAP-500",
+                title: "Direct blocker",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+              },
+            ]}
+          />,
+        );
+      }).not.toThrow();
+      expect(node).not.toBeNull();
+      expect(node!.textContent).toContain("PAP-500");
+    });
+
+    it("has required EN and RU translation keys with exact root and tasks patterns", async () => {
+      const en = await import("../i18n/myrmidon-locales/areas/approvals-decisions-notices-2.en.json");
+      const ru = await import("../i18n/myrmidon-locales/areas/approvals-decisions-notices-2.ru.json");
+
+      const enKeys =
+        (en.default as any)?.area?.["approvals-decisions-notices-2"]?.["issue-blocked-notice"] ??
+        (en.default as any)["area.approvals-decisions-notices-2"]?.["issue-blocked-notice"];
+      const ruKeys =
+        (ru.default as any)?.area?.["approvals-decisions-notices-2"]?.["issue-blocked-notice"] ??
+        (ru.default as any)["area.approvals-decisions-notices-2"]?.["issue-blocked-notice"];
+
+      expect(enKeys).toHaveProperty("rootFanout");
+      expect(enKeys).toHaveProperty("rootFanout_other");
+      expect(enKeys.rootFanout_other).toContain("Root:");
+      expect(enKeys.rootFanout_other).toContain("holds {{count}} tasks");
+
+      expect(ruKeys).toHaveProperty("rootFanout");
+      expect(ruKeys).toHaveProperty("rootFanout_many");
+      expect(ruKeys.rootFanout_many).toContain("Корень:");
+      expect(ruKeys.rootFanout_many).toContain("держит {{count}} задач");
     });
   });
 });

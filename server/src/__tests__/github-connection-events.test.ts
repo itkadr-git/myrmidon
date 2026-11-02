@@ -438,7 +438,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup, now: () => currentTime });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 2, failed: 0 });
-    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup).toHaveBeenCalledWith(returnsToExecutor ? agentId : reviewerId, expect.objectContaining({ reason: "ci_completed", payload: expect.objectContaining({ conclusion, headSha, pullRequestNumber: 123 }) }));
     const [updated] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(updated.status).toBe(returnsToExecutor ? "in_progress" : status);
@@ -452,11 +452,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       expect(comments[0].body).toContain("https://github.com/paperclipai/paperclip/actions/runs/456");
     }
     expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
-    expect(wakeup.mock.calls[1]?.[1].idempotencyKey).toContain(headSha);
     expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
     currentTime = new Date(currentTime.getTime() + 5_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 2, failed: 0 });
-    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
   it.each([

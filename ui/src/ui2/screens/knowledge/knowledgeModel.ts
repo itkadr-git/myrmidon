@@ -45,6 +45,7 @@ export interface KnowledgeRevisionSummary {
   at: string;
   by: string;
   note?: string | null;
+  sources?: KnowledgeSourceRef[];
 }
 
 /** A list-level knowledge item (no body: the tree query stays cheap). */

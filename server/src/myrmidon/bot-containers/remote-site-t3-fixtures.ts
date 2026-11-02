@@ -1,4 +1,5 @@
 import type { FleetHostConfig } from "./fleetd-hosts.js";
+import { compositeDriftFields, type CompositeDriftTarget } from "./drift.js";
 
 /** Safe test-only T3 profile. Values are deliberately synthetic, including the secret reference. */
 export const T3_A_FIXTURE: FleetHostConfig = {
@@ -14,19 +15,7 @@ export const T3_A_FIXTURE: FleetHostConfig = {
   imageAllowlist: ["ghcr.io/example/bot@sha256:*"],
 };
 
-export interface T3CompositeDriftInput {
-  profileHash: string;
-  imageDigest: string;
-  limits: { memoryMb: number; cpus: number; pidsLimit: number };
-}
+export type T3CompositeDriftInput = CompositeDriftTarget;
 
-/** Test-only contract adapter until the production reconciler owns this composite. */
-export function t3CompositeDriftFields(expected: T3CompositeDriftInput, actual: T3CompositeDriftInput): string[] {
-  const fields: string[] = [];
-  if (expected.profileHash !== actual.profileHash) fields.push("profileHash");
-  if (expected.imageDigest !== actual.imageDigest) fields.push("imageDigest");
-  for (const key of ["memoryMb", "cpus", "pidsLimit"] as const) {
-    if (expected.limits[key] !== actual.limits[key]) fields.push(`limits.${key}`);
-  }
-  return fields;
-}
+/** Production composite drift calculation adapter. */
+export const t3CompositeDriftFields = compositeDriftFields;

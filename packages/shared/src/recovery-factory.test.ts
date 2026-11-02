@@ -32,6 +32,7 @@ describe("recoveryFactoryRequestSchema", () => {
       "workspace_myr_ws",
       "devbuild",
       "disk_space",
+      "resource.oom",
       "operator_action",
     ] as const;
     for (const kind of factoryKinds) {
@@ -146,6 +147,7 @@ describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
     workspace_myr_ws: 120,
     devbuild: 120,
     disk_space: 60,
+    "resource.oom": 60,
     operator_action: 120,
     missing_disposition: 60,
     deliberate_wait_without_target: 60,
@@ -157,7 +159,7 @@ describe("RECOVERY_SLA_MINUTES_BY_KIND", () => {
   };
 
   it("completeness: covers every kind in ISSUE_RECOVERY_ACTION_KINDS with a positive SLA", () => {
-    expect(ISSUE_RECOVERY_ACTION_KINDS.length).toBe(15);
+    expect(ISSUE_RECOVERY_ACTION_KINDS.length).toBe(16);
     for (const kind of ISSUE_RECOVERY_ACTION_KINDS) {
       const minutes = RECOVERY_SLA_MINUTES_BY_KIND[kind];
       expect(typeof minutes).toBe("number");

@@ -24,6 +24,10 @@ describe("isIssueReady", () => {
     ["hold takes precedence", { ...readyFacts, onHold: true, hasProjectOrCaste: false }, false, "on_hold"],
     ["no project despite compatible assignment", { ...readyFacts, hasProjectOrCaste: false }, false, "missing_project_or_caste"],
     ["assignment mismatch despite project", { ...readyFacts, assignmentCompatible: false }, false, "incompatible_assignment"],
+    ["capacity allowed", { ...readyFacts, capacity: { allowed: true, reason: "allowed" } }, true, null],
+    ["capacity project_limit", { ...readyFacts, capacity: { allowed: false, reason: "project_limit" } }, false, "project_limit"],
+    ["capacity caste_limit", { ...readyFacts, capacity: { allowed: false, reason: "caste_limit" } }, false, "caste_limit"],
+    ["blocker takes precedence over capacity", { ...readyFacts, hasOpenBlocker: true, capacity: { allowed: false, reason: "project_limit" } }, false, "open_blocker"],
     ["blocker among all failures", { hasOpenBlocker: true, onHold: true, hasProjectOrCaste: false, assignmentCompatible: false }, false, "open_blocker"],
     ["all later failures", { hasOpenBlocker: false, onHold: false, hasProjectOrCaste: true, assignmentCompatible: false }, false, "incompatible_assignment"],
   ] as const;
