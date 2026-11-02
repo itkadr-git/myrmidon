@@ -3630,11 +3630,17 @@ export function issueThreadInteractionService(
         ) {
           recipientCandidate = { agentId: issueContextRow.createdByAgentId };
         } else if (
-          normalizedData.kind === "request_confirmation"
+          normalizedData.kind !== "connection_intent" &&
+          (normalizedData.kind === "request_confirmation" ||
+            ((normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions") &&
+              policy.effectiveResolverPolicy !== "human_only")) &&
+          normalizedData.payload.toolAction === undefined &&
+          normalizedData.payload.secretProposal === undefined
         ) {
-          // Confirmations are also emitted by agent/tool execution paths where
-          // no human user exists. Keep those legacy interactions on the board
-          // queue; human-only input remains strict below.
+          // Legacy agent-created interactions are handled by the board queue
+          // when no concrete owner can be inferred. Human-only interactions
+          // still go through the strict user-recipient branch above.
           recipientCandidate = { serviceQueue: "default" };
         } else if (policy.effectiveResolverPolicy === "human_only") {
           if (
