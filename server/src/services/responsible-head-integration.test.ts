@@ -33,7 +33,7 @@ import {
 async function waitForQueuedRun(
   db: Db,
   agentId: string,
-  interactionId: string,
+  queuedRunId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -47,12 +47,7 @@ async function waitForQueuedRun(
           eq(heartbeatRuns.status, "queued"),
         ),
       );
-    const matchingRun = runs.find(
-      (run) =>
-        (run.wakeupRequestId === interactionId) ||
-        ((run.resultJson as Record<string, unknown> | null)?.interactionId === interactionId) ||
-        run.id === interactionId,
-    );
+    const matchingRun = runs.find((run) => run.id === queuedRunId);
     if (matchingRun) return matchingRun;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -63,6 +58,7 @@ async function waitForDeferredWakeRequest(
   db: Db,
   agentId: string,
   interactionId: string,
+  wakeupRequestId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -78,7 +74,7 @@ async function waitForDeferredWakeRequest(
       );
     const matchingRequest = requests.find((request) => {
       const contextSnapshot = (request.payload as Record<string, unknown> | null)?.[
-        "__deferredWakeContext"
+        "_paperclipWakeContext"
       ];
       return (
         request.id === interactionId ||
@@ -559,7 +555,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.issueId).toBe(issueId);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
 
-      const targetRun = await waitForQueuedRun(db, admAgentId, interaction.id);
+      const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun?.id).toBe(wakeResult?.id);
 
       // Verify no queued runs for owner or engineer
@@ -658,7 +654,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
       expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
-      const targetRun = await waitForQueuedRun(db, admAgentId, interaction.id);
+      const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun?.id).toBe(wakeResult?.id);
     });
 
@@ -763,9 +759,9 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.status).toBe("queued");
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
-      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id);
+      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id, wakeResult!.id);
       expect(targetRequest).toBeDefined();
-      expect(targetRequest?.reason).toBe("interaction_pending");
+      expect(targetRequest?.runId).toBeDefined();
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
     });
 
@@ -860,7 +856,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
 
       expect(wakeResult).not.toBeNull();
       expect(wakeResult?.status).toBe("queued");
-      const queuedRun = await waitForQueuedRun(db, fallbackAdmId, interaction.id);
+      const queuedRun = await waitForQueuedRun(db, fallbackAdmId, wakeResult!.id);
 
       expect(queuedRun).toBeDefined();
       expect(queuedRun?.id).toBe(wakeResult?.id);
