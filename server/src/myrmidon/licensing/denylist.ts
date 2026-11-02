@@ -105,6 +105,8 @@ export function writeDenyListFile(file: string, denyListRaw: string): void {
   const content = Buffer.from(denyListRaw.trim() + "\n", "utf8");
   writeFileSync(tmp, content, { mode: 0o644 });
   renameSync(tmp, file);
+}
+
 export function denyAcceptedPath(env: NodeJS.ProcessEnv): string {
   return (env[DENY_ACCEPTED_PATH_ENV] ?? "").trim() || path.join(licenseDir(env), DENY_ACCEPTED_NAME);
 }
