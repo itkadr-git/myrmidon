@@ -34,6 +34,7 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { getStaleBlockOldestUnsweptSeconds } from "../../stale-block/index.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
 import { readFeatureAttentionSignals } from "../../features/attention.js";
 import {
@@ -69,10 +70,6 @@ import { continuationDedupeMetrics } from "../../../services/continuation-dedupe
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
-import {
-  collectLegacyBlockedMetrics, legacyBlockedReadPort, renderLegacyBlockedMetrics,
-  type LegacyBlockedMetrics, type LegacyBlockedReadPort,
-} from "./legacy-blocked.js";
 import {
   recoveryFactoryMetrics as processRecoveryMetrics,
   ISSUE_RECOVERY_ACTION_KINDS,
@@ -134,11 +131,6 @@ import {
 export const METRIC_FAMILIES = [
   "blocked_age_seconds",
   "blocked_missing_fields_total",
-  "legacy_blocked_migrated_total",
-  "legacy_blocked_classified_total",
-  "legacy_blocked_unknown_total",
-  "legacy_blocked_duplicate_total",
-  "legacy_blocked_remaining_age_seconds",
   ...INTERACTION_METRIC_FAMILIES,
   "myrmidon_runs_active",
   "myrmidon_runs_queued",
@@ -278,7 +270,6 @@ function validateCapacityDashboardMetrics(snapshot: CapacityDashboardMetricsSnap
   }
 }
 export interface MetricsSnapshotFields {
-  legacyBlocked?: LegacyBlockedMetrics | null;
   interactions?: InteractionMetricsSnapshot | null;
   blocked?: Array<{ companyId: string; groups: BlockedMetricsGroup[] }>;
   /** Live (running) runs right now. */
@@ -367,6 +358,8 @@ export interface MetricsSnapshotFields {
    * process (in-process, no DB). null renders HELP/TYPE with no samples.
    */
   fleetSites?: FleetSiteMetricsSample | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: number | null;
   blockerRoots?: BlockerRootMetrics | null;
   capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
@@ -424,7 +417,6 @@ export function recoveryPortSnapshot(port: RecoveryFactoryMetricsPort) {
 }
 
 export interface MetricsCollectorDeps {
-  legacyBlocked?: LegacyBlockedReadPort;
   interactions?: InteractionMetricsReadPort;
   db: Db;
   /** Fixed clock for tests. */
@@ -474,6 +466,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: (() => number | null) | null;
   /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
   recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 
@@ -969,15 +963,16 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
 
   // myrmidon(1.6.6 REMOTE-SITES-T4): the remote-site state rides the same guarded scrape.
-  const legacyBlocked = await guarded<LegacyBlockedMetrics | null>(
-    "legacy_blocked_migrated_total|legacy_blocked_classified_total|legacy_blocked_unknown_total|legacy_blocked_duplicate_total|legacy_blocked_remaining_age_seconds",
-    () => collectLegacyBlockedMetrics(deps.legacyBlocked ?? legacyBlockedReadPort(deps.db), now),
-    null,
-  );
   const fleetSites = await guarded(
     "myrmidon_fleet_site_reachable|myrmidon_fleet_site_last_seen_seconds|myrmidon_fleet_exec_retries_total|myrmidon_fleet_moves_total",
     () => Promise.resolve().then(() => (deps.fleetSites ?? readFleetSiteMetrics)()),
     null as FleetSiteMetricsSample | null,
+  );
+
+  const staleBlockOldestUnsweptSeconds = await guarded(
+    "stale_block_oldest_unswept_seconds",
+    async () => (deps.staleBlockOldestUnsweptSeconds ? deps.staleBlockOldestUnsweptSeconds() : getStaleBlockOldestUnsweptSeconds()),
+    null as number | null,
   );
 
   const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
@@ -1060,7 +1055,6 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
 
       runScratch,
 
-      legacyBlocked,
       fleetSites,
       failedBeforeModel: await guarded(
         "myrmidon_agent_failed_before_model_total",
@@ -1072,6 +1066,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
           ),
         null as Record<string, number> | null,
       ),
+      staleBlockOldestUnsweptSeconds,
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
@@ -1198,7 +1193,7 @@ function familyBlock(
 export function renderMetricsText(snapshot: MetricsSnapshot): string {
   const role = snapshot.role ?? "all";
   const R = `role="${escapeLabelValue(role)}"`;
-  const blocks: string[] = [renderLegacyBlockedMetrics(snapshot.legacyBlocked ?? null, role)];
+  const blocks: string[] = [];
 
   const blockedAgeSamples: string[] = [];
   const blockedMissingFieldsSamples: string[] = [];
@@ -1776,5 +1771,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
 
   blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
+  if (snapshot.staleBlockOldestUnsweptSeconds !== null && snapshot.staleBlockOldestUnsweptSeconds !== undefined) {
+    blocks.push(
+      familyBlock(
+        "stale_block_oldest_unswept_seconds",
+        "Age in seconds of the blocked task that has gone the longest without being swept by the stale-block watchdog.",
+        "gauge",
+        [`stale_block_oldest_unswept_seconds{${R}} ${formatSampleValue(snapshot.staleBlockOldestUnsweptSeconds)}`],
+      ),
+    );
+  }
   return `${blocks.join("\n\n")}\n`;
 }

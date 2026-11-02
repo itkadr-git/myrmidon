@@ -378,7 +378,7 @@ describe("issue assignee invokability guard", () => {
                 unblockDescriptor: {
                   owner: "board",
                   action: "Wait for dependency review",
-                  reasonRef: { kind: "event", eventKey: "invokability-test" },
+                  reasonRef: { kind: "event", eventKey: "recovery.liveness:invokability-test" },
                 },
                 blockerMetadata: {
                   blockReason: "dependency",

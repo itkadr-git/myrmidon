@@ -262,6 +262,7 @@ import {
 } from "../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
+import { recoverContainerOomForRun } from "../myrmidon/bot-containers/container-oom-recovery.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(BOARD-TOOLS-A): run-selection predicates moved with the assignment
 // logic into ./agent-assigned-tools.ts (import there).
@@ -20650,6 +20651,9 @@ export function heartbeatService(
           finalizedRun,
           parseObject(finalizedRun.resultJson),
         )) ?? finalizedRun;
+      await recoverContainerOomForRun(db, finalizedRun.id).catch((error) => {
+        logger.warn({ err: error, runId: finalizedRun.id }, "failed to classify OOM recovery evidence");
+      });
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
@@ -33663,6 +33667,18 @@ export function heartbeatService(
 
         return {
           ...rest,
+          // Keep the thin fields in the response as first-class values. The
+          // contextSnapshot/resultJson objects below are compatibility views;
+          // consumers of the list endpoint should not need to unpack them to
+          // read the wake reason or the brief result.
+          contextWakeReason,
+          resultSummary: resultSummary ?? null,
+          resultResult: resultResult ?? null,
+          resultMessage: resultMessage ?? null,
+          resultError: resultError ?? null,
+          resultTotalCostUsd: resultTotalCostUsd ?? null,
+          resultCostUsd: resultCostUsd ?? null,
+          resultCostUsdCamel: resultCostUsdCamel ?? null,
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,

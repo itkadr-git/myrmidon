@@ -357,12 +357,18 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
 # key-based ssh from a bot (-i <tmp key>, -o UserKnownHostsFile=<writable dir>).
 # jq: bots pipe JSON API responses (board, shop, ads APIs) through it in shell
 # steps; it is a small text tool, not a media tool.
+# gh (OPE-10494): the GitHub CLI for `gh pr view` etc. — every bot variant
+# (runtime, runtime-node, runtime-dev) needs it, not just the dev variant; the
+# github-launcher wrapper in packages/adapter-utils/src/github-launcher.ts
+# stages a per-run shim that execs the real `gh` binary, so the base image
+# must actually ship one.
 # No media tools (ffmpeg, yt-dlp, ...): forbidden by docs/myrmidon/CONVENTIONS.md §8
 # and out of scope — media handling is a separate service outside this image.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gh \
     git \
     jq \
     openssh-client \
