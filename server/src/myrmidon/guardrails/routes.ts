@@ -49,6 +49,7 @@ import { GUARDRAIL_RULES } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { badRequest } from "../../errors.js";
 import { redactText, restoreText, drizzleRedactionStore, type DetectedRedactionEntity, type RedactionMode } from "./entities/redaction.js";
+import { redactText, restoreText, drizzleRedactionStore, type DetectedRedactionEntity, type RedactionMode } from "./entities/redaction.js";
 
 export interface GuardrailRoutesDeps {
   db: Db;
@@ -60,6 +61,26 @@ const DEFAULT_LIMIT = 50;
 export function myrmidonGuardrailsRoutes(db: Db, _deps: Partial<GuardrailRoutesDeps> = {}) {
   const router = Router();
   const settings = instanceSettingsService(db);
+
+  router.post("/myrmidon/guardrails/redact", async (req, res) => {
+    const { text, entities, mode, ttlMs } = req.body as { text?: unknown; entities?: unknown; mode?: unknown; ttlMs?: unknown };
+    if (typeof text !== "string" || !Array.isArray(entities) || !["reversible", "irreversible", "flag"].includes(mode as string)) { res.status(400).json({ error: "text, entities, and a supported mode are required" }); return; }
+    const normalized = entities.filter((entity): entity is DetectedRedactionEntity => {
+      if (!entity || typeof entity !== "object") return false;
+      const value = entity as Record<string, unknown>;
+      return typeof value.type === "string" && typeof value.value === "string" && typeof value.start === "number" && typeof value.end === "number";
+    });
+    if (normalized.length !== entities.length) { res.status(400).json({ error: "entities must contain type, value, start, and end" }); return; }
+    const ttl = ttlMs === undefined ? undefined : Number(ttlMs);
+    if (ttl !== undefined && (!Number.isFinite(ttl) || ttl <= 0)) { res.status(400).json({ error: "ttlMs must be a positive number" }); return; }
+    res.json(await redactText(text, normalized, mode as RedactionMode, drizzleRedactionStore(db), { ttlMs: ttl }));
+  });
+  router.post("/myrmidon/guardrails/restore", async (req, res) => {
+    const { redactionId, text } = req.body as { redactionId?: unknown; text?: unknown };
+    if (typeof redactionId !== "string" || typeof text !== "string") { res.status(400).json({ error: "redactionId and text are required" }); return; }
+    res.json({ text: await restoreText(drizzleRedactionStore(db), redactionId, text) });
+  });
+
 
   router.post("/myrmidon/guardrails/redact", async (req, res) => {
     const { text, entities, mode, ttlMs } = req.body as {
