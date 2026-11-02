@@ -27,13 +27,15 @@ import type { Db } from "@myrmidon/db";
 import {
   BUDGET_LIMIT_LEVELS,
   budgetLimitUpsertSchema,
-  budgetLimitWarningThresholdSchema,
-  budgetLimitsSignalOnlySchema,
   getBudgetLimitWarningThreshold,
+  budgetLimitWarningThresholdSchema,
+  budgetLimitsExportQuerySchema,
+  budgetLimitsReportToCsv,
+  budgetLimitsSignalOnlySchema,
   isBudgetLimitOver,
+  type BudgetLimitExportFormat,
   type BudgetLimitLevel,
-  type BudgetLimitPeriod,
-  type BudgetLimitWarningThreshold,
+  type BudgetLimitReportRow,
 } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
@@ -61,17 +63,13 @@ export interface BudgetLimitRoutesDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   store?: BudgetLimitStore;
-  computeUsage?: (
-    companyId: string,
-    level: BudgetLimitLevel,
-    ref: string,
-    period: BudgetLimitPeriod,
-  ) => Promise<{ spentCents: number; events: number }>;
+  computeUsage?: typeof computeBudgetLimitUsage;
 }
 
 export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
   const router = Router();
   const store = deps.store ?? createBudgetLimitStore({ db, now: deps.now });
+  const computeUsage = deps.computeUsage ?? computeBudgetLimitUsage;
   const settings = instanceSettingsService(db);
   const base = "/myrmidon/companies/:companyId/budget-limits";
 
@@ -102,15 +100,13 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
     const limits = await store.list(companyId, levelParam ?? undefined);
     const rows = await Promise.all(
       limits.map(async (limit) => {
-        const usage = deps.computeUsage
-          ? await deps.computeUsage(companyId, limit.level, limit.ref, limit.period)
-          : await computeBudgetLimitUsage(
-              { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
-              companyId,
-              limit.level,
-              limit.ref,
-              limit.period,
-            );
+        const usage = await computeUsage(
+          { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
+          companyId,
+          limit.level,
+          limit.ref,
+          limit.period,
+        );
         const warningThreshold = getBudgetLimitWarningThreshold(limit, usage.spentCents);
         return {
           ...limit,
@@ -126,6 +122,49 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
       : rows;
     res.json({ usage: filteredRows });
   });
+
+  const exportHandler = async (
+    req: Parameters<typeof router.get>[1] extends (req: infer R, ...args: any[]) => any ? R : any,
+    res: any,
+    formatOverride?: BudgetLimitExportFormat,
+  ) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const queryToParse = formatOverride ? { ...req.query, format: formatOverride } : req.query;
+    const parsedQuery = budgetLimitsExportQuerySchema.safeParse(queryToParse);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: "Invalid export query", issues: parsedQuery.error.issues });
+      return;
+    }
+    const { format, level: filterLevel } = parsedQuery.data;
+    const limits = await store.list(companyId, filterLevel);
+    const rows: BudgetLimitReportRow[] = await Promise.all(limits.map(async (limit) => {
+      const usage = await computeUsage(
+        { db, foragingBudgetState: deps.foragingBudgetState, now: deps.now },
+        companyId, limit.level, limit.ref, limit.period,
+      );
+      return {
+        id: limit.id, companyId: limit.companyId, level: limit.level, ref: limit.ref,
+        amountCents: limit.amountCents, spentCents: usage.spentCents, period: limit.period,
+        mode: limit.mode, events: usage.events, overLimit: isBudgetLimitOver(limit, usage.spentCents),
+        isActive: limit.isActive, createdAt: limit.createdAt, updatedAt: limit.updatedAt,
+      };
+    }));
+    if (format === "csv") {
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="budget-limits-report-${companyId}.csv"`);
+      res.send(budgetLimitsReportToCsv(rows));
+      return;
+    }
+    res.setHeader("Content-Disposition", `attachment; filename="budget-limits-report-${companyId}.json"`);
+    res.json({ companyId, generatedAt: (deps.now?.() ?? new Date()).toISOString(), report: rows, items: rows });
+  };
+
+  router.get(`${base}/export`, (req, res) => exportHandler(req, res));
+  router.get(`${base}/export.csv`, (req, res) => exportHandler(req, res, "csv"));
+  router.get(`${base}/export.json`, (req, res) => exportHandler(req, res, "json"));
+  router.get(`${base}/usage/export`, (req, res) => exportHandler(req, res));
+  router.get(`${base}/report/export`, (req, res) => exportHandler(req, res));
 
   router.get(`${base}/journal`, async (req, res) => {
     const companyId = req.params.companyId as string;
