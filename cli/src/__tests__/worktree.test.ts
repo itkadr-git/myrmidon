@@ -1684,23 +1684,14 @@ describe("worktree helpers", () => {
             `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
           );
         } else {
-          await sourceDbClient.$client.unsafe("BEGIN");
-          try {
+          await sourceDbClient.$client.begin(async (tx) => {
             for (const statement of statements) {
-              await sourceDbClient.$client.unsafe(statement);
+              await tx.unsafe(statement);
             }
-            await sourceDbClient.$client.unsafe(
+            await tx.unsafe(
               `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
             );
-            await sourceDbClient.$client.unsafe("COMMIT");
-          } catch (error) {
-            try {
-              await sourceDbClient.$client.unsafe("ROLLBACK");
-            } catch {
-              // ignore rollback failure
-            }
-            throw error;
-          }
+          });
         }
       }
       await seedValidWorktreeSource(sourceDb.connectionString);
