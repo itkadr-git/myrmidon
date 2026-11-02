@@ -80,6 +80,7 @@ case "$1" in
     esac
     if [[ "$*" == *"imagetools inspect"* ]]; then
       if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: registry image not found" >&2; exit 1; fi
+      if [ -e "$SANDBOX/registry-invalid-revision" ]; then jq '.config.Labels["org.opencontainers.image.revision"]="efe4758"' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
       if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
@@ -178,6 +179,7 @@ function sandbox({
   // What the registry reports for the image (imagetools inspect): the labels, or null for none.
   registryLabels,
   registryMissing = false,
+  invalidRevisionLabel = false,
   origin = ORIGIN,
   notAClone = false,
   fetchFails = false,
@@ -226,6 +228,7 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (invalidRevisionLabel) fs.writeFileSync(path.join(dir, "registry-invalid-revision"), "");
   if (registryLabels === null) fs.writeFileSync(path.join(dir, "registry-no-labels"), "");
   if (registryLabels !== undefined && registryLabels !== null && !Object.hasOwn(registryLabels, "org.opencontainers.image.revision")) {
     fs.writeFileSync(path.join(dir, "registry-no-revision"), "");
@@ -297,6 +300,7 @@ function sandbox({
   if (bootUnit !== null) {
     fs.writeFileSync(path.join(unitDir, "paperclip.service"), bootUnit(sbPaths(composeDir)));
   }
+  if (bootUnit === null) fs.rmSync(path.join(unitDir, "paperclip.service"), { force: true });
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(
     config,
@@ -315,7 +319,7 @@ function sandbox({
       `MAINTENANCE_EXIT_COMMAND='echo exit >> ${path.join(dir, "maintenance.log")}'`,
       "RUNNING_RUNS_COMMAND='echo 0'",
       `SYSTEMD_UNIT_DIR=${unitDir}`,
-      "SYSTEMD_UNIT_INSTALL=1",
+      `SYSTEMD_UNIT_INSTALL=${bootUnit === null ? 0 : 1}`,
       // RELEASE-GATE: the release components answer their health probes here
       // (the fake curl serves every URL with the health file).
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
@@ -890,7 +894,7 @@ describe("deploy.sh: only CI images from the registry", () => {
     });
 
     it("refuses a revision label that is not a full commit sha", () => {
-      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE } });
+      const sb = sandbox({ registryLabels: { "org.opencontainers.image.revision": "efe4758", "org.opencontainers.image.source": SOURCE }, invalidRevisionLabel: true });
       assertRefused(sb, ["--digest", NEW], /no org\.opencontainers\.image\.revision label with a full commit sha/);
     });
 
@@ -1136,6 +1140,9 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in *"-X POST"*) if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi ;; esac
 url="$*"
 case "$url" in
+  *"-X POST"*)
+    if [ -e "$SANDBOX/post-fails" ]; then echo 'curl: (22) The requested URL returned error' >&2; exit 22; fi
+    echo '{"active":false,"instance":null,"windows":[]}'; exit 0 ;;
   *maintenance*)
     cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
     if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
