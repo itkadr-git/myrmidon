@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, vi, type Mocked } from "vitest";
 import { createLitellmSyncService } from "./service.js";
-import { parseLitellmChannel, sanitizeErrorMessage } from "./client.js";
+import { createLitellmSyncClient, parseLitellmChannel, sanitizeErrorMessage } from "./client.js";
 import type { LitellmSyncPort } from "./port.js";
 import type { Db } from "@myrmidon/db";
 
@@ -61,6 +61,26 @@ describe("LitellmSyncService", () => {
       deleteDeployment: vi.fn().mockResolvedValue(undefined),
       listChannels: vi.fn().mockResolvedValue([]),
     };
+  });
+
+  it("preserves LiteLLM's upstream model identifier for plugin registrations", async () => {
+    const service = createLitellmSyncService({ db: scriptedDb([]), litellm: port });
+
+    await service.registerPluginModel({
+      modelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
+
+    expect(port.registerModel).toHaveBeenCalledWith({
+      litellmModelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
   });
 
   it("registers model when enabled", async () => {
@@ -439,5 +459,41 @@ describe("LitellmSyncService", () => {
       expect(clean).not.toContain("custom-bearer-value");
       expect(clean).toContain("<redacted>");
     });
+  });
+});
+
+describe("LitellmSyncClient", () => {
+  it("registers the board alias while routing to the mapped LiteLLM model", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    try {
+      await createLitellmSyncClient({
+        litellmBaseUrl: "http://litellm.test",
+        litellmAdminKey: "admin-key",
+      }).registerModel({
+        litellmModelName: "chatgpt-pool/gpt-4o",
+        providerType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        credentialValue: "secrets/pool-key",
+        additionalConfig: { model: "openai/gpt-4o" },
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("http://litellm.test/model/new", expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model_name: "chatgpt-pool/gpt-4o",
+          litellm_params: {
+            model: "openai/gpt-4o",
+            provider: "openai",
+            api_base: "https://api.openai.com/v1",
+            api_key: "secrets/pool-key",
+          },
+          model_info: {},
+        }),
+      }));
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });

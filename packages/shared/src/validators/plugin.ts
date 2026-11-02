@@ -243,6 +243,28 @@ export type PluginModelProviderDeclarationInput = z.infer<
   typeof pluginModelProviderDeclarationSchema
 >;
 
+export const pluginProviderModelDeclarationSchema = z.object({
+  provider: z.string().trim().min(1).max(64),
+  baseUrl: z.string().trim().url().max(2048),
+  credentialSecretName: z.string().trim().min(1).max(200),
+  models: z.array(z.object({
+    id: z.string().trim().min(1).max(512),
+    name: z.string().trim().max(200).optional(),
+  })).min(1).superRefine((models, ctx) => {
+    const ids = new Set<string>();
+    models.forEach((model, index) => {
+      if (ids.has(model.id)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "model ids must be unique", path: [index, "id"] });
+      }
+      ids.add(model.id);
+    });
+  }),
+});
+
+export type PluginProviderModelDeclarationInput = z.infer<
+  typeof pluginProviderModelDeclarationSchema
+>;
+
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
 export const pluginManagedAgentDeclarationSchema = z.object({
@@ -811,6 +833,7 @@ export const pluginManifestV1Schema = z.object({
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
   modelProviders: z.array(pluginModelProviderDeclarationSchema).optional(),
+  providerModels: pluginProviderModelDeclarationSchema.optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),

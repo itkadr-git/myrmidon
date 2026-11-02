@@ -795,6 +795,24 @@ describe("openapi routes", () => {
     expect(replacement.responses["422"]).toBeDefined();
   });
 
+  it("documents admin-assistant health authorization and error responses", () => {
+    const { spec } = loadSpecRoutes();
+    for (const path of [
+      "/api/companies/{companyId}/admin-assistant/cluster-health",
+      "/api/admin-assistant/cluster-health",
+      "/api/admin-assistant/health",
+    ]) {
+      const operation = spec.paths[path].get;
+      expect(operation.responses["401"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toMatchObject({
+        actor: "board_or_agent",
+        companyScopedQuery: true,
+        unscoped: { actor: "board", instanceAdmin: true },
+      });
+    }
+  });
+
   it("documents auth and reviewed response-code invariants", () => {
     const { spec } = loadSpecRoutes();
 
