@@ -264,8 +264,10 @@ describe("prometheus exposition format", () => {
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25, plus the two
     // continuation dedupe counters = 27, plus two review/blocked gauges = 29,
     // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
-    // plus failed_before_model = 32, plus the five recovery families = 37, plus deferredIssueExecutionOver30m = 38.
-    expect(sampleLines).toHaveLength(38);
+    // plus failed_before_model = 32, plus the five recovery families = 37, plus deferredIssueExecutionOver30m = 38,
+    // plus the runs-execution phase gauge (5 known phases) and the
+    // reconnecting-oldest gauge (1.6.6 rc.19 MONITORING OPE-10046) = 44.
+    expect(sampleLines).toHaveLength(44);
     expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');

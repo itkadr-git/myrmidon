@@ -108,14 +108,19 @@ export function computeRunsExecutionEvaluation(
         const d = new Date(projection.lastConfirmedActivityAt);
         if (!isNaN(d.getTime())) candidateDates.push(d);
       }
+      // Age is measured from the most recent *confirmed activity*. The
+      // candidate set deliberately mirrors `lastConfirmedActivityAt` in
+      // `projectExecution` (server/src/services/execution-projection.ts):
+      // lastUsefulActionAt / lastOutputAt / lastEventAt / startedAt.
+      // `updatedAt`/`createdAt` are NOT activity: updatedAt is bumped by
+      // bookkeeping writes, so counting it would understate the hang age
+      // and disagree with the phase the projection builder already assigned.
       for (const val of [
         run.lastConfirmedActivityAt,
         run.lastUsefulActionAt,
         run.lastOutputAt,
         run.lastEventAt,
-        run.updatedAt,
         run.startedAt,
-        run.createdAt,
       ]) {
         if (val) {
           const d = new Date(val);

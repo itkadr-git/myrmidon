@@ -602,10 +602,8 @@ async function readRunsExecutionMetrics(
       status: heartbeatRuns.status,
       startedAt: heartbeatRuns.startedAt,
       createdAt: heartbeatRuns.createdAt,
-      lastConfirmedActivityAt: heartbeatRuns.lastConfirmedActivityAt,
       lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
       lastOutputAt: heartbeatRuns.lastOutputAt,
-      lastEventAt: heartbeatRuns.lastEventAt,
       updatedAt: heartbeatRuns.updatedAt,
     })
     .from(heartbeatRuns)

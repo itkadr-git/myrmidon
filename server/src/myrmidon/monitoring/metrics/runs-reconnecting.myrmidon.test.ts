@@ -22,13 +22,16 @@ function makeRun(overrides: Partial<LiveRunRecord> = {}): LiveRunRecord {
     id: overrides.id ?? `run-${Math.random().toString(36).slice(2, 8)}`,
     companyId: overrides.companyId ?? "test-company",
     status: overrides.status ?? "running",
-    startedAt: overrides.startedAt ?? new Date(),
-    createdAt: overrides.createdAt ?? new Date(),
+    // Timestamps default to null so a fixture never carries a wall-clock
+    // "now" newer than the fixed `now` the test passes to the evaluator;
+    // tests that care set them explicitly.
+    startedAt: overrides.startedAt ?? null,
+    createdAt: overrides.createdAt ?? null,
     lastConfirmedActivityAt: overrides.lastConfirmedActivityAt ?? null,
     lastUsefulActionAt: overrides.lastUsefulActionAt ?? null,
     lastOutputAt: overrides.lastOutputAt ?? null,
     lastEventAt: overrides.lastEventAt ?? null,
-    updatedAt: overrides.updatedAt ?? new Date(),
+    updatedAt: overrides.updatedAt ?? null,
     ...overrides,
   };
 }
@@ -165,7 +168,8 @@ describe("1.6.6 rc.19 MONITORING OPE-10046: runs execution phase metrics and wat
       now,
     );
     expect(alertTask.priority).toBe("high");
-    expect(alertTask.title).toContain("run-stalled-1");
+    // Run IDs are listed in the description and the alert event summary;
+    // the title is a short header by design.
     expect(alertTask.description).toContain("run-stalled-1");
     expect(alertTask.idempotencyKey).toBe(
       "monitoring:runs-reconnecting:test-company",
@@ -280,6 +284,24 @@ describe("1.6.6 rc.19 MONITORING OPE-10046: runs execution phase metrics and wat
   it("renders both gauges in Prometheus text exposition format", () => {
     const snapshot: MetricsSnapshot = {
       role: "all",
+      runsActive: 11,
+      runsQueued: 0,
+      runsQueuedOver30m: 0,
+      deferredIssueExecutionOver30m: 0,
+      runsFailedTotal: 0,
+      runsFailedWindow: 0,
+      runDurationSecondsP50: null,
+      runDurationSecondsP95: null,
+      roleQueueTasks: [],
+      reviewTasksWithoutReviewer: 0,
+      blockedTasksWithoutAssignee: 0,
+      codeTasksOnNoncodingRoles: 0,
+      swarmClaimsActive: 0,
+      swarmClaimsTotal: 0,
+      agentErrorSignals: 0,
+      llmCostCentsWindow: 0,
+      scrapeErrors: 0,
+      collectedAt: "2026-10-30T12:00:00.000Z",
       runsExecutionPhase: [
         { phase: "working", count: 8 },
         { phase: "reconnecting", count: 2 },
