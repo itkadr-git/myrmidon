@@ -1406,7 +1406,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       companyId: fixture.companyId,
       agentId: fixture.assignedAgentId,
       status: "running",
-      contextSnapshot: {},
+      contextSnapshot: { issueId: secondBoundTask.id },
     });
     await db
       .update(issues)
