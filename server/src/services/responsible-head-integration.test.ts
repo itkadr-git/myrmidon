@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentWakeupRequests,
@@ -69,7 +69,7 @@ async function waitForDeferredWakeRequest(
       .where(
         and(
           eq(agentWakeupRequests.agentId, agentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued"]),
         ),
       );
     const matchingRequest = requests.find((request) => {
