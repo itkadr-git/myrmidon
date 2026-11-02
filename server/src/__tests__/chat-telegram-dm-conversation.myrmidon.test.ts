@@ -1435,18 +1435,14 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     );
     agentApp.use(errorHandler);
 
-    // This fixture's synthetic agent context does not create a persisted heartbeat
-    // run, so the route may reject the reassignment at run-attribution before the
-    // tasks:assign/channel-binding checks. The service-level 409 assertion above
-    // remains the coverage for the binding lock itself.
+    // The matching live heartbeat run and checkout ownership let the route reach
+    // the service-level channel-binding guard for an actual reassignment.
     const reassignRes = await request(agentApp)
       .patch(`/api/issues/${secondBoundTask.id}`)
       .set("X-Paperclip-Run-Id", agentRunId)
       .send({ assigneeAgentId: fixture.replacementAgentId });
-    expect(reassignRes.status).toBe(403);
-    expect(reassignRes.body.error).toMatch(
-      /cannot mutate another agent's issue|authorization|cross-issue writes need a run|heartbeat run/i,
-    );
+    expect(reassignRes.status).toBe(409);
+    expect(reassignRes.body.error).toBe("chat_binding_agent_locked");
 
     const endpointRuntime = endpointRuntimeFromContext(endpoint.id, endpoint);
     const initialPostsCount = endpointRuntime.posts.length;
