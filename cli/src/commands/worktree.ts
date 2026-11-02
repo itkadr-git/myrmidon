@@ -927,7 +927,7 @@ export function resolveWorktreeReseedTargetPaths(input: {
 
   if (!homeDir || !instanceId) {
     throw new Error(
-      `Target config ${input.configPath} does not look like a worktree-local Paperclip instance. Expected PAPERCLIP_HOME and PAPERCLIP_INSTANCE_ID in the adjacent .env.`,
+      `Target config ${input.configPath} does not look like a worktree-local Myrmidon instance. Expected PAPERCLIP_HOME and PAPERCLIP_INSTANCE_ID in the adjacent .env.`,
     );
   }
 
@@ -2579,7 +2579,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
   p.outro(
     pc.green(
-      `Worktree ready. Run Paperclip inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
+      `Worktree ready. Run Myrmidon inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
     ),
   );
 }
@@ -3092,7 +3092,7 @@ async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
           ? ` Pending migrations: ${migrationState.pendingMigrations.join(", ")}.`
           : "";
       throw new Error(
-        `Database for ${configPath} is not up to date.${pending} Run \`pnpm db:migrate\` (or start Paperclip once) before using worktree merge history.`,
+        `Database for ${configPath} is not up to date.${pending} Run \`pnpm db:migrate\` (or start Myrmidon once) before using worktree merge history.`,
       );
     }
     const db = createDb(connectionString) as ClosableDb;
@@ -4274,7 +4274,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   const runningTargetPid = resolveRunningEmbeddedPostgresPid(targetConfig);
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Myrmidon in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
 
@@ -4415,7 +4415,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   const runningTargetPid = readRunningPostmasterPid(path.resolve(repairPaths.embeddedPostgresDataDir, "postmaster.pid"));
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Myrmidon in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
   if (runningTargetPid && opts.allowLiveTarget) {
