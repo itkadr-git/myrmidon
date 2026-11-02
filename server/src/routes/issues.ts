@@ -15912,6 +15912,24 @@ export function issueRoutes(
                       monitorExplicitlyUpdated: true,
                     });
                     Object.assign(issueUpdateData, monitorPatch.patch);
+                    // The initial issue update ran before admission could decide
+                    // that review must wait for CI. Persist the monitor transition
+                    // in the same transaction; mutating issueUpdateData alone is
+                    // too late to affect the already-committed service update.
+                    const persistedMonitor = await svc.update(
+                      id,
+                      {
+                        executionPolicy: updateFields.executionPolicy,
+                        monitorNextCheckAt: issueUpdateData.monitorNextCheckAt,
+                        monitorScheduledBy: issueUpdateData.monitorScheduledBy,
+                        monitorAttemptCount: issueUpdateData.monitorAttemptCount,
+                        monitorWakeRequestedAt: issueUpdateData.monitorWakeRequestedAt,
+                        monitorLastTriggeredAt: issueUpdateData.monitorLastTriggeredAt,
+                        ...monitorPatch.patch,
+                      },
+                      tx,
+                    );
+                    if (persistedMonitor) Object.assign(updated, persistedMonitor);
                     if (typeof monitorPatch.patch.executionState !== "undefined") {
                       updated.executionState = monitorPatch.patch.executionState as Record<string, unknown> | null;
                     }
