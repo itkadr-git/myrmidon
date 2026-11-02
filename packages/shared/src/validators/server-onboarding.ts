@@ -38,30 +38,17 @@ const sshPrivateKeySchema = z
     "private key must be a PEM-encoded OpenSSH or PKCS#8 key",
   );
 
-const sshPasswordSchema = z
-  .string()
-  .min(1, "password is required")
-  .max(256, "password must be 256 characters or fewer");
-
 /**
- * Authentication method for the dry-run check: either a password or a
- * private key. The dry-run endpoint accepts exactly one of the two.
+ * Authentication for the dry-run check: private key only. Password auth is
+ * not supported — OpenSSH BatchMode disables interactive password prompts,
+ * and there is no safe non-interactive way to pass a password without
+ * exposing it in argv, logs, or environment variables.
  */
 export const sshDryRunAuthSchema = z
   .object({
-    password: sshPasswordSchema.optional(),
-    privateKey: sshPrivateKeySchema.optional(),
+    privateKey: sshPrivateKeySchema,
   })
-  .strict()
-  .superRefine((body, ctx) => {
-    if (Boolean(body.password) === Boolean(body.privateKey)) {
-      ctx.addIssue({
-        code: "custom",
-        message: "give exactly one of password or privateKey",
-        path: ["password"],
-      });
-    }
-  });
+  .strict();
 
 /**
  * Full input for the SSH dry-run endpoint.

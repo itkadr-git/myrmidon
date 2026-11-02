@@ -5,7 +5,8 @@
 //   * timeout — the executor's timeout outcome maps to a safe 200 response
 //   * invalid key — the executor's invalid_key outcome maps to a safe 200 response
 //   * no persistence — no database write is issued for any outcome
-//   * the private key and password never appear in the response or the log
+//   * the private key never appears in the response or the log
+//   * password auth is rejected — the contract is private key only
 //
 // The SSH executor is mocked; the route is exercised through express with
 // a minimal actor middleware stub.
@@ -51,8 +52,7 @@ const AGENT_FOR_COMPANY = {
   keyId: "key-a",
 };
 
-// Distinctive secret markers so we can prove they never leak into a response.
-const PASSWORD_MARKER = "PASSWDmarker123!";
+// Distinctive secret marker so we can prove it never leaks into a response.
 const PRIVATE_KEY_MARKER = "PRIVATEKEYmarker456!";
 
 const PRIVATE_KEY_BODY =
@@ -192,24 +192,7 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
     expect(res.body).toMatchObject({ outcome: "invalid_key" });
   });
 
-  it("accepts password auth as an alternative to a private key", async () => {
-    const { app, executor } = makeApp(OWNER, async () => ({
-      outcome: "ok",
-      passwordlessSudo: false,
-      remoteUname: "Linux node-b 6.1.0 arm64",
-      durationMs: 12,
-    }));
-
-    const res = await request(app)
-      .post(`/api/companies/${COMPANY_ID}/servers/ssh-dry-run`)
-      .send(dryRunBody({ auth: { password: PASSWORD_MARKER } }));
-
-    expect(res.status).toBe(200);
-    expect(executor.calls[0]?.password).toBe(PASSWORD_MARKER);
-    expect(executor.calls[0]?.privateKey).toBeUndefined();
-  });
-
-  it("rejects a body with both password and privateKey", async () => {
+  it("rejects a body that includes a password field", async () => {
     const { app, executor } = makeApp(OWNER, async () => ({
       outcome: "ok",
       passwordlessSudo: true,
@@ -221,7 +204,7 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
       .post(`/api/companies/${COMPANY_ID}/servers/ssh-dry-run`)
       .send(
         dryRunBody({
-          auth: { password: PASSWORD_MARKER, privateKey: PRIVATE_KEY_BODY },
+          auth: { privateKey: PRIVATE_KEY_BODY, password: "secret123" },
         }),
       );
 
@@ -229,7 +212,7 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
     expect(executor.calls).toHaveLength(0);
   });
 
-  it("rejects a body with neither password nor privateKey", async () => {
+  it("rejects a body missing the private key", async () => {
     const { app, executor } = makeApp(OWNER, async () => ({
       outcome: "ok",
       passwordlessSudo: true,
@@ -309,7 +292,7 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
     expect(executor.calls).toHaveLength(1);
   });
 
-  it("never leaks the private key or password into the response", async () => {
+  it("never leaks the private key into the response", async () => {
     const { app } = makeApp(OWNER, async () => ({
       outcome: "invalid_key",
       reason: "the private key is invalid, malformed, or the host is unreachable",
@@ -322,10 +305,9 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
 
     const body = JSON.stringify(res.body);
     expect(body).not.toContain(PRIVATE_KEY_MARKER);
-    expect(body).not.toContain(PASSWORD_MARKER);
   });
 
-  it("never logs the private key or password", async () => {
+  it("never logs the private key", async () => {
     const { app } = makeApp(OWNER, async () => ({
       outcome: "ok",
       passwordlessSudo: true,
@@ -335,12 +317,11 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
 
     await request(app)
       .post(`/api/companies/${COMPANY_ID}/servers/ssh-dry-run`)
-      .send(dryRunBody({ auth: { password: PASSWORD_MARKER } }));
+      .send(dryRunBody());
 
     const logged = logSpy.mock.calls
       .map((c: unknown[]) => JSON.stringify(c))
       .join("\n");
-    expect(logged).not.toContain(PASSWORD_MARKER);
     expect(logged).not.toContain(PRIVATE_KEY_MARKER);
   });
 });

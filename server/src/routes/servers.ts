@@ -4,9 +4,9 @@
 //
 // Validates the SSH parameters the owner typed into the onboarding form by
 // opening a real SSH connection — without registering the server and without
-// persisting the credentials. The password or private key travels in the
-// request body, is used for the probe, and is never written to the database,
-// the journal, the activity log, or any response field.
+// persisting the credentials. The private key travels in the request body,
+// is used for the probe, and is never written to the database, the journal,
+// the activity log, or any response field. Password auth is not supported.
 
 import { Router } from "express";
 import type { Db } from "@myrmidon/db";
@@ -37,13 +37,12 @@ export function serverOnboardingRoutes(
         host: string;
         port: number;
         username: string;
-        auth: { password?: string; privateKey?: string };
+        auth: { privateKey: string };
         timeoutMs?: number;
       };
 
-      // Log the probe request without the credential material. The password
-      // and private key are deliberately omitted from every log line; the
-      // body shape alone (password vs key auth) is enough for diagnostics.
+      // Log the probe request without the credential material. The private
+      // key is deliberately omitted from every log line.
       logger.info(
         {
           companyId,
@@ -51,7 +50,7 @@ export function serverOnboardingRoutes(
           host: body.host,
           port: body.port,
           username: body.username,
-          authMethod: body.auth.privateKey ? "privateKey" : "password",
+          authMethod: "privateKey",
         },
         "ssh dry-run probe requested",
       );
@@ -60,7 +59,6 @@ export function serverOnboardingRoutes(
         host: body.host,
         port: body.port,
         username: body.username,
-        password: body.auth.password,
         privateKey: body.auth.privateKey,
         timeoutMs: body.timeoutMs,
       });

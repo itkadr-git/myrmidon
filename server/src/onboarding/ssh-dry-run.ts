@@ -1,9 +1,12 @@
 // myrmidon(SERVER-ONBOARD): SSH dry-run probe for the onboarding flow.
 //
 // The dry-run endpoint lets the owner validate SSH credentials *before*
-// registering the server. It opens a real SSH connection, authenticates,
-// runs a harmless command, reports success or a normalized failure — and
-// writes nothing to the database, the journal, or any secret store.
+// registering the server. It opens a real SSH connection, authenticates
+// with the provided private key, runs a harmless command, reports success
+// or a normalized failure — and writes nothing to the database, the
+// journal, or any secret store. Password auth is not supported: OpenSSH
+// BatchMode disables interactive prompts and there is no safe non-interactive
+// way to pass a password.
 //
 // The executor is a narrow port so the route tests can substitute a mock.
 // The real implementation shells out to the system `ssh` binary, the same
@@ -51,8 +54,7 @@ export interface SshDryRunExecutor {
     host: string;
     port: number;
     username: string;
-    password?: string;
-    privateKey?: string;
+    privateKey: string;
     timeoutMs?: number;
   }): Promise<SshDryRunResult>;
 }
@@ -92,8 +94,7 @@ async function runSshProbe(input: {
   host: string;
   port: number;
   username: string;
-  password?: string;
-  privateKey?: string;
+  privateKey: string;
   timeoutMs?: number;
 }): Promise<SshDryRunResult> {
   const startedAt = Date.now();
@@ -108,7 +109,7 @@ async function runSshProbe(input: {
       "-p", String(input.port),
     ];
 
-    if (input.privateKey) {
+    {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "myrmidon-ssh-dry-run-"));
       const file = path.join(dir, "key");
       // Normalize: ensure trailing newline so ssh does not complain.
@@ -118,13 +119,10 @@ async function runSshProbe(input: {
       sshArgs.push("-i", file);
     }
 
-    if (input.password) {
-      sshArgs.push("-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no");
-    } else {
-      sshArgs.push("-o", "PubkeyAuthentication=yes", "-o", "PasswordAuthentication=no");
-    }
+    sshArgs.push("-o", "PubkeyAuthentication=yes", "-o", "PasswordAuthentication=no");
 
-    sshArgs.push(`${input.username}@${input.host}`, "uname -a && sudo -n true 2>/dev/null; echo SUDO_OK");
+    // Only echo the SUDO_OK marker when sudo -n true actually succeeds.
+    sshArgs.push(`${input.username}@${input.host}`, "uname -a && sudo -n true 2>/dev/null && echo SUDO_OK");
 
     const { stdout, stderr, killed } = await new Promise<{
       stdout: string;
@@ -190,8 +188,7 @@ export function createMockSshDryRunExecutor(
     host: string;
     port: number;
     username: string;
-    password?: string;
-    privateKey?: string;
+    privateKey: string;
     timeoutMs?: number;
   }) => Promise<SshDryRunResult>,
 ): SshDryRunExecutor & {
@@ -199,8 +196,7 @@ export function createMockSshDryRunExecutor(
     host: string;
     port: number;
     username: string;
-    password?: string;
-    privateKey?: string;
+    privateKey: string;
     timeoutMs?: number;
   }>;
 } {
@@ -208,8 +204,7 @@ export function createMockSshDryRunExecutor(
     host: string;
     port: number;
     username: string;
-    password?: string;
-    privateKey?: string;
+    privateKey: string;
     timeoutMs?: number;
   }> = [];
   return {
