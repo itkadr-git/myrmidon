@@ -3390,7 +3390,7 @@ export function agentRoutes(
     }
     const rawModels = refresh
       ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      : await listAdapterModels(modelAdapterType, companyId);
     const models = await enrichWithPoolModels(db, companyId, rawModels);
     res.json(models);
   });
