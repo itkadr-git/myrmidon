@@ -53,8 +53,7 @@ function denyFile(privateKey: KeyObject, over: Record<string, unknown> = {}, raw
   return JSON.stringify({ payload: b64(bytes), signature: b64(sign(null, bytes, privateKey)) });
 }
 
-function setup(id: string | null = "lic-1") {
-  const k = keys();
+function setup(id: string | null = "lic-1", k: { privateKey: KeyObject; publicKey: KeyObject } = keys()) {
   const env = {
     MYR_LICENSE_PATH: path.join(dir, "license.key"),
     MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
@@ -93,7 +92,7 @@ describe("deny-list in the licensing check", () => {
     expect(s.status().reason).toBe("ok");
   });
 
-  it("id, instance_id and kid each match independently", () => {
+  it("id, instance_id and kid each match on their own; ids never match a license without id", () => {
     const s = setup();
     expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(false);
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 1 }));
@@ -105,8 +104,9 @@ describe("deny-list in the licensing check", () => {
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { kids: [keyId(s.k.publicKey)], serial: 3 }));
     expect(s.reader.revoked({ kid: keyId(s.k.publicKey) })).toBe(true);
     expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(false);
-    const noId = setup(null);
-    writeFileSync(noId.denyPath, denyFile(noId.k.privateKey, { ids: ["lic-1"] }));
+    const noId = setup(null, s.k);
+    writeFileSync(noId.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 4 }));
+    expect(noId.status().reason).toBe("ok");
     expect(noId.reader.revoked({})).toBe(false);
   });
 
