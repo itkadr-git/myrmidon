@@ -147,7 +147,8 @@ export async function createUser(
   let token: string | null = null;
   await db.transaction(async (tx) => {
     await tx.insert(authUsers).values({
-      id: userId, name: input.name.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
+      id: userId,
+      name: input.name?.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
     });
     await tx.insert(authAccounts).values({
       id: randomUUID(), issuer: CREDENTIAL_ISSUER, accountId: userId, providerId: "credential",
