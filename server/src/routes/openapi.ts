@@ -11843,10 +11843,6 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/servers/onboarding/dry-run",
   tags: ["servers"],
   summary: "Run read-only pre-registration probes (DNS, SSH banner, permissions) against a candidate server",
-  description:
-    "Runs the onboarding dry-run probes in order (DNS → SSH → permissions) and returns a typed result with stable per-check code/status. " +
-    "The endpoint never persists anything and never echoes credentials — the response has no field for the password or private key. " +
-    "Probes whose prerequisites failed are reported in skippedChecks. Individual probe failures do not change the HTTP status; the caller branches on per-check code/status.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: z.object({
