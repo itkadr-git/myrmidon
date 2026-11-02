@@ -363,7 +363,7 @@ describe("botd rules: safety", () => {
 describe("botd rules: contract fixtures", () => {
   it("desired-state.json has the C3 shape and drives the function", () => {
     const d = fixture("desired-state.json");
-    assert.deepEqual(Object.keys(d).sort(), ["closedKeys", "generatedAt", "grace", "pressure", "protectKeys", "workspaces"]);
+    assert.deepEqual(Object.keys(d).sort(), ["closedKeys", "closedTasks", "generatedAt", "grace", "pressure", "protectKeys", "workspaces"]);
     assert.deepEqual(Object.keys(d.grace).sort(), ["closingMinutes", "orphanHours", "scratchTtlHours"]);
     assert.ok(["none", "soft", "hard"].includes(d.pressure.level));
     for (const w of d.workspaces) {

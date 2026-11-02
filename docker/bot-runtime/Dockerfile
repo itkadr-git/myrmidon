@@ -271,6 +271,17 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/disabled_tools.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 19-redact-auth-bearer-template-syntax.patch:
+# authorization headers in code literals/templates (`Bearer ${token}`, <token>,
+# variable identifiers) must not be false-masked into `***`, while long high-entropy
+# secrets (e.g. `Bearer ghp_...` 36+ chars) are masked safely without syntax corruption.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/auth_header_redact_templates.py /opt/hermes-src
+# myrmidon(OPE-10602): behaviour regression for 20-run-scoped-run-id.patch after the
+# rc.29 defect: the gateway's internal ``run_<hex>`` id must never reach $PAPERCLIP_RUN_ID
+# (it 500ed every agent board mutation with ``invalid input syntax for type uuid``), only
+# the X-Paperclip-Run-Id header's UUID does, and a run's child env sees exactly its own
+# board run id.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_id_context_scope.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
@@ -352,12 +363,18 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
 # key-based ssh from a bot (-i <tmp key>, -o UserKnownHostsFile=<writable dir>).
 # jq: bots pipe JSON API responses (board, shop, ads APIs) through it in shell
 # steps; it is a small text tool, not a media tool.
+# gh (OPE-10494): the GitHub CLI for `gh pr view` etc. — every bot variant
+# (runtime, runtime-node, runtime-dev) needs it, not just the dev variant; the
+# github-launcher wrapper in packages/adapter-utils/src/github-launcher.ts
+# stages a per-run shim that execs the real `gh` binary, so the base image
+# must actually ship one.
 # No media tools (ffmpeg, yt-dlp, ...): forbidden by docs/myrmidon/CONVENTIONS.md §8
 # and out of scope — media handling is a separate service outside this image.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gh \
     git \
     jq \
     openssh-client \
@@ -558,6 +575,8 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import os, sys; real = os.path.realpath
 
 # /health needs no auth (unlike /v1/capabilities, which is Bearer-gated) —
 # see docker/bot-runtime/README.md and gateway/platforms/api_server.py.
+# The gateway starts before session retention. Keep this window for image and
+# process startup only; state.db size must not affect health.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${API_SERVER_PORT}/health" || exit 1
 

@@ -47,6 +47,15 @@ export {
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";
 export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
+export {
+  applyReaddress,
+  computeRouteType,
+  computeTimeoutAt,
+  formatApplySummary,
+  type ReaddressApplyItem,
+  type ReaddressApplyOptions,
+  type ReaddressApplyResult,
+} from "./readdress-apply.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";

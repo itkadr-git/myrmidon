@@ -29,7 +29,8 @@ concurrency:
 jobs:
   pr-text:
     name: PR text scan
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    # Light gate: own pool (vars.CI_RUNNER_LIGHT, same as `plan`), the GitHub-hosted queue is hours long.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
       - name: Checkout repository

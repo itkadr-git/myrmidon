@@ -37,6 +37,7 @@ import {
   Users,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
+import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel";
 import type {
   CompanySecret,
   CompanySecretUsageBinding,
@@ -1825,6 +1826,7 @@ export function Secrets() {
         <h1 className="text-lg font-semibold">{t("area.access-secrets-3.secrets.title")}</h1>
       </div>
 
+      <InstanceSecretSettingsPanel />
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}

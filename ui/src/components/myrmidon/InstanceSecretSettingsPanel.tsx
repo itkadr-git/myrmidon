@@ -53,6 +53,7 @@ export function InstanceSecretSettingsPanel() {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
               : t(`area.secret-settings.instance-secret-settings-panel.settingDescriptions.${setting.name.replace(/[.-]/g, "_")}`, { defaultValue: setting.description })}
+
           </div>
           <div className="font-mono text-xs text-muted-foreground">{setting.name}</div>
           <div className="text-sm" data-testid={`secret-setting-source-${setting.name}`}>

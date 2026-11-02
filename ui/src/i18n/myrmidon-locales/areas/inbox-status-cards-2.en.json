@@ -24,6 +24,9 @@
         "title": "New card"
       },
       "inbox": {
+        "knowledgeReview": "Knowledge review",
+        "knowledgeLoading": "Loading suggestions...",
+        "knowledgeLoadFailed": "Could not load knowledge suggestions.",
         "agentErrors_one": "<b>{{count}}</b> agent has errors",
         "agentErrors_other": "<b>{{count}}</b> agents have errors",
         "agentJoinRequest": "Agent join request",

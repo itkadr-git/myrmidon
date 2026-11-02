@@ -17,17 +17,48 @@ Optional tuning: `CORPUS_IMPORT_BATCH_SIZE`, `CORPUS_IMPORT_CONCURRENCY`, and `C
 
 ## Run and resume
 
-Run from the repository root:
+The importer CLI is included in the production runtime container image and is runnable directly with plain Node without development-only `tsx`.
+
+### 1. Read-only preflight (`--dry-run`)
+
+Before running a full import or embedding generation, execute a read-only `--dry-run`. This inspects RAGFlow datasets, documents, and chunks, validates chunk counts against declared totals, and checks existing PostgreSQL corpus chunk states to report embedding coverage:
 
 ```sh
+# Inside the built runtime container image (/app/server):
+node dist/scripts/ragflow-corpus-import.js --dry-run
+
+# Or via pnpm in the server package:
+pnpm --filter @myrmidon/server corpus:import:ragflow:dry-run
+```
+
+Dry-run characteristics:
+- Requires only `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `DATABASE_URL`, and `CORPUS_COMPANY_ID`.
+- Does NOT require `LITELLM_BASE_URL` or `LITELLM_API_KEY`.
+- Generates ZERO embeddings and performs ZERO writes to the database.
+- Outputs structured progress and a final JSON report detailing:
+  - Source datasets and documents count.
+  - Total enumerated chunks.
+  - Embedding coverage breakdown (`reusableChunks`, `missingChunks`, `coverageRatio`).
+
+### 2. Full production import
+
+Once dry-run verification succeeds and LiteLLM gateway capacity is confirmed, run the full import:
+
+```sh
+# Inside the built runtime container image (/app/server):
+node dist/scripts/ragflow-corpus-import.js
+
+# Or via pnpm:
 pnpm --filter @myrmidon/server corpus:import:ragflow
 ```
 
-The importer first enumerates source datasets/documents and obtains RAGFlow's declared document and chunk totals (stream-counting chunks where RAGFlow omits a total). It checks these before any database writes or embedding calls. A source/count mismatch aborts preflight; investigate pagination, source consistency and tolerance rather than bypassing the check.
+### Safe resumability
 
-Each progress record and the final summary are JSON lines on stdout. `embedded` counts newly requested vectors; `reused` counts matching valid stored vectors reused on resume. The summary includes elapsed milliseconds. Keep the complete run output in approved restricted operational logs and compare dataset/document/chunk totals and vector coverage with the RAGFlow source before declaring acceptance.
-
-If a run fails, fix the underlying connectivity/capacity issue and rerun with the same company, source and model. Matching chunks/vectors are reused; changed chunk content or model is re-embedded. Do not clean or truncate corpus tables to resume.
+The importer is fully idempotent and safely resumable:
+- Chunk IDs are deterministic UUIDs computed from `[companyId, datasetId, documentId, sourceChunkId || index]`.
+- Chunks in the database store `content`, `embedding`, `embeddingModel`, `embeddingDimensions`, and `embeddingContentHash`.
+- During import, existing chunk states are queried in batches. Any chunk with an existing normalized embedding matching the configured model, dimensions, and SHA-256 content hash is reused without calling LiteLLM.
+- If an import process terminates or fails mid-run, re-running with the same company and model will pick up where it left off, skipping already embedded chunks and processing only missing or updated chunks. Do not drop or truncate corpus tables to resume.
 
 ## Acceptance and rollback
 

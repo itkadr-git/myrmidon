@@ -16,6 +16,7 @@ function ui2SettingDescription(t: Ui2I18nContextValue["t"], name: string, fallba
   return translated === key ? fallback : translated;
 }
 
+
 export function Ui2InstanceSecretSettings() {
   const { t } = useUi2I18n();
   const { selectedCompanyId } = useCompany();
@@ -26,7 +27,7 @@ export function Ui2InstanceSecretSettings() {
   if (data.settingsLoading || data.settingsError || data.settings.length === 0) return null;
 
   return (
-    <Ui2Section title={t("ui2.settings.system.secretRefs.title")} footer={t("ui2.settings.system.secretRefs.hint")}>
+    <Ui2Section title={t("ui2.settings.secrets.title")} footer={t("ui2.settings.secrets.hint")}>
       {data.settings.map((setting) => (
         <div key={setting.name} className="ui2-secret-ref flex flex-col gap-2 rounded-md border border-border p-3" data-testid={`ui2-secret-setting-${setting.name}`}>
           <span className="text-sm font-medium">
@@ -35,6 +36,7 @@ export function Ui2InstanceSecretSettings() {
                   provider: setting.name.slice("tool-oauth.".length, -".client-secret".length).replace(/_/g, " "),
                 })
               : ui2SettingDescription(t, setting.name, setting.description)}
+
           </span>
           <span className="font-mono text-xs text-muted-foreground">{setting.name}</span>
           <span className="text-sm" data-testid={`ui2-secret-setting-source-${setting.name}`}>

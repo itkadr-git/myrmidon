@@ -38,6 +38,7 @@
 #
 # This script is read-only; deploy.sh does the pulling and switching.
 set -euo pipefail
+unset BASH_ENV ENV
 
 log() { printf '[myrmidon-release-support] %s\n' "$*" >&2; }
 die() { printf '[myrmidon-release-support] ERROR: %s\n' "$*" >&2; exit 1; }

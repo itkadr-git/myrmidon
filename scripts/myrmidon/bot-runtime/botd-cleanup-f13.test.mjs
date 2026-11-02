@@ -14,10 +14,9 @@ import { fileURLToPath } from "node:url";
 //     verified `<base>.full.tar.zst` of the whole directory, which clears removal —
 //     bounded: over the size cap or with no free space it is refused (ok:false)
 //     and the directory stays;
-//   * the rhythm cache: successful or error attempts on the same path/op are
-//     silently skipped inside the cooldown; deferred foreign-owner attempts are
-//     reported each pass so the board keeps a live attention card.
-//     a different op on the same path is a different decision; the pass ends with
+//   * the rhythm cache: the same op on the same path runs at most once per hour,
+//     keyed by path+op (a different op on the same path is a different decision);
+//     a repeat inside the window is a silent skip; the pass ends with
 //     `cleaned N, deferred M (...)`.
 // Placeholder keys and repositories only.
 
@@ -27,7 +26,6 @@ const { guardedRemove, inside } = await import(lib("remove.js"));
 const { createAttention, createCooldown, DEFAULT_TTL_MS } = await import(lib("cache.js"));
 const { archive, archiveTree, readManifest, retain, retainPass, verifyEntry, FULL_TAR_CAP_BYTES } = await import(lib("archive.js"));
 const { createLoop } = await import(lib("loop.js"));
-const { buildReport } = await import(lib("report.js"));
 const { archiveThenRemove } = await import(lib("legacy.js"));
 
 const KEY = "ABC-123";
@@ -49,19 +47,6 @@ const git = (cwd, ...args) => {
   return r.stdout.trim();
 };
 const at = (iso) => new Date(iso);
-
-describe("botd foreign-owner report", () => {
-  it("keeps the explicit ownership attention outside the truncated action log", () => {
-    const report = buildReport({
-      botKey: "bot-test",
-      at: new Date("2026-10-17T00:00:00Z"),
-      actions: [{ at: "2026-10-17T00:00:00Z", action: "skip", path: "/workspace/ABC-123", result: "skipped", detail: "remove: closing-unpushed — deferred: foreign-uid (EACCES)" }],
-      foreignUid: { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" },
-    });
-    assert.deepEqual(report.foreignUid, { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" });
-    assert.equal(report.actions.length, 1);
-  });
-});
 
 /** A copy with one unpushed commit on a branch: the bundle would have real content. */
 function makeRepo(dir) {
@@ -361,24 +346,6 @@ describe("loop: the rhythm cache and the pass summary", () => {
     assert.equal(calls, 2);
   });
 
-  it("a deferred foreign-owner action is retried and reported on the next pass", async () => {
-    const file = path.join(tmp, "cooldown-deferred", "botd-cooldown.json");
-    const cooldown = createCooldown(file);
-    let calls = 0;
-    const actions = [{ op: "remove", path: "/scratch/foreign", reason: "closing" }];
-    const { loop } = loopRig({
-      actions,
-      executor: { remove: async () => (++calls === 1 ? { deferred: "foreign-uid", detail: "EACCES" } : "removed") },
-      cooldown,
-    });
-    const first = await loop.runOnce();
-    assert.match(first.executed[0].detail, /deferred: foreign-uid/);
-    const second = await loop.runOnce();
-    assert.equal(calls, 2, "deferred permissions must be retried after the owner is repaired");
-    assert.equal(second.executed[0].result, "ok");
-    assert.equal(cooldown.deferredRecent("/scratch/foreign", "remove"), false);
-  });
-
   it("without the cooldown module every action runs (behaviour unchanged)", async () => {
     let calls = 0;
     const { loop } = loopRig({ actions: [{ op: "remove", path: "/scratch/y", reason: "age" }], executor: { remove: async () => { calls += 1; return "removed"; } } });
@@ -539,6 +506,7 @@ describe("archiveTree: bounded like the fallback tar", () => {
     const archiveMod = {
       archive: (...args) => { calls.push("repo"); return archive(...args); },
       archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
     };
     const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
     const item = { path: copy, key: KEY };
@@ -549,6 +517,58 @@ describe("archiveTree: bounded like the fallback tar", () => {
     fs.writeFileSync(path.join(copy, "new-work.txt"), "new\\n");
     assert.equal(archiveThenRemove(item, deps), "archived, removed");
     assert.equal(calls.length, 2, "changed source gets a fresh archive");
+  });
+
+  it("regression: archive reuse refuses stale/duplicate keys, missing parts, and corrupted archives", () => {
+    const dir = path.join(tmp, "archive-regression");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+      verifyEntry,
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+
+    // Initial archive creation
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+
+    const mPath = path.join(archiveRoot, "manifest.json");
+    const readM = () => JSON.parse(fs.readFileSync(mPath, "utf8"));
+    const writeM = (m) => fs.writeFileSync(mPath, JSON.stringify(m, null, 2));
+
+    // 1. Stale duplicate entry with same key but outdated/unrelated content should not hijack snapshot
+    const m1 = readM();
+    const goodEntry = m1.archives[0];
+    const staleEntry = {
+      key: KEY,
+      bundle: path.join(archiveRoot, "stale.bundle"),
+      createdAt: new Date(Date.now() - 100000).toISOString(),
+      // no sourceSnapshot or different sourceSnapshot
+    };
+    fs.writeFileSync(staleEntry.bundle, "dummy");
+    m1.archives.unshift(staleEntry);
+    writeM(m1);
+
+    // Should still reuse because the valid matching entry exists
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1);
+
+    // 2. Missing required archive part: if bundle of the valid entry is removed, cannot reuse
+    fs.rmSync(goodEntry.bundle, { force: true });
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "re-archived because archive part was missing");
+
+    // 3. Corrupted archive content: if bundle is corrupted, cannot reuse
+    const m2 = readM();
+    // Latest entry is the last one in archives
+    const latestGood = m2.archives[m2.archives.length - 1];
+    fs.writeFileSync(latestGood.bundle, "corrupted-content");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 3, "re-archived because archive content was corrupt");
   });
 
   it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {

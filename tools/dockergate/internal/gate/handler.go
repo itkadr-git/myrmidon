@@ -120,6 +120,8 @@ func (rs *reqState) handle() *deny.Error {
 		rs.target = rt.ImageRef
 	} else if rt.ID == route.A14 {
 		rs.target = route.DiskTarget
+	} else if rt.ID == route.A19 {
+		rs.target = route.EventsOomTarget
 	} else {
 		rs.target = rt.Name
 	}
@@ -182,6 +184,8 @@ func (rs *reqState) handle() *deny.Error {
 		return rs.a15(ctx, st, rt)
 	case route.A14:
 		return rs.a14(ctx, st)
+	case route.A19:
+		return rs.a19(ctx, st)
 	}
 	return deny.New(deny.RouteNotAllowed)
 }

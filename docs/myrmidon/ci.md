@@ -103,7 +103,7 @@ run 37277281522), а релиз публиковать руками.
 | `plan` | все | Выбирает уровень и тесты, план — артефакт `test-plan` |
 | `typecheck + build` | fast, full | Один job (общие checkout и install). Сначала `pnpm -r typecheck`; на fast без `typecheck:rust` раннера. Затем (даже если typecheck упал) `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
 | `tests (affected)` | fast | Отобранные тесты |
-| `tests (server 1/3)` … `(3/3)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`; шардов меньше, чем у вендора: лимит GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
+| `tests (server 1/6)` … `(6/6)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`. Шарды server делятся по замеренной стоимости наборов (`scripts/general-server-shard-durations.json`, алгоритм LPT в `scripts/general-server-shard.mjs`); манифест обновляется `scripts/myrmidon/ci/shard-durations-from-logs.mjs` по логам последних зелёных прогонов main, а `general-server-shards.test.mjs` в `checks` проверяет, что шарды вместе покрывают каждый набор ровно один раз. Число шардов ограничено лимитом GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
 | `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @paperclipai/paperclip-runner check:all` (проверка раннера у вендора) |
 | `go tools (dockergate + fleetd)` | все | gofmt, go vet, go test для `tools/dockergate` (+ контракт с драйвером) и `tools/fleetd` |
 | `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
@@ -496,7 +496,7 @@ pnpm install --frozen-lockfile
 node scripts/myrmidon/ci/affected-tests.mjs plan --base origin/main --head HEAD --out /tmp/plan.json
 node scripts/myrmidon/ci/affected-tests.mjs run --plan /tmp/plan.json   # быстрый уровень
 pnpm typecheck
-pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 5
+pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 6
 node scripts/myrmidon/ci/affected-tests.mjs extra                       # прочие пакеты
 pnpm build
 node --test $(find scripts/myrmidon -name '*.test.mjs')

@@ -67,6 +67,7 @@ import {
   type BotCanaryStatus,
 } from "./canary-domain.js";
 import { verifyBotCanaryImageFromRegistry, type BotCanaryProbeDeps } from "./canary-registry.js";
+import type { UpdateEventPayload } from "./update-notify.js";
 import { runCanarySmoke } from "./canary-smoke.js";
 import { readBotCanarySettings, type BotCanarySettings } from "./canary-settings.js";
 import {
@@ -125,6 +126,7 @@ export interface BotCanaryServiceDeps {
   env?: NodeJS.ProcessEnv;
   /** Test hook: replaces the smoke run. */
   smoke?: typeof runCanarySmoke;
+  notifyUpdate?: (event: UpdateEventPayload) => Promise<unknown>;
 }
 
 export class BotCanaryError extends Error {
@@ -438,6 +440,16 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
       if (!current || current.status !== "canary_waiting") return { next: null, result: null };
       return { next: updateJob(doc, job.id, next), result: next.status };
     });
+    if (deps.notifyUpdate) {
+      void deps.notifyUpdate({
+        companyId: job.companyId ?? "",
+        eventType: "canary_started",
+        version: job.version,
+        commit: job.commit,
+        digest: job.digest,
+        detail: job.canaryBotKey ? `canary bot: ${job.canaryBotKey}` : undefined,
+      }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send canary_started notification"));
+    }
     // The apply itself: applyBotContainerNow drives the drain, recreate and
     // start of THIS agent alone, exactly as a card image change would.
     const outcome = await deps.runtime.applyNow(canary, image, env);
@@ -459,6 +471,16 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
         );
         return { next: updateJob(doc, job.id, back), result: back.status };
       });
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: job.companyId ?? "",
+          eventType: "waiting_window",
+          version: job.version,
+          commit: job.commit,
+          digest: job.digest,
+          detail: outcome.reason,
+        }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send waiting_window notification"));
+      }
     }
   }
 
@@ -517,6 +539,15 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
         return { next: retireBotCanaryJob(updateJob(doc, job.id, next), job.id, at), result: next.status };
       });
       void retired;
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: job.companyId ?? "",
+          eventType: "rollout_succeeded",
+          version: job.version,
+          commit: job.commit,
+          digest: job.digest,
+        }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send rollout_succeeded notification"));
+      }
       await auditFor(job, "succeeded", { actorType: "system", actorId: "myrmidon-bot-canary" });
       return;
     }
@@ -636,6 +667,15 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
         if (!current || current.status !== "wave_restoring") return { next: null, result: null };
         return { next: retireBotCanaryJob(updateJob(doc, job.id, next), job.id, at), result: next.status };
       });
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: job.companyId ?? "",
+          eventType: "rollout_succeeded",
+          version: job.version,
+          commit: job.commit,
+          digest: job.digest,
+        }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send rollout_succeeded notification"));
+      }
       await auditFor(job, "succeeded", { actorType: "system", actorId: "myrmidon-bot-canary" }, { bots: job.doneBotKeys.length });
       return;
     }
@@ -696,6 +736,17 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
       return { next: updateJob(doc, jobId, next), result: true };
     });
     if (!moved) return false;
+    if (deps.notifyUpdate) {
+      const rollbackJob: BotCanaryJob = moved;
+      void deps.notifyUpdate({
+        companyId: rollbackJob.companyId ?? "",
+        eventType: "rollback_started",
+        version: rollbackJob.version,
+        commit: rollbackJob.commit,
+        digest: rollbackJob.digest,
+        reason,
+      }).catch((err) => logger.error({ err, jobId: rollbackJob.id }, "failed to send rollback_started notification"));
+    }
     await auditFor(moved, "rolling_back", { actorType: "system", actorId: "myrmidon-bot-canary" }, { reason, failedStatus });
     return true;
   }
@@ -727,6 +778,16 @@ export function botCanaryService(db: Db, deps: BotCanaryServiceDeps) {
         if (!c || c.status !== "rolling_back") return { next: null, result: null };
         return { next: retireBotCanaryJob(updateJob(doc, job.id, next), job.id, at), result: next.status };
       });
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: job.companyId ?? "",
+          eventType: "rollback_completed",
+          version: job.version,
+          commit: job.commit,
+          digest: job.digest,
+          reason: current.failureReason ?? undefined,
+        }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send rollback_completed notification"));
+      }
       await auditFor(job, "rolled_back", { actorType: "system", actorId: "myrmidon-bot-canary" }, { reason: current.failureReason });
       return;
     }

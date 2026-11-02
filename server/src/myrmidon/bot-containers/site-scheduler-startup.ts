@@ -16,6 +16,7 @@ import { logger } from "../../middleware/logger.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "./agents-query.js";
 import { createFleetMoveContext } from "./fleet-move-wiring.js";
+import { getActiveFleetClientManager, type FleetClientManager } from "./site-registry.js";
 import { startSiteSchedulerLane, type ScheduledAgentCard } from "./site-scheduler-lane.js";
 import type { AffinityRule, FleetSiteInfo } from "./site-scheduler.js";
 
@@ -34,11 +35,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Starts the lane when enabled; returns its stop function (a no-op when not enabled). */
-export function startSiteScheduler(db: Db, opts: { env?: NodeJS.ProcessEnv } = {}): () => void {
+export function startSiteScheduler(
+  db: Db,
+  opts: { env?: NodeJS.ProcessEnv; clientManager?: FleetClientManager | (() => FleetClientManager | null) } = {},
+): () => void {
   const env = opts.env ?? process.env;
   if (!isSiteSchedulerEnabled(env)) return () => {};
 
-  const moves = createFleetMoveContext(db);
+  const rawManager = opts.clientManager;
+  const clientManager: () => FleetClientManager | null =
+    typeof rawManager === "function"
+      ? rawManager
+      : () => rawManager ?? getActiveFleetClientManager();
+  const moves = createFleetMoveContext(db, clientManager);
   const agentsApi = agentService(db);
 
   const lane = startSiteSchedulerLane({

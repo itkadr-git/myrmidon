@@ -226,4 +226,19 @@ describe("myrmidon(W2a) createBotCardSync", () => {
     };
     await expect(createBotCardSync(ports)("agent-a", "agent-a", TARGET_VERSION)).rejects.toThrow("database is read-only");
   });
+
+  it("plans card sync with fleetGatewayApiBaseUrl pointing to fleet host", () => {
+    const plan = planGatewayCardSync(
+      { apiBaseUrl: "http://myrmidon-bot-agent-a:8642" },
+      {
+        botKey: "agent-a",
+        apiKeySecretId: SECRET_ID,
+        apiKeyVersion: TARGET_VERSION,
+        fleetGatewayApiBaseUrl: "http://192.0.2.110:18701",
+      },
+    );
+    expect(plan.changed).toBe(true);
+    expect(plan.adapterConfig.apiBaseUrl).toBe("http://192.0.2.110:18701");
+    expect(plan.changedKeys).toContain("apiBaseUrl");
+  });
 });

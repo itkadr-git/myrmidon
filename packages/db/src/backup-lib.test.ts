@@ -570,6 +570,80 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "preserves dimensions for user-defined vector columns during fallback JavaScript backup",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_vector_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-vector-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+      process.env.PAPERCLIP_PSQL_PATH = "/bin/false";
+
+      try {
+        const [hasVector] = await sourceSql<{ exists: boolean }[]>`
+          SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') AS exists
+        `;
+        if (!hasVector?.exists) {
+          return;
+        }
+
+        await sourceSql.unsafe(`
+          CREATE EXTENSION IF NOT EXISTS vector;
+          CREATE TABLE "public"."vector_test" (
+            "id" uuid PRIMARY KEY,
+            "embedding" vector(128)
+          );
+          CREATE INDEX "vector_test_embedding_hnsw_idx" ON "public"."vector_test" USING hnsw ("embedding" vector_cosine_ops);
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-vector-test",
+          backupEngine: "auto",
+        });
+
+        const backupSql = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        expect(backupSql).toContain('"embedding" "public"."vector"(128)');
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const [indexCheck] = await restoreSql<{ exists: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_indexes
+            WHERE schemaname = 'public' AND tablename = 'vector_test' AND indexname = 'vector_test_embedding_hnsw_idx'
+          ) AS exists
+        `;
+        expect(indexCheck?.exists).toBe(true);
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+        if (originalPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
+        }
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "restores legacy public-only backups without migration history",
     async () => {
       const restoreConnectionString = await createTempDatabase();

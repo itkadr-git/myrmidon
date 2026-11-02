@@ -54,7 +54,10 @@ function limit(overrides: Partial<BudgetLimitView> & Pick<BudgetLimitView, "leve
 }
 
 function usage(row: BudgetLimitView, spentCents: number, overLimit = false): BudgetLimitUsageRow {
-  return { ...row, spentCents, events: 2, overLimit };
+  const warningThreshold = row.isActive
+    ? (spentCents >= row.amountCents * 0.95 ? 95 : spentCents >= row.amountCents * 0.8 ? 80 : null)
+    : null;
+  return { ...row, spentCents, events: 2, overLimit, warningThreshold };
 }
 
 interface Handlers {
@@ -159,6 +162,25 @@ describe("BudgetLimitsScreenView — the limit tree", () => {
     render({ limits: undefined });
     expect(byTestId("myrmidon-budget-limits-loading")).not.toBeNull();
     expect(container.querySelector("[data-testid='budget-limits-tree']")).toBeNull();
+  });
+
+  it("renders warning indicators when usage is approaching limit (80% and 95%)", () => {
+    const nearLimit95 = limit({ level: "caste", ref: "designer", amountCents: 10_000 });
+    const nearLimit80 = limit({ level: "issue", ref: ISSUE_ID, amountCents: 10_000 });
+    render({
+      limits: [COMPANY, nearLimit95, nearLimit80],
+      usage: [
+        usage(COMPANY, 1000, false),
+        usage(nearLimit95, 9600, false),
+        usage(nearLimit80, 8500, false),
+      ],
+    });
+
+    const casteSpend = byTestId("budget-limits-spent-caste:designer").textContent ?? "";
+    expect(casteSpend).toContain("Approaching limit (95%)");
+
+    const issueSpend = byTestId(`budget-limits-spent-issue:${ISSUE_ID}`).textContent ?? "";
+    expect(issueSpend).toContain("Approaching limit (80%)");
   });
 });
 

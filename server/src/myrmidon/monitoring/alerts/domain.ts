@@ -132,6 +132,34 @@ export function parseZabbixAlert(raw: unknown): NormalizedAlert | null {
     : asString(payload.event_date) && asString(payload.event_time)
       ? `${asString(payload.event_date)}T${asString(payload.event_time)}Z`
       : null;
+
+  const rawTags = (raw as Record<string, unknown>).tags ?? (raw as Record<string, unknown>).event_tags;
+  const labels: Record<string, string> = {};
+  if (typeof rawTags === "string") {
+    for (const part of rawTags.split(/[\r\n,;]+/)) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      const sepIdx = trimmed.indexOf("=") !== -1 ? trimmed.indexOf("=") : trimmed.indexOf(":");
+      if (sepIdx !== -1) {
+        labels[trimmed.slice(0, sepIdx).trim()] = trimmed.slice(sepIdx + 1).trim();
+      } else {
+        labels[trimmed] = "";
+      }
+    }
+  } else if (Array.isArray(rawTags)) {
+    for (const item of rawTags) {
+      if (typeof item === "object" && item !== null) {
+        const t = asString((item as { tag?: unknown; name?: unknown }).tag ?? (item as { tag?: unknown; name?: unknown }).name);
+        const v = asString((item as { value?: unknown }).value);
+        if (t) labels[t] = v ?? "";
+      }
+    }
+  } else if (typeof rawTags === "object" && rawTags !== null) {
+    for (const [k, v] of Object.entries(rawTags)) {
+      labels[k] = asString(v) ?? "";
+    }
+  }
+
   return {
     source: "zabbix",
     key,
@@ -144,7 +172,7 @@ export function parseZabbixAlert(raw: unknown): NormalizedAlert | null {
     resolvedAt: resolved ? (rawStarted && !Number.isNaN(Date.parse(rawStarted)) ? new Date(rawStarted).toISOString() : new Date().toISOString()) : null,
     startedAt,
     severityCode: Number.isFinite(severityCode) ? severityCode : null,
-    labels: {},
+    labels,
     url: asString(payload.url),
   };
 }
@@ -273,16 +301,22 @@ export function routeAssignee(
   routes: AlertRouteRule[],
   defaultAssignee: string = DEFAULT_ALERT_ROUTE_ASSIGNEE,
 ): string {
+  const routeTag = alert.labels?.route?.toLowerCase();
+  if (routeTag === "owner" || routeTag === "adm") {
+    return "adm";
+  }
   return routeMatch(alert, routes)?.assignee ?? defaultAssignee;
 }
 
 /** The first rule matching the alert title, or null (the default route). */
 export function routeMatch(alert: NormalizedAlert, routes: AlertRouteRule[]): AlertRouteRule | null {
   const title = alert.title.toLowerCase();
+  const routeLabel = alert.labels?.route?.toLowerCase();
   for (const rule of routes) {
     const match = rule.match.trim().toLowerCase();
     if (!match || !rule.assignee.trim()) continue;
     if (title.includes(match)) return rule;
+    if (routeLabel && (match === `route=${routeLabel}` || match === `route:${routeLabel}` || match === routeLabel)) return rule;
   }
   return null;
 }

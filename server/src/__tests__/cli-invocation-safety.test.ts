@@ -809,7 +809,12 @@ describe("paperclipai CLI invocation safety", () => {
     const source = read("ui/src/pages/CompanyExport.tsx");
     expect(source).not.toContain("pnpm paperclipai company import");
     expect(source).not.toContain("pnpm exec paperclipai company import");
-    expect(source).toContain("npx paperclipai company import");
+    // The preview builder names the CLI by its Myrmidon binary (`myrmidon`, the
+    // same package bin as `paperclipai`). `npx` still runs that binary directly
+    // and the argument stays a static, non-interpolated placeholder.
+    expect(source).toContain("npx myrmidon company import this-github-url-or-folder");
+    expect(source).not.toContain("pnpm myrmidon company import");
+    expect(source).not.toContain("npx paperclipai company import");
   });
 
   // ── Runtime surfaces and their fixed literal lifecycle hints ─────────────

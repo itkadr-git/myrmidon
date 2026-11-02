@@ -11,6 +11,7 @@ import {
   createGitHubPort,
   createMemoryStateStore,
   decideApproveLabel,
+  detectMigrationViolation,
   latestVerdicts,
   main,
   parseVerdictLines,
@@ -20,6 +21,12 @@ import {
 const REPO = "owner/name";
 const HEAD = "bd4b5f8924df56595fde8268885f8f912ff6b262";
 const MAIN_HEAD = "1111222233334444555566667777888899990000";
+const MAIN_MIGRATIONS = [
+  "packages/db/src/migrations/0432_clean_raider.sql",
+  "packages/db/src/migrations/0433_legacy_blocked_import.sql",
+  "packages/db/src/migrations/meta/0432_snapshot.json",
+  "packages/db/src/migrations/meta/0433_snapshot.json",
+];
 const comment = (body, at, authorName = "adm-dev-review", id = "c1") => ({ id, issueId: "i1", createdAt: at, authorName, body });
 
 describe("parseVerdictLines", () => {
@@ -95,10 +102,64 @@ describe("decideApproveLabel", () => {
     assert.equal(decision.holdMerge, true);
   });
 
-  it("labels approved PR and allows auto-merge when main CI is in_progress after green", () => {
-    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress", autoMerge: true });
+  // OPE-10520: main CI that has not completed green right now holds auto-merge,
+  // even if the last completed run was green (incident #1923 merged into a main
+  // whose fresh run was red). The label is still applied so CI keeps running.
+  it("holds auto-merge when main CI is in_progress, even after green (OPE-10520)", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "in_progress", mainGreen: false, autoMerge: true });
     assert.equal(decision.action, "label");
-    assert.equal(decision.autoMerge, true);
+    assert.equal(decision.autoMerge, false);
+    assert.equal(decision.holdMerge, true);
+  });
+
+  it("refuses to merge a PR whose base is behind main (OPE-10520)", () => {
+    const decision = decideApproveLabel({ verdict: approve, pr: open, headCommittedAt: null, ci: "success", mainCi: "success", baseBehind: true, autoMerge: true });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-behind");
+    assert.notEqual(decision.autoMerge, true);
+  });
+
+  it("disables an armed auto-merge when the PR base falls behind main (OPE-10520)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      baseBehind: true,
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-behind");
+    assert.equal(decision.disableAutoMerge, true);
+  });
+
+  it("refuses PRs that rewrite an existing migration or add a stale snapshot number (OPE-10520)", () => {
+    const overwrite = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      migrationViolation: { reason: "migration-overwrite", path: "packages/db/src/migrations/0433_legacy_blocked_import.sql" },
+      autoMerge: true,
+    });
+    assert.equal(overwrite.action, "refuse");
+    assert.equal(overwrite.reason, "migration-overwrite");
+    assert.equal(overwrite.disableAutoMerge, true);
+    assert.equal(overwrite.removeLabel, true);
+
+    const stale = decideApproveLabel({
+      verdict: approve,
+      pr: open,
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      migrationViolation: { reason: "migration-stale-number", path: "packages/db/src/migrations/meta/0430_snapshot.json" },
+      autoMerge: true,
+    });
+    assert.equal(stale.action, "refuse");
+    assert.equal(stale.reason, "migration-stale-number");
   });
 
   it("holds auto-merge for an already labeled PR when main CI is failure", () => {
@@ -199,17 +260,67 @@ describe("decideApproveLabel", () => {
   });
 });
 
+describe("detectMigrationViolation", () => {
+  it("flags a PR that rewrites an existing migration .sql on main", () => {
+    const v = detectMigrationViolation(
+      ["server/src/x.ts", "packages/db/src/migrations/0433_legacy_blocked_import.sql"],
+      MAIN_MIGRATIONS,
+    );
+    assert.deepEqual(v, { reason: "migration-overwrite", path: "packages/db/src/migrations/0433_legacy_blocked_import.sql" });
+  });
+
+  it("flags a PR that rewrites an existing snapshot on main", () => {
+    const v = detectMigrationViolation(["packages/db/src/migrations/meta/0433_snapshot.json"], MAIN_MIGRATIONS);
+    assert.equal(v.reason, "migration-overwrite");
+  });
+
+  it("flags a new snapshot numbered below the newest on main (chain break)", () => {
+    const v = detectMigrationViolation(["packages/db/src/migrations/meta/0430_snapshot.json"], MAIN_MIGRATIONS);
+    assert.deepEqual(v, { reason: "migration-stale-number", path: "packages/db/src/migrations/meta/0430_snapshot.json" });
+  });
+
+  it("allows new migrations above the newest on main and unrelated files", () => {
+    assert.equal(
+      detectMigrationViolation(
+        ["packages/db/src/migrations/0434_new_one.sql", "packages/db/src/migrations/meta/0434_snapshot.json", "server/src/x.ts"],
+        MAIN_MIGRATIONS,
+      ),
+      null,
+    );
+  });
+
+  it("ignores files outside the migrations tree even with 4-digit prefixes", () => {
+    assert.equal(detectMigrationViolation(["packages/db/src/migrations/README.md", "doc/0433_notes.md"], MAIN_MIGRATIONS), null);
+  });
+});
+
 function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastCompletedMain = null } = {}) {
   const labeled = [];
   const autoMerged = [];
   const autoDisabled = [];
+  const removedLabels = [];
+  const updatedBranches = [];
   return {
     labeled,
     autoMerged,
     autoDisabled,
+    removedLabels,
+    updatedBranches,
     async pullRequest(n) {
       if (!prs[n]) throw new Error("404");
       return prs[n].pr;
+    },
+    async pullRequestFiles(n) {
+      return prs[n]?.files ?? [];
+    },
+    async mainMigrationFiles() {
+      return MAIN_MIGRATIONS;
+    },
+    async updateBranch(n) {
+      updatedBranches.push(n);
+    },
+    async removeLabel(n) {
+      removedLabels.push(n);
     },
     async headCommittedAt() {
       return new Date("2026-10-08T05:00:00Z");
@@ -245,7 +356,7 @@ function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastComp
 }
 
 describe("runOnce with green main protection and auto-merge", () => {
-  const open = (headSha, labels = [], autoMerge = false) => ({ state: "open", draft: false, merged: false, headSha, labels, autoMerge });
+  const open = (headSha, labels = [], autoMerge = false, baseSha = MAIN_HEAD) => ({ state: "open", draft: false, merged: false, headSha, baseSha, labels, autoMerge });
   const comments = [
     comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "a"),
     comment("VERDICT #2: APPROVE", "2026-10-08T07:00:00Z", "adm-dev-review", "b"),
@@ -300,8 +411,10 @@ describe("runOnce with green main protection and auto-merge", () => {
     assert.equal(saved.mainStatus, "failure");
   });
 
-  // Acceptance Case: main in_progress после зелёного → метка ставится, автовливание не останавливается, пауза не растёт
-  it("acceptance: main in_progress after green -> labels PR, does not hold auto-merge, pause does not grow", async () => {
+  // OPE-10520: main CI that has not completed green right now holds auto-merge —
+  // even if the last completed run was green (incident #1923). The label is
+  // still applied so CI pipelines keep running; the pause counter does not grow.
+  it("acceptance: main in_progress after green -> labels PR, holds auto-merge, pause does not grow", async () => {
     const store = createMemoryStateStore({
       consecutiveFailures: 0,
       backoffUntil: null,
@@ -320,14 +433,15 @@ describe("runOnce with green main protection and auto-merge", () => {
       autoMerge: true,
     });
 
-    assert.equal(paused, false);
+    assert.equal(paused, true);
     assert.equal(consecutiveFailures, 0);
     assert.equal(backoffUntil, null);
     assert.deepEqual(github.labeled, [1], "PR should be labeled");
-    assert.deepEqual(github.autoMerged, [1], "Auto-merge should be enabled");
+    assert.deepEqual(github.autoMerged, [], "Auto-merge must be held while the newest main CI run is not completed success");
     const r1 = results.find((r) => r.prNumber === 1);
     assert.equal(r1.action, "label");
-    assert.equal(r1.autoMerge, true);
+    assert.equal(r1.autoMerge, false);
+    assert.equal(r1.holdMerge, true);
   });
 
   // Acceptance Case: main in_progress после красного → автовливание стоит (метка ставится, пауза не растёт)
@@ -525,6 +639,122 @@ describe("runOnce with green main protection and auto-merge", () => {
 
     assert.equal(paused, true, "auto-merge should be paused when main CI is missing and last completed was failure");
     assert.deepEqual(github.autoMerged, []);
+  });
+
+  // OPE-10520 acceptance: PR whose base lags main never merges; update-branch is requested instead.
+  const singleApproveComments = [comment(`VERDICT #1: APPROVE (head ${HEAD})`, "2026-10-08T07:00:00Z", "adm-dev-review", "a")];
+  it("acceptance: stale base -> holds auto-merge and asks GitHub to update-branch", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD, [], false, "9999888877776666555544443333222211110000"), ci: "success" },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, [], "stale-base PR must never auto-merge");
+    assert.deepEqual(github.updatedBranches, [1], "update-branch should be requested");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-behind");
+  });
+
+  // OPE-10520 acceptance: armed auto-merge is disarmed when the base falls behind.
+  it("acceptance: armed auto-merge is disabled when the base falls behind main", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD, [APPROVED_LABEL], true, "9999888877776666555544443333222211110000"), ci: "success" },
+    }, { mainCi: "success" });
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.autoDisabled, [1]);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.updatedBranches, [1]);
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-behind");
+    assert.equal(r1.disableAutoMerge, true);
+  });
+
+  // OPE-10520 acceptance: PR rewriting an already-applied migration is refused.
+  it("acceptance: PR that rewrites an existing migration is refused and disarmed", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: open(HEAD, [APPROVED_LABEL], true),
+        ci: "success",
+        files: ["server/src/x.ts", "packages/db/src/migrations/0433_legacy_blocked_import.sql"],
+      },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.autoDisabled, [1]);
+    assert.deepEqual(github.removedLabels, [1], "the review-approved label must be stripped on refusal");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "refuse");
+    assert.equal(r1.reason, "migration-overwrite");
+  });
+
+  // OPE-10520 acceptance: PR adding a snapshot below the newest on main is refused.
+  it("acceptance: PR adding a snapshot numbered below the newest on main is refused", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: open(HEAD),
+        ci: "success",
+        files: ["packages/db/src/migrations/meta/0430_snapshot.json"],
+      },
+    }, { mainCi: "success" });
+
+    const { results, failed } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.equal(failed, 0);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.labeled, [], "a violating PR must not be labeled");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "refuse");
+    assert.equal(r1.reason, "migration-stale-number");
+  });
+
+  // OPE-10520 acceptance: migration guard listing failure holds auto-merge (fail closed).
+  it("acceptance: migration guard listing failure holds auto-merge", async () => {
+    const github = fakeGitHub({
+      1: { pr: open(HEAD), ci: "success" },
+    }, { mainCi: "success" });
+    github.mainMigrationFiles = async () => [];
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.autoMerged, [], "merge must be held when the migration listing is unavailable");
+    assert.deepEqual(github.labeled, [1], "labeling still works so CI keeps running");
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "label");
+    assert.equal(r1.autoMerge, false);
   });
 });
 

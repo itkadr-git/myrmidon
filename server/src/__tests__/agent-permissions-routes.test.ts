@@ -732,6 +732,74 @@ describe.sequential("agent permission routes", () => {
     );
   }, 20_000);
 
+  it("passes wakeReason and hasResult filters to heartbeat list and version key", async () => {
+    mockHeartbeatService.listVersionKey.mockResolvedValue('"vk-heartbeat-runs:filtered"');
+    mockHeartbeatService.list.mockResolvedValue([
+      { id: "run-filtered", contextWakeReason: "issue_commented", resultSummary: "done" },
+    ]);
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(
+        `/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}&wakeReason=issue_commented&hasResult=true`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { id: "run-filtered", contextWakeReason: "issue_commented", resultSummary: "done" },
+    ]);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+      undefined,
+      false,
+      expect.any(String),
+      "issue_commented",
+      true,
+    );
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+      undefined,
+      { summary: false, wakeReason: "issue_commented", hasResult: true },
+    );
+  }, 20_000);
+
+  it("filters heartbeat runs by wakeReason and hasResult", async () => {
+    mockHeartbeatService.listVersionKey.mockResolvedValue("vk-filtered");
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-with-result", resultJson: { summary: "ok" } }]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?wakeReason=issue_commented&hasResult=true&agentId=agent-1`),
+    );
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      false,
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      "issue_commented",
+      true,
+    );
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      companyId,
+      "agent-1",
+      undefined,
+      { summary: false, wakeReason: "issue_commented", hasResult: true },
+    );
+  });
+
   it("redacts env values in agent mutation responses", async () => {
     const plaintextValue = "mutation-value-must-not-leak";
     const storedAgent = {

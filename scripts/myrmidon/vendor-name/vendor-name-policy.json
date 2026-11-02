@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "comment": [
+    "Vendor-name policy of the 1.7 rebrand (REBRAND F). Read by",
+    "scripts/myrmidon/vendor-name/check-vendor-name.mjs in CI and by the instance",
+    "settings panel (GET /api/myrmidon/vendor-name-check).",
+    "",
+    "mode: ratchet — the visible count of the built bundle and of the recorded",
+    "response snapshots may not grow above the baseline below. After REBRAND A",
+    "(visible UI strings) and REBRAND B (server texts) have merged, set mode to",
+    "\"strict\" and lower the baselines in the same PR: strict allows only the",
+    "exceptions declared here. Mode precedence: --mode flag, then",
+    "MYRMIDON_VENDOR_NAME_CHECK_MODE, then this field.",
+    "",
+    "baseline: the number of visible vendor-name occurrences (/\\bPaperclip\\b/)",
+    "recorded when this file was last refreshed. Never raise a baseline to make",
+    "CI pass — remove the occurrence or add a reasoned exception instead."
+  ],
+  "tokens": {
+    "visible": "\\bPaperclip\\b",
+    "identifier": "(?i)paperclip"
+  },
+  "mode": "ratchet",
+  "targets": {
+    "bundle": {
+      "path": "ui/dist",
+      "baseline": 27
+    },
+    "snapshots": {
+      "path": "scripts/myrmidon/vendor-name/snapshots",
+      "baseline": 17
+    }
+  },
+  "exceptions": {
+    "comment": [
+      "paths: whole files that may carry the vendor name — the licence and the",
+      "third-party notices, and source maps (a debug artifact, not the shipped",
+      "interface).",
+      "contentPatterns: spans blanked out before counting. The list mirrors the",
+      "allowlist of the source-side guard",
+      "ui/src/lib/myrmidon-branding-guard.myrmidon.test.ts (B1a), extended with the",
+      "attribution the export and licence panels show in every locale",
+      "(\"Base: Paperclip {{version}} (MIT)\"): the vendor's real external services",
+      "(Paperclip Cloud / Labs / EE / Enterprise), the wire identifiers",
+      "X-Paperclip-* and the MIT attribution, plus the legacy \"Paperclip …\"",
+      "recovery-notice sentences that comments stored before the rename still",
+      "carry. A new vendor mention that is not one of these fails the gate —",
+      "extend this list only with a reason, never to silence a leak."
+    ],
+    "paths": [
+      "**/LICENSE",
+      "**/LICENSE.md",
+      "**/LICENSE.txt",
+      "**/NOTICE",
+      "**/NOTICE.md",
+      "**/NOTICE.txt",
+      "**/THIRD-PARTY-NOTICES*",
+      "**/*THIRD_PARTY_NOTICES*",
+      "**/*.map"
+    ],
+    "contentPatterns": [
+      "[Bb]ased on Paperclip",
+      "Paperclip \\{\\{version\\}\\} \\(MIT\\)",
+      "Paperclip\\s+(?:Cloud|Labs|EE|Enterprise)",
+      "X-Paperclip",
+      "Paperclip exhausted the bounded successful-run handoff correction",
+      "Paperclip needs a disposition",
+      "Paperclip could not resolve this issue"
+    ]
+  }
+}

@@ -18,6 +18,7 @@ import { readBotCanarySettings } from "./canary-settings.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { apiServerKeySecretName } from "./profile-ports.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { createUpdateNotifier } from "./update-notify.js";
 
 /**
  * The runtime port over the registered bot container runtime (startup.ts
@@ -96,6 +97,7 @@ function canaryServiceDeps(db: Db): Parameters<typeof botCanaryService>[1] {
     runtime: botCanaryRuntimePort(db),
     logActivity: ((dbArg: unknown, entry: Parameters<typeof logActivity>[1]) =>
       logActivity(dbArg as Db, entry)) as typeof logActivity,
+    notifyUpdate: createUpdateNotifier(db),
   };
 }
 
