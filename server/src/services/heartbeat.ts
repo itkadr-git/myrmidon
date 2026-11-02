@@ -536,7 +536,10 @@ import { toolAccessService } from "./tool-access.js";
 // myrmidon(BOARD-TOOLS-A): agent-assigned runtime MCP selection lives in its own module
 import { resolveAgentAssignedToolSet } from "./agent-assigned-tools.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  IDEMPOTENT_DEPENDENCY_WAKE_STATUSES,
+} from "./issue-dependency-wakeups.js";
 import {
   applyIssueMonitorPolicyTransition,
   buildIssueMonitorClearedPatch,
@@ -32132,6 +32135,27 @@ export function heartbeatService(
             });
           }
 
+          if (
+            opts.idempotencyKey &&
+            opts.idempotencyKey.startsWith("issue_blockers_resolved:")
+          ) {
+            const [existingWake] = await tx
+              .select({ id: agentWakeupRequests.id })
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                  inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+                ),
+              )
+              .limit(1);
+            if (existingWake) {
+              return { kind: "skipped" as const };
+            }
+          }
+
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -32147,8 +32171,13 @@ export function heartbeatService(
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
             })
+            .onConflictDoNothing()
             .returning()
             .then((rows) => rows[0]);
+
+          if (!wakeupRequest) {
+            return { kind: "skipped" as const };
+          }
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;
