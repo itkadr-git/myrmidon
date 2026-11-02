@@ -7764,6 +7764,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/ssh-dry-run",
+  tags: ["companies"],
+  summary: "Dry-run SSH credential validation for server onboarding (no persistence)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/assets/{assetId}/content",
   tags: ["assets"],
