@@ -6,7 +6,7 @@
 import { REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY, REVIEW_ROUTING_PR_KIND_METADATA_KEY } from "@myrmidon/shared";
 
 /** The per-head CI/review state the github.ts resolver reads off GitHub. */
-export type PullRequestHeadCiState = "green" | "not_green" | "unknown";
+export type PullRequestHeadCiState = "green" | "not_green" | "unknown" | "pending";
 export type PullRequestReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "BLOCKED" | null;
 
 export interface PrRef {
@@ -24,12 +24,23 @@ export interface PullRequestHeadState extends PrRef {
   ci: PullRequestHeadCiState;
   reviewDecision: PullRequestReviewDecision;
   fetchFailed: boolean;
+  /** GitHub mergeability, null when GitHub cannot determine it. */
+  mergeable?: boolean | null;
   /** Present when the PR body was read (title, link, author, base for the task text). */
   title?: string | null;
   url?: string | null;
   authorLogin?: string | null;
   baseRef?: string | null;
   labels?: readonly string[];
+}
+
+export function shouldHandOffDeliveringPr(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && head.ci === "green";
+}
+
+/** In-progress work can wait for CI/review once its open PR is conflict-free. */
+export function shouldRouteOpenPrToReview(head: PullRequestHeadState): boolean {
+  return head.open && !head.draft && !head.fetchFailed && head.mergeable === true && (head.ci === "pending" || head.ci === "green");
 }
 
 /** The board-side view of an open pr-routing task, for coverage and supersede. */
@@ -54,14 +65,14 @@ export interface PrRoutedTask {
  */
 export function reviewTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open || head.draft) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === null;
 }
 
 /** The steward trigger: open, green, APPROVED on the current head. */
 export function stewardTaskDueForHead(head: PullRequestHeadState): boolean {
   if (!head.open) return false;
-  if (head.fetchFailed || head.ci !== "green") return false;
+  if (head.fetchFailed || head.ci !== "green" || head.mergeable !== true) return false;
   return head.reviewDecision === "APPROVED";
 }
 

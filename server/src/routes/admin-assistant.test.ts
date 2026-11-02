@@ -2,7 +2,13 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { agents, heartbeatRuns, issues } from "@myrmidon/db";
-import { adminAssistantRoutes, collectClusterHealth, measureDiskSpaceSafe } from "./admin-assistant.js";
+import {
+  adminAssistantRoutes,
+  collectClusterHealth,
+  collectDryRunDiagnostics,
+  DRY_RUN_PROBE_TIMEOUT_MS,
+  measureDiskSpaceSafe,
+} from "./admin-assistant.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 /**
@@ -53,6 +59,70 @@ function mockDb(
       }),
     }),
   };
+}
+
+/** A db mock whose select() returns a builder we can spy on for mutation calls. */
+function mockDbWithMutationTracking(
+  tables: {
+    agents?: unknown[];
+    issues?: unknown[];
+    heartbeats?: unknown[];
+  },
+): { db: any; mutationSpies: { insert: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> } } {
+  const mutationSpies = {
+    insert: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  };
+  const db = {
+    ...mockDb(tables),
+    ...mutationSpies,
+  };
+  return { db, mutationSpies };
+}
+
+/** Actor fixtures for auth tests. */
+const instanceAdminActor: Express.Request["actor"] = {
+  type: "board",
+  userId: "user-admin-1",
+  userEmail: null,
+  source: "session",
+  isInstanceAdmin: true,
+  companyIds: [],
+  memberships: [],
+};
+
+const instanceAdminAgentActor = {
+  type: "agent" as const,
+  agentId: "agent-1",
+  companyId: "company-1",
+  userEmail: null,
+  source: "agent_key" as const,
+  isInstanceAdmin: true,
+  companyIds: ["company-1"],
+  memberships: [],
+};
+
+const nonAdminAgentActor = {
+  type: "agent" as const,
+  agentId: "agent-1",
+  companyId: "company-1",
+  userEmail: null,
+  source: "agent_key" as const,
+  isInstanceAdmin: false,
+  companyIds: ["company-1"],
+  memberships: [],
+};
+
+function buildApp(actor: Express.Request["actor"], db: any) {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.actor = actor;
+    next();
+  });
+  app.use(adminAssistantRoutes(db));
+  app.use(errorHandler);
+  return app;
 }
 
 describe("admin assistant routes and health collection", () => {
@@ -228,6 +298,157 @@ describe("admin assistant routes and health collection", () => {
 
     it("rejects arbitrary disk paths", async () => {
       await expect(measureDiskSpaceSafe("/etc")).rejects.toMatchObject({ status: 400 });
+    });
+  });
+
+  describe("collectDryRunDiagnostics", () => {
+    it("returns an explicitly marked dry_run payload", async () => {
+      const db = mockDb({
+        agents: [{ status: "idle" }, { status: "running" }],
+        issues: [{ status: "todo" }, { status: "done" }],
+        heartbeats: [{ status: "queued" }],
+      });
+
+      const result = await collectDryRunDiagnostics(db);
+
+      expect(result.dry_run).toBe(true);
+      expect(result.timestamp).toBeDefined();
+      expect(Array.isArray(result.probes)).toBe(true);
+      expect(result.probes.length).toBeGreaterThan(0);
+      expect(result.summary.total).toBe(result.probes.length);
+      expect(result.summary.ok).toBe(result.probes.filter((p) => p.status === "ok").length);
+      expect(result.summary.degraded).toBe(result.probes.filter((p) => p.status === "degraded").length);
+    });
+
+    it("never invokes mutating db methods (insert / update / delete)", async () => {
+      const { db, mutationSpies } = mockDbWithMutationTracking({
+        agents: [{ status: "idle" }],
+        issues: [{ status: "todo" }],
+        heartbeats: [{ status: "queued" }],
+      });
+
+      await collectDryRunDiagnostics(db);
+
+      expect(mutationSpies.insert).not.toHaveBeenCalled();
+      expect(mutationSpies.update).not.toHaveBeenCalled();
+      expect(mutationSpies.delete).not.toHaveBeenCalled();
+    });
+
+    it("degrades a probe that exceeds its timeout but keeps the error visible and does not block siblings", async () => {
+      // A probe that never resolves within the timeout window.
+      const hangingDb = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockImplementation((_table: unknown) => {
+            // Return a promise that never settles for the agents table.
+            return new Promise(() => {});
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+
+      const result = await collectDryRunDiagnostics(hangingDb as any, { probeTimeoutMs: 30 });
+
+      const agentsProbe = result.probes.find((p) => p.name === "agents_summary");
+      expect(agentsProbe).toBeDefined();
+      expect(agentsProbe!.status).toBe("degraded");
+      expect(agentsProbe!.error).toBeDefined();
+      expect(agentsProbe!.error).toMatch(/timed out/);
+
+      // Other probes still completed independently.
+      const diskProbe = result.probes.find((p) => p.name === "disk_usage");
+      expect(diskProbe).toBeDefined();
+      expect(diskProbe!.status).toBe("ok");
+
+      // Summary counts reflect the degradation.
+      expect(result.summary.degraded).toBeGreaterThan(0);
+      expect(result.summary.ok).toBeGreaterThan(0);
+    });
+
+    it("degrades a probe that throws and surfaces the error message", async () => {
+      const failingDb = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockImplementation((table: unknown) => {
+            if (table === agents) {
+              return rejectedQuery(new Error("connection reset"));
+            }
+            return queryResult([]);
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+
+      const result = await collectDryRunDiagnostics(failingDb as any);
+
+      const agentsProbe = result.probes.find((p) => p.name === "agents_summary");
+      expect(agentsProbe).toBeDefined();
+      expect(agentsProbe!.status).toBe("degraded");
+      expect(agentsProbe!.error).toMatch(/connection reset/);
+    });
+  });
+
+  describe("adminAssistantRoutes dry-run endpoint", () => {
+    it("requires instance admin for the dry-run diagnostics route", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+
+      const res = await request(app).get("/admin-assistant/dry-run");
+
+      expect(res.status).toBe(403);
+    });
+
+    it("requires instance admin even when a companyId query is present", async () => {
+      const app = buildApp(nonAdminAgentActor, mockDb({}));
+
+      const res = await request(app).get("/admin-assistant/dry-run?companyId=company-1");
+
+      expect(res.status).toBe(403);
+    });
+
+    it("returns 200 with dry_run true and redacted payload for an instance admin", async () => {
+      const db = mockDb({
+        agents: [{ status: "idle" }],
+        issues: [{ status: "todo" }],
+        heartbeats: [{ status: "queued" }],
+      });
+      const app = buildApp(instanceAdminActor, db);
+
+      const res = await request(app).get("/admin-assistant/dry-run");
+
+      expect(res.status).toBe(200);
+      expect(res.body.dry_run).toBe(true);
+      expect(Array.isArray(res.body.probes)).toBe(true);
+      expect(res.body.summary).toBeDefined();
+      // No credential-shaped key should appear unredacted.
+      expect(JSON.stringify(res.body)).not.toMatch(/pcp_/);
+    });
+
+    it("redacts credential-shaped values from probe detail before responding", async () => {
+      // Simulate a probe that accidentally includes a credential-shaped key.
+      const db = mockDb({});
+
+      // Inject a probe whose detail carries an api_key; the route must
+      // redact it before the payload leaves the process.
+      const diagnostics = await collectDryRunDiagnostics(db, {
+        probes: [
+          {
+            name: "leaky_probe",
+            run: async () => ({ api_key: "pcp_secret_value_123", note: "ok" }),
+          },
+        ],
+      });
+
+      // Simulate what the route does: pass through redactSensitive.
+      const { redactSensitive } = await import("../middleware/redact-sensitive.js");
+      const redacted = redactSensitive(diagnostics) as typeof diagnostics;
+
+      expect(JSON.stringify(redacted)).not.toContain("pcp_secret_value_123");
+      expect(JSON.stringify(redacted)).toContain("[REDACTED]");
+      // Non-sensitive fields survive redaction.
+      const leaky = redacted.probes.find((p) => p.name === "leaky_probe");
+      expect((leaky?.detail as Record<string, unknown>).note).toBe("ok");
     });
   });
 });

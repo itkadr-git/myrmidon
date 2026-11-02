@@ -11,29 +11,24 @@
 // answer: the shadow leg can never change the response, block it or time it
 // out; its own failures are caught and recorded in `module_error` only.
 //
-// The corpus port is injected. The hybrid SearchIndex implementation ships in
-// a later part of the corpus module; until a real one is wired, the default
-// implementation is a no-op returning [] — the shadow rows still prove the
-// wiring, and p95 of the module leg reflects the no-op until then.
+// The request path uses the same company-scoped corpus SearchIndex as the MCP facade.
 import { desc } from "drizzle-orm";
 import { corpusShadowLog, type Db } from "@myrmidon/db";
 
 /**
  * The retrieval port the shadow leg calls — structurally the `SearchIndex`
- * interface of the corpus module (`packages/corpus/src/ports.ts`), declared locally so
- * the server does not gain a package dependency before the MCP facade of the
- * corpus module wires it up (part B connects the real implementation here).
+ * The hybrid SearchIndex implementation is wired through the corpus MCP port.
  */
 export type CorpusShadowSearchHit = { chunkId: string };
-export type CorpusShadowSearchQuery = { dataset?: string; text: string };
+export type CorpusShadowSearchQuery = { companyId: string; dataset?: string; text: string };
 export interface CorpusShadowSearch {
   search(query: CorpusShadowSearchQuery): Promise<CorpusShadowSearchHit[]>;
 }
 
-/** The no-op default: part A must not block on the unmerged implementation. */
+/** Fail-closed fallback: report a missing SearchIndex instead of recording fake empty hits. */
 export const noOpCorpusShadowSearch: CorpusShadowSearch = {
   async search() {
-    return [];
+    throw new Error("no-op corpus shadow search is not configured");
   },
 };
 
@@ -44,7 +39,9 @@ export type ShadowSearchCallPlan = {
   query: string;
 };
 
-const DATASET_KEYS = ["dataset", "dataset_name", "dataset_id", "kb", "knowledge_base"];
+// `dataset_ids` is the argument of the live `ragflow_retrieval` tool: an array of RAGFlow
+// dataset ids, of which the shadow leg follows the first one.
+const DATASET_KEYS = ["dataset", "dataset_name", "dataset_id", "kb", "knowledge_base", "dataset_ids", "datasetIds"];
 const QUERY_KEYS = ["query", "question", "text"];
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -164,6 +161,7 @@ export interface CorpusShadowRunner {
    */
   recordShadowCall(input: {
     plan: ShadowSearchCallPlan;
+    companyId: string | null;
     botId: string | null;
     ragflowChunkIds: string[];
     ragflowLatencyMs: number;
@@ -206,6 +204,7 @@ export function createCorpusShadowRunner(deps: {
 
   async function leg(input: {
     plan: ShadowSearchCallPlan;
+    companyId: string | null;
     botId: string | null;
     ragflowChunkIds: string[];
     ragflowLatencyMs: number;
@@ -214,8 +213,13 @@ export function createCorpusShadowRunner(deps: {
     let moduleChunkIds: string[] | null = null;
     let moduleError: string | null = null;
     try {
+      if (!input.companyId) throw new Error("missing company scope for corpus shadow search");
       const hits = await withTimeout(
-        search.search({ dataset: input.plan.dataset ?? undefined, text: input.plan.query }),
+        search.search({
+          companyId: input.companyId,
+          dataset: input.plan.dataset ?? undefined,
+          text: input.plan.query,
+        }),
         timeoutMs,
       );
       moduleChunkIds = hits.map((hit) => hit.chunkId);
@@ -284,6 +288,7 @@ export function createCorpusShadowRunner(deps: {
  */
 export function maybeRecordShadowSearchCall(deps: {
   runner: CorpusShadowRunner;
+  companyId: string | null;
   tool: { name: string; upstreamToolName?: string | null };
   /** Non-null only on the remote MCP leg — the knowledge tools live there. */
   execution: unknown | null;
@@ -301,6 +306,7 @@ export function maybeRecordShadowSearchCall(deps: {
     if (!plan) return;
     deps.runner.recordShadowCall({
       plan,
+      companyId: deps.companyId,
       botId: deps.botId,
       ragflowChunkIds: extractChunkIds(deps.result),
       ragflowLatencyMs: Math.max(0, Math.round(deps.latencyMs)),

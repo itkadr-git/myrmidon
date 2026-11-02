@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
-import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
@@ -109,6 +108,12 @@ function splitMigrationStatements(content: string): string[] {
     .split("--> statement-breakpoint")
     .map((statement) => statement.trim())
     .filter((statement) => statement.length > 0);
+}
+
+function migrationRequiresNonTransactionalExecution(statements: readonly string[]): boolean {
+  return statements.some((statement) => /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+    statement.replace(/^\s*--.*$/gm, "").trim(),
+  ));
 }
 
 export type MigrationState =
@@ -504,20 +509,27 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
+      const statements = splitMigrationStatements(migrationContent);
+      const recordHistory = () => recordMigrationHistoryEntry(
+        sql,
+        qualifiedTable,
+        columnNames,
+        migrationFile,
+        hash,
+        folderMillisByFileName.get(migrationFile) ?? Date.now(),
+      );
+      if (migrationRequiresNonTransactionalExecution(statements)) {
+        // PostgreSQL forbids CREATE INDEX CONCURRENTLY in a transaction.
+        for (const statement of statements) {
           await sql.unsafe(statement);
         }
-
-        await recordMigrationHistoryEntry(
-          sql,
-          qualifiedTable,
-          columnNames,
-          migrationFile,
-          hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
-        );
-      });
+        await runInTransaction(sql, recordHistory);
+      } else {
+        await runInTransaction(sql, async () => {
+          for (const statement of statements) await sql.unsafe(statement);
+          await recordHistory();
+        });
+      }
     }
   } finally {
     await sql.end();
@@ -616,6 +628,9 @@ async function indexExists(
       WHERE n.nspname = 'public'
         AND c.relkind = 'i'
         AND c.relname = ${indexName}
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_index i WHERE i.indexrelid = c.oid AND NOT i.indisvalid
+        )
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
@@ -735,9 +750,10 @@ async function migrationStatementAlreadyApplied(
     );
   }
 
-  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
+  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: CONCURRENTLY)?(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
-    return indexExists(sql, createIndexMatch[1]);
+    const isValid = await indexExists(sql, createIndexMatch[1]);
+    return isValid;
   }
 
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
@@ -1111,30 +1127,14 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   if (initialState.status === "upToDate") return;
 
   if (initialState.reason === "no-migration-journal-empty-db") {
-    const sql = createUtilitySql(url);
-    try {
-      const db = drizzlePg(sql);
-      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
-    } finally {
-      await sql.end();
+    await applyPendingMigrationsManually(url, initialState.pendingMigrations);
+    const finalState = await inspectMigrations(url);
+    if (finalState.status !== "upToDate") {
+      throw new Error(
+        `Failed to bootstrap migrations: ${finalState.pendingMigrations.join(", ")}`,
+      );
     }
-
-    let bootstrappedState = await inspectMigrations(url);
-    if (bootstrappedState.status === "upToDate") return;
-    if (bootstrappedState.reason === "pending-migrations") {
-      const repair = await reconcilePendingMigrationHistory(url);
-      if (repair.repairedMigrations.length > 0) {
-        bootstrappedState = await inspectMigrations(url);
-      }
-      if (bootstrappedState.status === "needsMigrations" && bootstrappedState.reason === "pending-migrations") {
-        await applyPendingMigrationsManually(url, bootstrappedState.pendingMigrations);
-        bootstrappedState = await inspectMigrations(url);
-      }
-    }
-    if (bootstrappedState.status === "upToDate") return;
-    throw new Error(
-      `Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`,
-    );
+    return;
   }
 
   if (initialState.reason === "no-migration-journal-non-empty-db") {
@@ -1194,8 +1194,8 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
       return { migrated: false, reason: "not-empty-no-migration-journal", tableCount };
     }
 
-    const db = drizzlePg(sql);
-    await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    const migrationFiles = await listJournalMigrationFiles();
+    await applyPendingMigrationsManually(url, migrationFiles);
 
     return { migrated: true, reason: "migrated-empty-db", tableCount: 0 };
   } finally {
