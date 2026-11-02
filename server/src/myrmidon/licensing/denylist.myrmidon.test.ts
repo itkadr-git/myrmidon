@@ -118,11 +118,13 @@ describe("deny-list in the licensing check", () => {
     expect(s.warnings.every((w) => w.startsWith("license deny-list ignored"))).toBe(true);
   });
 
-  it("a lower serial than seen is rejected, including after a restart (state file)", () => {
+  it("a lower serial keeps the last accepted list active, including after a restart", () => {
     const s = setup();
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 5 }));
     expect(s.status().reason).toBe("revoked");
     expect(readFileSync(path.join(dir, "license.deny.state"), "utf8").trim()).toBe("5");
+    expect(existsSync(path.join(dir, "license.deny.accepted"))).toBe(true);
+    // A stale list that revokes nobody must not un-revoke lic-1.
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 4 }));
     expect(s.status().reason).toBe("ok");
     expect(s.warnings.some((w) => w.includes("lower than the seen 5"))).toBe(true);
@@ -131,6 +133,29 @@ describe("deny-list in the licensing check", () => {
     expect(fresh.revoked({ licenseId: "lic-1" })).toBe(false);
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 6 }));
     expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
+  });
+
+  it("rollback without a stored accepted list fails closed with denylist_rollback_no_cache", () => {
+    const s = setup();
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 5 }));
+    expect(s.status().reason).toBe("ok");
+    rmSync(path.join(dir, "license.deny.accepted"));
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 4 }));
+    const freshWarnings: string[] = [];
+    const fresh = createDenyListReader({ env: () => s.env, trustedKeys: [s.k.publicKey], warn: (m) => freshWarnings.push(m) });
+    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
+    expect(freshWarnings.some((w) => w.includes("denylist_rollback_no_cache"))).toBe(true);
+  });
+
+  it("a higher serial replaces the stored accepted list", () => {
+    const s = setup();
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 5 }));
+    expect(s.status().reason).toBe("revoked");
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 6 }));
+    expect(s.status().reason).toBe("ok");
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 5 }));
+    const fresh = createDenyListReader({ env: () => s.env, trustedKeys: [s.k.publicKey] });
+    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(false);
   });
 
   it("without a state file any valid list is accepted and its serial is remembered; the state path is overridable", () => {
