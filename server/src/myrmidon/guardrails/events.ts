@@ -189,15 +189,13 @@ export async function listGuardrailEvents(
   if (filters.agentId || filters.agent) conditions.push(eq(guardrailEvents.agentId, filters.agentId ?? filters.agent!));
   if (filters.decision) conditions.push(eq(guardrailEvents.decision, filters.decision));
   return db
-    .select({
-      ...guardrailEvents,
-      agent: guardrailEvents.agentId,
-      ts: guardrailEvents.occurredAt,
-    })
+    .select()
+    .from(guardrailEvents)
     .where(and(...conditions))
     .orderBy(desc(guardrailEvents.occurredAt))
     .limit(options.limit)
-    .offset(options.offset);
+    .offset(options.offset)
+    .then((rows) => rows.map((row) => ({ ...row, agent: row.agentId, ts: row.occurredAt })));
 }
 
 /**
