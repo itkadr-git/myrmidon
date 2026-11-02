@@ -998,7 +998,7 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
   });
 
   it("governed secret-proposal accept: writes intent atomically and rolls back on failure", async () => {
-    const seeded = await seed();
+    const seeded = await seed({ interactionStatus: "pending" });
     const svc = createSecretProposalsService(db);
     const payload: RequestConfirmationSecretProposalPayload = {
       version: 1, proposalId: "prop-tx-test", sourceSecretLabel: "source-label",
@@ -1037,7 +1037,7 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
   });
 
   it("governed secret-proposal accept: enqueue failure + sweep delivery with canonical idempotency", async () => {
-    const seeded = await seed();
+    const seeded = await seed({ interactionStatus: "pending" });
     const svc = createSecretProposalsService(db);
     const payload: RequestConfirmationSecretProposalPayload = {
       version: 1, proposalId: "prop-sweep-test", sourceSecretLabel: "source-label",
