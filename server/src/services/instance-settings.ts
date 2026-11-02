@@ -98,6 +98,8 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
+import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 // myrmidon(1.7 LOCALE-UPLOAD E.1, OPE-9645): keep custom uploaded locales across vendor writes of `general`
 import { preserveCustomLocalesGeneralKey } from "../myrmidon/locale-upload/settings.js";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
