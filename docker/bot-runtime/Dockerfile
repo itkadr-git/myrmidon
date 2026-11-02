@@ -357,12 +357,18 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
 # key-based ssh from a bot (-i <tmp key>, -o UserKnownHostsFile=<writable dir>).
 # jq: bots pipe JSON API responses (board, shop, ads APIs) through it in shell
 # steps; it is a small text tool, not a media tool.
+# gh (OPE-10494): the GitHub CLI for `gh pr view` etc. — every bot variant
+# (runtime, runtime-node, runtime-dev) needs it, not just the dev variant; the
+# github-launcher wrapper in packages/adapter-utils/src/github-launcher.ts
+# stages a per-run shim that execs the real `gh` binary, so the base image
+# must actually ship one.
 # No media tools (ffmpeg, yt-dlp, ...): forbidden by docs/myrmidon/CONVENTIONS.md §8
 # and out of scope — media handling is a separate service outside this image.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gh \
     git \
     jq \
     openssh-client \
@@ -563,6 +569,8 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import os, sys; real = os.path.realpath
 
 # /health needs no auth (unlike /v1/capabilities, which is Bearer-gated) —
 # see docker/bot-runtime/README.md and gateway/platforms/api_server.py.
+# The gateway starts before session retention. Keep this window for image and
+# process startup only; state.db size must not affect health.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${API_SERVER_PORT}/health" || exit 1
 

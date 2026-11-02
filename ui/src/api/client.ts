@@ -1,5 +1,6 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { authSessionRecovery } from "@/lib/auth-session-recovery";
 
 const BASE = "/api";
 
@@ -43,6 +44,10 @@ function applyObservabilityHeaders(headers: Headers) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (authSessionRecovery.isSessionExpired()) {
+    throw new ApiError("Session expired", 401, { error: "Session expired" });
+  }
+
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
   if (!(body instanceof FormData) && !headers.has("Content-Type")) {
@@ -59,6 +64,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const errorBody = await res.json().catch(() => null);
     const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, errorBody);
     if (recovery) return recovery;
+    authSessionRecovery.handleUnauthorized(res.status, errorBody);
     throw new ApiError(
       (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
       res.status,
@@ -83,6 +89,10 @@ interface InflightGet {
 }
 
 const inflightGets = new Map<string, InflightGet>();
+
+authSessionRecovery.onUnauthorized(() => {
+  inflightGets.clear();
+});
 
 function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const signal = options?.signal;

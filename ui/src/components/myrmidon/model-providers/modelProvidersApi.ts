@@ -22,6 +22,8 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
 ] as const;
 
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
@@ -97,6 +99,7 @@ export interface PoolAccountChannelView {
   models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
+  error?: string | null;
   windows: {
     primary: PoolAccountLimitWindow | null;
     secondary: PoolAccountLimitWindow | null;
@@ -104,7 +107,6 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
-  error?: string | null;
 }
 
 export interface PoolAccountRoleSignal {
@@ -126,6 +128,13 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    nextResetAt: number | null;
+  };
 }
 
 export interface LitellmChannelView {

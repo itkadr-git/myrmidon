@@ -507,6 +507,8 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     // default and refuses without its inputs. No BOARD_COMPANY_ID here, so the
     // walked path list stays company-free.
     "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+    "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+    "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
     `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
     "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
     "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",

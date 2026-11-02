@@ -1538,6 +1538,23 @@ describe("mapFinalResultForTest", () => {
     expect(resultJson.gatewayCallIdsTruncated).toBe(false);
   });
 
+  it("keeps a completed run with output free of an error message", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-completed",
+        status: "completed",
+        payload: { status: "completed", output: "Задача сделана, PR открыт." },
+      },
+      outputChunks: ["Задача сделана, PR открыт."],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1692,6 +1709,18 @@ describe("mapFinalResultForTest", () => {
         "Server (đôi khi) quá tải vì số lượng người dùng lớn, vui lòng retry! | The server is (sometimes) overloaded due to high user traffic. Please retry!",
       ),
     ).toBe(true);
+  });
+
+  it("detects the OPE-10494 bilingual maintenance / resource-exhaustion reply", () => {
+    // The exact provider text observed 01.11 on adm-architect runs:
+    // Vietnamese half, English half, and the slash-joined form.
+    for (const text of [
+      "Tạm bảo trì vì hết tài nguyên…",
+      "Temporarily under maintenance due to resource exhaustion…",
+      "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…",
+    ]) {
+      expect(isProviderErrorAsContent(text)).toBe(true);
+    }
   });
 
   it("does not treat an overload-like tool result as a provider error", () => {

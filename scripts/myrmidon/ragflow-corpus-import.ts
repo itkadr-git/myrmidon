@@ -13,6 +13,7 @@ import {
   DEFAULT_EMBEDDING_CONCURRENCY,
   DEFAULT_EMBEDDING_DIMENSIONS,
   DEFAULT_EMBEDDING_MODEL,
+  dryRunRagflowImport,
   importRagflowCorpus,
   type CorpusImportTarget,
 } from "@myrmidon/corpus";
@@ -136,10 +137,46 @@ async function createLiteLlmEmbedder(options: {
 }
 
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const isDryRun = args.includes("--dry-run");
+  const isHelp = args.includes("--help") || args.includes("-h");
+
+  if (isHelp) {
+    process.stdout.write(`RAGFlow-to-Corpus Import CLI
+
+Usage:
+  node dist/scripts/ragflow-corpus-import.js [--dry-run]
+
+Options:
+  --dry-run   Read-only preflight: report source datasets, documents, chunks, and existing embedding coverage without writing or embedding
+  --help, -h  Display this help message
+
+Environment variables (names only):
+  RAGFLOW_BASE_URL              RAGFlow instance base URL (required)
+  RAGFLOW_API_KEY               RAGFlow API key (required)
+  DATABASE_URL                  Target PostgreSQL database URL (required)
+  CORPUS_COMPANY_ID             Company ID to import into (required)
+  LITELLM_BASE_URL              LiteLLM base URL (required for import, not needed for --dry-run)
+  LITELLM_API_KEY               LiteLLM API key (required for import, not needed for --dry-run)
+  CORPUS_EMBEDDING_MODEL        Embedding model name (default: ${DEFAULT_EMBEDDING_MODEL})
+  CORPUS_EMBEDDING_DIMENSIONS   Embedding dimensions (default: ${DEFAULT_EMBEDDING_DIMENSIONS})
+  CORPUS_IMPORT_BATCH_SIZE      Chunk batch size (default: ${DEFAULT_EMBEDDING_BATCH_SIZE})
+  CORPUS_IMPORT_CONCURRENCY     Embedding concurrency (default: ${DEFAULT_EMBEDDING_CONCURRENCY})
+  CORPUS_CHUNK_COUNT_TOLERANCE  Chunk count tolerance ratio (default: 0.01)
+`);
+    return;
+  }
+
   const env = process.env;
-  const required = ["RAGFLOW_BASE_URL", "RAGFLOW_API_KEY", "DATABASE_URL", "CORPUS_COMPANY_ID", "LITELLM_BASE_URL", "LITELLM_API_KEY"] as const;
+  const baseRequired = ["RAGFLOW_BASE_URL", "RAGFLOW_API_KEY", "DATABASE_URL", "CORPUS_COMPANY_ID"] as const;
+  const required = isDryRun
+    ? baseRequired
+    : ([...baseRequired, "LITELLM_BASE_URL", "LITELLM_API_KEY"] as const);
+
   const missing = required.filter((key) => !env[key]);
-  if (missing.length > 0) throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  }
 
   const dbUrl = env.DATABASE_URL!;
   const db = createDb(dbUrl);
@@ -149,17 +186,37 @@ async function main(): Promise<void> {
     if (dimensions !== DEFAULT_EMBEDDING_DIMENSIONS) {
       throw new Error(`Corpus storage requires ${DEFAULT_EMBEDDING_DIMENSIONS}-dimension embeddings`);
     }
+
     const source = createRagflowSource({ baseUrl: env.RAGFLOW_BASE_URL!, apiKey: env.RAGFLOW_API_KEY! });
+    const target = createDatabaseTarget(db);
+    const startedAt = Date.now();
+
+    if (isDryRun) {
+      const result = await dryRunRagflowImport({
+        source,
+        target,
+        companyId: env.CORPUS_COMPANY_ID!,
+        embeddingModel: model,
+        embeddingDimensions: dimensions,
+        chunkCountTolerance: Number(env.CORPUS_CHUNK_COUNT_TOLERANCE ?? 0.01),
+        onProgress(progress) {
+          process.stdout.write(`${JSON.stringify({ ...progress, elapsedMs: Date.now() - startedAt })}\n`);
+        },
+      });
+      process.stdout.write(`${JSON.stringify({ mode: "dry-run", ...result, completedAt: new Date().toISOString() })}\n`);
+      return;
+    }
+
     const embed = await createLiteLlmEmbedder({
       baseUrl: env.LITELLM_BASE_URL!,
       apiKey: env.LITELLM_API_KEY!,
       model,
       dimensions,
     });
-    const startedAt = Date.now();
+
     const summary = await importRagflowCorpus({
       source,
-      target: createDatabaseTarget(db),
+      target,
       embed,
       companyId: env.CORPUS_COMPANY_ID!,
       embeddingModel: model,
@@ -171,7 +228,7 @@ async function main(): Promise<void> {
         process.stdout.write(`${JSON.stringify({ ...progress, elapsedMs: Date.now() - startedAt })}\n`);
       },
     });
-    process.stdout.write(`${JSON.stringify({ ...summary, completedAt: new Date().toISOString() })}\n`);
+    process.stdout.write(`${JSON.stringify({ mode: "import", ...summary, completedAt: new Date().toISOString() })}\n`);
   } finally {
     await closeRegisteredClients(dbUrl);
   }

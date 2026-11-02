@@ -50,6 +50,24 @@ operator's immediate lever: `POST /api/myrmidon/agents/:id/emergency-stop`
 stops them at once. It exists since release 1.1.2 and adds nothing to
 configure.
 
+## Runtime guardrails and fleet isolation (1.7 SETTINGS-TO-UI)
+
+Starting with Myrmidon 1.7, execution safety guardrails and container fleet boundaries can be configured dynamically without restarting the server:
+
+- **Egress traffic control** (`bot_egress_mode`): Controls whether bot container network traffic is unproxied (`off`) or routed through the egress proxy with full request audit logging (`log`).
+- **Tool circuit breaker** (`tool_breaker_*`): Halts tool execution loops automatically when consecutive tool failures cross threshold limits within a rolling time window.
+- **Tool execution timeouts** (`tool_timeout_*`): Enforces maximum tool runtime limits and warns on slow tool execution.
+- **Host environment filtering** (`run_env_allow`): Restricts which host environment variables can be passed into agent runs.
+- **Container isolation boundaries**:
+  - Image allowlist (`bot_image_allowlist`): Restricts runner containers to verified images.
+  - Mount source allowlist (`bot_mount_sources`): Restricts host directory mounts.
+  - Container GitHub env allowlist (`bot_container_github_env_allowlist`): Restricts sensitive token forwarding.
+  - Autonomous YOLO mode (`bot_yolo`): Toggles whether agents bypass interactive confirmation.
+- **Precedence and UI Confirmation**:
+  - Precedence: `ui` (saved setting) > `env` (environment variable) > `default` (built-in default).
+  - Updating allowlists or enabling YOLO mode requires explicit confirmation in the UI modal dialog to protect against accidental security degradation.
+  - Full details: [Settings in the interface](Settings-in-the-interface.md#guardrails-panel-instance--general).
+
 ## In detail
 
 - [Autonomy matrix: instructions change control](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/autonomy-matrix-instructions.md)
