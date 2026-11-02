@@ -3660,8 +3660,7 @@ export function issueThreadInteractionService(
           recipientCandidate = { serviceQueue: "default" };
         } else if (
           normalizedData.kind === "suggest_tasks" ||
-          normalizedData.kind === "ask_user_questions" ||
-          normalizedData.kind === "request_confirmation"
+          normalizedData.kind === "ask_user_questions"
         ) {
           // Legacy agent-created interactions are handled by the board queue
           // when no concrete owner can be inferred. Human-only interactions
