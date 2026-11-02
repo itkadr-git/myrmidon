@@ -187,6 +187,18 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  it("ignores a run id header that is not a board run uuid (OPE-10602)", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", "run_964ef567a57342228a9d9c8590fb164e");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board" });
+    expect(res.body.runId).toBeUndefined();
+  });
+
   it("identifies an unexpanded API key variable separately from an invalid JWT", async () => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const app = createApp(db);

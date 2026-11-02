@@ -244,7 +244,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
+    // myrmidon(OPE-10602): only a board heartbeat-run uuid is a run id. A gateway-internal
+    // `run_<hex>` (or any other non-uuid) is ignored here instead of reaching uuid columns
+    // downstream and failing the agent's write with HTTP 500.
+    const rawRunIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
+    const runIdHeader = rawRunIdHeader && isUuidLike(rawRunIdHeader.trim()) ? rawRunIdHeader.trim() : undefined;
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
