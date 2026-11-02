@@ -184,13 +184,66 @@ describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: PATCH the threshold", () => {
     invalidateOwnerActiveChannelSettingsCache();
   });
 
-  it("a body outside the bounds is rejected with 400", async () => {
+  it("a body outside the bounds is rejected with 400 and standard validation error format", async () => {
     invalidateOwnerActiveChannelSettingsCache();
     const { withActor } = harness();
     const adminApp = withActor(admin);
-    await request(adminApp).patch(URL).send({ thresholdMin: 2 }).expect(400);
-    await request(adminApp).patch(URL).send({ thresholdMin: 99999 }).expect(400);
-    await request(adminApp).patch(URL).send({ unknown: 1 }).expect(400);
+
+    const resTooLow = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: 2 })
+      .expect(400);
+    expect(resTooLow.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "too_small",
+        }),
+      ]),
+    });
+
+    const resTooHigh = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: 99999 })
+      .expect(400);
+    expect(resTooHigh.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "too_big",
+        }),
+      ]),
+    });
+
+    const resInvalidType = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: "not-a-number" })
+      .expect(400);
+    expect(resInvalidType.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "invalid_type",
+        }),
+      ]),
+    });
+
+    const resUnknown = await request(adminApp)
+      .patch(URL)
+      .send({ unknown: 1 })
+      .expect(400);
+    expect(resUnknown.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          code: "unrecognized_keys",
+        }),
+      ]),
+    });
+
     invalidateOwnerActiveChannelSettingsCache();
   });
 });
