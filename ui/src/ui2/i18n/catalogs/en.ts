@@ -713,6 +713,30 @@ export type Ui2Catalog = {
           tokens: string;
           unnamed: string;
         },
+        chart: {
+          title: string;
+          empty: string;
+          day: string;
+        },
+        range: {
+          from: string;
+          to: string;
+          preset: {
+            mtd: string;
+            "7d": string;
+            "30d": string;
+            ytd: string;
+            all: string;
+            custom: string;
+          };
+        },
+        issues: {
+          title: string;
+          issue: string;
+          cost: string;
+          runs: string;
+          empty: string;
+        },
         incidents: {
           keepPaused: string;
           raiseAndResume: string;
