@@ -455,6 +455,8 @@ vi.mock("../services/secret-proposals.js", () => ({
 
 vi.mock("../storage/index.js", () => ({
   createStorageServiceFromConfig: vi.fn(() => ({ id: "storage-service" })),
+  // #2296 wired retention runtime gitBundleCleanup to getStorageService
+  getStorageService: vi.fn(() => ({ id: "storage-service" })),
 }));
 
 vi.mock("../services/feedback-share-client.js", () => ({

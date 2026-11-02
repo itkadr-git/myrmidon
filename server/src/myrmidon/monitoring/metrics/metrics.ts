@@ -68,6 +68,7 @@ import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-cla
 import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
+import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
@@ -138,6 +139,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_deferred_issue_execution_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
+  "myrmidon_empty_runs_total",
   "myrmidon_run_duration_seconds",
   "myrmidon_knowledge_on_change_share",
   "myrmidon_knowledge_revision_delay_seconds",
@@ -216,13 +218,16 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
-
   // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
   "myrmidon_readiness_ratio",
   "myrmidon_queue_age_seconds",
   "myrmidon_project_share",
   "myrmidon_starvation_total",
   "myrmidon_claim_rejection_total",
+
+  // myrmidon(1.6.6 OPE-9967): retention compaction timeouts without progress
+  "myrmidon_datastore_retention_consecutive_timeouts",
+  "myrmidon_datastore_retention_timeouts_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -285,6 +290,8 @@ export interface MetricsSnapshotFields {
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
   runsFailedWindow: number;
+  /** Successful empty-response runs in the error window, by agent. */
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
   /** p50/p95 of finished run durations inside the latency window (seconds). */
   runDurationSecondsP50: number | null;
   runDurationSecondsP95: number | null;
@@ -539,6 +546,33 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   };
 }
 
+async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ agentId: string; count: number }>> {
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "succeeded"),
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from issue_work_products
+          where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from activity_log
+          where activity_log.run_id = ${heartbeatRuns.id}
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
+        )`,
+        gte(heartbeatRuns.finishedAt, windowStart),
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+  return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
 export async function readAgentFailedBeforeModel(
   db: Db,
@@ -564,6 +598,7 @@ export async function readAgentFailedBeforeModel(
   } catch {
     return {};
   }
+
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -909,6 +944,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
+  const emptyRunsByAgent = await guarded(
+    "myrmidon_empty_runs_total",
+    () => readEmptyRunsByAgent(deps.db, errorWindowStart),
+    [] as Array<{ agentId: string; count: number }>,
+  );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
   // and names the six families, never kills the scrape.
@@ -1022,6 +1062,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       deferredIssueExecutionOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
+      emptyRunsByAgent,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
       corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
@@ -1293,6 +1334,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
   blocks.push(
     familyBlock(
+      "myrmidon_empty_runs_total",
+      "Successful empty-response heartbeat runs in the scrape error window, by agent.",
+      "gauge",
+      snapshot.emptyRunsByAgent.map(({ agentId, count: total }) =>
+        `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
+    ),
+  );
+  blocks.push(
+    familyBlock(
       "myrmidon_run_duration_seconds",
       "Run duration quantiles (finishedAt - startedAt) over the latency window.",
       "summary",
@@ -1472,6 +1522,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
     ),
   );
   const continuationCounters = continuationDedupeMetrics.read();
+  const retention = datastoreRetentionMetrics.read();
   blocks.push(
     familyBlock(
       "myrmidon_continuation_created_total",
@@ -1484,6 +1535,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Continuation keys suppressed because they were already claimed, cumulative since process start.",
       "counter",
       [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_consecutive_timeouts",
+      "Consecutive context retention passes that timed out without progress.",
+      "gauge",
+      [`myrmidon_datastore_retention_consecutive_timeouts{${R}} ${formatSampleValue(retention.consecutiveTimeouts)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_timeouts_total",
+      "Total context retention passes that timed out without progress, cumulative since process start.",
+      "counter",
+      [`myrmidon_datastore_retention_timeouts_total{${R}} ${formatSampleValue(retention.timeoutsTotal)}`],
     ),
   );
 

@@ -171,6 +171,7 @@ describe("OPE-9476: gateway cooldown and failed-before-model handling", () => {
       process: null,
       scrapeErrors: 0,
       collectedAt: new Date().toISOString(),
+      emptyRunsByAgent: [],
       failedBeforeModel: { "agent-adm": 1 },
     };
 
