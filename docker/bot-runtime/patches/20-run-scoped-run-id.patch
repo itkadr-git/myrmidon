@@ -6,7 +6,7 @@ index a05dcd3..55312d5 100644
      # profile's ``skills/paperclip-managed/`` segment in _run_agent_sync,
      # before the model starts (see tools/run_skills.py).
      paperclip_skills: Optional[List[Dict[str, Any]]] = None
-+    # myrmidon(OPE-10602): the board's own run id for THIS run, carried verbatim
++    # myrmidon(G1): the board's own run id for THIS run, carried verbatim
 +    # from the ``X-Paperclip-Run-Id`` request header (a UUID the board minted
 +    # in heartbeat_runs). ``run.run_id`` is the gateway's internal
 +    # ``run_<hex>`` id — NEVER a board run id — so binding it as
@@ -24,7 +24,7 @@ index a05dcd3..55312d5 100644
                             "Invalid 'paperclip_skills' field: expected a list of {path, name, content} objects",
                             code="invalid_paperclip_skills", status=400)
  
-+    # myrmidon(OPE-10602): the board's run id for this attempt, sent as the
++    # myrmidon(G1): the board's run id for this attempt, sent as the
 +    # ``X-Paperclip-Run-Id`` request header. Must be a UUID (the board stores
 +    # it in heartbeat_runs.id); a malformed header is a 400, same discipline
 +    # as Idempotency-Key below — a board bug must fail loudly, not silently
@@ -46,7 +46,7 @@ index a05dcd3..55312d5 100644
          # materialize into the run profile before the model starts.
 -        paperclip_skills=paperclip_skills_field)
 +        paperclip_skills=paperclip_skills_field,
-+        # myrmidon(OPE-10602): the board's run id for this run — bound as
++        # myrmidon(G1): the board's run id for this run — bound as
 +        # $PAPERCLIP_RUN_ID in _run_agent_sync, NEVER run.run_id (the gateway's
 +        # internal id is not a board UUID).
 +        paperclip_run_id=paperclip_run_id)
@@ -73,7 +73,7 @@ index a05dcd3..55312d5 100644
 +            # unconditionally (contextvars, reset in the finally block) so the
 +            # child-env bridge in tools/environments/local.py overrides the
 +            # stale container-level value for this run's spawns.
-+            # myrmidon(OPE-10602): bind ONLY the board run id the adapter sent
++            # myrmidon(G1): bind ONLY the board run id the adapter sent
 +            # as ``X-Paperclip-Run-Id`` (validated UUID in _handle_runs).
 +            # ``run.run_id`` is the gateway's internal ``run_<hex>`` id and
 +            # must never reach $PAPERCLIP_RUN_ID — rc.29 did exactly that and
@@ -99,7 +99,7 @@ index 899c437..cc13fc6 100644
 +    # every later run — a stale $PAPERCLIP_RUN_ID on an X-Paperclip-Run-Id
 +    # board mutation gets a 409 run-ownership conflict). Only a UUID bound by
 +    # api_server_runs.py from the X-Paperclip-Run-Id request header reaches
-+    # this bridge (OPE-10602); a context outside a run (CLI, tests) binds
++    # this bridge (myrmidon G1); a context outside a run (CLI, tests) binds
 +    # nothing and leaves the inherited value untouched.
 +    try:
 +        from tools.run_id_context import run_id_bound, run_id_env
@@ -137,7 +137,7 @@ index 0000000..637ee3c
 +container-level value, so ``$PAPERCLIP_RUN_ID`` inside any tool call is
 +exactly this run's board run id.
 +
-+myrmidon(OPE-10602): only a UUID is a board run id. The gateway's internal
++myrmidon(G1): only a UUID is a board run id. The gateway's internal
 +``run.run_id`` (``run_<hex>``) must never be bound — binding it was the
 +rc.29 defect that made every agent board mutation fail with HTTP 500
 +(``invalid input syntax for type uuid: "run_..."``). The board now also
@@ -153,7 +153,7 @@ index 0000000..637ee3c
 +# The board run id the board minted for THIS run, or None outside a run context.
 +_RUN_ID: ContextVar[Optional[str]] = ContextVar("PAPERCLIP_RUN_ID_CONTEXT", default=None)
 +
-+# myrmidon(OPE-10602): a board run id is a UUID and nothing else. The
++# myrmidon(G1): a board run id is a UUID and nothing else. The
 +# rc.29 regression shipped the gateway's internal ``run_<hex>`` id through
 +# this context; the strict pattern is the belt, the 400 on a malformed
 +# ``X-Paperclip-Run-Id`` header in _handle_runs is the braces.
@@ -188,7 +188,7 @@ index 0000000..637ee3c
 +    ``reset(token)`` for every entry, so ``reset`` must accept and ignore one
 +    positional argument (the token is already closed over here).
 +
-+    myrmidon(OPE-10602): a non-UUID *run_id* binds NOTHING. The setter is
++    myrmidon(G1): a non-UUID *run_id* binds NOTHING. The setter is
 +    the last line of defence — whatever the caller passes, only a UUID
 +    reaches the contextvar.
 +    """
