@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { systemRoutes } from "./system.js";
 
 function fixture() {
+  let lastFilter = "";
   const projectRows = new Map<string, { companyId: string; env: Record<string, unknown> | null }>([
     ["p1", { companyId: "c1", env: {} }],
     ["p2", { companyId: "c1", env: {} }],
@@ -15,10 +16,10 @@ function fixture() {
       let selected: { companyId?: string; env?: Record<string, unknown> | null } | undefined;
       const chain: any = {
         from: () => chain,
-        where: (condition: any) => { chain.condition = condition; return chain; },
+        where: (condition: any) => { chain.condition = condition; lastFilter = String(condition); return chain; },
         then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
-          const values = [...projectRows.entries()].filter(([id]) => String(chain.condition).includes(id));
-          selected = values.length ? { companyId: values[0]![1].companyId, env: values[0]![1].env } : undefined;
+          const match = [...projectRows.entries()].find(([id]) => lastFilter.includes(id));
+          selected = match ? { companyId: match[1].companyId, env: match[1].env } : undefined;
           return Promise.resolve(selected ? [selected] : []).then(resolve, reject);
         },
       };
@@ -29,8 +30,8 @@ function fixture() {
         set: (value: any) => { chain.value = value; return chain; },
         where: () => chain,
         then: (resolve: (value: unknown) => unknown) => {
-          const target = projectRows.get("p1")!;
-          target.env = chain.value.env;
+          const match = [...projectRows.entries()].find(([id]) => lastFilter.includes(id));
+          if (match) match[1].env = chain.value.env;
           return Promise.resolve([]).then(resolve);
         },
       };
@@ -53,7 +54,7 @@ describe("project auto-update settings API", () => {
     const { app } = fixture();
     const settings = { enabled: true, cron: "0 3 * * 1", durationMinutes: 60, timezone: "Europe/Paris" };
     const put = await request(app).put("/api/projects/p1/system/auto-update-settings").send(settings);
-    expect(put.status).toBe(200);
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
     expect(put.body.settings).toEqual(settings);
     const get = await request(app).get("/api/projects/p1/system/auto-update-settings");
     expect(get.status).toBe(200);
