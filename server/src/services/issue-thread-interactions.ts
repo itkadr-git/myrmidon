@@ -3222,6 +3222,12 @@ export function issueThreadInteractionService(
             .update(issueThreadInteractions)
             .set({
               status: "cancelled",
+              addresseeAgentId: null,
+              routeType: null,
+              addresseeQueue: null,
+              timeoutAt: null,
+              escalationChain: null,
+              escalationLevel: 0,
               result: buildAdministrativeOutcomeResult(
                 row,
                 "addressee_deleted",
@@ -3548,7 +3554,9 @@ export function issueThreadInteractionService(
           projectId: issues.projectId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          responsibleAgentId: issues.responsibleAgentId,
           responsibleUserId: issues.responsibleUserId,
+          createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
           conversationUserId: issues.conversationUserId,
         })
@@ -3611,6 +3619,16 @@ export function issueThreadInteractionService(
           (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
         ) {
           recipientCandidate = { userId: issueContextRow.assigneeUserId };
+        } else if (
+          issueContextRow?.responsibleAgentId &&
+          (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
+        ) {
+          recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
+        } else if (
+          issueContextRow?.createdByAgentId &&
+          (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
+        ) {
+          recipientCandidate = { agentId: issueContextRow.createdByAgentId };
         } else if (policy.effectiveResolverPolicy === "human_only") {
           if (
             issueContextRow?.responsibleUserId &&
@@ -3629,8 +3647,7 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           }
         } else if (
-          (normalizedData.kind === "ask_user_questions" ||
-            normalizedData.kind === "request_confirmation") &&
+          policy.effectiveResolverPolicy !== "human_only" &&
           actor.agentId &&
           actor.agentId === issueContextRow?.assigneeAgentId
         ) {
@@ -3647,16 +3664,14 @@ export function issueThreadInteractionService(
       ) {
         routeType = "operator_action";
       } else if (
-        policy.effectiveResolverPolicy === "human_only"
-      ) {
-        routeType = "human_input";
-      } else if (
         normalizedData.kind === "request_checkbox_confirmation" ||
         normalizedData.kind === "request_item_verdicts"
       ) {
         routeType = "approval";
       } else {
-        routeType = "decision";
+        routeType = policy.effectiveResolverPolicy === "human_only"
+          ? "human_input"
+          : "decision";
       }
 
       let resolvedRecipient: InteractionRecipient;
