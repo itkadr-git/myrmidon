@@ -1442,7 +1442,10 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
       .set("X-Paperclip-Run-Id", agentRunId)
       .send({ assigneeAgentId: fixture.replacementAgentId });
     expect(reassignRes.status).toBe(409);
-    expect(reassignRes.body.error).toBe("chat_binding_agent_locked");
+    expect(reassignRes.body.error).toBe(
+      "Agent assignment cannot change while this task is bound to an external channel",
+    );
+    expect(reassignRes.body.code).toBe("chat_binding_agent_locked");
 
     const endpointRuntime = endpointRuntimeFromContext(endpoint.id, endpoint);
     const initialPostsCount = endpointRuntime.posts.length;
