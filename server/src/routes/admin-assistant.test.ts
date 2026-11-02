@@ -82,6 +82,16 @@ function mockDbWithMutationTracking(
 }
 
 /** Actor fixtures for auth tests. */
+const instanceAdminActor: Express.Request["actor"] = {
+  type: "board",
+  userId: "user-admin-1",
+  userEmail: null,
+  source: "session",
+  isInstanceAdmin: true,
+  companyIds: [],
+  memberships: [],
+};
+
 const instanceAdminAgentActor = {
   type: "agent" as const,
   agentId: "agent-1",
@@ -104,7 +114,7 @@ const nonAdminAgentActor = {
   memberships: [],
 };
 
-function buildApp(actor: Record<string, unknown>, db: any) {
+function buildApp(actor: Express.Request["actor"], db: any) {
   const app = express();
   app.use((req, _res, next) => {
     req.actor = actor;
@@ -338,7 +348,7 @@ describe("admin assistant routes and health collection", () => {
         delete: vi.fn(),
       };
 
-      const result = await collectDryRunDiagnostics(hangingDb, { probeTimeoutMs: 30 });
+      const result = await collectDryRunDiagnostics(hangingDb as any, { probeTimeoutMs: 30 });
 
       const agentsProbe = result.probes.find((p) => p.name === "agents_summary");
       expect(agentsProbe).toBeDefined();
@@ -371,7 +381,7 @@ describe("admin assistant routes and health collection", () => {
         delete: vi.fn(),
       };
 
-      const result = await collectDryRunDiagnostics(failingDb);
+      const result = await collectDryRunDiagnostics(failingDb as any);
 
       const agentsProbe = result.probes.find((p) => p.name === "agents_summary");
       expect(agentsProbe).toBeDefined();
@@ -403,7 +413,7 @@ describe("admin assistant routes and health collection", () => {
         issues: [{ status: "todo" }],
         heartbeats: [{ status: "queued" }],
       });
-      const app = buildApp(instanceAdminAgentActor, db);
+      const app = buildApp(instanceAdminActor, db);
 
       const res = await request(app).get("/admin-assistant/dry-run");
 
