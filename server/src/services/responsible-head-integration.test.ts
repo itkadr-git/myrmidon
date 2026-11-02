@@ -44,7 +44,7 @@ async function waitForQueuedRun(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.wakeupRequestId, wakeupRequestId),
+          eq(heartbeatRuns.id, wakeupRequestId),
         ),
       );
     const matchingRun = runs[0];
@@ -559,7 +559,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
 
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun).toBeDefined();
-      expect(targetRun?.wakeupRequestId).toBe(wakeResult?.id);
+      expect(targetRun?.id).toBe(wakeResult?.id);
 
       // Verify no queued runs for owner or engineer
       const allQueuedRuns = await db
@@ -659,7 +659,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun).toBeDefined();
-      expect(targetRun?.wakeupRequestId).toBe(wakeResult?.id);
+      expect(targetRun?.id).toBe(wakeResult?.id);
     });
 
     it("queued dispatch: defers wake when head is busy and does not fail with 422 responsible_user_unresolved", async () => {
