@@ -68,6 +68,7 @@ import {
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
 import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -29580,6 +29581,8 @@ export function heartbeatService(
     }
   }
 
+  const wakeStormGuard = new WakeStormGuard();
+
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -29647,6 +29650,41 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // myrmidon(1.6.7 WAKE-STORM-GUARD): bound repeated automatic wakes from
+    // one rule/watchdog/trigger before they create durable runs. Manual wakes
+    // remain an explicit operator override. A trip is recorded as an activity
+    // event so operators can see which source was paused.
+    if (!opts.manualUserWake && opts.requestedByActorType !== "user") {
+      const sourceKey = wakeStormSourceKey({
+        source,
+        reason,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+      });
+      const admission = wakeStormGuard.admit(agentId, sourceKey);
+      if (!admission.allowed) {
+        if (admission.tripped) {
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId,
+            action: "heartbeat.wake_storm_guard_tripped",
+            entityType: "agent",
+            entityId: agentId,
+            details: {
+              sourceKey,
+              count: admission.count,
+              limit: wakeStormGuard.settings?.limit,
+              windowMs: wakeStormGuard.settings?.windowMs,
+            },
+          });
+          logger.warn({ agentId, sourceKey, count: admission.count }, "wake storm guard tripped; source paused");
+        }
+        return null;
+      }
+    }
 
     // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
     // automatic wake of a swarm reason that names no existing task must never
