@@ -232,6 +232,7 @@ describe("releaseIssueExecution", () => {
       recovery: createFakeRecovery(),
     });
     await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date(), suppressImmediateRecovery: true });
+
     expect(transaction.cancelDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-1" }));
     expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
     expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
@@ -865,9 +866,10 @@ describe("releaseIssueExecution", () => {
     })];
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      findIssue: vi.fn(async () => ({ ...ISSUE, status })),
     });
     const release = createReleaseIssueExecution({
-      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }),
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }, { ...RUN, agentId: ISSUE.assigneeAgentId! }),
       recovery: createFakeRecovery(),
     });
 
