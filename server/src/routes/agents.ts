@@ -5815,7 +5815,7 @@ function getActorIdentityPart(req: Request): string {
         {
           scopeType: "agent",
           scopeId: agent.id,
-          amount: patchData.budgetMonthlyCents,
+          amount: patchData.budgetMonthlyCents!,
           windowKind: "calendar_month_utc",
         },
         actorUserId,
