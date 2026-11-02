@@ -89,16 +89,20 @@ async function extractIssueFacts(
   }
 
   const blockerMap = new Map(blockerIssues.map((b) => [b.id, b]));
-  const links: LegacyBlockedLinkFact[] = relations.map((r: { issueId: string; relatedIssueId: string; type: string }) => {
-    const blockerIssueId = r.relatedIssueId === issue.id ? r.issueId : r.relatedIssueId;
-    const blocker = blockerMap.get(blockerIssueId);
-    return {
-      type: "issue" as const,
-      relation: r.type,
-      status: blocker?.status ?? "unknown",
-      label: blocker?.identifier ?? blocker?.id ?? blockerIssueId,
-    };
-  });
+  const links: LegacyBlockedLinkFact[] = relations
+    .filter((r: { issueId: string; relatedIssueId: string; type: string }) =>
+      r.type === "blocks" && r.relatedIssueId === issue.id,
+    )
+    .map((r: { issueId: string; relatedIssueId: string; type: string }) => {
+      const blockerIssueId = r.issueId;
+      const blocker = blockerMap.get(blockerIssueId);
+      return {
+        type: "issue" as const,
+        relation: r.type,
+        status: blocker?.status ?? "unknown",
+        label: blocker?.identifier ?? blocker?.id ?? blockerIssueId,
+      };
+    });
 
   const activeBlockerIds = blockerIssues
     .filter((blocker) => !resolvedBlockerStatuses.has(normalized(blocker.status)))
