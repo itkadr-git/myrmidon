@@ -20,7 +20,7 @@ The wake and heartbeat payload subsystem forms the contract between the control 
 
 ## Difference from the intended design
 
-The wake payload is constructed on demand from several tables (issues, issue comments, attachments, interaction records, run continuations) rather than being persisted as a pre-computed event payload. Because database snapshots and delivery payloads have different size constraints, continuation data is decoupled in storage and rejoined at dispatch time. Additionally, task cooling and taskless wake guards were layered on top of the original Paperclip heartbeat as Myrmidon-specific guard filters rather than a native queue-level rate limiter.
+The wake payload is constructed on demand from several tables (issues, issue comments, attachments, interaction records, run continuations) rather than being persisted as a pre-computed event payload. Because database snapshots and delivery payloads have different size constraints, continuation data is decoupled in storage and rejoined at dispatch time. Additionally, task cooling and taskless wake guards were layered on top of the original Myrmidon heartbeat as Myrmidon-specific guard filters rather than a native queue-level rate limiter.
 
 ## Related
 
