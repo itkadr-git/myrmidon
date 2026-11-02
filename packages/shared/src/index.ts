@@ -3059,9 +3059,15 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+export * from "./installed-locales.js";
+
 // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
 export * from "./locale-validator.js";
 export * from "./locale-upload.js";
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
+export * from "./myrmidon-auto-update-window-cron.js";
 
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.

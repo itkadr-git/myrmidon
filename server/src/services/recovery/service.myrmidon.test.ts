@@ -119,6 +119,18 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     return db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
   }
 
+  it("skips terminal issues in recovery reconcile", async () => {
+    const { companyId, issueId } = await seedStrandedIssue({ errorCode: "setup_failed" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const report = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(report.issueIds).not.toContain(issueId);
+    expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("done");
+  }, 30_000);
+
   it("does not escalate while the agent is only paused and the retry budget is not exhausted", async () => {
     const { issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 0 });
 
