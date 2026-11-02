@@ -13,7 +13,7 @@
 // query returns to the partial index.
 
 import { readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
@@ -98,6 +98,15 @@ describe("heartbeat_runs context compact index migration (static checks)", () =>
     ) as { tables: Record<string, { indexes: Record<string, { name: string }> }> };
     const runsIndexes = snapshot.tables["public.heartbeat_runs"]?.indexes ?? {};
     expect(runsIndexes[INDEX_NAME]?.name).toBe(INDEX_NAME);
+  });
+
+  it("computes the expected sha256 migration hash for journal recording", async () => {
+    const migrationSql = await readFile(
+      fileURLToPath(new URL(MIGRATION_FILE, import.meta.url)),
+      "utf8",
+    );
+    const hash = createHash("sha256").update(migrationSql).digest("hex");
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
