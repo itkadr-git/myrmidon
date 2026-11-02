@@ -101,11 +101,15 @@ describeDb("closed-task git-bundle retention cleanup", () => {
     expect(await db.select().from(issueAttachments).where(eq(issueAttachments.id, fixture.attachmentId))).toHaveLength(0);
   });
 
-  it("does not classify unrelated metadata as a git bundle", async () => {
-    const fixture = await seed({ ageDays: 4, filename: "archive.zip", contentType: "application/zip" });
+  it("matches bundle attachment filenames and rejects unrelated metadata", async () => {
+    const fixture = await seed({ ageDays: 4, filename: "runner-123.bundle", contentType: "application/octet-stream" });
     const storage = makeStorage(async () => undefined);
+    expect(await createClosedTaskGitBundleCleanup({ db, storage, now: () => NOW })()).toEqual({ deleted: 1, failed: 0 });
+    expect(storage.deleteObject).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.id, fixture.attachmentId))).toHaveLength(0);
+
+    const unrelated = await seed({ ageDays: 4, filename: "archive.zip", contentType: "application/zip" });
     expect(await createClosedTaskGitBundleCleanup({ db, storage, now: () => NOW })()).toEqual({ deleted: 0, failed: 0 });
-    expect(storage.deleteObject).not.toHaveBeenCalled();
-    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.id, fixture.attachmentId))).toHaveLength(1);
+    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.id, unrelated.attachmentId))).toHaveLength(1);
   });
 });
