@@ -276,6 +276,12 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # variable identifiers) must not be false-masked into `***`, while long high-entropy
 # secrets (e.g. `Bearer ghp_...` 36+ chars) are masked safely without syntax corruption.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/auth_header_redact_templates.py /opt/hermes-src
+# myrmidon(OPE-10602): behaviour regression for 20-run-scoped-run-id.patch after the
+# rc.29 defect: the gateway's internal ``run_<hex>`` id must never reach $PAPERCLIP_RUN_ID
+# (it 500ed every agent board mutation with ``invalid input syntax for type uuid``), only
+# the X-Paperclip-Run-Id header's UUID does, and a run's child env sees exactly its own
+# board run id.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_id_context_scope.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
