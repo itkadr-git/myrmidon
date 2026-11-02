@@ -39,6 +39,12 @@ describe("isThrottleCandidateIssueRewake", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
   });
 
+  it("throttles automatic loop-forming wake reasons (OPE-10582 п.2)", () => {
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "swarm_matched" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "idle_pickup" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_disposition_repair" })).toBe(true);
+  });
+
   it("keeps agent comments throttle-eligible without granting human comment privileges", () => {
     expect(isThrottleCandidateIssueRewake({
       ...base,
