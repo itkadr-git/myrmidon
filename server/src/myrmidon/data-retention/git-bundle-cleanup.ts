@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, lte, or } from "drizzle-orm";
+import { and, eq, ilike, inArray, isNotNull, lte, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { assets, issueAttachments, issues } from "@myrmidon/db";
 import type { StorageService } from "../../storage/types.js";
@@ -6,6 +6,17 @@ import type { StorageService } from "../../storage/types.js";
 /** Closed-task git bundles are registered with this immutable asset filename. */
 export const GIT_BUNDLE_ATTACHMENT_FILENAME = "workspace.bundle";
 export const CLOSED_TASK_GIT_BUNDLE_GRACE_DAYS = 2;
+export const GIT_BUNDLE_CONTENT_TYPES = [
+  "application/octet-stream",
+  "application/vnd.git.bundle",
+  "application/x-git-bundle",
+] as const;
+
+export function isGitBundleFilename(filename: string | null | undefined): boolean {
+  if (!filename) return false;
+  const lower = filename.trim().toLowerCase();
+  return lower === GIT_BUNDLE_ATTACHMENT_FILENAME || lower.endsWith(".bundle");
+}
 
 export interface GitBundleCleanupResult {
   deleted: number;
@@ -21,7 +32,7 @@ export interface GitBundleCleanupDeps {
 /**
  * Delete storage-backed git bundle attachments after their issue has been
  * closed for the grace period. Storage is deleted first; a failed provider
- * operation leaves the database row for the next idempotent retry.
+ * operation leaves the database rows for the next idempotent retry.
  */
 export function createClosedTaskGitBundleCleanup(deps: GitBundleCleanupDeps) {
   const now = deps.now ?? (() => new Date());
@@ -34,6 +45,7 @@ export function createClosedTaskGitBundleCleanup(deps: GitBundleCleanupDeps) {
       .select({
         attachmentId: issueAttachments.id,
         companyId: issueAttachments.companyId,
+        assetId: assets.id,
         objectKey: assets.objectKey,
       })
       .from(issueAttachments)
@@ -44,11 +56,11 @@ export function createClosedTaskGitBundleCleanup(deps: GitBundleCleanupDeps) {
           inArray(issues.status, ["done", "cancelled"]),
           isNotNull(issues.completedAt),
           lte(issues.completedAt, cutoff),
-          eq(assets.originalFilename, GIT_BUNDLE_ATTACHMENT_FILENAME),
           or(
-            eq(assets.contentType, "application/octet-stream"),
-            eq(assets.contentType, "application/vnd.git.bundle"),
+            eq(assets.originalFilename, GIT_BUNDLE_ATTACHMENT_FILENAME),
+            ilike(assets.originalFilename, "%.bundle"),
           ),
+          inArray(assets.contentType, [...GIT_BUNDLE_CONTENT_TYPES]),
         ),
       );
 
@@ -63,6 +75,14 @@ export function createClosedTaskGitBundleCleanup(deps: GitBundleCleanupDeps) {
             and(
               eq(issueAttachments.id, candidate.attachmentId),
               eq(issueAttachments.companyId, candidate.companyId),
+            ),
+          );
+        await deps.db
+          .delete(assets)
+          .where(
+            and(
+              eq(assets.id, candidate.assetId),
+              eq(assets.companyId, candidate.companyId),
             ),
           );
         deleted += 1;

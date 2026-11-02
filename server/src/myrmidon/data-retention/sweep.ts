@@ -552,7 +552,12 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
       ? await deps.gitBundleCleanup().catch(() => undefined)
       : undefined;
     const didWork =
-      (bundleCleanup !== undefined) ||
+      Boolean(
+        bundleCleanup &&
+        typeof bundleCleanup === "object" &&
+        "deleted" in bundleCleanup &&
+        Number((bundleCleanup as { deleted: unknown }).deleted) > 0,
+      ) ||
       results.runs.deleted > 0 ||
       results.activity.deleted > 0 ||
       results.access.deleted > 0;
