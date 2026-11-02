@@ -8,6 +8,7 @@
 // compile — the whole suite is red on the change's absence.
 
 import { describe, expect, it } from "vitest";
+import { selectForagingCandidatePort } from "./candidate-routing.js";
 import {
   nullForagingCandidatePort,
   skillKeyForRole,
@@ -166,6 +167,32 @@ function portWith(db: FakeDb, log?: { warn(obj: unknown, msg: string): void }) {
 }
 
 describe("the foraging candidate port", () => {
+  it("routes role-targeted findings to SKILL-LIFECYCLE candidate", async () => {
+    const db = fakeDb();
+    const skillPort = portWith(db);
+    const knowledgePort = {
+      available: true,
+      createFindingCandidate: async () => "knowledge-proposal",
+    };
+    const candidatePort = selectForagingCandidatePort(skillPort, knowledgePort);
+    const ref = await candidatePort.createFindingCandidate(candidateInput());
+
+    expect(ref).toBe("skill-1");
+    expect(db.records.get(ref!)?.state).toBe("candidate");
+    expect(db.revisions[0].fileInventory[0].content).toContain("social-media-marketing");
+  });
+
+  it("uses KNOWLEDGE when the finding has no target skill", async () => {
+    const db = fakeDb();
+    const skillPort = portWith(db);
+    const knowledgePort = {
+      available: true,
+      createFindingCandidate: async () => "knowledge-proposal",
+    };
+    const candidatePort = selectForagingCandidatePort(skillPort, knowledgePort);
+    await expect(candidatePort.createFindingCandidate(candidateInput({ skillKey: "" }))).resolves.toBe("knowledge-proposal");
+  });
+
   it("is available and turns a finding into a candidate through the real lifecycle", async () => {
     const db = fakeDb();
     const port = portWith(db);
