@@ -114,6 +114,7 @@ function appFor(
     settings?: ReturnType<typeof fakeSettings>;
     store?: FakeStore;
     computeUsage?: (
+      deps: unknown,
       companyId: string,
       level: any,
       ref: string,
