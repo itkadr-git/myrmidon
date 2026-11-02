@@ -41,6 +41,7 @@
 //      state machine) still apply on top.
 
 import express, { Router, type Request, type Response } from "express";
+import { createHash } from "node:crypto";
 import type { Db } from "@myrmidon/db";
 import {
   knowledgeApproveSchema,
@@ -70,6 +71,13 @@ import { assertRuleWriteGrade, builtinCasteSensitivity, type CasteSensitivityRes
 import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { KnowledgeDomainError } from "./domain.js";
 import type { KnowledgeItemStatus, KnowledgeKind } from "./domain.js";
+import {
+  countKnowledgeDeviations,
+  findStaleUnassignedDeviations,
+  listKnowledgeDeviations,
+  recordKnowledgeDeviation,
+  resolveKnowledgeDeviation,
+} from "./deviations.js";
 import { createKnowledgeModule, type KnowledgeModule } from "./service.js";
 import { guardrailsInjectionEnabled, injectionScoreThreshold, scanForInjection } from "../guardrails/injection.js";
 import { dbAutonomyStore, agentRoleFromDb } from "../autonomy/store.js";
@@ -81,6 +89,8 @@ import { dbAutonomyStore, agentRoleFromDb } from "../autonomy/store.js";
 export interface KnowledgeRoutesDeps {
   /** Bind the store to the path company. Tests inject a stub module. */
   moduleFor(companyId: string): KnowledgeModule;
+  /** Database handle for the meta/deviations ledger (1.6.6 KNOWLEDGE-ON-CHANGE). */
+  db?: Db;
   /**
    * The autonomy matrix resolver. Production reads `dbAutonomyStore(db)`;
    * tests inject a fixed matrix. Returns null when the matrix store is
@@ -326,6 +336,60 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     }
   });
 
+  // -------------------------------------------------- meta/deviations (1.6.6)
+
+  /** Read path of the deviation ledger: list + counter, nest-scoped. */
+  router.get("/myrmidon/companies/:companyId/knowledge/deviations", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_search");
+    const includeResolved = req.query.includeResolved === "true";
+    const items = await listKnowledgeDeviations(deps.db, companyId, { includeResolved });
+    const open = await countKnowledgeDeviations(deps.db, companyId);
+    const stale = await findStaleUnassignedDeviations(deps.db, companyId, deps.now?.() ?? new Date());
+    res.json({ items, open, alert: stale.length > 0 ? { unassignedOver24h: stale.length, items: stale } : null });
+  });
+
+  /** Record a wiki-vs-reality mismatch (page, was, became, howVerified, task). */
+  router.post("/myrmidon/companies/:companyId/knowledge/deviations", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_propose");
+    const actor = actorOf(req);
+    const body = req.body as {
+      page?: string;
+      was?: string;
+      became?: string;
+      howVerified?: string;
+      task?: string | null;
+      nestId?: string;
+    };
+    for (const [field, value] of [["page", body.page], ["was", body.was], ["became", body.became], ["howVerified", body.howVerified]] as const) {
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw unprocessable(`deviation.${field} is required`, { code: "knowledge_deviation_invalid" });
+      }
+      assertCleanWrite(value, `deviation.${field}`);
+    }
+    const deviation = await recordKnowledgeDeviation(deps.db, {
+      companyId,
+      nestId: body.nestId ?? companyId,
+      page: body.page!,
+      was: body.was!,
+      became: body.became!,
+      howVerified: body.howVerified!,
+      task: body.task ?? null,
+      createdByAgentId: actor.actorType === "agent" ? (actor.agentId ?? actor.actorId ?? null) : null,
+      createdByUserId: actor.actorType !== "agent" ? (actor.actorId ?? null) : null,
+    });
+    res.status(201).json({ deviation });
+  });
+
+  router.post("/myrmidon/companies/:companyId/knowledge/deviations/:id/resolve", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_propose");
+    const resolved = await resolveKnowledgeDeviation(deps.db, companyId, req.params.id as string);
+    if (!resolved) throw notFound(`No knowledge deviation ${JSON.stringify(req.params.id)} in this company.`);
+    res.json({ deviation: resolved });
+  });
+
   router.get("/myrmidon/companies/:companyId/knowledge/items", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_list");
@@ -334,10 +398,23 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     try {
       const items = await mod.listItems({
         kind: query.kind,
-        status: query.status as KnowledgeItemStatus | undefined,
+        // The default catalogue is the published tree. Drafts and archived
+        // records remain available through an explicit status filter.
+        status: (query.status ?? "published") as KnowledgeItemStatus,
         folderPrefix: query.space,
       });
-      res.json({ items: items.slice(0, query.limit ?? 50) });
+      // The default catalogue is published-only; explicit status queries can
+      // request drafts, archived, or superseded records. Do not truncate the
+      // published tree unless the caller explicitly supplies a limit.
+      const body = JSON.stringify({ items: query.limit ? items.slice(0, query.limit) : items });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -348,7 +425,15 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_read");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ revisions: await mod.listRevisions(itemIdOrSlug(req)) });
+      const body = JSON.stringify({ revisions: await mod.listRevisions(itemIdOrSlug(req)) });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -373,7 +458,15 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     await assertKnowledgeToolAccess(req, "knowledge_backlinks");
     const mod = deps.moduleFor(companyId);
     try {
-      res.json({ backlinks: await mod.backlinks(itemIdOrSlug(req)) });
+      const body = JSON.stringify({ backlinks: await mod.backlinks(itemIdOrSlug(req)) });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -390,7 +483,21 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const idOrSlug = itemIdOrSlug(req);
       const item = await mod.get(idOrSlug);
       if (!item) throw notFound(`No knowledge item ${JSON.stringify(idOrSlug)} in this company.`);
-      res.json({ item });
+      // Return the complete published read model in one request. The UI can
+      // render immediately without separately loading revisions and backlinks.
+      const [revisions, backlinks] = await Promise.all([
+        mod.listRevisions(idOrSlug),
+        mod.backlinks(idOrSlug),
+      ]);
+      const body = JSON.stringify({ item: { ...item, revisions, backlinks } });
+      const etag = `"${createHash("sha256").update(body).digest("base64url")}"`;
+      res.setHeader("Cache-Control", "private, max-age=30, stale-while-revalidate=300");
+      res.setHeader("ETag", etag);
+      if (req.headers["if-none-match"] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.type("application/json").send(body);
     } catch (err) {
       throw toHttpError(err);
     }
@@ -475,6 +582,8 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
           {
             content: req.body.content,
             changeSummary: req.body.changeSummary ?? null,
+            title: req.body.title,
+            summary: req.body.summary,
             sources: req.body.sources,
             force: req.body.force,
             reason: req.body.reason,
@@ -756,6 +865,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   return knowledgeRoutes({
     moduleFor: (companyId) => createKnowledgeModule(db, companyId),
+    db,
     casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     roleForAgent: agentRoleFromDb(db),
     matrixFor: async () => {

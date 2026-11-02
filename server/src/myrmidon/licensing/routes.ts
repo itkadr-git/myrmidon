@@ -3,6 +3,7 @@
 //   GET  /api/licensing/install-id    { installId, source }
 //   GET  /api/licensing/status        install id + request blob + license state per closed module
 //   POST /api/licensing/license       { value } save a license where the modules read it
+//   POST /api/licensing/deny-list     { value } save a signed deny-list where the modules read it
 //
 // The same router is also mounted under /api/myrmidon/licensing (the fork
 // rule for new API paths). Every route is instance-admin only. The board only
@@ -36,12 +37,20 @@ import {
   writeLicenseFile,
   type HostShareOptions,
 } from "./client-license.js";
-import { createDenyListReader } from "./denylist.js";
+import {
+  createDenyListReader,
+  denyListPath,
+  highestAcceptedDenySerial,
+  parseDenyList,
+  writeDenyListFile,
+  type DenyList,
+} from "./denylist.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 // `value`, not `license`: the request logger redacts `value` in 4xx lines, so
 // a refused license never reaches a log.
 const saveLicenseBody = z.object({ value: z.string().min(1).max(MAX_LICENSE_CHARS) }).strict();
+const saveDenyListBody = z.object({ value: z.string().min(1).max(1_000_000) }).strict();
 
 const SAVE_REFUSALS: Partial<Record<VerifyReason, string>> = {
   bad_format: "This is not a license: expected one line starting with MYR1.",
@@ -197,6 +206,41 @@ export function licensingRoutes(options: LicensingRoutesOptions): Router {
           },
           "module license saved",
         );
+        res.json(await clientState(null));
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    router.post(`${prefix}/deny-list`, instanceAdminOnly, validate(saveDenyListBody), async (req, res, next) => {
+      try {
+        const text = (req.body as z.infer<typeof saveDenyListBody>).value.trim();
+        let parsed: DenyList;
+        try {
+          parsed = parseDenyList(text, trustedKeys);
+        } catch (err) {
+          throw unprocessable((err as Error).message, { code: "deny_list_invalid" });
+        }
+        const highest = highestAcceptedDenySerial(env(), trustedKeys);
+        if (highest !== null && parsed.serial < highest) {
+          throw conflict(
+            `Deny-list serial ${parsed.serial} is lower than highest accepted serial ${highest}`,
+            { code: "deny_list_rollback" },
+          );
+        }
+        const file = denyListPath(env());
+        try {
+          writeDenyListFile(file, text);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+          logger.warn({ path: file, code }, "licensing: cannot write the deny-list file");
+          throw conflict(`Cannot write the deny-list file ${file} (${code})`, {
+            code: "deny_list_path_unwritable",
+            path: file,
+            errno: code,
+          });
+        }
+        logger.info({ path: file }, "module license deny-list saved");
         res.json(await clientState(null));
       } catch (err) {
         next(err);

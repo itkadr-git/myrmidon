@@ -37,10 +37,15 @@ export interface TaskPrSyncPrFact {
   mergedSha: string | null;
   /** Mergeability state reported by GitHub or external provider. */
   mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
+  baseRef?: string | null;
+  headRef?: string | null;
+  defaultBranch?: string | null;
 }
 
 export interface TaskPrSyncFacts {
   issueStatus: string;
+  issueTitle?: string | null;
+  isReleaseTask?: boolean;
   /** The task's pull_request work products, archived (superseded) rows included; the policy filters them. */
   prs: TaskPrSyncPrFact[];
   /** An explicit, still-open post-deploy gate holds the task (see the sweep's gate check). */
@@ -52,12 +57,15 @@ export type TaskPrSyncNoopReason =
   | "no_pr_products"
   | "pr_still_open"
   | "pr_state_unknown"
-  | "post_deploy_gate_open";
+  | "post_deploy_gate_open"
+  | "inactive_issue";
 
 export type TaskPrSyncDecision =
   | { kind: "settle_done"; mergedSha: string | null; prRefs: string[] }
   | { kind: "return_to_assignee"; closedPrRefs: string[] }
   | { kind: "return_conflict"; conflictPrRefs: string[] }
+  | { kind: "warn_foreign_bot_base"; baseRef: string; prRefs: string[] }
+  | { kind: "non_main_base"; baseRef: string; prRefs: string[]; mergedSha: string | null }
   | { kind: "noop"; reason: TaskPrSyncNoopReason };
 
 /** Terminal statuses the sweep must never rewrite. */
@@ -114,6 +122,51 @@ export function readLastMergedSha(
   return typeof sha === "string" && sha.length > 0 ? sha : null;
 }
 
+export function extractReleasePrefix(title: string): string | null {
+  const match = title.match(/^(\d+\.\d+(?:\.\d+)?)/);
+  return match ? match[1] : null;
+}
+
+export function isReleaseTask(title?: string | null): boolean {
+  if (!title) return false;
+  return Boolean(extractReleasePrefix(title) || title.includes("rel/"));
+}
+
+export function isDeliveringBaseRef(input: {
+  baseRef?: string | null;
+  defaultBranch?: string | null;
+  issueTitle?: string | null;
+  isReleaseTask?: boolean;
+}): boolean {
+  if (input.baseRef == null) return true;
+  const base = input.baseRef.trim();
+  const defaultBranch = input.defaultBranch?.trim() || "main";
+  if (base === defaultBranch || base === "main") {
+    return true;
+  }
+  if (base.startsWith("rel/")) {
+    if (input.isReleaseTask) return true;
+    if (input.issueTitle) {
+      return isReleaseTask(input.issueTitle);
+    }
+  }
+  return false;
+}
+
+export function buildNonMainBaseComment(input: {
+  baseRef: string;
+}): string {
+  return `PR влит в ${input.baseRef}, не в main: нужен PR в main`;
+}
+
+export function buildForeignBotBaseWarningComment(input: {
+  baseRef: string;
+  prRefs: string[];
+}): string {
+  const refs = input.prRefs.length > 0 ? ` ${input.prRefs.join(", ")}` : "";
+  return `PR${refs}: база ${input.baseRef} является чужой веткой bot/*, а не main: измени базу PR на main.`;
+}
+
 /**
  * The decision table.
  *
@@ -128,6 +181,11 @@ export function readLastMergedSha(
  */
 export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
   if (TERMINAL_ISSUE_STATUSES.has(facts.issueStatus)) return noop("terminal_issue");
+  // Inactive queue states may update PR work-product state, but must not auto-close
+  // a task before an assignee starts it. Explicit post-deploy gates remain decisive.
+  if (facts.issueStatus === "todo" || facts.issueStatus === "backlog" || facts.issueStatus === "blocked") {
+    return facts.openPostDeployGate ? noop("post_deploy_gate_open") : noop("inactive_issue");
+  }
 
   const active = facts.prs.filter((pr) => pr.state !== "superseded");
   if (active.length === 0) return noop("no_pr_products");
@@ -141,6 +199,22 @@ export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
     }
   }
 
+  if (facts.issueStatus === "in_review" || facts.issueStatus === "in_progress") {
+    const foreignBotBase = active.filter(
+      (pr) =>
+        (pr.state === "open" || pr.state === "draft") &&
+        Boolean(pr.baseRef && pr.baseRef.startsWith("bot/")),
+    );
+    if (foreignBotBase.length > 0) {
+      const targetPr = foreignBotBase[0]!;
+      return {
+        kind: "warn_foreign_bot_base",
+        baseRef: targetPr.baseRef!,
+        prRefs: foreignBotBase.map(taskPrReference),
+      };
+    }
+  }
+
   if (active.some((pr) => pr.state === "open" || pr.state === "draft")) return noop("pr_still_open");
   if (active.some((pr) => pr.state === "unknown")) return noop("pr_state_unknown");
 
@@ -149,6 +223,26 @@ export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
 
   if (merged.length > 0) {
     if (facts.openPostDeployGate) return noop("post_deploy_gate_open");
+
+    const nonMainMerged = merged.filter(
+      (pr) =>
+        !isDeliveringBaseRef({
+          baseRef: pr.baseRef,
+          defaultBranch: pr.defaultBranch,
+          issueTitle: facts.issueTitle,
+          isReleaseTask: facts.isReleaseTask,
+        }),
+    );
+    if (nonMainMerged.length > 0) {
+      const targetPr = nonMainMerged[0]!;
+      return {
+        kind: "non_main_base",
+        baseRef: targetPr.baseRef ?? "unknown",
+        prRefs: nonMainMerged.map(taskPrReference),
+        mergedSha: targetPr.mergedSha,
+      };
+    }
+
     // Report the newest merge sha the resolver returned as the representative
     // marker; every merged fact keeps its own sha on the work product.
     const mergedSha = [...merged].reverse().find((pr) => pr.mergedSha)?.mergedSha ?? null;
@@ -169,10 +263,20 @@ export function decideTaskPrSync(facts: TaskPrSyncFacts): TaskPrSyncDecision {
  * stored statuses only; the guard that consumes this must not call GitHub.
  */
 export function settlePendingForProducts(
-  products: ReadonlyArray<{ type: string; status: string }>,
+  products: ReadonlyArray<{ type: string; status: string; metadata?: unknown }>,
 ): boolean {
   const prs = products.filter((product) => product.type === "pull_request" && product.status !== "archived");
   if (prs.length === 0) return false;
   if (prs.some((product) => product.status !== "merged" && product.status !== "closed")) return false;
-  return prs.some((product) => product.status === "merged");
+  const mergedPrs = prs.filter((product) => product.status === "merged");
+  if (mergedPrs.length === 0) return false;
+  for (const product of mergedPrs) {
+    const meta = product.metadata && typeof product.metadata === "object" ? product.metadata as Record<string, unknown> : null;
+    const baseRef = typeof meta?.baseRef === "string" ? meta.baseRef : null;
+    const defaultBranch = typeof meta?.defaultBranch === "string" ? meta.defaultBranch : "main";
+    if (baseRef && !isDeliveringBaseRef({ baseRef, defaultBranch })) {
+      return false;
+    }
+  }
+  return true;
 }

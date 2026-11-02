@@ -233,6 +233,13 @@ d("activity_log company/action/created index migration (embedded postgres)", () 
     const idx = await sql`SELECT tablename FROM pg_indexes WHERE indexname = ${INDEX_NAME}`;
     expect(idx.map((row) => row.tablename as string)).toEqual(["activity_log"]);
 
+    // In this test for migration 0415, we verify index 0415 in isolation.
+    // If subsequent migrations (such as 0428 continuation expression index)
+    // exist on the test database, drop them so 0415 behavior and its fallback
+    // teeth upon DROP INDEX are validated independently.
+    await sql`DROP INDEX IF EXISTS activity_log_company_action_continuation_idx`;
+    await sql`ANALYZE activity_log`;
+
     // 3) With the index, both legs of activity.latest are served by it: the
     // plan names the new index and reads no sequential scan of activity_log.
     // The details->>'continuation' residual runs on the index slice only —

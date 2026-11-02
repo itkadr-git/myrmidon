@@ -160,11 +160,13 @@ func main() {
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg)}
+	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg), oom: newOomStore(1000)}
+	go srv.startOomListener(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", srv.requireAuth(srv.health))
 	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux.HandleFunc("/v1/events/oom", srv.requireAuth(srv.eventsOom))
 	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
 	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
 	mux.HandleFunc("/v1/memory/export", srv.requireAuth(srv.memoryExport))
@@ -311,6 +313,7 @@ type server struct {
 	cfg       *config
 	memory    *memoryClient
 	docker    *dockerClient
+	oom       *oomStore
 	gatewayMu sync.Mutex
 }
 

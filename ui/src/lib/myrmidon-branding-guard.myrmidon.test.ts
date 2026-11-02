@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { PRODUCT_NAME } from "@myrmidon/shared";
+import { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "@myrmidon/shared";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -184,6 +184,30 @@ describe("myrmidon(B1a): shipped page and manifest advertise Myrmidon", () => {
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, "ui", "public", "site.webmanifest"), "utf-8"));
     expect(manifest.name).toBe(PRODUCT_NAME);
     expect(manifest.short_name).toBe(PRODUCT_NAME);
+  });
+
+  it("index.html defines Open Graph and Twitter card metadata for Myrmidon", () => {
+    const html = readFileSync(path.join(REPO_ROOT, "ui", "index.html"), "utf-8");
+    expect(html).toContain('<meta property="og:type" content="website" />');
+    expect(html).toContain(`<meta property="og:title" content="${PRODUCT_NAME}" />`);
+    expect(html).toContain(`<meta property="og:description" content="${PRODUCT_DESCRIPTION}" />`);
+    expect(html).toContain('<meta property="og:image" content="/android-chrome-512x512.png" />');
+    expect(html).toContain('<meta name="twitter:card" content="summary" />');
+    expect(html).toContain(`<meta name="twitter:title" content="${PRODUCT_NAME}" />`);
+    expect(html).toContain(`<meta name="twitter:description" content="${PRODUCT_DESCRIPTION}" />`);
+    expect(html).toContain('<meta name="twitter:image" content="/android-chrome-512x512.png" />');
+    expect(existsSync(path.join(REPO_ROOT, "ui", "public", "android-chrome-512x512.png"))).toBe(true);
+  });
+
+  it("preview html pages use Myrmidon in titles and avoid Paperclip", () => {
+    for (const previewFile of ["connect-flow-preview.html", "connect-model-preview.html"]) {
+      const html = readFileSync(path.join(REPO_ROOT, "ui", previewFile), "utf-8");
+      expect(html).toContain(PRODUCT_NAME);
+      expect(html).not.toMatch(/<title>.*Paperclip.*<\/title>/);
+      expect(html).toContain('<meta property="og:type" content="website" />');
+      expect(html).toContain(`<meta property="og:title" content="`);
+      expect(html).toContain('<link rel="icon" href="/favicon.ico"');
+    }
   });
 });
 

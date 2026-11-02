@@ -34,6 +34,9 @@ export interface FleetSiteProfile {
   gatewayPortStart?: number;
   gatewayPortEnd?: number;
   egressProfile?: string;
+  /** myrmidon(OPE-10200): whether site uses private network or secure tunnel, allowing plain HTTP gateway transport */
+  privateNetwork?: boolean;
+  tunnel?: boolean;
 }
 
 /**

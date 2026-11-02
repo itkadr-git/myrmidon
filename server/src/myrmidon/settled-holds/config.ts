@@ -2,6 +2,8 @@
 // should still block an explicitly authorized wake. See
 // docs/myrmidon/SETTINGS.md (MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES).
 
+import { liveStrandedSettings } from "../runs-queue-settings/live.js";
+
 /**
  * false (the default) is our behavior: a closed (resolved/cancelled)
  * recovery action's `evidence.automaticRecovery.replay === "blocked"`
@@ -11,5 +13,7 @@
  * original behavior, where that disposition blocks every wake.
  */
 export function settledHoldsBlockExplicitWakes(): boolean {
-  return process.env.MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES === "1";
+  // OPE-4096: resolves live (UI value → env forced override → default false);
+  // the explicit env value always wins, so `=1` still restores the vendor behavior.
+  return liveStrandedSettings(process.env).settledHoldsBlockExplicitWakes;
 }

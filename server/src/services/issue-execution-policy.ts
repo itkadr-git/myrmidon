@@ -37,6 +37,9 @@ type IssueLike = AssigneeLike & {
   defaultEscalationAgentIds?: string[] | null;
   /** Role of the currently assigned agent, when resolved by the route. */
   assigneeAgentRole?: string | null;
+  /** Replacement engineer when a persisted return assignee was terminated. */
+  terminatedReturnAssigneeAgentId?: string | null;
+  fallbackReturnAssigneeAgentId?: string | null;
   executionReviewParticipantAgentIds?: string[];
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
@@ -400,9 +403,26 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
   };
 }
 
+export function safeNormalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  if (input == null) return null;
+  try {
+    return normalizeIssueExecutionPolicy(input);
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Older persisted rows or legacy callers may contain `sequential`; normalize it to `normal`
+  // so existing policies with stages and monitor are preserved without failing validation.
+  const legacyCoerced =
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { mode?: unknown }).mode === "sequential"
+      ? { ...input, mode: "normal" }
+      : input;
+  const parsed = issueExecutionPolicySchema.safeParse(legacyCoerced);
   if (!parsed.success) {
     throw unprocessable("Invalid execution policy", parsed.error.flatten());
   }
@@ -802,6 +822,20 @@ function safeReturnAssignee(
   return null;
 }
 
+function replaceTerminatedReturnAssignee(
+  currentAssignee: IssueExecutionStagePrincipal | null,
+  issue: IssueLike,
+) {
+  if (
+    currentAssignee?.type !== "agent" ||
+    currentAssignee.agentId !== issue.terminatedReturnAssigneeAgentId ||
+    !issue.fallbackReturnAssigneeAgentId
+  ) {
+    return currentAssignee;
+  }
+  return { type: "agent" as const, agentId: issue.fallbackReturnAssigneeAgentId };
+}
+
 function clearExecutionStatePatch(input: {
   patch: Record<string, unknown>;
   issueStatus: string;
@@ -1196,11 +1230,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (requestedAssigneePatchProvided) {
           Object.assign(patch, patchForPrincipal(explicitAssignee));
         } else {
-          const safeAssignee = safeReturnAssignee(
-            existingState.returnAssignee,
-            activeStage,
+          const safeAssignee = replaceTerminatedReturnAssignee(
+            safeReturnAssignee(
+              existingState.returnAssignee,
+              activeStage,
+              input.issue,
+              actor,
+            ),
             input.issue,
-            actor,
           );
           if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
         }
@@ -1369,7 +1406,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? safeNormalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,
@@ -1505,7 +1542,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       };
     } else {
       patch.executionPolicy = {
-        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        ...(input.policy ?? previousPolicy ?? { mode: "normal", commentRequired: false, stages: [] }),
         monitor: restoredMonitor,
       };
       patch.monitorNextCheckAt = new Date(nextCheckAt);

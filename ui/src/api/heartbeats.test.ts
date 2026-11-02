@@ -36,6 +36,17 @@ describe("heartbeatsApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25");
   });
+
+  it("passes wakeReason and hasResult options to filter runs", async () => {
+    await heartbeatsApi.list("company-1", "agent-1", 50, {
+      wakeReason: "issue_commented",
+      hasResult: true,
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/heartbeat-runs?agentId=agent-1&limit=50&wakeReason=issue_commented&hasResult=true",
+    );
+  });
 });
 
 describe("heartbeatsApi.liveRunsForCompany", () => {

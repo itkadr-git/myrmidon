@@ -265,6 +265,36 @@ describe("docker/bot-runtime/github-broker/gh", () => {
     assert.doesNotMatch(result.stdout + result.stderr, new RegExp(TEST_TOKEN));
   });
 
+  it("rewrites base branch from bot/* to main when running gh pr create", async () => {
+    reply = { status: 200, body: available };
+    const cases = [
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "-B", "bot/OPE-9334", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create -B main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "--base", "bot/foo", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create --base main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "--base=bot/bar", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create --base=main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "-B", "rel/1.6.7", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create -B rel/1.6.7 --title test",
+      },
+    ];
+    for (const { args, expectedArgs } of cases) {
+      const result = await run(GH_WRAPPER, args, {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+        cwd: fakeBin,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(result.stdout.includes(`args=${expectedArgs}`));
+    }
+  });
+
   it("says why when the broker has no identity for the run", async () => {
     reply = { status: 200, body: { status: "absent", reason: "No GitHub identity connected", env: {} } };
     const result = await run(GH_WRAPPER, ["pr", "list"], {

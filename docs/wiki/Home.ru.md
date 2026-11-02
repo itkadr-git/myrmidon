@@ -22,6 +22,7 @@ Myrmidon — система управления командой ИИ-аген�
   решений, сводки и эскалации, темы группы как входящие задачи.
 - [Модели и бюджеты](Models-and-keys.ru) — провайдеры моделей, исполнение
   бюджетов, советы по стоимости промпта, лимиты допуска запусков.
+- [Оверлей потоковой стоимости LiteLLM v1.104.1](../myrmidon/guides/litellm-streaming-cost-overlay.ru.md) ([English](../myrmidon/guides/litellm-streaming-cost-overlay.md)) — эксплуатационная выкатка и проверка учёта потоковых трат.
 - [Знания и обучение](Knowledge-and-learning.ru) — регламенты, форажинг из
   одобренных источников, эталонные оценки, базовые линии качества.
 - [Дизайн POST-TASK-REFLECT](../myrmidon/design/post-task-reflect.ru.md)

@@ -125,7 +125,7 @@ describe("GitHub external object resolver: shared-identity App token", () => {
     const [mintCall] = calls(fetch, "/app/installations/77/access_tokens");
     expect(JSON.parse(String((mintCall![1] as RequestInit).body))).toEqual({
       repositories: ["myrmidon-deploy"],
-      permissions: { metadata: "read", contents: "read", pull_requests: "read" },
+      permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "read" },
     });
     const [prCall] = calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63");
     expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${APP_TOKEN}` });

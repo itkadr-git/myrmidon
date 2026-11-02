@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { finalizeHeartbeatRunResponseComment } from "../services/heartbeat.js";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  deliverHeartbeatRunResponseComment,
   LEGACY_WITHHELD_RUN_COMMENT,
   projectHistoricalHeartbeatRunComment,
   findHeartbeatRunCompletionComment,
@@ -400,6 +402,154 @@ describe("resolveHeartbeatRunResponse", () => {
       text: "semantic result",
       decision: { chosenSource: "semantic_result_summary" },
     });
+  });
+
+  it("suppresses retryable provider error content from every comment candidate", () => {
+    expect(resolveHeartbeatRunResponse({
+      resultJson: {
+        errorFamily: "transient_upstream",
+        summary: "The server is overloaded. Please retry!",
+        result: "The server is overloaded. Please retry!",
+      },
+      finalAgentMessage: {
+        text: "The server is overloaded. Please retry!",
+        sourceEventId: "event-error",
+        channel: "final",
+      },
+    })).toMatchObject({
+      text: null,
+      decision: {
+        chosenSource: "none",
+        commentAction: "none",
+        reasonCodes: ["retryable_provider_failure"],
+      },
+    });
+  });
+
+  it("suppresses issue comment creation via deliverHeartbeatRunResponseComment for provider error", async () => {
+    const addComment = vi.fn(async (_text: string) => ({ id: "should-not-exist", body: _text }));
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson: {
+        errorFamily: "transient_upstream",
+        provider_error_as_content: true,
+        summary: "The server is overloaded. Please retry!",
+        result: "The server is overloaded. Please retry!",
+      },
+      finalAgentMessage: {
+        text: "The server is overloaded. Please retry!",
+        sourceEventId: "event-error",
+        channel: "final",
+      },
+    });
+
+    const delivery = await deliverHeartbeatRunResponseComment({
+      resolved,
+      issueId: "issue-123",
+      addComment,
+    });
+
+    expect(resolved.decision.commentAction).toBe("none");
+    expect(delivery.comment).toBeNull();
+    expect(delivery.decision.commentAction).toBe("none");
+    expect(addComment).not.toHaveBeenCalled();
+  });
+
+  it("calls addComment via deliverHeartbeatRunResponseComment for valid agent response", async () => {
+    const addComment = vi.fn(async (text: string) => ({ id: "comment-1", body: text }));
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson: {
+        status: "completed",
+        result: "Here is the solution to your issue.",
+      },
+      finalAgentMessage: {
+        text: "Here is the solution to your issue.",
+        sourceEventId: "event-ok",
+        channel: "final",
+      },
+    });
+
+    const delivery = await deliverHeartbeatRunResponseComment({
+      resolved,
+      issueId: "issue-123",
+      addComment,
+    });
+
+    expect(resolved.decision.commentAction).toBe("create");
+    expect(addComment).toHaveBeenCalledWith("Here is the solution to your issue.");
+    expect(delivery.comment?.id).toBe("comment-1");
+    expect(delivery.decision.commentId).toBe("comment-1");
+  });
+
+  it("suppresses issue comment creation through production finalizeHeartbeatRunResponseComment down to issuesSvc.addComment for provider error", async () => {
+    const addComment = vi.fn(async (_issueId: string, _text: string) => ({
+      id: "should-not-exist",
+      body: _text,
+    }));
+    const issuesSvc = { addComment };
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson: {
+        errorFamily: "transient_upstream",
+        provider_error_as_content: true,
+        summary: "The server is overloaded. Please retry!",
+        result: "The server is overloaded. Please retry!",
+      },
+      finalAgentMessage: {
+        text: "The server is overloaded. Please retry!",
+        sourceEventId: "event-error",
+        channel: "final",
+      },
+    });
+
+    const delivery = await finalizeHeartbeatRunResponseComment({
+      issuesSvc,
+      agentId: "agent-1",
+      runId: "run-1",
+      companyId: "company-1",
+      issueId: "issue-123",
+      resolved,
+    });
+
+    expect(resolved.decision.commentAction).toBe("none");
+    expect(delivery.comment).toBeNull();
+    expect(delivery.decision.commentAction).toBe("none");
+    expect(addComment).not.toHaveBeenCalled();
+  });
+
+  it("calls issuesSvc.addComment through production finalizeHeartbeatRunResponseComment for valid agent response", async () => {
+    const addComment = vi.fn(async (_issueId: string, text: string) => ({
+      id: "comment-1",
+      body: text,
+    }));
+    const issuesSvc = { addComment };
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson: {
+        status: "completed",
+        result: "Here is the solution to your issue.",
+      },
+      finalAgentMessage: {
+        text: "Here is the solution to your issue.",
+        sourceEventId: "event-ok",
+        channel: "final",
+      },
+    });
+
+    const delivery = await finalizeHeartbeatRunResponseComment({
+      issuesSvc,
+      agentId: "agent-1",
+      runId: "run-1",
+      companyId: "company-1",
+      issueId: "issue-123",
+      resolved,
+    });
+
+    expect(resolved.decision.commentAction).toBe("create");
+    expect(addComment).toHaveBeenCalledWith(
+      "issue-123",
+      "Here is the solution to your issue.",
+      { agentId: "agent-1", runId: "run-1" },
+      { authorizationReason: null },
+    );
+    expect(delivery.comment?.id).toBe("comment-1");
   });
 
   it("returns no response instead of an artificial placeholder", () => {

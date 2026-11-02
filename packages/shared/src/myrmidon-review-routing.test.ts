@@ -33,8 +33,9 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
     for (const raw of [undefined, null, "x", { maxLoadPerReviewer: 0 }, { unknown: 1 }]) {
       expect(normalizeReviewRoutingSettings(raw)).toEqual({
         enabled: true,
-        reviewerRoles: ["reviewer"],
+        reviewerRoles: ["reviewer", "lead"],
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
+        queueThreshold: 8,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
         prWatch: PR_WATCH_DEFAULTS,
       });
@@ -48,6 +49,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
       enabled: true,
       reviewerRoles: ["qa", "lead"],
       maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
+      queueThreshold: 8,
       reassignAfterHours: 0,
       prWatch: PR_WATCH_DEFAULTS,
     });
@@ -87,6 +89,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         enabled: true,
         reviewerRoles: ["qa"],
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
+        queueThreshold: 8,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
         prWatch: PR_WATCH_DEFAULTS,
       });
@@ -136,6 +139,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         enabled: false,
         reviewerRoles: ["qa"],
         maxLoadPerReviewer: 2,
+        queueThreshold: 8,
         reassignAfterHours: 12,
         prWatch: { pollIntervalSec: 30 },
       },

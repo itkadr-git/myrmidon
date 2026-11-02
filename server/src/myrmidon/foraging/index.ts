@@ -72,7 +72,7 @@ export {
 export { foragingPassRoutes } from "./pass-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
-export { createForagingReader } from "./reader.js";
+export { createForagingReader, type ForagingFetcher } from "./reader.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 export * from "./limits.js";
 export { createForagingCandidatePort, createDbForagingSkillStore, buildCandidateMarkdown } from "./candidate-port.js";

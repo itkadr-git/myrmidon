@@ -86,6 +86,13 @@ If you change schema/API behavior, update all impacted layers:
 - `server` routes/services
 - `ui` API clients and pages
 
+When adding new contracts to `packages/shared`:
+- **Do NOT append exports to the end of `packages/shared/src/index.ts`** (OPE-9341). Appending exports to the end of `index.ts` creates merge conflicts across concurrent PR chains.
+- `packages/shared/src/index.ts` is a stable root barrel that re-exports domain barrel files (`./myrmidon/index.js`, `./types/index.js`, `./validators/index.js`).
+- Add new Myrmidon control plane contracts to `packages/shared/src/myrmidon/` (or `packages/shared/src/` with a domain prefix) and export them via `packages/shared/src/myrmidon/index.ts`.
+- Keep exports in `packages/shared/src/myrmidon/index.ts` strictly sorted alphabetically, or run `pnpm generate:shared` (`node scripts/generate-shared-exports.mjs`) to regenerate the barrel. Because exports are sorted alphabetically, concurrent PRs add exports at different lines in the file and merge cleanly without git conflicts.
+- Always verify that all exported symbols are preserved using the export snapshot test: `packages/shared/src/exports.test.ts`.
+
 3. Preserve control-plane invariants.
 - Single-assignee task model
 - Atomic issue checkout semantics

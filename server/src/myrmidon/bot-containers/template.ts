@@ -739,12 +739,22 @@ export function botdProfileEnv(mechanics: BotDiskMechanics, boardUrl: string, bo
     [WS_PROFILE_ENV.partitionCriticalPercent]: String(mechanics.partitionCriticalPercent),
     [WS_PROFILE_ENV.graceClosingMinutes]: String(mechanics.graceClosingMinutes),
     [WS_PROFILE_ENV.scratchTtlHours]: String(mechanics.scratchTtlHours),
+    [WS_PROFILE_ENV.sessionRetentionDays]: String(mechanics.sessionRetentionDays),
     [WS_PROFILE_ENV.boardUrl]: boardUrl,
     [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
   };
   // botd reports under its own bot key (the agent id, not a secret); the hostname fallback is a container id the board refuses.
   if (botKey) env[BOT_KEY_ENV] = botKey;
   if (mechanics.botdIntervalSec !== undefined) env[WS_PROFILE_ENV.botdIntervalSec] = String(mechanics.botdIntervalSec);
+  if (mechanics.hermesPruneEnabled !== undefined) {
+    env[WS_PROFILE_ENV.hermesPruneEnabled] = mechanics.hermesPruneEnabled ? "1" : "0";
+  }
+  if (mechanics.hermesPruneDays !== undefined) {
+    env[WS_PROFILE_ENV.hermesPruneDays] = String(mechanics.hermesPruneDays);
+  }
+  if (mechanics.gitMigrationEnabled !== undefined) {
+    env[WS_PROFILE_ENV.gitMigrationEnabled] = mechanics.gitMigrationEnabled ? "1" : "0";
+  }
   return env;
 }
 
