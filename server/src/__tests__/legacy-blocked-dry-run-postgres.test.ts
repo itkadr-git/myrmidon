@@ -138,6 +138,7 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
         companyId,
         title: "Issue with open blocker",
         status: "blocked",
+        description: "Open blocker dependency",
       },
       {
         id: openBlockerId,
