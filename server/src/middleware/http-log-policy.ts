@@ -41,6 +41,10 @@ const SECRET_SENSITIVE_HTTP_PATHS = [
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
   // myrmidon(OPE-8985): carries the one-time token and the new password.
   /^\/api\/myrmidon\/users-admin-a\/password-set(?:\/|$)/,
+  // myrmidon(SERVER-ONBOARD, OPE-10271): the request body carries the SSH
+  // password or private key for the dry-run probes. Validation errors and
+  // crash metadata must be sanitized like other credential routes.
+  /^\/api\/companies\/[^/]+\/servers\/onboarding\/dry-run(?:\/|$)/,
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 

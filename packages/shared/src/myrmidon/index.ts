@@ -79,6 +79,7 @@ export * from "../myrmidon-run-stall.js";
 export * from "../myrmidon-runs-queue-settings.js";
 export * from "../myrmidon-runtime-limits.js";
 export * from "../myrmidon-scent.js";
+export * from "../myrmidon-server-onboarding-dry-run.js";
 export * from "../myrmidon-session-generations.js";
 export * from "../myrmidon-shared-mount.js";
 export * from "../myrmidon-successful-run-handoff-notices.js";

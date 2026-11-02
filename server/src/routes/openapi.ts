@@ -11835,3 +11835,26 @@ registerCurrentRoute({
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
+
+// ─── Server onboarding (SERVER-ONBOARD, OPE-10271) ──────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  summary: "Run read-only pre-registration probes (DNS, SSH banner, permissions) against a candidate server",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
