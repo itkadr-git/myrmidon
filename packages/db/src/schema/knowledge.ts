@@ -152,6 +152,8 @@ export const knowledgeRevisions = pgTable(
     status: text("status").$type<KnowledgeRevisionStatus>().notNull().default("draft"),
     lang: text("lang").$type<KnowledgeRevisionLang>().notNull().default("en"),
     translationOf: uuid("translation_of").references((): AnyPgColumn => knowledgeRevisions.id, { onDelete: "set null" }),
+    title: text("title"),
+    summary: text("summary"),
     content: text("content").notNull(),
     /** What changed, free text — shown in the revision diff (K-4 UI). */
     changeSummary: text("change_summary"),
@@ -336,3 +338,42 @@ export const knowledgeSearch = pgTable(
     nestIdx: index("knowledge_search_nest_idx").on(table.nestId),
   }),
 );
+
+/**
+ * Knowledge deviations (§ meta/deviations):
+ * Discrepancies between documented knowledge and reality.
+ * Structure: page, was, became, how_verified, task.
+ */
+export const knowledgeDeviations = pgTable(
+  "knowledge_deviations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    nestId: uuid("nest_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    page: text("page").notNull(),
+    was: text("was").notNull(),
+    became: text("became").notNull(),
+    howVerified: text("how_verified").notNull(),
+    task: text("task"),
+    status: text("status").$type<"open" | "resolved">().notNull().default("open"),
+    createdByAgentId: text("created_by_agent_id"),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyIdx: index("knowledge_deviations_company_idx").on(table.companyId),
+    nestIdx: index("knowledge_deviations_nest_idx").on(table.nestId),
+    pageIdx: index("knowledge_deviations_page_idx").on(table.page),
+    taskIdx: index("knowledge_deviations_task_idx").on(table.task),
+    nestCreatedAtIdx: index("knowledge_deviations_nest_created_at_idx").on(table.nestId, table.createdAt),
+    nestStatusIdx: index("knowledge_deviations_nest_status_idx").on(table.nestId, table.status),
+  }),
+);
+
+export type KnowledgeDeviation = typeof knowledgeDeviations.$inferSelect;
+export type NewKnowledgeDeviation = typeof knowledgeDeviations.$inferInsert;

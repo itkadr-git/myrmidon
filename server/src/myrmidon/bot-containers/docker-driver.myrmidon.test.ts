@@ -4,9 +4,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   APPLIED_MARKER_CONTAINER_PATH,
   BOT_CONTAINER_UID,
+  BOT_YOLO_ENV,
   BOT_STOP_TIMEOUT_SEC,
   botStateFromInspect,
   buildApplyScript,
@@ -20,6 +22,8 @@ import {
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
   dockerBotContainerDriver,
+  readDockerDriverConfig,
+  BOT_VOLUME_ROOT_ENV,
   parseAppliedMarker,
   serializeAppliedMarker,
   templateDriftFields,
@@ -88,6 +92,32 @@ function testProfile(
 
 const NONCE = "00112233aabbccdd";
 
+describe("readDockerDriverConfig YOLO setting", () => {
+  it("prefers a value saved from the UI to the process environment, and ignores it for an explicit env", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorRoot = process.env[BOT_VOLUME_ROOT_ENV];
+    const priorYolo = process.env[BOT_YOLO_ENV];
+    try {
+      process.env[BOT_VOLUME_ROOT_ENV] = "/var/lib/myrmidon/bots";
+      process.env[BOT_YOLO_ENV] = "true";
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      expect(readDockerDriverConfig().yolo).toBe(false);
+      applyLiveBehaviorSettings({ settings: {}, sources: {} });
+      expect(readDockerDriverConfig().yolo).toBe(true);
+      applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
+      const explicit = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      expect(readDockerDriverConfig(explicit).yolo).toBeUndefined();
+      expect(readDockerDriverConfig({ ...explicit, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
+    } finally {
+      if (priorRoot === undefined) delete process.env[BOT_VOLUME_ROOT_ENV];
+      else process.env[BOT_VOLUME_ROOT_ENV] = priorRoot;
+      if (priorYolo === undefined) delete process.env[BOT_YOLO_ENV];
+      else process.env[BOT_YOLO_ENV] = priorYolo;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+});
+
 describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
     const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
@@ -103,8 +133,14 @@ describe("buildCreateContainerRequestBody", () => {
     ]);
     const without = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", false);
     expect(without.HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
-    // A mirror without a cache path has nowhere to live: no bind.
     expect(buildCreateContainerRequestBody(spec(), CONFIG, undefined, true).HostConfig.Binds.some((bind) => bind.includes("/cache/git"))).toBe(false);
+  });
+
+  it("adds the operator-selected YOLO mode as a driver-owned runtime env", () => {
+    const enabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: true });
+    expect(enabled.Env).toContain(`${BOT_YOLO_ENV}=1`);
+    const disabled = buildCreateContainerRequestBody(spec(), { ...CONFIG, yolo: false });
+    expect(disabled.Env).toContain(`${BOT_YOLO_ENV}=0`);
   });
 
   it("builds the fixed template body for an allowed image and the configured network", () => {
@@ -1389,11 +1425,85 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(bot()?.state).toBe("running");
     });
 
-    it("fails an unhealthy non-developer container without startup grace", async () => {
-      await driver.create(spec());
-      await driver.writeProfile("agent-a", testProfile());
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
       daemon.options.healthOnStart = "unhealthy";
-      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("waits through transient unhealthy for a regular container until healthy", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await regularDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("uses the same unhealthy startup grace for non-dev images as the runtime healthcheck start period", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const regularDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 420_000,
+          healthPollIntervalMs: 30_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await regularDriver.create(spec());
+      await regularDriver.writeProfile("agent-a", testProfile());
+      await expect(regularDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      // All bots tolerate unhealthy through the image's 300s start-period; 420s total timeout remains the outer bound.
+      expect(elapsed).toBeGreaterThanOrEqual(300_000);
+    });
+
+    it("fails an unhealthy container after its startup grace expires", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      const unhealthyDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await unhealthyDriver.create(spec());
+      await unhealthyDriver.writeProfile("agent-a", testProfile());
+      await expect(unhealthyDriver.start("agent-a")).rejects.toThrow(/reports unhealthy after start/);
+      expect(elapsed).toBeGreaterThanOrEqual(30_000);
     });
 
     it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {

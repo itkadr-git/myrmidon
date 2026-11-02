@@ -155,4 +155,28 @@ describe("refreshGitMirrors", () => {
     const mode = (await stat(path.join(root, "git", "owner"))).mode & 0o777;
     expect(mode & 0o055).toBe(0o055);
   });
+
+  it("never deletes or replaces an existing mirror when refresh fails or succeeds (OPE-9673)", async () => {
+    const { value } = deps();
+    // 1. Initial creation
+    await refreshGitMirrors(layout(), value);
+    const dir = gitMirrorPath(root, "owner/repo");
+    expect(existsSync(dir)).toBe(true);
+    await writeFile(path.join(dir, "sentinel.txt"), "preserve-mirror");
+
+    // 2. Advance time past refresh interval
+    let now = Date.now() + 10 * 60 * 1000;
+    const failingDeps = deps({
+      now: () => (now += 1000),
+      runGit: async (args) => {
+        if (args.includes("fetch")) throw new Error("git fetch failed");
+      },
+    });
+
+    const results = await refreshGitMirrors(layout(), failingDeps.value);
+    expect(results[0]?.outcome).toBe("failed");
+    // Existing mirror must remain intact and never be deleted
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(path.join(dir, "sentinel.txt"))).toBe(true);
+  });
 });

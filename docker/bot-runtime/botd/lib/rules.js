@@ -44,6 +44,9 @@ export const RULE_DEFAULTS = Object.freeze({
   graceClosingMinutes: 30,
   scratchTtlHours: 24,
   orphanHours: 24,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
   pressureScratchTtlHours: 1,
   baseIdleDays: 30,
   baseLimit: 8,
@@ -83,6 +86,9 @@ function resolveLimits(desired, settings) {
       (pick(g.closingMinutes, s.graceClosingMinutes) ?? RULE_DEFAULTS.graceClosingMinutes) * MIN,
     scratchTtlMs: (pick(g.scratchTtlHours, s.scratchTtlHours) ?? RULE_DEFAULTS.scratchTtlHours) * HOUR,
     orphanMs: (pick(g.orphanHours, s.orphanHours) ?? RULE_DEFAULTS.orphanHours) * HOUR,
+    npmCacheTtlMs: (pick(g.npmCacheTtlHours, s.npmCacheTtlHours) ?? RULE_DEFAULTS.npmCacheTtlHours) * HOUR,
+    uvCacheTtlMs: (pick(g.uvCacheTtlHours, s.uvCacheTtlHours) ?? RULE_DEFAULTS.uvCacheTtlHours) * HOUR,
+    terminalOutputTtlMs: (pick(g.terminalOutputTtlHours, s.terminalOutputTtlHours) ?? RULE_DEFAULTS.terminalOutputTtlHours) * HOUR,
     pressureScratchTtlMs:
       (pick(s.pressureScratchTtlHours) ?? RULE_DEFAULTS.pressureScratchTtlHours) * HOUR,
     baseIdleMs: (pick(s.baseIdleDays) ?? RULE_DEFAULTS.baseIdleDays) * DAY,
@@ -229,7 +235,9 @@ export function plan(inventory, desired, now, settings) {
   // `legacyPressureIdleDays`, except `shared`. Without `closedKeys` / `protectKeys` (an older board)
   // every key-like directory is only reported.
   const protectKeys = new Set(arr(desired.protectKeys));
-  const closedKeys = Array.isArray(desired.closedKeys) ? new Set(desired.closedKeys) : null;
+  const closedKeys = Array.isArray(desired.closedKeys)
+    ? new Set(desired.closedKeys.map((k) => (typeof k === "string" ? k : k?.key)).filter(Boolean))
+    : null;
   const listedKeys = new Set([...byKey.keys(), ...protectKeys, ...(closedKeys ?? [])]);
   const held = [];
   const hold = (sc, kind, key) => held.push(key === undefined ? { path: sc.path, kind } : { path: sc.path, kind, key });

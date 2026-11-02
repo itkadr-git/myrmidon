@@ -142,6 +142,16 @@ describe("resolveRecoveryOwner", () => {
       expect(result.owner).toHaveProperty("agentId", "agent-devops-1");
     });
 
+    it("routes resource.oom to an infrastructure agent", () => {
+      const result = resolveRecoveryOwner({
+        kind: "resource.oom",
+        candidates: BASE_CANDIDATES,
+        now: "2026-10-26T10:00:00.000Z",
+      });
+      expect(result.owner).toHaveProperty("agentId", "agent-devops-1");
+      expect(result.slaMinutes).toBe(60);
+    });
+
     it("throws RecoveryOwnerUnresolvedError when only user owners are present on technical kinds", () => {
       const usersOnlyPool: RecoveryOwnerCandidate[] = [
         { id: "user-1", userId: "usr-1", role: "lead" },

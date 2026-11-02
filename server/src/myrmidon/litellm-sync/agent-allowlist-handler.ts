@@ -35,14 +35,22 @@ export interface AllowlistSyncResult {
   skipped: string[];
 }
 
-/** The company's enabled model names as registered in the gateway. */
-async function listEnabledModelNames(db: Db, companyId: string): Promise<string[]> {
+/** The company's model names and enabled state as registered in the gateway. */
+async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
   const rows = await db
-    .select({ litellmModelName: modelProviderModels.litellmModelName })
+    .select()
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
-    .where(and(eq(modelProviders.companyId, companyId), eq(modelProviderModels.enabled, true)));
-  return [...new Set(rows.map((row) => row.litellmModelName))];
+    .where(eq(modelProviders.companyId, companyId));
+  return rows.map((row: any) => {
+    // Drizzle returns joined tables under their table keys; keeping the flat
+    // fallback makes this port easy to exercise with lightweight adapters.
+    const model = row.modelProviderModels ?? row;
+    return {
+      name: model.litellmModelName ?? model.modelName,
+      enabled: model.enabled === true,
+    };
+  });
 }
 
 /**
@@ -64,14 +72,12 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const models = await listEnabledModelNames(db, companyId);
-  if (models.length === 0) {
-    // Nothing enabled yet: leave keys unrestricted rather than locking the
-    // fleet out with an empty allowlist.
-    return skip("no-enabled-models");
-  }
+  const companyModels = await listCompanyModels(db, companyId);
+  const models = companyModels.filter((model) => model.enabled).map((model) => model.name);
 
-  // The env carries the secret NAME; the gateway needs the VALUE.
+  // The env carries the secret NAME; the gateway needs the VALUE. Resolve it
+  // before the empty-registry guard so a configured-but-broken deployment is
+  // reported distinctly, while still leaving all keys untouched.
   const adminKey = await agentGatewayKeys.readSecretValue(companyId, settings.adminKeySecret);
   if (!adminKey) {
     return skip("admin-key-secret-unresolved");
@@ -79,6 +85,11 @@ export async function updateAgentAllowlistsForCompany(
   const gateway = agentGatewayKeys.gateway({ baseUrl: settings.baseUrl, adminKey });
   if (!gateway.setKeyAllowedModels) {
     return skip("gateway-port-without-allowlist-support");
+  }
+  if (models.length === 0) {
+    // Nothing enabled yet: leave keys unrestricted rather than locking the
+    // fleet out with an empty allowlist.
+    return skip("no-enabled-models");
   }
 
   const companyAgents = await db
@@ -100,7 +111,30 @@ export async function updateAgentAllowlistsForCompany(
     }
     attempted += 1;
     try {
-      const applied = await gateway.setKeyAllowedModels({ alias, models });
+      if (!gateway.getKeyInfo) {
+        skipped.push(`gateway-port-without-key-info:${agent.id}`);
+        continue;
+      }
+      const keyInfo = await gateway.getKeyInfo({ alias });
+      if (!keyInfo) {
+        skipped.push(`alias-unknown-to-gateway:${agent.id}`);
+        continue;
+      }
+      const current = keyInfo.models ?? [];
+      if (current.length === 0) {
+        // An empty gateway list means ALL models. Never turn that into a
+        // restrictive list merely because the board owns some models.
+        skipped.push(`key-all-models:${agent.id}`);
+        continue;
+      }
+      // Merge: keep models the board does not own (other pools/tenants),
+      // add/revoke only the board-owned ones.
+      const ownedNames = new Set(companyModels.map((model) => model.name));
+      const next = [
+        ...current.filter((name) => !ownedNames.has(name)),
+        ...models,
+      ];
+      const applied = await gateway.setKeyAllowedModels({ alias, models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {

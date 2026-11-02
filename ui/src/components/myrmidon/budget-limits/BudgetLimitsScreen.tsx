@@ -11,7 +11,7 @@
 // RU screen carries no literal English text, guarded by the
 // `legacy-screens-no-english` test.
 import { useState } from "react";
-import { Wallet } from "lucide-react";
+import { Download, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +66,7 @@ export interface BudgetLimitsScreenViewProps {
   onSaveLimit: (level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void;
   onDeleteLimit: (level: BudgetLimitLevel, ref: string) => void;
   onToggleSignalOnly: (signalOnly: boolean) => void;
+  onExport?: (format: "csv" | "json") => void;
   pending: boolean;
   error: string | null;
 }
@@ -88,6 +89,7 @@ export function BudgetLimitsScreenView({
   onSaveLimit,
   onDeleteLimit,
   onToggleSignalOnly,
+  onExport,
   pending,
   error,
 }: BudgetLimitsScreenViewProps) {
@@ -165,12 +167,40 @@ export function BudgetLimitsScreenView({
 
   return (
     <section className="space-y-6" data-testid="myrmidon-budget-limits">
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <Wallet className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">{t("budgetLimits.title")}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Wallet className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">{t("budgetLimits.title")}</h2>
+          </div>
+          <p className="max-w-2xl text-sm text-muted-foreground">{t("budgetLimits.intro")}</p>
         </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">{t("budgetLimits.intro")}</p>
+        {onExport ? (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              data-testid="budget-limits-export-csv"
+              onClick={() => onExport("csv")}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              {t("budgetLimits.exportCsv")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              data-testid="budget-limits-export-json"
+              onClick={() => onExport("json")}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              {t("budgetLimits.exportJson")}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {error ? (

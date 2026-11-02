@@ -57,6 +57,8 @@ function pruneCloudTenantWriteDebounce(
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): a session request marks the owner active in the portal.
+import { touchWebActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -68,18 +70,29 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-function invalidAgentTokenMessage(token: string) {
+function unverifiedAgentTokenContext(token: string) {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      sub?: unknown;
+      company_id?: unknown;
+      run_id?: unknown;
       exp?: unknown;
     };
-    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
-      return "Expired agent token; obtain fresh credentials and retry";
-    }
+    return {
+      agentId: typeof payload.sub === "string" ? payload.sub : undefined,
+      companyId: typeof payload.company_id === "string" ? payload.company_id : undefined,
+      tokenRunId: typeof payload.run_id === "string" ? payload.run_id : undefined,
+      expired: typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000),
+    };
   } catch {
-    // Malformed and incorrectly signed tokens share the generic failure below.
+    return { expired: false };
   }
-  return "Agent token did not verify; obtain fresh credentials and retry";
+}
+
+function invalidAgentTokenMessage(token: string) {
+  return unverifiedAgentTokenContext(token).expired
+    ? "Expired agent token; obtain fresh credentials and retry"
+    : "Agent token did not verify; obtain fresh credentials and retry";
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -231,7 +244,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
@@ -292,6 +305,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             runId: runIdHeader ?? undefined,
             source: "session",
           };
+          // myrmidon(1.7-ACTIVE-CHANNEL): a portal session request is the
+          // owner's `web` touch. Debounced and fire-and-forget: the request
+          // never waits on it and a failed write never fails the request.
+          touchWebActivityBestEffort(db, userId);
           next();
           return;
         }
@@ -342,6 +359,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        const context = unverifiedAgentTokenContext(token);
+        logger.warn(
+          {
+            agentId: context.agentId,
+            companyId: context.companyId,
+            runId: context.tokenRunId ?? runIdHeader ?? undefined,
+            reason: context.expired ? "expired" : "signature_or_malformed",
+            method: req.method,
+            url: req.originalUrl,
+          },
+          "Rejected agent token",
+        );
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
@@ -377,7 +406,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           url: req.originalUrl,
         });
         next(
-          unprocessable("X-Paperclip-Run-Id does not match signed agent JWT run_id", {
+          unprocessable("Run ID does not match signed agent JWT run_id", {
             code: "agent_jwt_run_id_mismatch",
             claimRunId: claims.run_id,
             headerRunId: normalizedRunIdHeader,

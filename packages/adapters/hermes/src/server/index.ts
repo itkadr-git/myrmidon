@@ -5,6 +5,26 @@
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { detectModel, parseModelFromConfig, resolveProvider, inferProviderFromModel } from "./detect-model.js";
+export {
+  detectModelFamily,
+  getModelInstructionProfile,
+  renderModelInstructionSection,
+  type ModelFamily,
+  type ModelInstructionProfile,
+} from "./model-instruction-profiles.js";
+export {
+  TrajectoryTracker,
+  validateTrajectoryEvent,
+  TRAJECTORY_EVENT_JSON_SCHEMA,
+  type TrajectoryEvent,
+  type TrajectoryEventType,
+  type TrajectoryRunStartPayload,
+  type TrajectoryStepPayload,
+  type TrajectoryToolCallPayload,
+  type TrajectoryToolResultPayload,
+  type TrajectoryStopConditionPayload,
+  type TrajectoryRunCompletePayload,
+} from "./trajectory-events.js";
 export { getConfigSchema } from "./config-schema.js";
 export {
   listHermesSkills as listSkills,

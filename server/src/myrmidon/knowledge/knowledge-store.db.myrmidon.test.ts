@@ -941,6 +941,78 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(res201.body.revision).toBeDefined();
     });
   });
+
+  describe("OPE-10241 draft and publish update page title and retain revision history", () => {
+    it("draft with new title -> publish -> GET item returns new title, old revision retains old title", async () => {
+      companyId = await makeCompany();
+      const store = makeStore();
+      const created = await store.create(
+        {
+          companyId,
+          nestId: companyId,
+          kind: "wiki",
+          slug: "wiki/title-lifecycle",
+          title: "Original Title",
+          summary: "Original summary",
+          content: "# Original Title\n\nInitial full article body content for testing.",
+        },
+        OWNER,
+      );
+
+      expect(created.title).toBe("Original Title");
+      expect(created.summary).toBe("Original summary");
+
+      const initialRevisions = await store.listRevisions(companyId, "wiki/title-lifecycle");
+      expect(initialRevisions).toHaveLength(1);
+      const rev1 = initialRevisions[0]!;
+      expect(rev1.title).toBe("Original Title");
+      expect(rev1.summary).toBe("Original summary");
+
+      // Draft revision 2 with new title and summary
+      await store.draft(
+        companyId,
+        "wiki/title-lifecycle",
+        {
+          title: "Updated Title",
+          summary: "Updated summary",
+          content: "# Updated Title\n\nUpdated article body with plenty of content.",
+        },
+        AGENT,
+      );
+
+      // Before publish: item title has NOT changed
+      const itemBeforePublish = (await store.get(companyId, "wiki/title-lifecycle"))!;
+      expect(itemBeforePublish.title).toBe("Original Title");
+      expect(itemBeforePublish.summary).toBe("Original summary");
+
+      // History shows both revisions with their respective titles
+      const revisions = await store.listRevisions(companyId, "wiki/title-lifecycle");
+      expect(revisions).toHaveLength(2);
+      expect(revisions[0]!.revisionNumber).toBe(1);
+      expect(revisions[0]!.title).toBe("Original Title");
+      expect(revisions[1]!.revisionNumber).toBe(2);
+      expect(revisions[1]!.title).toBe("Updated Title");
+      expect(revisions[1]!.summary).toBe("Updated summary");
+
+      // Publish revision 2
+      await store.publish(companyId, "wiki/title-lifecycle", AGENT);
+
+      // After publish: GET item returns the new title and summary
+      const itemAfterPublish = (await store.get(companyId, "wiki/title-lifecycle"))!;
+      expect(itemAfterPublish.title).toBe("Updated Title");
+      expect(itemAfterPublish.summary).toBe("Updated summary");
+
+      // Old revision 1 still retains the old title
+      const oldRev = (await store.getRevision(companyId, "wiki/title-lifecycle", rev1.id))!;
+      expect(oldRev.title).toBe("Original Title");
+      expect(oldRev.summary).toBe("Original summary");
+
+      // Delivered revision 2 has the new title
+      const newRev = (await store.getRevision(companyId, "wiki/title-lifecycle", itemAfterPublish.deliveredRevisionId!))!;
+      expect(newRev.title).toBe("Updated Title");
+      expect(newRev.summary).toBe("Updated summary");
+    });
+  });
 });
 
 // ----------------------------------------------------------------- hygiene
@@ -961,6 +1033,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     // REST (routes.ts) and MCP (mcp.ts) surfaces. New files must be listed
     // here deliberately.
     expect(sources).toEqual([
+      "deviations.ts",
       "domain.ts",
       "git-export-git.ts",
       "git-export-job.ts",

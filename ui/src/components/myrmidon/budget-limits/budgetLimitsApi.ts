@@ -139,4 +139,52 @@ export const budgetLimitsApi = {
     api.put<BudgetLimitView>(limitPath(companyId, level, ref), body),
   removeLimit: (companyId: string, level: BudgetLimitLevel, ref: string) =>
     api.delete<{ removed: boolean }>(limitPath(companyId, level, ref)),
+  exportReport: async (
+    companyId: string,
+    format: "csv" | "json" = "json",
+    level?: BudgetLimitLevel,
+  ): Promise<Blob | { report: BudgetLimitUsageRow[] }> => {
+    const params = new URLSearchParams();
+    params.set("format", format);
+    if (level) params.set("level", level);
+    const url = `${base(companyId)}/export?${params.toString()}`;
+    if (format === "csv") {
+      const res = await fetch(`/api${url}`, {
+        credentials: "include",
+        headers: { Accept: "text/csv" },
+      });
+      if (!res.ok) {
+        throw new Error(`Export failed: ${res.status}`);
+      }
+      return res.blob();
+    }
+    return api.get<{ report: BudgetLimitUsageRow[] }>(url);
+  },
 };
+
+export async function downloadBudgetReport(
+  companyId: string,
+  format: "csv" | "json",
+  level?: BudgetLimitLevel,
+): Promise<void> {
+  const params = new URLSearchParams();
+  params.set("format", format);
+  if (level) params.set("level", level);
+  const url = `/api${base(companyId)}/export?${params.toString()}`;
+  const res = await fetch(url, {
+    credentials: "include",
+    headers: { Accept: format === "csv" ? "text/csv" : "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Export failed: ${res.status}`);
+  }
+  const blob = await res.blob();
+  const downloadUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = `budget-limits-report-${companyId}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(downloadUrl);
+}

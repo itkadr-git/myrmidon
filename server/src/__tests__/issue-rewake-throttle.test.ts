@@ -206,4 +206,20 @@ describe("evaluateIssueRewakeThrottle", () => {
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
   });
+
+  it("freezes after six empty runs without a time-based escape", () => {
+    const runs = Array.from({ length: 6 }, (_, i) =>
+      runSample({ id: `r${i}`, finishedSecondsAgo: 3600 + i * 30 }));
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision).toEqual({
+      blocked: true, frozen: true, noProgressStreak: 6, frozenAt: runs[0]!.finishedAt,
+    });
+    expect(evaluateIssueRewakeThrottle({
+      now: NOW, recentTerminalRuns: runs, runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: true,
+    })).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
 });

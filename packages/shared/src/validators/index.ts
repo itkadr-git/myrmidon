@@ -1,4 +1,11 @@
 export {
+  haStandbyStatusSchema,
+  haStandbyCheckSchema,
+  haStandbyCheckStatusSchema,
+  type HaStandbyStatus,
+} from "./ha.js";
+
+export {
   connectionsSearchInputSchema,
   connectionRequestInputSchema,
   completeConnectionIntentSchema,
@@ -439,6 +446,9 @@ export {
   issueExecutionPolicySchema,
   issueBlockReasonSchema,
   issueBlockerMetadataSchema,
+  realIssueBlockerMetadataSchema,
+  issueFreezeOnlyMetadataSchema,
+  issueRewakeFreezeSchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
@@ -997,5 +1007,11 @@ export * from "./skill-policy.js";
 export * from "./provider-trace.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
+export * from "./geo-check.js";
 
 export * from "./email.js";
+export * from "./foraging.js";
+export * from "./ideas.js";
+export * from "./guardrails.js";
+export * from "./user-block.js";
+export * from "./audit.js";

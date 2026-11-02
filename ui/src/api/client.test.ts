@@ -3,6 +3,7 @@ import {
   createTenantSessionRecoveryCoordinator,
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
+import { authSessionRecovery } from "@/lib/auth-session-recovery";
 import { __inflightGetCount, api, detachInflightGet } from "./client";
 
 interface Deferred<T> {
@@ -33,6 +34,7 @@ const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  authSessionRecovery.reset();
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -74,6 +76,23 @@ describe("tenant-session recovery", () => {
       status: 401,
       message: "unauthorized",
     });
+  });
+
+  it("fast-rejects subsequent requests without network fetch once session is expired", async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse({ error: "unauthorized" }));
+
+    await expect(api.get("/first-401")).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Second call fails fast without calling fetch
+    await expect(api.get("/second-call")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+      message: "Session expired",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

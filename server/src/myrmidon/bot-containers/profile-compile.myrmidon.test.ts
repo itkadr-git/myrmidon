@@ -117,6 +117,37 @@ function fileContent(profile: CompiledProfile, path: string): string {
 }
 
 describe("myrmidon(W2a) createBotProfileCompile", () => {
+  it("compiles a card pinned to a fleet host with site-specific endpoints", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "site-a" } };
+    const compile = createBotProfileCompile(board.ports, {
+      env: INSTANCE_ENV,
+      fleetHostForAgent: async () => ({
+        name: "site-a",
+        url: "https://fleet.example.com",
+        tokenSecret: "site-token",
+        hindsightUrl: "https://site.example.com/hindsight",
+        llmBaseUrl: "https://site.example.com/llm/v1",
+        boardExtraHost: "board.example.com",
+        volumeRoot: "/srv/site-bots",
+        network: "site-network",
+        imageAllowlist: ["registry.example.com/bots/*"],
+        mcpEndpoints: [],
+      }),
+    });
+    const profile = await compile("agent-a", "agent-a");
+    expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
+    expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+  });
+
+  it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
+    const board = fakeBoard();
+    board.agent.current!.adapterConfig = { model: "some-model", provider: "custom", container: { host: "missing-site" } };
+    const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV, fleetHostForAgent: async () => null });
+    await expect(compile("agent-a", "agent-a")).rejects.toThrow("not registered");
+    expect(board.calls).not.toContain("ensureApiServerKey");
+  });
+
   it("compiles a card into the profile files, credentials in .env only", async () => {
     const board = fakeBoard();
     const compile = createBotProfileCompile(board.ports, { env: INSTANCE_ENV });
@@ -218,6 +249,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
           partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
           partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+          sessionRetentionDays: WS_BOT_DISK_SETTING_DEFAULTS.sessionRetentionDays,
         }),
       });
       const env = fileContent(await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a"), "hermes/.env");
@@ -245,6 +277,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       });
@@ -268,6 +301,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const profile = await createBotProfileCompile(board.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -284,6 +318,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const changed = fakeBoard({
@@ -293,6 +328,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 85,
           partitionRefuseOpenPercent: 90,
           partitionCriticalPercent: 95,
+          sessionRetentionDays: 30,
         }),
       });
       const first = await createBotProfileCompile(defaults.ports, { env: INSTANCE_ENV })("agent-a", "agent-a");
@@ -308,6 +344,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
           partitionThresholdPercent: 80,
           partitionRefuseOpenPercent: 88,
           partitionCriticalPercent: 93,
+          sessionRetentionDays: 14,
           botdIntervalSec: 300,
         }),
       };
