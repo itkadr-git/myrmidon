@@ -924,8 +924,8 @@ Release не создаётся (отменённый прогон CI тега �
 
 **Как устроено.** Workflow **Myrmidon release publish** (запускается пушем
 тега `myr-vX.Y.Z`) открывает задачу `release-freeze: <тег>`; задача в
-открытом состоянии и есть freeze. Проверка **Release freeze gate** (workflow
-[myrmidon-release-freeze.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-release-freeze.yml))
+открытом состоянии и есть freeze. Проверка **Release freeze gate** (встроена
+напрямую в шаг `plan` основного workflow `Myrmidon CI`, [.github/workflows/myrmidon-ci.yml](https://github.com/itkadr-git/myrmidon/blob/main/.github/workflows/myrmidon-ci.yml))
 красная на каждом PR в `main`, пока freeze активен. Как только `Myrmidon CI`
 на теге позеленел, тот же tag-workflow закрывает задачу — freeze снят.
 Состояние выводится из GitHub (новейший тег + его CI + открытая
