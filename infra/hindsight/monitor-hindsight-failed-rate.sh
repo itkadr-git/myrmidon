@@ -13,7 +13,9 @@
 #
 # Env (боевые значения задаёт оператор при развёртывании, в репо секретов нет):
 #   DATABASE_URL            — подключение к Postgres с БД myrmidon_hindsight
-#   PAPERCLIP_API_URL       — по умолчанию http://10.10.10.2:3100
+#   PAPERCLIP_API_URL       — URL Paperclip API (обязателен, приватный адрес
+#                             должен задаваться только через env при деплое,
+#                             в коде значения по умолчанию нет)
 #   PAPERCLIP_API_KEY       — ключ агента-сторожа
 #   PAPERCLIP_RUN_ID        — UUID текущего run (сырой, без префикса run_)
 #   ALERT_ISSUE_ID          — UUID приёмника тревоги (OPE-10620); можно задать
@@ -33,13 +35,14 @@ WINDOW_MINUTES="${WINDOW_MINUTES:-15}"
 NOSEND="${NOSEND:-0}"
 STATE_FILE="${STATE_FILE:-/var/lib/monitor-hindsight/failed-rate.state}"
 ALERT_ISSUE_ID="${ALERT_ISSUE_ID:-}"
-PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://10.10.10.2:3100}"
+PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-}"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 die() { log "ERROR: $*"; exit 2; }
 
 [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is not set"
 [ -n "${PAPERCLIP_API_KEY:-}" ] || die "PAPERCLIP_API_KEY is not set"
+[ -n "${PAPERCLIP_API_URL:-}" ] || die "PAPERCLIP_API_URL is not set (задаётся оператором при развёртывании)"
 
 # --- 1. Считаем статистику записи памяти за окно -----------------------------
 

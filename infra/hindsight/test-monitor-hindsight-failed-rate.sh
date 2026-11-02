@@ -31,6 +31,7 @@ run_case() { # name fixture_row state_content
     PSQL_FIXTURE="${fixture}" \
     DATABASE_URL="postgres://mock" \
     PAPERCLIP_API_KEY="mock-key" \
+    PAPERCLIP_API_URL="http://paperclip.invalid" \
     PAPERCLIP_RUN_ID="run_test-run-id" \
     ALERT_ISSUE_ID="dbcda1db-a629-47ab-87e3-5ee2d7a64d3c" \
     NOSEND=0 \
