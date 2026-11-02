@@ -1110,6 +1110,7 @@ describe("releaseIssueExecution", () => {
     const terminalIssue = { ...ISSUE, status: "done" };
     const transaction = createFakeTransaction({
       findIssue: vi.fn(async () => terminalIssue),
+      findNextDeferredWake: vi.fn(async () => null),
       findInvokableAgent: vi.fn(async () => null),
       isImmediateRecoverySourceBlocked: vi.fn(async () => true),
     });
