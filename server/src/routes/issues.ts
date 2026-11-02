@@ -371,6 +371,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   safeNormalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -15904,7 +15905,10 @@ export function issueRoutes(
                       ),
                       requestedStatus: updated.status,
                       requestedAssigneePatch: {},
-                      actor: { agentId: actor.agentId, userId: actor.userId },
+                      actor: {
+                        agentId: actor.agentId ?? null,
+                        userId: actor.actorType === "user" ? actor.actorId : null,
+                      },
                       monitorExplicitlyUpdated: true,
                     });
                     Object.assign(issueUpdateData, monitorPatch.patch);
