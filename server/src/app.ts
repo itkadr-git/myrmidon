@@ -226,6 +226,7 @@ import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/
 // myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
 import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
+import { serverOnboardingRoutes } from "./routes/servers.js"; // myrmidon(SERVER-ONBOARD)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { localeUploadRoutes } from "./myrmidon/locale-upload/routes.js"; // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187)
 import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
@@ -1297,6 +1298,7 @@ export async function createApp(
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
+  api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): onboarding dry-run
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
   api.use(myrmidonCorpusMcpRoutes(db)); // myrmidon(1.6.6-CORPUS-D): company corpus MCP endpoint (corpus_search, corpus_get_document, corpus_list_datasets, corpus_list_documents)

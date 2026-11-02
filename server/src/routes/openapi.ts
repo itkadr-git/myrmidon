@@ -11835,3 +11835,30 @@ registerCurrentRoute({
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
+
+// ─── Server onboarding (SERVER-ONBOARD, OPE-10271) ──────────────────────────
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  summary: "Run read-only pre-registration probes (DNS, SSH banner, permissions) against a candidate server",
+  description:
+    "Runs the onboarding dry-run probes in order (DNS → SSH → permissions) and returns a typed result with stable per-check code/status. " +
+    "The endpoint never persists anything and never echoes credentials — the response has no field for the password or private key. " +
+    "Probes whose prerequisites failed are reported in skippedChecks. Individual probe failures do not change the HTTP status; the caller branches on per-check code/status.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
