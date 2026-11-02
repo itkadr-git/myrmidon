@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Db } from "@myrmidon/db";
 import type { StoredCustomLocale } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
+import { badRequest } from "../../errors.js";
 import { localeUploadRoutes } from "./routes.js";
 import {
   validateCatalog,
@@ -62,19 +63,10 @@ function createMockService(initialLocales: Record<string, StoredCustomLocale> = 
       });
 
       if (!validation.valid && !params.dryRun) {
-        const error = new Error("CATALOG_VALIDATION_FAILED") as Error & {
-          statusCode?: number;
-          body?: unknown;
-        };
-        error.statusCode = 400;
-        error.body = {
-          success: false,
-          valid: false,
-          error: "CATALOG_VALIDATION_FAILED",
+        throw badRequest("CATALOG_VALIDATION_FAILED", {
           errors: validation.errors,
           report: validation.report,
-        };
-        throw error;
+        });
       }
 
       if (params.dryRun) {
