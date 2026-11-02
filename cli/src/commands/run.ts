@@ -19,7 +19,6 @@ import {
 import { assertForegroundRunAllowed } from "../services/service-manager.js";
 import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
 import { printUpdateNotice } from "../update-notice.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { ensureWorktreeSeeded } from "./worktree.js";
 import { readProductEnv, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
@@ -111,7 +110,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     process.exit(1);
   }
 
-  p.log.step(`Starting ${PRODUCT_NAME} server...`);
+  p.log.step("Starting Myrmidon server...");
   const startedServer = await importServerEntry();
   writeRuntimeInfo({
     schemaVersion: 1,
@@ -210,13 +209,13 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
 
   if (result.error) {
     throw new Error(
-      `Failed to prepare workspace build artifacts before starting the ${PRODUCT_NAME} dev server.\n${formatError(result.error)}`,
+      `Failed to prepare workspace build artifacts before starting the Myrmidon dev server.\n${formatError(result.error)}`,
     );
   }
 
   if ((result.status ?? 1) !== 0) {
     throw new Error(
-      `Failed to prepare workspace build artifacts before starting the ${PRODUCT_NAME} dev server.`,
+      "Failed to prepare workspace build artifacts before starting the Myrmidon dev server.",
     );
   }
 }
@@ -241,13 +240,13 @@ async function importServerEntry(): Promise<StartedServer> {
     const missingServerEntrypoint = !missingSpecifier || missingSpecifier === "@myrmidon/server";
     if (isModuleNotFoundError(err) && missingServerEntrypoint) {
       throw new Error(
-        `Could not locate a ${PRODUCT_NAME} server entrypoint.\n` +
+        `Could not locate a Myrmidon server entrypoint.\n` +
           `Tried: ${devEntry}, @myrmidon/server\n` +
           `${formatError(err)}`,
       );
     }
     throw new Error(
-      `${PRODUCT_NAME} server failed to start.\n` +
+      `Myrmidon server failed to start.\n` +
         `${formatError(err)}`,
     );
   }
@@ -260,7 +259,7 @@ function shouldGenerateBootstrapInviteAfterStart(config: PaperclipConfig): boole
 async function startServerFromModule(mod: unknown, label: string): Promise<StartedServer> {
   const startServer = (mod as { startServer?: () => Promise<StartedServer> }).startServer;
   if (typeof startServer !== "function") {
-    throw new Error(`${PRODUCT_NAME} server entrypoint did not export startServer(): ${label}`);
+    throw new Error(`Myrmidon server entrypoint did not export startServer(): ${label}`);
   }
   return await startServer();
 }

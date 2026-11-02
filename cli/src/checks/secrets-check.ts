@@ -4,7 +4,6 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const AWS_CREDENTIAL_SOURCE_HINT =
@@ -171,7 +170,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message: `AWS Secrets Manager provider is missing non-secret config: ${missingConfig.join(", ")}`,
       canRepair: false,
       repairHint:
-        `Set ${missingConfig.join(", ")} in the ${PRODUCT_NAME} server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in ${PRODUCT_NAME} secrets.`,
+        `Set ${missingConfig.join(", ")} in the Myrmidon server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in Myrmidon secrets.`,
     };
   }
 
@@ -189,7 +188,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message,
       canRepair: false,
       repairHint:
-        `AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in ${PRODUCT_NAME} company secrets.`,
+        "AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in Myrmidon company secrets.",
     };
   }
 

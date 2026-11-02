@@ -5,7 +5,6 @@ import {
   resolveAgentJwtEnvFile,
 } from "../config/env.js";
 import type { CheckResult } from "./index.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 export function agentJwtSecretCheck(configPath?: string): CheckResult {
   if (readAgentJwtSecretFromEnv(configPath)) {
@@ -24,7 +23,7 @@ export function agentJwtSecretCheck(configPath?: string): CheckResult {
       name: "Agent JWT secret",
       status: "warn",
       message: `PAPERCLIP_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment`,
-      repairHint: `Set the value from ${envPath} in your shell before starting the ${PRODUCT_NAME} server`,
+      repairHint: `Set the value from ${envPath} in your shell before starting the Myrmidon server`,
     };
   }
 

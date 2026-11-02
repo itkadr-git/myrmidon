@@ -12,7 +12,6 @@ import {
   type BaseClientOptions,
   type ResolvedClientContext,
 } from "./common.js";
-import { PRODUCT_NAME } from "../../myrmidon-product.js";
 
 interface FeedbackFilterOptions extends BaseClientOptions {
   targetType?: string;
@@ -299,7 +298,7 @@ export function renderFeedbackReport(input: {
 }): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push(pc.bold(pc.magenta(`${PRODUCT_NAME} Feedback Report`)));
+  lines.push(pc.bold(pc.magenta("Myrmidon Feedback Report")));
   lines.push(pc.dim(new Date().toISOString()));
   lines.push(horizontalRule());
   lines.push(`${pc.dim("Server:")}  ${input.apiBase}`);
@@ -471,7 +470,7 @@ export async function writeFeedbackExportBundle(input: {
 export function renderFeedbackExportSummary(exported: FeedbackExportResult): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push(pc.bold(pc.magenta(`${PRODUCT_NAME} Feedback Export`)));
+  lines.push(pc.bold(pc.magenta("Myrmidon Feedback Export")));
   lines.push(pc.dim(exported.manifest.exportedAt));
   lines.push(horizontalRule());
   lines.push(`${pc.dim("Company:")} ${exported.manifest.companyId}`);

@@ -3,7 +3,6 @@ import { promisify } from "node:util";
 import pc from "picocolors";
 import { resolvePublishedVersion, type CommandRunner } from "./install.js";
 import { packageVersion } from "../version.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -99,7 +98,7 @@ export async function channelsCommand(
     return;
   }
 
-  console.log(pc.bold(`${PRODUCT_NAME} release channels`));
+  console.log(pc.bold("Myrmidon release channels"));
   console.log("");
   for (const entry of state) {
     const version = entry.version ?? pc.yellow("unavailable");

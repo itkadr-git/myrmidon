@@ -46,7 +46,6 @@ import {
   normalizeFeedbackTraceExportFormat,
   serializeFeedbackTraces,
 } from "./feedback.js";
-import { PRODUCT_NAME } from "../../myrmidon-product.js";
 
 interface CompanyCommandOptions extends BaseClientOptions {}
 interface CompanyJsonOptions extends BaseClientOptions {
@@ -423,7 +422,7 @@ async function promptForImportSelection(preview: CompanyPortabilityPreviewResult
 
   while (true) {
     const choice = await p.select<ImportSelectableGroup | "company" | "confirm">({
-      message: `Select what ${PRODUCT_NAME} should import`,
+      message: "Select what Myrmidon should import",
       options: [
         {
           value: "company",

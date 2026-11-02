@@ -15,7 +15,6 @@ import {
   resolveApiBase,
   type BaseClientOptions,
 } from "./common.js";
-import { PRODUCT_NAME } from "../../myrmidon-product.js";
 
 interface ConnectOptions extends BaseClientOptions {
   profile?: string;
@@ -65,7 +64,7 @@ async function connectWizard(opts: ConnectOptions) {
   const resolvedProfile = resolveProfile(context, opts.profile);
   const initialApiBase = resolveApiBase(opts, resolvedProfile.profile);
   const apiBaseInput = await p.text({
-    message: `${PRODUCT_NAME} API base`,
+    message: "Myrmidon API base",
     initialValue: initialApiBase,
     placeholder: "http://localhost:3100",
   });

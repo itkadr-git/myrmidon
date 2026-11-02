@@ -19,7 +19,6 @@ import {
 } from "./services/service-manager.js";
 import { buildLocalAppUrl, buildLocalHealthUrl } from "./utils/health-url.js";
 import { packageVersion } from "./version.js";
-import { PRODUCT_NAME } from "./myrmidon-product.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type OnboardServiceOptions = {
@@ -98,7 +97,7 @@ export async function handoffToOnboardedService(
   const deps = { ...defaultDashboardDependencies, ...dependencies };
   const runtime = await deps.waitUntilReady();
   const dashboardUrl = resolveOnboardServiceDashboardUrl(config, runtime);
-  deps.info(`${PRODUCT_NAME} dashboard: ${pc.cyan(dashboardUrl)}`);
+  deps.info(`Myrmidon dashboard: ${pc.cyan(dashboardUrl)}`);
 
   if (!runtime) {
     deps.warn(
@@ -111,7 +110,7 @@ export async function handoffToOnboardedService(
   if (!deps.isInteractive() || envDisablesBrowser()) return;
 
   if (await deps.openDashboard(dashboardUrl)) {
-    deps.success(`Sent the ${PRODUCT_NAME} dashboard to your browser.`);
+    deps.success("Sent the Myrmidon dashboard to your browser.");
   } else {
     deps.warn(`Could not open a browser automatically. Open ${dashboardUrl} manually.`);
   }
@@ -193,14 +192,14 @@ const defaultDependencies: OnboardServiceDependencies = {
   },
   confirm: async () => {
     const answer = await p.confirm({
-      message: `Install ${PRODUCT_NAME} as a background service?`,
+      message: "Install Myrmidon as a background service?",
       initialValue: true,
     });
     return !p.isCancel(answer) && answer === true;
   },
   confirmLinger: async () => {
     const answer = await p.confirm({
-      message: `Allow ${PRODUCT_NAME} to keep running after logout? This may request system authorization.`,
+      message: "Allow Myrmidon to keep running after logout? This may request system authorization.",
       initialValue: false,
     });
     return !p.isCancel(answer) && answer === true;

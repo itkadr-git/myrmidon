@@ -1,7 +1,6 @@
 import { inferBindModeFromHost } from "@myrmidon/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
@@ -36,7 +35,7 @@ export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
       status: "fail",
       message: "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET)",
       canRepair: false,
-      repairHint: `Set BETTER_AUTH_SECRET before starting ${PRODUCT_NAME}`,
+      repairHint: "Set BETTER_AUTH_SECRET before starting Myrmidon",
     };
   }
 

@@ -11,7 +11,6 @@ import {
 } from "../install-store.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
 import { detectServiceManager, launchdServiceName, systemdServiceName } from "../services/service-manager.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 type UninstallDependencies = {
   detectServiceManager: typeof detectServiceManager;
@@ -30,8 +29,8 @@ function otherServiceDefinitions(platform: NodeJS.Platform, userHomeDir: string,
     ? systemdServiceName(instanceId)
     : `${launchdServiceName(instanceId)}.plist`;
   const pattern = platform === "linux"
-    ? /^paperclipai(?:-.+)?\.service$/
-    : /^ing\.paperclip\.paperclipai(?:\..+)?\.plist$/;
+    ? /^(?:myrmidon|paperclipai)(?:-.+)?\.service$/
+    : /^ing\.paperclip\.(?:myrmidon|paperclipai)(?:\..+)?\.plist$/;
   return fs.readdirSync(directory)
     .filter((name) => name !== currentName && pattern.test(name))
     .map((name) => path.join(directory, name));
@@ -84,8 +83,8 @@ export async function uninstallCommand(
   }, paths, { initialize: !hadStore });
 
   if (!shimRemoved) {
-    console.log(pc.yellow(`Left ${paths.shimPath} unchanged because it is not a ${PRODUCT_NAME}-managed shim.`));
+    console.log(pc.yellow(`Left ${paths.shimPath} unchanged because it is not a Myrmidon-managed shim.`));
   }
-  console.log(pc.green(`Removed the managed ${PRODUCT_NAME} CLI install.`));
+  console.log(pc.green("Removed the managed Myrmidon CLI install."));
   console.log(pc.dim(`User data was left untouched under ${paths.paperclipHome}.`));
 }
