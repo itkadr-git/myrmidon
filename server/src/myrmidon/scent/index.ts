@@ -23,7 +23,7 @@
 //   routes.ts      POST …/issues/:id/scent/refresh, POST
 //                  …/agents/:id/scent/refresh, GET …/swarm/scent/status.
 
-export { classifyIssueScent, classifyAgentScent } from "./gateway.js";
+export { classifyIssueScent, classifyAgentScent, normalizeScentBaseUrl } from "./gateway.js";
 export type {
   ScentGatewayDeps,
   ClassifyIssueScentInput,
@@ -51,3 +51,5 @@ export {
 } from "./queue.js";
 export type { ScentQueuePorts } from "./queue.js";
 export { myrmidonScentRoutes } from "./routes.js";
+export { scentMetrics } from "./metrics.js";
+export { checkScentHealth } from "./health.js";
