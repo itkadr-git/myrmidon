@@ -98,8 +98,8 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
     const result = await reader.read(source("https://example.com/direct"), new AbortController().signal);
     expect(result.text).toContain("Hello");
-    expect(result.page.final_url).toBe("https://example.com/direct");
-    expect(result.page.content_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.page?.final_url).toBe("https://example.com/direct");
+    expect(result.page?.content_sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("rejects direct redirects", async () => {
