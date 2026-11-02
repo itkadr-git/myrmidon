@@ -15828,6 +15828,7 @@ export function issueRoutes(
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
               });
+              let reviewerAdmissionDeferred = false;
               if (stageWake?.agentId) {
                 let admitReviewer = true;
                 if (
@@ -15840,6 +15841,7 @@ export function issueRoutes(
                   });
                   if (ci.state === "pending" || ci.state === "unknown") {
                     admitReviewer = false;
+                    reviewerAdmissionDeferred = true;
                     if (ci.state === "unknown") {
                       const headKey = ci.headSha ?? "unknown-head";
                       const eventIdempotencyKey = `review-ci-unreadable:${updated.id}:${headKey}`;
@@ -15958,7 +15960,8 @@ export function issueRoutes(
               if (
                 assigneeWillChange &&
                 updated.assigneeAgentId &&
-                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId) &&
+                !reviewerAdmissionDeferred
               ) {
                 const wakeup: WakeupOptions = {
                   source: "assignment",
