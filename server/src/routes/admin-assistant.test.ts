@@ -201,6 +201,31 @@ describe("admin assistant routes and health collection", () => {
       expect(res.status).toBe(403);
     });
 
+    it("requires company access for a company-scoped query request", async () => {
+      const app = express();
+      app.use((req, _res, next) => {
+        req.actor = {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "other-company",
+          userEmail: null,
+          source: "agent_key",
+          isInstanceAdmin: false,
+          companyIds: ["other-company"],
+          memberships: [],
+        };
+        next();
+      });
+      app.use(adminAssistantRoutes(mockDb({})));
+      app.use(errorHandler);
+
+      const res = await request(app).get(
+        "/admin-assistant/cluster-health?companyId=company-1",
+      );
+
+      expect(res.status).toBe(403);
+    });
+
     it("rejects arbitrary disk paths", async () => {
       await expect(measureDiskSpaceSafe("/etc")).rejects.toMatchObject({ status: 400 });
     });
