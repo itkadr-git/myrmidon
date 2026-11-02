@@ -93,17 +93,21 @@ describe("deny-list in the licensing check", () => {
     expect(s.status().reason).toBe("ok");
   });
 
-  it("id, instance_id and kid each match on their own; ids never match a license without id", () => {
+  it("id, instance_id and kid each match independently", () => {
     const s = setup();
-    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { instance_ids: [INSTALL_ID], serial: 1 }));
-    expect(s.status().reason).toBe("revoked");
-    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { kids: [keyId(s.k.publicKey)], serial: 2 }));
-    expect(s.status().reason).toBe("revoked");
-    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["other"], serial: 3 }));
-    expect(s.status().reason).toBe("ok");
+    expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(false);
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 1 }));
+    expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(true);
+    expect(s.reader.revoked({ instanceId: INSTALL_ID })).toBe(false);
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { instance_ids: [INSTALL_ID], serial: 2 }));
+    expect(s.reader.revoked({ instanceId: INSTALL_ID })).toBe(true);
+    expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(false);
+    writeFileSync(s.denyPath, denyFile(s.k.privateKey, { kids: [keyId(s.k.publicKey)], serial: 3 }));
+    expect(s.reader.revoked({ kid: keyId(s.k.publicKey) })).toBe(true);
+    expect(s.reader.revoked({ licenseId: "lic-1" })).toBe(false);
     const noId = setup(null);
     writeFileSync(noId.denyPath, denyFile(noId.k.privateKey, { ids: ["lic-1"] }));
-    expect(noId.status().reason).toBe("ok");
+    expect(noId.reader.revoked({})).toBe(false);
   });
 
   it("a foreign signature, broken JSON and a wrong shape are ignored with a warning", () => {
@@ -126,11 +130,11 @@ describe("deny-list in the licensing check", () => {
     expect(existsSync(path.join(dir, "license.deny.accepted"))).toBe(true);
     // A stale list that revokes nobody must not un-revoke lic-1.
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 4 }));
-    expect(s.status().reason).toBe("ok");
+    expect(s.status().reason).toBe("revoked");
     expect(s.warnings.some((w) => w.includes("lower than the seen 5"))).toBe(true);
     const fresh = createDenyListReader({ env: () => s.env, trustedKeys: [s.k.publicKey] });
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 3 }));
-    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(false);
+    expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { ids: ["lic-1"], serial: 6 }));
     expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
   });
