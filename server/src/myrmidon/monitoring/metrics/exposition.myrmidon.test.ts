@@ -276,6 +276,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
     expect(text).toContain('myrmidon_runs_queued_over_30m{role="all"} 1');
+    expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 0');
   });
 
   it("renders myrmidon_runs_queued with reason labels when queued runs have wait reasons", () => {

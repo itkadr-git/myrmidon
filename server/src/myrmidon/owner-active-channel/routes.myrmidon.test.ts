@@ -6,7 +6,7 @@
 // without a database.
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import { OWNER_ACTIVE_THRESHOLD_ENV } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
@@ -41,6 +41,7 @@ interface HarnessOptions {
 
 function harness(options: HarnessOptions = {}) {
   const current = { stored: options.stored as unknown };
+  const activity = { ...(options.activity ?? {}) } as Record<string, string | null>;
   const audits: Array<Record<string, unknown>> = [];
   const deps: Partial<OwnerActiveChannelServiceDeps> = {
     getGeneral: async () => ({ ownerActiveChannel: current.stored }),
@@ -59,10 +60,10 @@ function harness(options: HarnessOptions = {}) {
   // answer only for their owner id, so unknown users read as empty.
   deps.readActivity = async (userId) => {
     const owner = options.activityUser ?? member.userId;
-    const activity = userId === owner ? options.activity ?? {} : {};
+    const userActivity = userId === owner ? activity : {};
     return {
-      web: (activity.web as string | null | undefined) ?? null,
-      telegram: (activity.telegram as string | null | undefined) ?? null,
+      web: (userActivity.web as string | null | undefined) ?? null,
+      telegram: (userActivity.telegram as string | null | undefined) ?? null,
     };
   };
   const db = {} as unknown as Db;
@@ -76,7 +77,9 @@ function harness(options: HarnessOptions = {}) {
       (req as unknown as { actor: unknown }).actor = actor;
       next();
     });
-    scoped.use("/api", ownerActiveChannelRoutes(db, service));
+    scoped.use("/api", ownerActiveChannelRoutes(db, service, async (_db, input) => {
+      activity[input.channel] = new Date().toISOString();
+    }));
     scoped.use(errorHandler);
     return scoped;
   };
@@ -84,7 +87,32 @@ function harness(options: HarnessOptions = {}) {
 }
 
 const URL = "/api/myrmidon/owner/active-channel";
+const CHANNELS_URL = "/api/myrmidon/owner/channels";
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+describe("POST /api/owner/heartbeat", () => {
+  it("records the authenticated member web touch and returns the updated view", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness();
+    const response = await request(app).post("/api/owner/heartbeat").send({}).expect(200);
+    expect(response.body.channel).toBe("web");
+    expect(response.body.lastActiveAt.web).toEqual(expect.any(String));
+    expect(response.body.lastActiveAt.telegram).toBeNull();
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("rejects outsiders and actors without a board user identity", async () => {
+    const { withActor } = harness();
+    await request(withActor(outsider)).post("/api/owner/heartbeat").send({}).expect(403);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await request(withActor({ ...member, userId: undefined }))
+        .post("/api/owner/heartbeat").send({}).expect(400);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
 
 describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET the active channel", () => {
   it("answers telegram when the freshest touch is a Telegram message", async () => {
@@ -145,6 +173,59 @@ describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET the active channel", () => {
     const empty = await request(adminApp).get(`${URL}?userId=ghost`).expect(200);
     expect(empty.body.channel).toBeNull();
     expect(empty.body.lastActiveAt).toEqual({ web: null, telegram: null });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+});
+
+describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET owner channel list", () => {
+  it("returns the canonical empty list and never errors when no activity exists", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: {} });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: null, active: false },
+        { channel: "telegram", lastSeenAt: null, active: false },
+      ],
+    });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("returns both channels from the shared activity source and exposes no secrets", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const web = minutesAgo(10);
+    const telegram = minutesAgo(130);
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: { web, telegram } });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: web, active: true },
+        { channel: "telegram", lastSeenAt: telegram, active: false },
+      ],
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/token|secret|chat.?id|bot/i);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("requires board organization access and instance admin for another userId", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({ activity: {} });
+    await request(withActor(outsider)).get(CHANNELS_URL).expect(403);
+    await request(withActor(member)).get(`${CHANNELS_URL}?userId=user-z`).expect(403);
+    const adminResponse = await request(withActor(admin))
+      .get(`${CHANNELS_URL}?userId=user-z`)
+      .expect(200);
+    expect(adminResponse.body.userId).toBe("user-z");
+    expect(adminResponse.body.channels).toEqual([
+      { channel: "web", lastSeenAt: null, active: false },
+      { channel: "telegram", lastSeenAt: null, active: false },
+    ]);
     invalidateOwnerActiveChannelSettingsCache();
   });
 });
