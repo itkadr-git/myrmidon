@@ -130,19 +130,40 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(
       hasChangesRequestedVerdict(
         { status: "changes_requested" },
+        [],
       ),
     ).toBe(true);
 
     expect(
       hasChangesRequestedVerdict(
         { lastDecisionOutcome: "changes_requested" },
+        [],
       ),
     ).toBe(true);
 
-    expect(hasChangesRequestedVerdict(null)).toBe(false);
+    const comments: CommentSummary[] = [
+      {
+        id: "c-1",
+        body: "REQUEST CHANGES: fix type error in routes.ts",
+        createdAt: new Date(),
+      },
+    ];
+    expect(hasChangesRequestedVerdict(null, comments)).toBe(true);
 
-    // Comments are explanatory text, not execution verdicts.
-    expect(hasChangesRequestedVerdict(null)).toBe(false);
+    // Strictly respects the latest verdict: if subsequent comment is approved, changes_requested is false
+    const approvedComments: CommentSummary[] = [
+      {
+        id: "c-2",
+        body: "VERDICT: APPROVED LGTM!",
+        createdAt: new Date(Date.now() + 1000),
+      },
+      {
+        id: "c-1",
+        body: "REQUEST CHANGES: fix type error in routes.ts",
+        createdAt: new Date(),
+      },
+    ];
+    expect(hasChangesRequestedVerdict(null, approvedComments)).toBe(false);
   });
 
   it("extracts reviewer remarks and formats return comment", () => {
@@ -205,15 +226,16 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.commentBody).toContain("Задача возвращена автору");
   });
 
-  it("skips pending review assigned to its participant even with an engineer PR", () => {
+  it("skips guard-return for a code task already in review", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],
       [reviewerAgent.id, reviewerAgent],
     ]);
+
     const candidate: GuardReturnCandidate = {
       issueId: "issue-review",
-      identifier: "OPE-10324",
-      title: "Review a change",
+      identifier: "OPE-9474",
+      title: "Review an open PR",
       companyId: "comp-1",
       status: "in_review",
       assigneeAgentId: reviewerAgent.id,
@@ -221,22 +243,42 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
       projectId: "proj-1",
       casteKey: "engineer",
       labels: [],
-      executionState: {
-        status: "pending",
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgent.id },
-      },
+      executionState: { status: "in_progress" },
       prWorkProducts: [{ id: "pr-review", type: "pull_request", status: "open", creatorAgentId: engineerAgent.id }],
       comments: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
     expect(decideGuardReturn(candidate, agentMap).action).toBe("skip");
   });
 
-  it("does not treat engineer comments mentioning remarks as a verdict", () => {
-    expect(hasChangesRequestedVerdict(null)).toBe(false);
+  it("returns an in-review task only after changes are requested", () => {
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-changes",
+      identifier: "OPE-9475",
+      title: "Apply review changes",
+      companyId: "comp-1",
+      status: "in_review",
+      assigneeAgentId: reviewerAgent.id,
+      assigneeRole: reviewerAgent.role,
+      projectId: "proj-1",
+      casteKey: "engineer",
+      labels: [],
+      executionState: { status: "changes_requested", returnAssignee: { type: "agent", agentId: engineerAgent.id } },
+      prWorkProducts: [],
+      comments: [{ id: "changes", body: "REQUEST CHANGES: fix the test", authorType: "agent", createdAt: new Date() }],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const agentMap = new Map<string, AgentSummary>([
+      [engineerAgent.id, engineerAgent],
+      [reviewerAgent.id, reviewerAgent],
+    ]);
+    expect(decideGuardReturn(candidate, agentMap).action).toBe("return");
   });
+
   it("skips return when task is already assigned to an engineer", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],
@@ -272,7 +314,7 @@ describe("1.6.6 GUARD-RETURN: sweeper execution", () => {
       identifier: "OPE-9900",
       title: "Refactor database queries",
       companyId: "company-test",
-      status: "in_review",
+      status: "in_progress",
       assigneeAgentId: "agent-reviewer",
       projectId: "proj-100",
       casteKey: "engineer",

@@ -15,6 +15,7 @@
 import type { Db } from "@myrmidon/db";
 import {
   OWNER_ACTIVE_CHANNEL_SETTINGS_KEY,
+  buildOwnerChannelsList,
   mergeOwnerActiveChannelSettings,
   resolveActiveOwnerChannel,
   resolveOwnerActiveChannelSettings,
@@ -22,6 +23,7 @@ import {
   type OwnerChannel,
   type OwnerActiveChannelSettings,
   type OwnerActiveChannelView,
+  type OwnerChannelsView,
 } from "@myrmidon/shared";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -61,6 +63,8 @@ export interface OwnerActiveChannelServiceDeps {
 export interface OwnerActiveChannelService {
   /** The status for one owner: active channel, touches, threshold and its source. */
   read(userId: string): Promise<OwnerActiveChannelView>;
+  /** List every supported owner channel with its activity and effective threshold. */
+  readChannels(userId: string, now?: number): Promise<OwnerChannelsView>;
   /** Persist and audit a threshold change; returns the settings now in force. */
   update(patch: OwnerActiveChannelPatch, actor: OwnerActiveChannelActor): Promise<ResolvedOwnerActiveChannelView>;
 }
@@ -124,6 +128,23 @@ export function ownerActiveChannelService(
         lastActiveAt,
         thresholdMin: resolved.thresholdMin,
         thresholdSource: resolved.thresholdSource,
+      };
+    },
+
+    readChannels: async (userId, now = Date.now()) => {
+      const resolved = await readOwnerActiveChannelSettings({
+        getGeneral: deps.getGeneral,
+        env,
+      });
+      const lastActiveAt = await deps.readActivity(userId);
+      return {
+        userId,
+        thresholdMin: resolved.thresholdMin,
+        thresholdSource: resolved.thresholdSource,
+        channels: buildOwnerChannelsList(lastActiveAt, {
+          thresholdMin: resolved.thresholdMin,
+          now,
+        }),
       };
     },
 

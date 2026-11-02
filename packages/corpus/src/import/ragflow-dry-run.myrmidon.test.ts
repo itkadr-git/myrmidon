@@ -215,4 +215,73 @@ describe("dryRunRagflowImport", () => {
       }),
     ).rejects.toThrow(RagflowApiError);
   });
+
+  // myrmidon(OPE-10668): a live RAGFlow document can declare 1020 chunks while
+  // the endpoint enumerates 1019 — a one-off drift must not fail the dry-run.
+  it("tolerates per-document declared vs endpoint chunk drift within tolerance", async () => {
+    const dataset: RagflowDataset = { id: "ds-drift", name: "Drift KB", chunk_count: 1019, document_count: 1 };
+    const doc: RagflowDocument = { id: "doc-drift", name: "drift.pdf", chunk_count: 1020, run: "DONE" };
+    const chunks: RagflowChunk[] = Array.from({ length: 1019 }, (_, i) => ({ id: `c-${i}`, content: `text ${i}` }));
+
+    const source: RagflowSource = {
+      baseUrl: "https://ragflow.mock",
+      async listDatasets() { return [dataset]; },
+      async *listDocuments() { yield doc; },
+      async *listChunks() { yield* chunks; },
+      async countChunks() { return 1019; },
+    };
+
+    const target: Pick<CorpusImportTarget, "getChunkStates"> = {
+      async getChunkStates() {
+        return new Map<string, ChunkState>();
+      },
+    };
+
+    const result = await dryRunRagflowImport({
+      source,
+      target,
+      companyId: "comp-drift",
+      chunkCountTolerance: 0.01,
+    });
+
+    expect(result.chunks).toBe(1019);
+    expect(result.documents).toBe(1);
+  });
+
+  // myrmidon(OPE-10668): only allowlisted datasets are inventoried.
+  it("inventories only datasets whose names are allowlisted", async () => {
+    const datasets: RagflowDataset[] = [
+      { id: "ds-adm", name: "adm-craft" },
+      { id: "ds-other", name: "other-dataset" },
+    ];
+    const source = makeMockSource({
+      datasets,
+      documents: new Map([
+        ["ds-adm", [{ id: "doc-adm", name: "adm.pdf", run: "DONE", chunk_count: 1 }]],
+        ["ds-other", [{ id: "doc-other", name: "other.pdf", run: "DONE", chunk_count: 1 }]],
+      ]),
+      chunks: new Map([
+        ["ds-adm:doc-adm", [{ id: "c-adm", content: "adm content" }]],
+        ["ds-other:doc-other", [{ id: "c-other", content: "other content" }]],
+      ]),
+    });
+
+    const target: Pick<CorpusImportTarget, "getChunkStates"> = {
+      async getChunkStates() {
+        return new Map<string, ChunkState>();
+      },
+    };
+
+    const result = await dryRunRagflowImport({
+      source,
+      target,
+      companyId: "comp-filter",
+      datasetNames: ["adm-craft"],
+    });
+
+    expect(result.datasets).toBe(1);
+    expect(result.documents).toBe(1);
+    expect(result.chunks).toBe(1);
+    expect(result.details.datasets[0]?.name).toBe("adm-craft");
+  });
 });

@@ -56,7 +56,7 @@ export async function deliverAgentUnblockNotification(input: {
 // myrmidon(STALE-BLOCK): transitions into blocked after this rollout moment
 // must carry a reason reference (blockedByIssueIds or unblockDescriptor.reasonRef);
 // records blocked earlier stay valid and are never retro-rejected.
-export const STALE_BLOCK_ROLLOUT_AT = new Date("2026-10-03T12:00:00.000Z");
+export const STALE_BLOCK_ROLLOUT_AT = new Date("2026-10-04T13:40:54.000Z");
 
 export function isStaleBlockGuardedTransition(input: {
   status: string;

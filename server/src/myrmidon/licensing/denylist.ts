@@ -8,9 +8,11 @@
 // A license is revoked when its signed `id`, its `instance_id` or its `kid`
 // is listed. The file is re-read on every call: no file -> nobody is revoked;
 // a broken or foreign signature, or a wrong shape -> the whole list is ignored
-// (one warning); a serial lower than the highest one accepted before is
-// rejected. The highest accepted serial lives in memory and in a state file
-// next to the license (no state file -> any valid list is accepted).
+// (one warning). A lower serial is ignored; the full signed last-accepted list
+// remains active, so rollback cannot un-revoke a license or disable all clients.
+// Only rollback with no stored accepted copy fails closed with the observable
+// reason denylist_rollback_no_cache. Serial state and the accepted envelope are
+// stored next to the license (both paths may be overridden).
 
 import { createPublicKey, verify, type KeyObject } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -23,8 +25,11 @@ export const DENY_STATE_PATH_ENV = "MYR_LICENSE_DENY_STATE_PATH";
 export const DENY_URL_ENV = "MYR_LICENSE_DENY_URL";
 export const DENY_PULL_INTERVAL_ENV = "MYR_LICENSE_DENY_PULL_INTERVAL_MS";
 export const DEFAULT_DENY_PULL_INTERVAL_MS = 60_000;
+export const DENY_ACCEPTED_PATH_ENV = "MYR_LICENSE_DENY_ACCEPTED_PATH";
+export const DENY_ROLLBACK_NO_CACHE = "denylist_rollback_no_cache";
 const DENY_FILE_NAME = "license.deny.json";
 const DENY_STATE_NAME = "license.deny.state";
+const DENY_ACCEPTED_NAME = "license.deny.accepted";
 const MAX_DENY_BYTES = 1_000_000;
 
 export interface DenyList {
@@ -100,6 +105,10 @@ export function writeDenyListFile(file: string, denyListRaw: string): void {
   const content = Buffer.from(denyListRaw.trim() + "\n", "utf8");
   writeFileSync(tmp, content, { mode: 0o644 });
   renameSync(tmp, file);
+}
+
+export function denyAcceptedPath(env: NodeJS.ProcessEnv): string {
+  return (env[DENY_ACCEPTED_PATH_ENV] ?? "").trim() || path.join(licenseDir(env), DENY_ACCEPTED_NAME);
 }
 
 function b64urlDecode(part: unknown): Buffer {
@@ -189,14 +198,44 @@ export function createDenyListReader(input: {
   env: () => NodeJS.ProcessEnv;
   trustedKeys: readonly TrustedIssuerKey[];
   warn?: (message: string) => void;
+  incrementCounter?: (name: string) => void;
 }): DenyListReader {
   let maxSerial: number | null = null;
+  let accepted: DenyList | null = null;
   const warned = new Set<string>();
   const warnOnce = (key: string, message: string) => {
     if (warned.has(key)) return;
     warned.add(key);
     input.warn?.(`license deny-list ignored: ${message}`);
   };
+
+  function storedSerial(statePath: string): number | null {
+    try {
+      const raw = readFileSync(statePath, "utf8").trim();
+      return /^[0-9]{1,15}$/.test(raw) ? Number(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function loadAccepted(acceptedPath: string): DenyList | null {
+    try {
+      const raw = readFileSync(acceptedPath);
+      if (raw.length > MAX_DENY_BYTES) return null;
+      return parseDenyList(raw.toString("utf8"), input.trustedKeys);
+    } catch {
+      return null;
+    }
+  }
+
+  function rememberAccepted(acceptedPath: string, raw: string): void {
+    try {
+      writeFileSync(`${acceptedPath}.tmp`, raw, { mode: 0o600 });
+      renameSync(`${acceptedPath}.tmp`, acceptedPath);
+    } catch {
+      warnOnce("accepted-write", "cannot persist the last accepted deny-list");
+    }
+  }
 
   function load(): DenyList | null {
     const env = input.env();
@@ -220,19 +259,26 @@ export function createDenyListReader(input: {
       return null;
     }
     const statePath = denyStatePath(env);
+    const acceptedPath = denyAcceptedPath(env);
     const seen = [maxSerial, storedDenyStateSerial(statePath)].filter((n): n is number => n !== null);
     const highest = seen.length > 0 ? Math.max(...seen) : null;
     if (highest !== null && data.serial < highest) {
-      warnOnce(`rollback:${data.serial}<${highest}`, `serial ${data.serial} is lower than the seen ${highest}`);
-      return null;
+      warnOnce(`rollback:${data.serial}<${highest}`, `serial ${data.serial} is lower than the seen ${highest}; ignoring the incoming list`);
+      const cached = accepted ?? loadAccepted(acceptedPath);
+      if (cached) return cached;
+      warnOnce(DENY_ROLLBACK_NO_CACHE, `${DENY_ROLLBACK_NO_CACHE}: rollback with no stored accepted list; failing closed`);
+      input.incrementCounter?.("denylist_rollback_no_cache");
+      return { ids: [], instance_ids: [], kids: [], serial: highest, issued_at: 0, rollbackNoCache: true } as DenyList & { rollbackNoCache: true };
     }
     if (highest === null || data.serial > highest) {
       try {
-        writeFileSync(`${statePath}.tmp`, `${data.serial}\n`);
+        writeFileSync(`${statePath}.tmp`, `${data.serial}\n`, { mode: 0o600 });
         renameSync(`${statePath}.tmp`, statePath);
       } catch {
         warnOnce("state-write", "cannot persist the highest seen serial");
       }
+      rememberAccepted(acceptedPath, raw);
+      accepted = data;
     }
     maxSerial = data.serial;
     return data;
@@ -242,6 +288,7 @@ export function createDenyListReader(input: {
     revoked({ licenseId, instanceId, kid }) {
       const list = load();
       if (!list) return false;
+      if ((list as DenyList & { rollbackNoCache?: boolean }).rollbackNoCache) return true;
       return Boolean(
         (licenseId && list.ids.includes(licenseId)) ||
           (instanceId && list.instance_ids.includes(instanceId)) ||

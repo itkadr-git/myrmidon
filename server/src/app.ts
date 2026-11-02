@@ -12,6 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@myrmidon/db";
+import { type Config, loadConfig } from "./config.js";
 import {
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
@@ -125,6 +126,8 @@ import { myrmidonBehaviorSettingsRoutes } from "./myrmidon/behavior-settings/ind
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+import { myrmidonInstalledLocalesRoutes } from "./myrmidon/installed-locales/index.js";
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
 import { myrmidonUsersAdminRoutes } from "./myrmidon/users-admin-a/index.js"; // myrmidon(OPE-8985)
 import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
@@ -241,7 +244,8 @@ import {
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
-import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { configureCorpusAdapters, myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { createCorpusShadowSearch } from "./myrmidon/corpus/shadow-search.js";
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
 import {
   myrmidonArchitectDataMcpRoutes,
@@ -1313,6 +1317,8 @@ export async function createApp(
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));
+  // myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+  api.use(myrmidonInstalledLocalesRoutes(db));
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
@@ -1368,7 +1374,9 @@ export async function createApp(
     trustedLocalStdioRuntimeHost,
   });
   const toolActionDeliveries = toolActionDeliveryService(db, heartbeatService(db, { pluginWorkerManager: workerManager }));
+  configureCorpusAdapters(db, loadConfig());
   const toolGateway = createToolGatewayService(db, {
+    corpusShadowSearch: createCorpusShadowSearch(db),
     onToolActionSettled: (id) => toolActionDeliveries.deliver(id),
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,
