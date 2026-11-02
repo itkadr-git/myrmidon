@@ -46,6 +46,10 @@ import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js"
 import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+} from "../myrmidon/review-stage-recovery/policy.js";
+import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
   isApprovalRequestingDone,
@@ -3712,13 +3716,13 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
-    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   } = {},
 ) {
   const router = Router();
@@ -15824,16 +15828,109 @@ export function issueRoutes(
                 reenteringReview: existing.status !== "in_review",
               });
               if (stageWake?.agentId) {
-                const admission = await insertReviewAdmissionWakeup(
-                  stageWake.agentId,
-                  stageWake.wakeup,
-                  tx as unknown as Db,
-                  updated.companyId,
-                );
-                if (admission && admission.created === false && !admission.skippedMissingAgent) {
-                  throw new Error(
-                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                let admitReviewer = true;
+                if (
+                  stageWake.wakeup.reason === "execution_review_requested" ||
+                  stageWake.wakeup.reason === "execution_review_participant_recovery"
+                ) {
+                  const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                    companyId: updated.companyId,
+                    issueId: updated.id,
+                  });
+                  if (ci.state === "pending" || ci.state === "unknown") {
+                    admitReviewer = false;
+                    if (ci.state === "unknown") {
+                      const headKey = ci.headSha ?? "unknown-head";
+                      const eventIdempotencyKey = `review-ci-unreadable:${updated.id}:${headKey}`;
+                      const priorEvent = await tx.query.activityLog.findFirst({
+                        where: and(
+                          eq(activityLog.companyId, updated.companyId),
+                          eq(activityLog.entityType, "issue"),
+                          eq(activityLog.entityId, updated.id),
+                          eq(activityLog.action, "review_ci_unreadable"),
+                          sql`${activityLog.details}->>'idempotencyKey' = ${eventIdempotencyKey}`,
+                        ),
+                      });
+                      if (!priorEvent) {
+                        await logActivity(tx as unknown as Db, {
+                          companyId: updated.companyId,
+                          actorType: "system",
+                          actorId: "review-admission",
+                          agentId: null,
+                          runId: actor.runId,
+                          action: "review_ci_unreadable",
+                          entityType: "issue",
+                          entityId: updated.id,
+                          details: {
+                            idempotencyKey: eventIdempotencyKey,
+                            pullRequestUrl: ci.pullRequestUrl,
+                            headSha: ci.headSha,
+                            reason: ci.reason ?? "unknown",
+                          },
+                        });
+                      }
+                    }
+                    const previousPolicy = normalizeIssueExecutionPolicy(
+                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    );
+                    const monitor = {
+                      nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
+                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      scheduledBy: "assignee" as const,
+                      kind: "external_service" as const,
+                      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+                      externalRef: ci.pullRequestUrl ?? updated.id,
+                      timeoutAt: null,
+                      maxAttempts: null,
+                      recoveryPolicy: "wake_owner" as const,
+                    };
+                    updateFields.executionPolicy = {
+                      ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+                      monitor,
+                    } as any;
+                    issueUpdateData.executionPolicy = updateFields.executionPolicy;
+                    issueUpdateData.monitorNextCheckAt = new Date(monitor.nextCheckAt);
+                    issueUpdateData.monitorScheduledBy = monitor.scheduledBy;
+                    issueUpdateData.monitorAttemptCount = 0;
+                    issueUpdateData.monitorWakeRequestedAt = null;
+                    issueUpdateData.monitorLastTriggeredAt = null;
+                    // Apply the monitor transition now because the update ran before
+                    // reviewer admission decided that this stage must wait on CI.
+                    const monitorPatch = applyIssueMonitorPolicyTransition({
+                      issue: updated,
+                      policy: updateFields.executionPolicy,
+                      previousPolicy: normalizeIssueExecutionPolicy(
+                        (existing.executionPolicy ?? null) as any,
+                      ),
+                      requestedStatus: updated.status,
+                      requestedAssigneePatch: {},
+                      actor: { agentId: actor.agentId, userId: actor.userId },
+                      monitorExplicitlyUpdated: true,
+                    });
+                    Object.assign(issueUpdateData, monitorPatch.patch);
+                    if (typeof monitorPatch.patch.executionState !== "undefined") {
+                      updated.executionState = monitorPatch.patch.executionState;
+                    }
+                    if (typeof monitorPatch.patch.monitorNextCheckAt !== "undefined") {
+                      updated.monitorNextCheckAt = monitorPatch.patch.monitorNextCheckAt;
+                    }
+                    if (typeof monitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
+                      updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt;
+                    }
+                  }
+                }
+                if (admitReviewer) {
+                  const admission = await insertReviewAdmissionWakeup(
+                    stageWake.agentId,
+                    stageWake.wakeup,
+                    tx as unknown as Db,
+                    updated.companyId,
                   );
+                  if (admission && admission.created === false && !admission.skippedMissingAgent) {
+                    throw new Error(
+                      `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                    );
+                  }
                 }
               }
               if (
