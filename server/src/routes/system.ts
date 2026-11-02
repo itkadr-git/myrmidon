@@ -25,7 +25,7 @@ export function systemRoutes(db: Db) {
   router.get("/projects/:projectId/system/auto-update-settings", async (req, res) => {
     const projectId = req.params.projectId!;
     const row = await db.select({ companyId: projects.companyId }).from(projects)
-      .where(eq(projects.id, projectId)).then((rows) => rows[0] ?? null);
+      .where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null);
     if (!row) throw notFound("Project not found");
     assertCompanyAccess(req, row.companyId);
     res.json(await readProjectSettings(projectId, row.companyId));
@@ -34,11 +34,12 @@ export function systemRoutes(db: Db) {
   router.put("/projects/:projectId/system/auto-update-settings", validate(autoUpdateSettingsSchema), async (req, res) => {
     const projectId = req.params.projectId!;
     const row = await db.select({ companyId: projects.companyId }).from(projects)
-      .where(eq(projects.id, projectId)).then((rows) => rows[0] ?? null);
+      .where(eq(projects.id, projectId)).limit(1).then((rows) => rows[0] ?? null);
     if (!row) throw notFound("Project not found");
     assertCompanyAccess(req, row.companyId);
     const current = await db.select({ env: projects.env }).from(projects)
-      .where(and(eq(projects.id, projectId), eq(projects.companyId, row.companyId))).then((rows) => rows[0]!);
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, row.companyId))).limit(1).then((rows) => rows[0] ?? null);
+    if (!current) throw notFound("Project not found");
     const env = { ...(current.env as Record<string, unknown> | null ?? {}), autoUpdateSettings: req.body };
     await db.update(projects).set({ env, updatedAt: new Date() })
       .where(and(eq(projects.id, projectId), eq(projects.companyId, row.companyId)));
