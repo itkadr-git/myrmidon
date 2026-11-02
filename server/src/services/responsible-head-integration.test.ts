@@ -30,6 +30,56 @@ import {
   resolveResponsibleHeadAgentId,
 } from "./responsible-head.js";
 
+async function waitForQueuedRun(
+  db: Db,
+  agentId: string,
+  interactionId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
+    const matchingRun = run?.contextSnapshot as Record<string, unknown> | null;
+    if (matchingRun?.interactionId === interactionId) return run;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
+async function waitForDeferredWakeRequest(
+  db: Db,
+  agentId: string,
+  interactionId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const requests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      );
+    const matchingRequest = requests.find(
+      (request) => (request.payload as Record<string, unknown> | null)?.interactionId === interactionId,
+    );
+    if (matchingRequest) return matchingRequest;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
 const support = await getEmbeddedPostgresTestSupport();
 const d = support.supported ? describe : describe.skip;
 
@@ -497,19 +547,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.issueId).toBe(issueId);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
 
-      const headRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, admAgentId),
-            eq(heartbeatRuns.status, "queued"),
-          ),
-        );
-
-      const targetRun = headRuns.find(
-        (r) => (r.contextSnapshot as any)?.interactionId === interaction.id,
-      );
+      const targetRun = await waitForQueuedRun(db, admAgentId, interaction.id);
       expect(targetRun?.id).toBe(wakeResult?.id);
 
       // Verify no queued runs for owner or engineer
@@ -608,18 +646,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
       expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
-      const headRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, admAgentId),
-            eq(heartbeatRuns.status, "queued"),
-          ),
-        );
-      const targetRun = headRuns.find(
-        (r) => (r.contextSnapshot as any)?.interactionId === interaction.id,
-      );
+      const targetRun = await waitForQueuedRun(db, admAgentId, interaction.id);
       expect(targetRun?.id).toBe(wakeResult?.id);
     });
 
@@ -724,18 +751,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.status).toBe("queued");
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
-      const wakeRequests = await db
-        .select()
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.agentId, admAgentId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          ),
-        );
-      const targetRequest = wakeRequests.find(
-        (r) => (r.payload as any)?.interactionId === interaction.id,
-      );
+      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id);
       expect(targetRequest).toBeDefined();
       expect(targetRequest?.reason).toBe("interaction_pending");
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
@@ -832,17 +848,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
 
       expect(wakeResult).not.toBeNull();
       expect(wakeResult?.status).toBe("queued");
-      const queuedRun = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, fallbackAdmId),
-            eq(heartbeatRuns.status, "queued"),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const queuedRun = await waitForQueuedRun(db, fallbackAdmId, interaction.id);
 
       expect(queuedRun).toBeDefined();
       expect(queuedRun?.id).toBe(wakeResult?.id);
