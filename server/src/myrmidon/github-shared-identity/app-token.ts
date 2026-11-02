@@ -115,10 +115,22 @@ type CachedToken = { token: string; expiresAt: number };
 const tokenCache = new Map<string, CachedToken>();
 const installationCache = new Map<string, string>();
 
+const resetListeners: Array<() => void> = [];
+export function onResetGitHubAppTokenCache(fn: () => void) {
+  resetListeners.push(fn);
+}
+
 /** Tests only: forget cached tokens and installation ids. */
 export function resetGitHubAppTokenCacheForTests() {
   tokenCache.clear();
   installationCache.clear();
+  for (const fn of resetListeners) {
+    try {
+      fn();
+    } catch {
+      // Ignore listener errors during cache reset
+    }
+  }
 }
 
 async function githubRequest(
