@@ -56,20 +56,28 @@ case "$1" in
     esac ;;
   buildx)
     echo "docker buildx $*" >> "$SANDBOX/calls.log"
-      if [[ "$*" == *"imagetools inspect"* ]]; then
-        if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
-          jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
-        fi
-        cat "$SANDBOX/imagetools.json"; exit 0
-      fi
-    # RELEASE-GATE: the same registry answers the component repositories. A
-    # digest-format inspect gets the component digest file; the board and every
-    # CI check get the image JSON (with labels).
+    # RELEASE-GATE: component inspections must be routed before the generic
+    # board-image response. check-release-support.sh asks for
+    # '{{json .Manifest.Digest}}', while image-label checks ask for the full
+    # image JSON.
     case "$4" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
-        cat "$SANDBOX/component-image.json" ;;
+        for a in "$@"; do
+          case "$a" in
+            *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;;
+          esac
+        done
+        cat "$SANDBOX/component-image.json"; exit 0 ;;
+    esac
+    if [[ "$*" == *"imagetools inspect"* ]]; then
+      if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
+        jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
+      fi
+      cat "$SANDBOX/imagetools.json"; exit 0
+    fi
+    # RELEASE-GATE: non-imagetools buildx commands are not expected here.
+    case "$4" in
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         cat "$SANDBOX/imagetools.json" ;;
@@ -190,6 +198,7 @@ function sandbox({
   // arguments; the files themselves must exist (a real compose dir does).
   fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash\ncase "$1" in\n  --version) echo systemd 255 ; exit 0 ;;\n  is-enabled|daemon-reload|enable|start) exit 0 ;;\n  *) exit 0 ;;\nesac\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
@@ -291,6 +300,7 @@ function sandbox({
       `MAINTENANCE_EXIT_COMMAND='echo exit >> ${path.join(dir, "maintenance.log")}'`,
       "RUNNING_RUNS_COMMAND='echo 0'",
       `SYSTEMD_UNIT_DIR=${unitDir}`,
+      "SYSTEMD_UNIT_INSTALL=1",
       // RELEASE-GATE: the release components answer their health probes here
       // (the fake curl serves every URL with the health file).
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
@@ -339,9 +349,9 @@ function pathWithoutGit(sb) {
 }
 
 function run(sb, script, args, input, extraEnv = {}) {
-  const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
+  const searchPath = `${sb.bin}:${pathWithoutGit(sb).split(":").slice(1).join(":")}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
+    env: { ...process.env, BASH_ENV: "", ENV: "", PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
     input,
   });
@@ -753,7 +763,7 @@ describe("deploy.sh", () => {
     const sb = sandbox({
       newRevision: "0123456789abcdef0123456789abcdef01234568",
       oldRevision: "fedcba9876543210fedcba9876543210fedcba98",
-      migrationFiles: "packages/db/src/migrations/0433_urgent.sql\\n",
+      migrationFiles: "packages/db/src/migrations/0433_urgent.sql\n",
     });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "critical fix", "--dry-run"]);
     assert.notEqual(code, 0, out);
