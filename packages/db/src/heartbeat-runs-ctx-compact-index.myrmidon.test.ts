@@ -76,8 +76,9 @@ describe("heartbeat_runs context compact index migration (static checks)", () =>
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
     expect(statements.length).toBe(1);
-    expect(statements[0]!.endsWith(`${CREATE_STATEMENT};`)).toBe(true);
-    expect(statements[0]).toMatch(/^CREATE INDEX CONCURRENTLY IF NOT EXISTS/i);
+    const sqlStatement = statements[0]!.replace(/^(--[^\n]*\n\s*)*/, "").trim();
+    expect(sqlStatement.endsWith(`${CREATE_STATEMENT};`)).toBe(true);
+    expect(sqlStatement).toMatch(/^CREATE INDEX CONCURRENTLY IF NOT EXISTS/i);
   });
 
   it("registers the migration in the journal and the snapshot with matching index name", async () => {
