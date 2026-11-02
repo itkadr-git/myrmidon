@@ -65,6 +65,7 @@ import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-con
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
+import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
@@ -148,6 +149,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
   "swarm_lease_recovered_total",
+  "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_recovery_created_total",
@@ -1458,6 +1460,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       SWARM_LEASE_RECOVERY_REASONS.map((reason) =>
         `swarm_lease_recovered_total{${R},reason="${reason}"} ${formatSampleValue(claimCounters.recovered[reason])}`,
       ),
+    ),
+  );
+  const scentSnapshot = scentMetrics.read();
+  blocks.push(
+    familyBlock(
+      "swarm_scent_classifier_alarm",
+      "Alarm flag (1 if active, 0 otherwise) when scent classifier has >=10 attempts and 0 successes in the last hour.",
+      "gauge",
+      [`swarm_scent_classifier_alarm{${R}} ${formatSampleValue(scentSnapshot.alarm)}`],
     ),
   );
   const continuationCounters = continuationDedupeMetrics.read();
