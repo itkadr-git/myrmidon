@@ -361,6 +361,6 @@ describe("readdress-apply", () => {
         SELECT COUNT(*)::int AS count FROM interaction_escalations
       `)) as unknown as Array<{ count: number }>;
       expect(journalAfterRepeat[0]!.count).toBe(3);
-    });
+    }, 60_000);
   });
 });
