@@ -1711,6 +1711,18 @@ describe("mapFinalResultForTest", () => {
     ).toBe(true);
   });
 
+  it("detects the OPE-10494 bilingual maintenance / resource-exhaustion reply", () => {
+    // The exact provider text observed 01.11 on adm-architect runs:
+    // Vietnamese half, English half, and the slash-joined form.
+    for (const text of [
+      "Tạm bảo trì vì hết tài nguyên…",
+      "Temporarily under maintenance due to resource exhaustion…",
+      "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…",
+    ]) {
+      expect(isProviderErrorAsContent(text)).toBe(true);
+    }
+  });
+
   it("does not treat an overload-like tool result as a provider error", () => {
     const result = mapFinalResultForTest({
       terminal: {

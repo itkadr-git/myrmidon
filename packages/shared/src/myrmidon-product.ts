@@ -10,3 +10,6 @@
 
 /** The product name as shown to people and agents. */
 export const PRODUCT_NAME = "Myrmidon";
+
+/** The default product description for metadata, manifests, and Open Graph tags. */
+export const PRODUCT_DESCRIPTION = "AI-powered project management and agent coordination platform";

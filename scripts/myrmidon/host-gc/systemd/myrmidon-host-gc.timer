@@ -1,0 +1,12 @@
+[Unit]
+Description=Myrmidon Host GC Timer — every 2 hours
+Documentation=file:///opt/myrmidon/scripts/myrmidon/host-gc/README.md
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=2h
+Persistent=true
+Unit=myrmidon-host-gc.service
+
+[Install]
+WantedBy=timers.target

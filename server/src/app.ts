@@ -98,6 +98,7 @@ import { decisionQueueRoutes } from "./routes/decision-queues.js";
 import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { usersRoutes } from "./routes/users.js";
+import { auditRoutes } from "./routes/audit.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
@@ -140,6 +141,7 @@ import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
 import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
 import { installIdProviderFor } from "./myrmidon/licensing/install-id.js"; // myrmidon(OPE-8836)
 import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
+import { startDenyListPuller } from "./myrmidon/licensing/denylist-pull.js"; // myrmidon(OPE-9084)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
@@ -1207,6 +1209,9 @@ export async function createApp(
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
   api.use(myrmidonUsersAdminRoutes(db, { authPublicBaseUrl: opts.authPublicBaseUrl })); // myrmidon(OPE-8985): users admin + public password-set
+  api.use(usersRoutes(db)); // myrmidon(OPE-10215): dedicated user block operator
+  api.use(auditRoutes(db)); // myrmidon(OPE-10215): user block audit query routes
+
   api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
   api.use(myrmidonOwnerActiveChannelRoutes(db)); // myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel status and threshold
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
@@ -1686,6 +1691,9 @@ export async function createApp(
     jobCoordinator.start();
     scheduler.start();
   }
+  // myrmidon(OPE-9084): the client installation pulls the issuer's signed
+  // deny-list itself. API-only processes do not own periodic work.
+  const denyListPuller = backgroundWorkEnabled ? startDenyListPuller() : null;
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -1932,6 +1940,7 @@ export async function createApp(
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;
       }
+      denyListPuller?.stop();
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);

@@ -6,7 +6,18 @@ import { logger } from "../../middleware/logger.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { createStaleBlockSweep, type StaleBlockSweep } from "./sweep.js";
 
-export { createStaleBlockSweep, type StaleBlockSweep, type StaleBlockSweepResult } from "./sweep.js";
+export {
+  createStaleBlockSweep,
+  type StaleBlockSweep,
+  type StaleBlockSweepResult,
+  type KeysetCursor,
+  type BlockedCandidatesResult,
+  STALE_BLOCK_SWEEP_PAGE_SIZE,
+  STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS,
+  recordStaleBlockOldestUnsweptAge,
+  getStaleBlockOldestUnsweptSeconds,
+  computeOldestUnsweptBlockedTaskAgeMs,
+} from "./sweep.js";
 export {
   judgeStaleBlockReason,
   collectStaleBlockReasons,
@@ -16,10 +27,18 @@ export {
 export { readReasonRef, type StaleBlockReasonRef } from "./reason.js";
 export {
   STALE_BLOCK_RECOVERY_LIVENESS_EVENT_PREFIX,
+  STALE_BLOCK_GITHUB_EVENT_PREFIX,
+  STALE_BLOCK_STRANDED_DISPOSITION_EVENT_PREFIX,
+  REGISTERED_EVENT_KEY_PREFIXES,
+  isRegisteredEventKey,
   recoveryLivenessEventKey,
   recoveryLivenessDescriptor,
   recoveryLivenessIssueId,
+  strandedDispositionIssueId,
   createRecoveryLivenessEventReader,
+  createGithubEventReader,
+  createStrandedDispositionEventReader,
+  createDefaultEventReader,
 } from "./event-keys.js";
 export {
   readStaleBlockEnabled,
@@ -76,6 +95,12 @@ export function createStaleBlockScheduler(input: {
         .then((result) => {
           if (result.unblocked > 0) {
             logger.info(result, "stale block sweep removed dead blocks");
+          }
+          if (result.starvationAlert) {
+            logger.warn(
+              { oldestUnsweptAgeMs: result.oldestUnsweptAgeMs },
+              "stale block sweep starvation alert: blocked tasks waiting >1h",
+            );
           }
         })
         .catch((err) => {
