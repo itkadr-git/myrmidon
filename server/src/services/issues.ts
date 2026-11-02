@@ -10186,6 +10186,16 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        if (issueData.projectId == null && issueData.parentId) {
+          const parentIssue = await getWorkspaceInheritanceIssue(
+            tx,
+            companyId,
+            issueData.parentId,
+          ).catch(() => null);
+          if (parentIssue?.projectId) {
+            issueData.projectId = parentIssue.projectId;
+          }
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
