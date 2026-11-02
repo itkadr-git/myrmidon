@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import type { Db } from "@myrmidon/db";
-import { badRequest, notFound } from "../../errors.js";
+import { badRequest, HttpError, notFound } from "../../errors.js";
 import { assertAuthenticated, assertBoard } from "../../routes/authz.js";
 import { parseCatalogJson } from "./validator.js";
 import {
@@ -177,6 +177,17 @@ export function localeUploadRoutes(
         stored: uploadResult.stored,
       });
     } catch (err) {
+      if (err instanceof HttpError && err.status === 400) {
+        const details = err.details as
+          | { errors?: unknown; report?: unknown }
+          | undefined;
+        return res.status(400).json({
+          error: err.message,
+          valid: false,
+          ...(details?.errors ? { errors: details.errors } : {}),
+          ...(details?.report ? { report: details.report } : {}),
+        });
+      }
       next(err);
     }
   };
