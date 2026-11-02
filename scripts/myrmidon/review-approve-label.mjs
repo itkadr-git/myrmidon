@@ -242,6 +242,8 @@ export function decideApproveLabel({
   } else if (!headCommittedAt || headCommittedAt.getTime() > verdict.at.getTime()) {
     return { action: "needs-rereview", reason: "head-newer-than-verdict" };
   }
+  // Every approved PR must have an actual completed SUCCESS on its current head.
+  // In particular, do not treat skipped, neutral, missing, or transient checks as green.
   if (ci !== "success") return { action: "skip", reason: `ci-${ci}` };
 
   // Migration guard (OPE-10520): refuse to merge PRs that rewrite applied

@@ -192,6 +192,30 @@ describe("decideApproveLabel", () => {
     assert.equal(decision.autoMerge, true);
   });
 
+  it("does not label or merge when CI result is skipped", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: open,
+      headCommittedAt: null,
+      ci: "skipped",
+      autoMerge: true,
+    });
+    assert.deepEqual(decision, { action: "skip", reason: "ci-skipped" });
+  });
+  it("holds auto-merge when main CI is cancelled or timed out", () => {
+    for (const mainCi of ["cancelled", "timed_out"]) {
+      const decision = decideApproveLabel({
+        verdict: approve,
+        pr: { ...open, labels: [APPROVED_LABEL], autoMerge: true },
+        headCommittedAt: null,
+        ci: "success",
+        mainCi,
+        autoMerge: true,
+      });
+      assert.deepEqual(decision, { action: "hold", disableAutoMerge: true, reason: "main-red" });
+    }
+  });
+
   it("is a no-op when already labeled and autoMerge is already enabled", () => {
     const decision = decideApproveLabel({
       verdict: approve,
