@@ -222,6 +222,30 @@ export const en = {
           tokens: "Tokens",
           unnamed: "Unnamed agent",
         },
+        chart: {
+          title: "Daily spend",
+          empty: "No spend is recorded",
+          day: "Day",
+        },
+        range: {
+          from: "From",
+          to: "To",
+          preset: {
+            mtd: "Month to Date",
+            "7d": "Last 7 Days",
+            "30d": "Last 30 Days",
+            ytd: "Year to Date",
+            all: "All Time",
+            custom: "Custom",
+          },
+        },
+        issues: {
+          title: "Expensive tasks for the period",
+          issue: "Task",
+          cost: "Cost",
+          runs: "Runs",
+          empty: "No expensive tasks",
+        },
         incidents: {
           keepPaused: "Keep paused",
           raiseAndResume: "Raise and resume",
