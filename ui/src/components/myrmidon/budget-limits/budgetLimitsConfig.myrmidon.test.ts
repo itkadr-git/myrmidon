@@ -17,6 +17,8 @@ import {
   periodLabelKey,
   signalOnlySourceLabelKey,
   usagePercent,
+  warningLabelKey,
+  warningThresholdFromUsage,
 } from "./budgetLimitsConfig";
 import type { BudgetLimitUsageRow, BudgetLimitView } from "./budgetLimitsApi";
 
@@ -128,6 +130,29 @@ describe("usagePercent", () => {
   });
 });
 
+describe("warningThresholdFromUsage and warningLabelKey", () => {
+  it("computes thresholds 80% and 95%", () => {
+    expect(warningThresholdFromUsage(799, 1000)).toBeNull();
+    expect(warningThresholdFromUsage(800, 1000)).toBe(80);
+    expect(warningThresholdFromUsage(949, 1000)).toBe(80);
+    expect(warningThresholdFromUsage(950, 1000)).toBe(95);
+    expect(warningThresholdFromUsage(1000, 1000)).toBe(95);
+    expect(warningThresholdFromUsage(1200, 1000)).toBe(95);
+  });
+
+  it("returns null for non-positive amount or spent", () => {
+    expect(warningThresholdFromUsage(null, 1000)).toBeNull();
+    expect(warningThresholdFromUsage(0, 1000)).toBeNull();
+    expect(warningThresholdFromUsage(500, 0)).toBeNull();
+    expect(warningThresholdFromUsage(500, null)).toBeNull();
+  });
+
+  it("returns the corresponding i18n label keys", () => {
+    expect(warningLabelKey(80)).toBe("budgetLimits.warning80");
+    expect(warningLabelKey(95)).toBe("budgetLimits.warning95");
+  });
+});
+
 describe("buildBudgetLimitTree", () => {
   const companyLimit = limit({ level: "nest", ref: "company", amountCents: 50000, mode: "soft" });
   const projectLimit = limit({ level: "nest", ref: PROJECT_ID });
@@ -155,11 +180,23 @@ describe("buildBudgetLimitTree", () => {
     expect(orphan?.refLabel).toBeNull();
   });
 
-  it("carries the spend and the over-limit flag of every stored row", () => {
+  it("carries the spend, over-limit flag and warning threshold of every stored row", () => {
     expect(tree.nest[0].spentCents).toBe(60000);
     expect(tree.nest[0].overLimit).toBe(true);
+    expect(tree.nest[0].warningThreshold).toBe(95);
     expect(tree.nest[1].spentCents).toBe(250);
     expect(tree.nest[1].overLimit).toBe(false);
+    expect(tree.nest[1].warningThreshold).toBeNull();
+  });
+
+  it("does not show a warning for an inactive limit at 90% usage", () => {
+    const inactiveLimit = limit({ level: "nest", ref: "inactive", amountCents: 1000, isActive: false });
+    const result = buildBudgetLimitTree({
+      limits: [inactiveLimit],
+      usage: [{ ...inactiveLimit, spentCents: 900, events: 1, overLimit: false, warningThreshold: null }],
+      projects: [],
+    });
+    expect(result.nest.find((row) => row.ref === "inactive")?.warningThreshold).toBeNull();
   });
 
   it("reads a stored row without a usage row as zero spend, not as no limit", () => {

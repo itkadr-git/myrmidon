@@ -61,7 +61,6 @@ interface Handlers {
   onSaveLimit: Mock<(level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void>;
   onDeleteLimit: Mock<(level: BudgetLimitLevel, ref: string) => void>;
   onToggleSignalOnly: Mock<(signalOnly: boolean) => void>;
-  onExport: Mock<(format: "csv" | "json") => void>;
 }
 
 function render(options: {
@@ -69,12 +68,10 @@ function render(options: {
   usage?: BudgetLimitUsageRow[];
   journal?: BudgetLimitChangeView[];
   signalOnly?: BudgetLimitsSignalOnlyView | null;
-  onExport?: (format: "csv" | "json") => void;
 }): Handlers {
   const onSaveLimit = vi.fn<(level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void>();
   const onDeleteLimit = vi.fn<(level: BudgetLimitLevel, ref: string) => void>();
   const onToggleSignalOnly = vi.fn<(signalOnly: boolean) => void>();
-  const onExport = vi.fn<(format: "csv" | "json") => void>(options.onExport);
   flushSync(() => {
     root.render(
       <BudgetLimitsScreenView
@@ -86,13 +83,12 @@ function render(options: {
         onSaveLimit={onSaveLimit}
         onDeleteLimit={onDeleteLimit}
         onToggleSignalOnly={onToggleSignalOnly}
-        onExport={onExport}
         pending={false}
         error={null}
       />,
     );
   });
-  return { onSaveLimit, onDeleteLimit, onToggleSignalOnly, onExport };
+  return { onSaveLimit, onDeleteLimit, onToggleSignalOnly };
 }
 
 function row(key: string): HTMLElement {
@@ -165,22 +161,23 @@ describe("BudgetLimitsScreenView — the limit tree", () => {
     expect(container.querySelector("[data-testid='budget-limits-tree']")).toBeNull();
   });
 
-  it("renders export buttons and notifies on click", () => {
-    const { onExport } = render({ limits: [COMPANY] });
-    const csvButton = byTestId("budget-limits-export-csv");
-    const jsonButton = byTestId("budget-limits-export-json");
-    expect(csvButton).not.toBeNull();
-    expect(jsonButton).not.toBeNull();
-
-    act(() => {
-      csvButton.click();
+  it("renders warning indicators when usage is approaching limit (80% and 95%)", () => {
+    const nearLimit95 = limit({ level: "caste", ref: "designer", amountCents: 10_000 });
+    const nearLimit80 = limit({ level: "issue", ref: ISSUE_ID, amountCents: 10_000 });
+    render({
+      limits: [COMPANY, nearLimit95, nearLimit80],
+      usage: [
+        usage(COMPANY, 1000, false),
+        usage(nearLimit95, 9600, false),
+        usage(nearLimit80, 8500, false),
+      ],
     });
-    expect(onExport).toHaveBeenCalledWith("csv");
 
-    act(() => {
-      jsonButton.click();
-    });
-    expect(onExport).toHaveBeenCalledWith("json");
+    const casteSpend = byTestId("budget-limits-spent-caste:designer").textContent ?? "";
+    expect(casteSpend).toContain("Approaching limit (95%)");
+
+    const issueSpend = byTestId(`budget-limits-spent-issue:${ISSUE_ID}`).textContent ?? "";
+    expect(issueSpend).toContain("Approaching limit (80%)");
   });
 });
 

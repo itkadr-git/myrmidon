@@ -7,6 +7,9 @@
 import { describe, expect, it } from "vitest";
 import {
   budgetLimitWindow,
+  budgetLimitWarningThresholdSchema,
+  getBudgetLimitWarningThreshold,
+  isBudgetLimitApproaching,
   budgetLimitsExportQuerySchema,
   budgetLimitsReportToCsv,
   escapeCsvCell,
@@ -118,6 +121,57 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) shared contract", () => {
       const lines = csv.split("\n");
       expect(lines[0]).toBe("level,ref,period,mode,amount_cents,spent_cents,events,over_limit,is_active,created_at,updated_at");
       expect(lines[1]).toBe("nest,company,calendar_month_utc,soft,50000,12500,10,false,true,2026-10-01T00:00:00.000Z,2026-10-01T00:00:00.000Z");
+    });
+  });
+
+  describe("warning thresholds (80% and 95%)", () => {
+    const activeLimit = { amountCents: 10_000, isActive: true }; // $100.00
+    const inactiveLimit = { amountCents: 10_000, isActive: false };
+
+    it("evaluates warning thresholds at 80% and 95%", () => {
+      // Under 80%: no warning
+      expect(getBudgetLimitWarningThreshold(activeLimit, 0)).toBeNull();
+      expect(getBudgetLimitWarningThreshold(activeLimit, 5_000)).toBeNull();
+      expect(getBudgetLimitWarningThreshold(activeLimit, 7_999)).toBeNull();
+
+      // At and above 80%, below 95%: threshold 80
+      expect(getBudgetLimitWarningThreshold(activeLimit, 8_000)).toBe(80);
+      expect(getBudgetLimitWarningThreshold(activeLimit, 8_500)).toBe(80);
+      expect(getBudgetLimitWarningThreshold(activeLimit, 9_499)).toBe(80);
+
+      // At and above 95%: threshold 95
+      expect(getBudgetLimitWarningThreshold(activeLimit, 9_500)).toBe(95);
+      expect(getBudgetLimitWarningThreshold(activeLimit, 9_999)).toBe(95);
+      expect(getBudgetLimitWarningThreshold(activeLimit, 10_000)).toBe(95);
+      expect(getBudgetLimitWarningThreshold(activeLimit, 12_000)).toBe(95);
+    });
+
+    it("returns null for inactive limits or invalid amounts", () => {
+      expect(getBudgetLimitWarningThreshold(inactiveLimit, 9_900)).toBeNull();
+      expect(getBudgetLimitWarningThreshold({ amountCents: 0, isActive: true }, 100)).toBeNull();
+      expect(getBudgetLimitWarningThreshold({ amountCents: -500, isActive: true }, 100)).toBeNull();
+      expect(getBudgetLimitWarningThreshold(null, 5_000)).toBeNull();
+      expect(getBudgetLimitWarningThreshold(activeLimit, null)).toBeNull();
+      expect(getBudgetLimitWarningThreshold(activeLimit, -100)).toBeNull();
+    });
+
+    it("checks isBudgetLimitApproaching predicate with default and explicit thresholds", () => {
+      expect(isBudgetLimitApproaching(activeLimit, 7_999)).toBe(false);
+      expect(isBudgetLimitApproaching(activeLimit, 8_000)).toBe(true);
+      expect(isBudgetLimitApproaching(activeLimit, 8_000, 80)).toBe(true);
+      expect(isBudgetLimitApproaching(activeLimit, 8_000, 95)).toBe(false);
+      expect(isBudgetLimitApproaching(activeLimit, 9_500, 95)).toBe(true);
+      expect(isBudgetLimitApproaching(inactiveLimit, 9_900, 80)).toBe(false);
+    });
+
+    it("validates threshold schema for query and inputs", () => {
+      expect(budgetLimitWarningThresholdSchema.safeParse(80).success).toBe(true);
+      expect(budgetLimitWarningThresholdSchema.safeParse(95).success).toBe(true);
+      expect(budgetLimitWarningThresholdSchema.safeParse("80").success).toBe(true);
+      expect(budgetLimitWarningThresholdSchema.safeParse("95").success).toBe(true);
+      expect(budgetLimitWarningThresholdSchema.safeParse(50).success).toBe(false);
+      expect(budgetLimitWarningThresholdSchema.safeParse("abc").success).toBe(false);
+      expect(budgetLimitWarningThresholdSchema.safeParse(-80).success).toBe(false);
     });
   });
 });
