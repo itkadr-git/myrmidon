@@ -7,7 +7,7 @@
  * credentials. The launcher therefore tries several candidate base URLs in
  * order until one answers:
  *
- *   PAPERCLIP_GITHUB_BROKER_URL -> PAPERCLIP_API_URL -> PAPERCLIP_RUNTIME_API_URL
+ *   MYRMIDON_BOT_BOARD_URL -> PAPERCLIP_GITHUB_BROKER_URL -> PAPERCLIP_API_URL -> PAPERCLIP_RUNTIME_API_URL
  *   -> items of PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
  *
  * at most GITHUB_BROKER_MAX_CANDIDATES, without duplicates. Each request is
@@ -49,6 +49,7 @@ function paperclipBrokerCandidateUrls(env) {
     seen.add(trimmed);
     urls.push(trimmed);
   };
+  push(env.MYRMIDON_BOT_BOARD_URL);
   push(env.PAPERCLIP_GITHUB_BROKER_URL);
   push(env.PAPERCLIP_API_URL);
   push(env.PAPERCLIP_RUNTIME_API_URL);
@@ -85,9 +86,9 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
           body,
         });
         outcome = String(response.status);
-        if (response.status !== 409) break;
+        if (response.status !== 409 && ![400, 495, 496].includes(response.status)) break;
         await response.arrayBuffer().catch(() => undefined);
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(retryDelayMs, deadline - Date.now()))));
+        if ([400, 495, 496].includes(response.status)) break;
       }
     } catch (error) {
       // A dead or unreachable candidate must not stop the walk.
