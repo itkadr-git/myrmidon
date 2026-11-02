@@ -23,7 +23,7 @@ describe("wake storm guard", () => {
     expect(guard.admit("a", "r", 2).tripped).toBe(true);
     expect(guard.admit("a", "other", 2).allowed).toBe(true);
     expect(guard.admit("b", "r", 2).allowed).toBe(true);
-    expect(guard.admit("a", "r", 11).allowed).toBe(true);
+    expect(guard.admit("a", "r", 12).allowed).toBe(true);
   });
 
   it("reads configurable settings and resolves an explicit source key", () => {

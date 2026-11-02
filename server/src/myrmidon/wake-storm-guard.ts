@@ -59,7 +59,7 @@ export class WakeStormGuard {
 
   admit(agentId: string, sourceKey: string, now = Date.now()): WakeStormAdmission {
     const normalizedSource = sourceKey.trim() || "unknown";
-    const key = `${agentId}:${normalizedSource}`;
+    const key = JSON.stringify([agentId, normalizedSource]);
     const bucket = this.buckets.get(key) ?? { timestamps: [], pausedUntil: 0, alertedAt: null };
     const cutoff = now - this.settings.windowMs;
     bucket.timestamps = bucket.timestamps.filter((timestamp) => timestamp > cutoff);
