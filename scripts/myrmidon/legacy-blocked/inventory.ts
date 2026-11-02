@@ -1,7 +1,6 @@
 import { and, eq, isNull, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { issueRelations, issueThreadInteractions, issues, type Db } from "../../../packages/db/src/index.js";
-import { blockerOpenCondition } from "../../../server/src/myrmidon/blocker-resolved.js";
 
 /**
  * List blocked issues with no pending interaction, child, or blocker metadata.
