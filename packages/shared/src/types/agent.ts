@@ -129,6 +129,13 @@ export interface AgentListItem extends Agent {
   projectIds: string[];
 }
 
+export interface AgentListFilters {
+  q?: string;
+  status?: AgentListItem["status"] | AgentListItem["status"][] | string | string[];
+  role?: string;
+  reportsTo?: string;
+}
+
 export interface AgentDetail extends Agent {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;

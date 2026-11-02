@@ -549,4 +549,122 @@ describeEmbeddedPostgres("stale block sweep", () => {
     const commentsAfterSecond = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(commentsAfterSecond).toHaveLength(commentsAfterFirst.length);
   });
+
+  it("fair traversal: 120 blocked tasks (50 old live + 70 expired dueAt) are all unblocked across 3 passes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Fair Traverse Co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Agent A",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const rowsToInsert = [];
+    // 50 older live blocks (e.g. updatedAt 2026-10-01, live event reason)
+    for (let i = 0; i < 50; i++) {
+      rowsToInsert.push({
+        id: randomUUID(),
+        companyId,
+        identifier: `LIVE-${String(i).padStart(3, "0")}`,
+        title: `Live task ${i}`,
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        unblockDescriptor: {
+          owner: { agentId },
+          action: "wait for external signal",
+          reasonRef: { kind: "event", eventKey: "custom:live", dueAt: "2026-10-04T12:00:00.000Z" },
+        },
+        blockedTransitionAt: new Date("2026-10-01T08:00:00.000Z"),
+        updatedAt: new Date(`2026-10-01T08:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`),
+      });
+    }
+
+    // 70 newer dead blocks (e.g. updatedAt 2026-10-02, dueAt expired relative to NOW)
+    for (let i = 0; i < 70; i++) {
+      rowsToInsert.push({
+        id: randomUUID(),
+        companyId,
+        identifier: `DEAD-${String(i).padStart(3, "0")}`,
+        title: `Dead task ${i}`,
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        unblockDescriptor: {
+          owner: { agentId },
+          action: "wait for external service",
+          reasonRef: {
+            kind: "event",
+            eventKey: "github:inst:1",
+            dueAt: "2026-10-02T12:00:00.000Z", // Expired relative to NOW (2026-10-03T12:00:00.000Z)
+          },
+        },
+        blockedTransitionAt: new Date("2026-10-02T08:00:00.000Z"),
+        updatedAt: new Date(`2026-10-02T08:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`),
+      });
+    }
+
+    await db.insert(issues).values(rowsToInsert as any);
+
+    // sweep with isEventStillSet returning true for custom:live
+    const { sweep } = sweepWith({
+      isEventStillSet: vi.fn(async (_companyId, key) => key === "custom:live"),
+    });
+
+    // Pass 1: checks the 50 oldest (all live)
+    const pass1 = await sweep.sweep({ force: true, at: NOW });
+    expect(pass1.scanned).toBe(50);
+    expect(pass1.unblocked).toBe(0);
+    expect(pass1.skippedLive).toBe(50);
+
+    // Pass 2: continues with keyset cursor to next 50 (50 dead)
+    const pass2 = await sweep.sweep({ force: true, at: NOW });
+    expect(pass2.scanned).toBe(50);
+    expect(pass2.unblocked).toBe(50);
+    expect(pass2.skippedLive).toBe(0);
+
+    // Pass 3: continues with keyset cursor to next 20 (20 dead)
+    const pass3 = await sweep.sweep({ force: true, at: NOW });
+    expect(pass3.scanned).toBe(20);
+    expect(pass3.unblocked).toBe(20);
+    expect(pass3.skippedLive).toBe(0);
+
+    // Across 3 passes, all 70 dead blocks are unblocked!
+    expect(pass1.unblocked + pass2.unblocked + pass3.unblocked).toBe(70);
+
+    const remainingBlocked = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked")));
+    expect(remainingBlocked).toHaveLength(50);
+    expect(remainingBlocked.every((r) => r.identifier?.startsWith("LIVE-"))).toBe(true);
+  });
+
+  it("tracks oldest unswept blocked task age and raises starvation alert if > 1 hour", async () => {
+    // Task was blocked 2 hours before NOW and has not been swept yet
+    const twoHoursAgo = new Date(NOW.getTime() - 2 * 60 * 60 * 1000);
+    await seed({
+      blockerStatus: "in_progress",
+      withRelation: true,
+      updatedAt: twoHoursAgo,
+    });
+
+    const { sweep } = sweepWith();
+    // Sweep runs at NOW. Before this pass, the task was unswept for 2 hours.
+    const result = await sweep.sweep({ force: true, at: NOW });
+    expect(result.oldestUnsweptAgeMs).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000 - 1000);
+    expect(result.starvationAlert).toBe(true);
+
+    // After this pass, the task was swept (age is now ~0ms), so next sweep has age < 1 hour
+    const secondResult = await sweep.sweep({ force: true, at: new Date(NOW.getTime() + 10_000) });
+    expect(secondResult.oldestUnsweptAgeMs).toBeLessThan(60 * 60 * 1000);
+    expect(secondResult.starvationAlert).toBe(false);
+  });
 });

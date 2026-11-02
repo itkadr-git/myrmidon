@@ -33,6 +33,10 @@ if (!runnable) {
   );
 }
 
+afterAll(async () => {
+  await pgvectorInstall.cleanup();
+});
+
 function rowsOf<T>(result: unknown): T[] {
   // drizzle's db.execute over the postgres.js driver returns the driver Result,
   // which is an Array of row objects.
@@ -64,7 +68,11 @@ d("corpus store/queue on embedded Postgres", () => {
   }, 120_000);
 
   afterAll(async () => {
-    await testDb.cleanup();
+    try {
+      await testDb.cleanup();
+    } finally {
+      await pgvectorInstall.cleanup();
+    }
   });
 
   function embedding(seed: number): number[] {

@@ -6,6 +6,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { resolveSignInEmail } from "../lib/login-identifier"; // myrmidon(OPE-8985)
+import { authSessionRecovery } from "../lib/auth-session-recovery";
 import { Button } from "@/components/ui/button";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -36,6 +37,10 @@ export function AuthPage() {
   });
 
   useEffect(() => {
+    authSessionRecovery.reset();
+  }, []);
+
+  useEffect(() => {
     if (session) {
       navigate(nextPath, { replace: true });
     }
@@ -55,6 +60,7 @@ export function AuthPage() {
     },
     onSuccess: async () => {
       setError(null);
+      authSessionRecovery.reset();
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
       // Reset rather than invalidate: the `["companies"]` entry is shared app-wide and

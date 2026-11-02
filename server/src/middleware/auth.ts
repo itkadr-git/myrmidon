@@ -57,6 +57,8 @@ function pruneCloudTenantWriteDebounce(
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): a session request marks the owner active in the portal.
+import { touchWebActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -68,18 +70,29 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-function invalidAgentTokenMessage(token: string) {
+function unverifiedAgentTokenContext(token: string) {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      sub?: unknown;
+      company_id?: unknown;
+      run_id?: unknown;
       exp?: unknown;
     };
-    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
-      return "Expired agent token; obtain fresh credentials and retry";
-    }
+    return {
+      agentId: typeof payload.sub === "string" ? payload.sub : undefined,
+      companyId: typeof payload.company_id === "string" ? payload.company_id : undefined,
+      tokenRunId: typeof payload.run_id === "string" ? payload.run_id : undefined,
+      expired: typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000),
+    };
   } catch {
-    // Malformed and incorrectly signed tokens share the generic failure below.
+    return { expired: false };
   }
-  return "Agent token did not verify; obtain fresh credentials and retry";
+}
+
+function invalidAgentTokenMessage(token: string) {
+  return unverifiedAgentTokenContext(token).expired
+    ? "Expired agent token; obtain fresh credentials and retry"
+    : "Agent token did not verify; obtain fresh credentials and retry";
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -231,7 +244,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    // myrmidon(OPE-10602): only a board heartbeat-run uuid is a run id. A gateway-internal
+    // `run_<hex>` (or any other non-uuid) is ignored here instead of reaching uuid columns
+    // downstream and failing the agent's write with HTTP 500.
+    const rawRunIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
+    const runIdHeader = rawRunIdHeader && isUuidLike(rawRunIdHeader.trim()) ? rawRunIdHeader.trim() : undefined;
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
@@ -245,6 +262,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       (publicMcpGatewayProtocolPath.test(req.path) || monitoringAlertsWebhookPath.test(req.originalUrl))
     ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "public_path_bypass";
+      }
       next();
       return;
     }
@@ -265,6 +285,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         try {
           session = await opts.resolveSession(req);
         } catch (err) {
+          req.actorNoneReason = "session_resolution_error";
           logger.warn(
             { err, method: req.method, url: req.originalUrl },
             "Failed to resolve auth session from request headers",
@@ -292,11 +313,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             runId: runIdHeader ?? undefined,
             source: "session",
           };
+          // myrmidon(1.7-ACTIVE-CHANNEL): a portal session request is the
+          // owner's `web` touch. Debounced and fire-and-forget: the request
+          // never waits on it and a failed write never fails the request.
+          touchWebActivityBestEffort(db, userId);
           next();
           return;
         }
+        if (session && (!session.user?.id || !session.session?.id)) {
+          req.actorNoneReason = "session_invalid";
+        }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "no_credentials";
+      }
       next();
       return;
     }
@@ -304,6 +335,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
       next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
+      return;
+    }
+    if (/^(?:\$|PAPERCLIP_API_KEY$)/.test(token)) {
+      next(unauthorized(
+        "Authorization contains the literal $PAPERCLIP_API_KEY; the environment variable was not expanded (possibly due to single quotes). Read the value from the environment using double quotes or os.environ.",
+        { code: "agent_token_unexpanded_variable" },
+      ));
       return;
     }
 
@@ -342,6 +380,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        const context = unverifiedAgentTokenContext(token);
+        req.actorNoneReason = context.expired ? "agent_token_expired" : "agent_token_invalid";
+        logger.warn(
+          {
+            agentId: context.agentId,
+            companyId: context.companyId,
+            runId: context.tokenRunId ?? runIdHeader ?? undefined,
+            reason: context.expired ? "expired" : "signature_or_malformed",
+            method: req.method,
+            url: req.originalUrl,
+          },
+          "Rejected agent token",
+        );
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
@@ -353,15 +404,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        req.actorNoneReason = "agent_token_agent_mismatch";
         next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
         return;
       }
 
       if (agentRecord.status === "terminated") {
+        req.actorNoneReason = "agent_token_agent_terminated";
         next(unauthorized("Agent is terminated and cannot authenticate"));
         return;
       }
       if (agentRecord.status === "pending_approval") {
+        req.actorNoneReason = "agent_token_agent_pending";
         next(unauthorized("Agent is pending approval and cannot authenticate"));
         return;
       }
@@ -377,7 +431,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           url: req.originalUrl,
         });
         next(
-          unprocessable("X-Paperclip-Run-Id does not match signed agent JWT run_id", {
+          unprocessable("Run ID does not match signed agent JWT run_id", {
             code: "agent_jwt_run_id_mismatch",
             claimRunId: claims.run_id,
             headerRunId: normalizedRunIdHeader,
@@ -443,14 +497,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
+      req.actorNoneReason = "agent_key_agent_mismatch";
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
       return;
     }
     if (agentRecord.status === "terminated") {
+      req.actorNoneReason = "agent_key_agent_terminated";
       next(unauthorized("Agent is terminated and cannot authenticate"));
       return;
     }
     if (agentRecord.status === "pending_approval") {
+      req.actorNoneReason = "agent_key_agent_pending";
       next(unauthorized("Agent is pending approval and cannot authenticate"));
       return;
     }

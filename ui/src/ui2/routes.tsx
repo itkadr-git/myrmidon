@@ -21,11 +21,13 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Commander } from "./screens/commander/Ui2Commander";
 import { Ui2Fleet } from "./screens/fleet/Ui2Fleet";
 // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
 // reader of the knowledge store and the regulations of Autonomy.
 import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
 import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
+import { Ui2PhoneMore } from "./screens/more/Ui2PhoneMore";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -35,11 +37,13 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
+  | "commander"
   | "commander-chat"
   | "fleet"
   | "knowledge"
   | "knowledge-page"
-  | "settings-autonomy-regulations";
+  | "settings-autonomy-regulations"
+  | "more";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -60,7 +64,9 @@ export interface Ui2RouteEntry {
  * language-settings guard test.
  */
 function ui2Screen(element: ReactNode): ReactNode {
-  return <Ui2I18nProvider>{element}</Ui2I18nProvider>;
+  // A single Ui2I18nProvider is mounted at Ui2Root above Ui2Shell so that
+  // settings changes propagate to rail, top bar, and sidebar without reload.
+  return element;
 }
 
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
@@ -124,6 +130,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   // flag. The legacy entry stays /board-chat (conference room); this screen is
   // the single-owner planning conversation, so it does not shadow it.
   {
+    key: "commander",
+    path: "commander",
+    titleKey: "ui2.screens.commander",
+    element: ui2Screen(<Ui2Commander />),
+    legacyPath: "/dashboard",
+  },
+  // Commander chat remains the separate planning conversation route.
+  {
     key: "commander-chat",
     path: "commander-chat",
     titleKey: "ui2.screens.commanderChat",
@@ -156,6 +170,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.regulations",
     element: ui2Screen(<Ui2Regulations />),
     legacyPath: "/company/settings",
+  },
+  // myrmidon(1.7 UI2 PHONE MORE): the phone "More" screen with swarm, costs, quality, settings, agent card and theme switch.
+  {
+    key: "more",
+    path: "more",
+    titleKey: "ui2.screens.more",
+    element: ui2Screen(<Ui2PhoneMore />),
+    legacyPath: "/agents/all",
   },
 ];
 

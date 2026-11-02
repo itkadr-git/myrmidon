@@ -174,8 +174,46 @@ describe("resolvePullRequestHeadCi", () => {
       fetch: fakeFetch({ [PULL]: status(403, { "x-ratelimit-remaining": "0" }) }),
     });
     expect(result.state).toBe("unknown");
-    expect(result.reason).toBe("pull:http_403_rate_limited+anonymous:http_403_rate_limited");
+    expect(result.reason).toBe("pull:http_403_rate_limited");
+    expect(result.rateLimit).toEqual({ remaining: 0, limit: null, resetEpochSeconds: null });
     expect(JSON.stringify(result)).not.toContain("secret-token-value");
+  });
+
+  it("does not retry anonymously when an authenticated request hits the rate limit", async () => {
+    const calls: Array<{ path: string; headers: Record<string, string> }> = [];
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: "app-token",
+      fetch: fakeFetch(
+        { [PULL]: status(403, { "x-ratelimit-remaining": "0" }) },
+        calls,
+      ),
+    });
+    expect(result).toEqual({
+      state: "unknown",
+      headSha: null,
+      reason: "pull:http_403_rate_limited",
+      rateLimit: { remaining: 0, limit: null, resetEpochSeconds: null },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.headers.authorization).toBeDefined();
+  });
+
+  it("measures the GitHub rate limit budget when a read is refused", async () => {
+    const result = await resolvePullRequestHeadCi({
+      reference,
+      token: "app-token",
+      fetch: fakeFetch({
+        [PULL]: status(403, {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-limit": "15000",
+          "x-ratelimit-reset": "1790000000",
+        }),
+      }),
+    });
+    expect(result.state).toBe("unknown");
+    expect(result.reason).toBe("pull:http_403_rate_limited");
+    expect(result.rateLimit).toEqual({ remaining: 0, limit: 15000, resetEpochSeconds: 1790000000 });
   });
 
   it("reads public data without the token when GitHub refuses the token", async () => {

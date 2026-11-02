@@ -730,6 +730,10 @@ function OnboardingWizardInner({
   // submissions could then both pass the fresh probe and both hire. `loading`
   // cannot stop the second caller for the same reason as above.
   const hiringAgentRef = useRef<number | null>(null);
+  // Skip-launch re-entry guard, same pattern as hiringAgentRef: the skip link
+  // and the primary button sit on one footer, and a double-press must not
+  // create two onboarding tasks (OPE-10206).
+  const skipLaunchRef = useRef(false);
   const connectAttemptRef = useRef(0);
   const autoConnectStartedRef = useRef(false);
   // True when the last `adapterEnvResult` came from a config that carried
@@ -1757,6 +1761,98 @@ function OnboardingWizardInner({
   }
 
   /**
+   * Finish onboarding without hiring, from the connect step's skip link.
+   *
+   * A model credential is the one thing the product genuinely cannot run
+   * without — but it is not a precondition for reaching the board, and the
+   * wizard must not present it as one (OPE-10206: "у нас от нее зависимости
+   * нет"). This is the skip half of the connect step being a choice: the
+   * customer can be on their board now and hire the first agent later, in
+   * settings, with whatever source they turn out to have — a LiteLLM gateway
+   * through OpenCode needs no vendor subscription at all.
+   *
+   * The server work is `handleLaunchToDashboard`'s: the company gets its
+   * onboarding project and its first task, so the board the customer lands on
+   * is a working one (they can create and see tasks immediately). The task is
+   * left unassigned — there is no agent to assign it to, and inventing a
+   * placeholder id would only produce a dead link in the UI. The task-detail
+   * view's seeded brief and greeting come from `onboardingFirstTask` server
+   * side, and do not require an assignee.
+   *
+   * Skipped is not failed: no error banner, no half-state. The wizard closes
+   * the way the full run does — company selected, draft discarded — except the
+   * destination is the dashboard rather than a task conversation, because
+   * there is no agent to have one with yet.
+   */
+  async function handleSkipConnectStep() {
+    if (!createdCompanyId) return;
+    if (skipLaunchRef.current) return;
+    skipLaunchRef.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      let goalId = createdCompanyGoalId;
+      if (!goalId) {
+        const goals = await goalsApi.list(createdCompanyId);
+        goalId = selectDefaultCompanyGoalId(goals);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedCompanyGoalId(goalId);
+      }
+
+      let projectId = createdProjectId;
+      if (!projectId) {
+        const projects = await projectsApi.list(createdCompanyId);
+        const existingOnboardingProject = selectReusableOnboardingProject(projects);
+        if (existingOnboardingProject) {
+          projectId = existingOnboardingProject.id;
+        } else {
+          const project = await projectsApi.create(
+            createdCompanyId,
+            buildOnboardingProjectPayload(goalId)
+          );
+          projectId = project.id;
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.projects.list(createdCompanyId)
+          });
+        }
+        if (stillTheSameCompany(createdCompanyId)) setCreatedProjectId(projectId);
+      }
+
+      let issueRef = createdIssueRef;
+      if (!issueRef) {
+        const issue = await issuesApi.create(
+          createdCompanyId,
+          buildOnboardingIssuePayload({
+            title: DEFAULT_TASK_TITLE,
+            // Deliberately no assignee: there is no agent to assign it to, and
+            // the board must still be complete and working (OPE-10206).
+            assigneeAgentId: null,
+            projectId,
+            goalId
+          })
+        );
+        issueRef = issue.identifier ?? issue.id;
+        if (stillTheSameCompany(createdCompanyId)) setCreatedIssueRef(issueRef);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.list(createdCompanyId)
+        });
+      }
+
+      if (!stillTheSameCompany(createdCompanyId)) return;
+
+      const prefix = createdCompanyPrefix;
+      setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
+      reset();
+      closeOnboarding();
+      navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("area.apps-connections-1.onboarding-wizard.launchFailed"));
+    } finally {
+      skipLaunchRef.current = false;
+      setLoading(false);
+    }
+  }
+
+  /**
    * Store the typed key as the customer's own user secret, and report whether it
    * is in place.
    *
@@ -2688,6 +2784,30 @@ function OnboardingWizardInner({
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">{t("area.apps-connections-1.onboarding-wizard.existingConnection")}</p>}
                       </div>
                     </motion.div>
+
+                    {/* The step's way out for a customer with no credential to
+                        give yet. The wizard's job is to get the customer onto
+                        a working board, and nothing about that needs a model
+                        subscription: the first task lands unassigned and the
+                        agent is hired later, in settings, with any source —
+                        a LiteLLM gateway through OpenCode needs no vendor
+                        account at all (OPE-10206). Sits under the credential
+                        switch, plain and low-key, so it reads as an equal way
+                        on rather than a footnote — but never as the
+                        recommended one. Hidden once a sign-in is running for
+                        the same reason the credential link is: abandoning a
+                        live session from under it is a press this step cannot
+                        honour. */}
+                    {connectPhase === "idle" && !connectCredentialStored && (
+                      <button
+                        type="button"
+                        onClick={() => void handleSkipConnectStep()}
+                        disabled={loading || !createdCompanyId}
+                        className="mt-1 px-3 py-2 text-left text-sm font-medium text-muted-foreground underline decoration-muted-foreground/40 underline-offset-4 transition-colors hover:text-foreground hover:decoration-foreground/40 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50"
+                      >
+                        {t("area.apps-connections-1.onboarding-wizard.skipConnect")}
+                      </button>
+                    )}
                   </div>
 
                   {/*

@@ -55,7 +55,31 @@ function headers(token: string | null): Record<string, string> {
   };
 }
 
-type JsonRead = { ok: true; json: unknown } | { ok: false; code: string; status: number | null };
+type JsonRead =
+  | { ok: true; json: unknown }
+  | { ok: false; code: string; status: number | null; rateLimit?: RateLimitFacts | null };
+
+/** The measured budget of one GitHub answer (x-ratelimit-* headers; no token, OPE-10246). */
+type RateLimitFacts = {
+  remaining: number | null;
+  limit: number | null;
+  resetEpochSeconds: number | null;
+};
+
+function rateLimitFactsOf(response: Response): RateLimitFacts | null {
+  const read = (name: string): number | null => {
+    const raw = response.headers.get(`x-ratelimit-${name}`);
+    if (raw === null || raw.trim() === "") return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const facts: RateLimitFacts = {
+    remaining: read("remaining"),
+    limit: read("limit"),
+    resetEpochSeconds: read("reset"),
+  };
+  return facts.remaining !== null || facts.limit !== null || facts.resetEpochSeconds !== null ? facts : null;
+}
 
 async function readJson(fetchImpl: FetchLike, url: string, token: string | null): Promise<JsonRead> {
   let response: Response;
@@ -66,7 +90,12 @@ async function readJson(fetchImpl: FetchLike, url: string, token: string | null)
   }
   if (!response.ok) {
     const rateLimited = response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0";
-    return { ok: false, code: `http_${response.status}${rateLimited ? "_rate_limited" : ""}`, status: response.status };
+    return {
+      ok: false,
+      code: `http_${response.status}${rateLimited ? "_rate_limited" : ""}`,
+      status: response.status,
+      rateLimit: rateLimitFactsOf(response),
+    };
   }
   try {
     return { ok: true, json: await response.json() };
@@ -85,15 +114,25 @@ async function readGitHub(
   url: string,
   token: string | null,
   what: string,
-): Promise<{ ok: true; json: unknown } | { ok: false; reason: string }> {
+): Promise<{ ok: true; json: unknown } | { ok: false; reason: string; rateLimit?: RateLimitFacts | null }> {
   const first = await readJson(fetchImpl, url, token);
   if (first.ok) return first;
   if (token && (first.status === 401 || first.status === 403 || first.status === 404)) {
+    // An exhausted authenticated installation budget applies to the installation,
+    // not just this endpoint. Anonymous fallback burns the shared IP quota too;
+    // preserve the reset time so the monitor can retry after GitHub's reset.
+    if (first.code.endsWith("_rate_limited")) {
+      return { ok: false, reason: `${what}:${first.code}`, rateLimit: first.rateLimit };
+    }
     const anonymous = await readJson(fetchImpl, url, null);
     if (anonymous.ok) return anonymous;
-    return { ok: false, reason: `${what}:${first.code}+anonymous:${anonymous.code}` };
+    return {
+      ok: false,
+      reason: `${what}:${first.code}+anonymous:${anonymous.code}`,
+      rateLimit: anonymous.rateLimit ?? first.rateLimit,
+    };
   }
-  return { ok: false, reason: `${what}:${first.code}${token ? "" : " (anonymous)"}` };
+  return { ok: false, reason: `${what}:${first.code}${token ? "" : " (anonymous)"}`, rateLimit: first.rateLimit };
 }
 
 /** CI state of the current head of one pull request; network only, injected fetch for tests. */
@@ -107,12 +146,21 @@ export async function resolvePullRequestHeadCi(input: {
   headSha: string | null;
   /** Only for "unknown": a short code of what failed, never a token. */
   reason?: string;
+  /** GitHub budget headers for a failed read, for operator diagnostics and reset scheduling. */
+  rateLimit?: RateLimitFacts | null;
 }> {
   const fetchImpl = input.fetch ?? ghFetch;
   const apiBase = gitHubApiBase(input.reference.host);
   const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
   const pull = await readGitHub(fetchImpl, `${apiBase}/repos/${repository}/pulls/${input.reference.number}`, input.token, "pull");
-  if (!pull.ok) return { state: "unknown", headSha: null, reason: pull.reason };
+  if (!pull.ok) {
+    return {
+      state: "unknown",
+      headSha: null,
+      reason: pull.reason,
+      ...(pull.rateLimit ? { rateLimit: pull.rateLimit } : {}),
+    };
+  }
   const pullRecord = asRecord(pull.json);
   if (!pullRecord) return { state: "unknown", headSha: null, reason: "pull:unreadable_payload" };
   const headRecord = asRecord(pullRecord.head);
@@ -126,7 +174,14 @@ export async function resolvePullRequestHeadCi(input: {
     `${apiBase}/repos/${repository}/commits/${encodeURIComponent(headSha)}/check-runs` +
     `?check_name=${encodeURIComponent(REVIEW_CI_FINAL_CHECK_NAME)}&filter=all&per_page=100`;
   const checkRuns = await readGitHub(fetchImpl, checkRunsUrl, input.token, "check_runs");
-  if (!checkRuns.ok) return { state: "unknown", headSha, reason: checkRuns.reason };
+  if (!checkRuns.ok) {
+    return {
+      state: "unknown",
+      headSha,
+      reason: checkRuns.reason,
+      ...(checkRuns.rateLimit ? { rateLimit: checkRuns.rateLimit } : {}),
+    };
+  }
   const runs = asRecord(checkRuns.json)?.check_runs;
   if (!Array.isArray(runs)) return { state: "unknown", headSha, reason: "check_runs:unreadable_payload" };
   return { state: pullRequestHeadCiStateFromChecks({ checkRuns: runs }), headSha };
@@ -185,6 +240,7 @@ export function createReviewPullRequestCiResolver(input: {
         pullRequestUrl: product.url,
         headSha: head.headSha,
         reason: `${head.reason ?? "read_failed"}${tokenError ? "; token provider failed" : ""}`,
+        ...(head.rateLimit ? { rateLimit: head.rateLimit } : {}),
       };
     } catch {
       return { state: "unknown", pullRequestUrl: product.url, headSha: null, reason: "read_failed" };

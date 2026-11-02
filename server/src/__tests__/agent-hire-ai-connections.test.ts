@@ -25,6 +25,7 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
+  vi.stubEnv("MYRMIDON_AGENT_JWT_SECRET", "vitest-agent-jwt-secret");
   database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
   db = createDb(database.connectionString);
 }, 90_000);

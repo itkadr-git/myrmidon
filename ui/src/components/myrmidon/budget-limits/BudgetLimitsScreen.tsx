@@ -11,7 +11,7 @@
 // RU screen carries no literal English text, guarded by the
 // `legacy-screens-no-english` test.
 import { useState } from "react";
-import { Wallet } from "lucide-react";
+import { Download, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,7 @@ import {
   periodLabelKey,
   signalOnlySourceLabelKey,
   usagePercent,
+  warningLabelKey,
   type BudgetLimitNode,
   type BudgetLimitProjectRef,
 } from "./budgetLimitsConfig";
@@ -65,6 +66,7 @@ export interface BudgetLimitsScreenViewProps {
   onSaveLimit: (level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void;
   onDeleteLimit: (level: BudgetLimitLevel, ref: string) => void;
   onToggleSignalOnly: (signalOnly: boolean) => void;
+  onExport?: (format: "csv" | "json") => void;
   pending: boolean;
   error: string | null;
 }
@@ -87,6 +89,7 @@ export function BudgetLimitsScreenView({
   onSaveLimit,
   onDeleteLimit,
   onToggleSignalOnly,
+  onExport,
   pending,
   error,
 }: BudgetLimitsScreenViewProps) {
@@ -149,10 +152,13 @@ export function BudgetLimitsScreenView({
       setAddError(t(parsed.messageKey));
       return;
     }
-    setAddError(null);
-    if (!rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref)) {
-      setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
+    const alreadyExists = rows.find((group) => group.level === level)?.nodes.some((node) => node.ref === parsed.ref);
+    if (alreadyExists) {
+      setAddError(t("budgetLimits.refAlreadyExists"));
+      return;
     }
+    setAddError(null);
+    setAddedRefs((previous) => [...previous, { level, ref: parsed.ref }]);
     setAddLevel(null);
     setAddProjectRef("");
     setAddFreeRef("");
@@ -164,12 +170,40 @@ export function BudgetLimitsScreenView({
 
   return (
     <section className="space-y-6" data-testid="myrmidon-budget-limits">
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <Wallet className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">{t("budgetLimits.title")}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Wallet className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">{t("budgetLimits.title")}</h2>
+          </div>
+          <p className="max-w-2xl text-sm text-muted-foreground">{t("budgetLimits.intro")}</p>
         </div>
-        <p className="max-w-2xl text-sm text-muted-foreground">{t("budgetLimits.intro")}</p>
+        {onExport ? (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              data-testid="budget-limits-export-csv"
+              onClick={() => onExport("csv")}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              {t("budgetLimits.exportCsv")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              data-testid="budget-limits-export-json"
+              onClick={() => onExport("json")}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              {t("budgetLimits.exportJson")}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {error ? (
@@ -248,7 +282,17 @@ export function BudgetLimitsScreenView({
                           <td className="py-2 pr-4">
                             {node.limit ? (
                               <span data-testid={`budget-limits-spent-${node.key}`}>
-                                <span className={node.overLimit ? "font-medium text-destructive" : undefined}>
+                                <span
+                                  className={
+                                    node.overLimit
+                                      ? "font-medium text-destructive"
+                                      : node.warningThreshold
+                                        ? node.warningThreshold >= 95
+                                          ? "font-medium text-amber-500"
+                                          : "font-medium text-yellow-600"
+                                        : undefined
+                                  }
+                                >
                                   {formatCents(node.spentCents ?? 0)}
                                 </span>
                                 <span className="text-muted-foreground">
@@ -259,6 +303,17 @@ export function BudgetLimitsScreenView({
                                 {node.overLimit ? (
                                   <span className="ml-2 text-xs font-medium text-destructive">
                                     {t("budgetLimits.overLimit")}
+                                  </span>
+                                ) : node.warningThreshold ? (
+                                  <span
+                                    className={
+                                      node.warningThreshold >= 95
+                                        ? "ml-2 text-xs font-medium text-amber-500"
+                                        : "ml-2 text-xs font-medium text-yellow-600"
+                                    }
+                                    data-testid={`budget-limits-warning-${node.key}`}
+                                  >
+                                    {t(warningLabelKey(node.warningThreshold))}
                                   </span>
                                 ) : null}
                               </span>

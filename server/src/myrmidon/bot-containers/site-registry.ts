@@ -355,6 +355,8 @@ export interface FleetClientManager {
    * for the health probe and the site-agent calls that are not part of the driver contract.
    */
   getTransports?(): ReadonlyMap<string, FleetSiteTransport>;
+  getSites?(): ReadonlyMap<string, FleetSite>;
+  getSite?(name: string, companyId?: string): FleetSite | null;
   refresh(): Promise<ReadonlyMap<string, BotContainerDriver>>;
   getVersion(): number;
   /**
@@ -429,6 +431,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
   const clientFingerprints = new Map<string, string>();
   const clientAgents = new Map<string, https.Agent>();
   const clientTransports = new Map<string, FleetSiteTransport>();
+  const clientSites = new Map<string, FleetSite>();
   let lastVersion = -1;
   let lastAttemptAt = 0;
   let lastOk = false;
@@ -453,6 +456,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
   function dropClient(key: string): void {
     clients.delete(key);
     clientTransports.delete(key);
+    clientSites.delete(key);
     clientFingerprints.delete(key);
     const agent = clientAgents.get(key);
     if (agent) {
@@ -592,6 +596,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         // The replaced client's agent is released only after the new one is in.
         const oldAgent = clientAgents.get(key);
         clients.set(key, driver);
+        clientSites.set(key, site);
         clientTransports.set(key, { baseUrl: site.url, ...(token ? { token } : {}), ...(httpsAgent ? { agent: httpsAgent } : {}), ...(site.caCert ? { caCert: site.caCert } : {}), ...(clientCert ? { clientCert } : {}), ...(clientKey ? { clientKey } : {}), mtls });
         clientFingerprints.set(key, fingerprint);
         if (httpsAgent) clientAgents.set(key, httpsAgent);
@@ -646,6 +651,21 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     return clientTransports;
   }
 
+  function getSites(): ReadonlyMap<string, FleetSite> {
+    return clientSites;
+  }
+
+  function getSite(name: string, companyId?: string): FleetSite | null {
+    if (companyId) {
+      const site = clientSites.get(fleetSiteKey(companyId, name));
+      if (site) return site;
+    }
+    for (const site of clientSites.values()) {
+      if (site.name === name) return site;
+    }
+    return null;
+  }
+
   function getVersion(): number {
     return getFleetRegistryVersion();
   }
@@ -655,15 +675,22 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     clientAgents.clear();
     clients.clear();
     clientTransports.clear();
+    clientSites.clear();
     clientFingerprints.clear();
   }
 
   return {
     getClients,
     getTransports,
+    getSites,
+    getSite,
     refresh,
     getVersion,
     ensureFresh,
     close,
   };
+}
+
+export function getActiveFleetSite(name: string, companyId?: string): FleetSite | null {
+  return activeFleetClientManager?.getSite?.(name, companyId) ?? null;
 }

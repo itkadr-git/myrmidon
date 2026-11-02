@@ -292,6 +292,23 @@ export function githubConnectionEventService(
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.provider, "github"),
       ));
+
+    const matchingProduct = products.find((product) => {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      return productRepository?.toLowerCase() === repository.toLowerCase() && productNumber === pullRequestNumber;
+    });
+
+    if (!active && matchingProduct) {
+      const metadata = record(matchingProduct.metadata);
+      const lastCompleted = record(metadata.lastCompletedCi);
+      if (lastCompleted && lastCompleted.headSha === headSha && lastCompleted.conclusion === conclusion) {
+        return;
+      }
+    }
+
     for (const product of products) {
       const metadata = record(product.metadata);
       const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
@@ -299,7 +316,20 @@ export function githubConnectionEventService(
         ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
       await database.update(issueWorkProducts).set({
-        metadata: { ...metadata, activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null },
+        metadata: {
+          ...metadata,
+          activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null,
+          ...(active ? { lastCompletedCi: null } : {
+            lastCompletedCi: {
+              repository,
+              number: pullRequestNumber,
+              headSha,
+              conclusion,
+              runId,
+              completedAt: currentTime.toISOString(),
+            },
+          }),
+        },
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
     }
@@ -372,6 +402,18 @@ export function githubConnectionEventService(
       }
     }
 
+    if (matching.issue.monitorNextCheckAt) {
+      await database.update(issues).set({
+        monitorNextCheckAt: null,
+        monitorWakeRequestedAt: null,
+        monitorLastTriggeredAt: currentTime,
+        executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', 'null'::jsonb)`,
+        executionState: sql`case when ${issues.executionState} is not null then jsonb_set(${issues.executionState}, '{monitor,status}', '"cleared"'::jsonb) else null end`,
+        updatedAt: currentTime,
+      }).where(eq(issues.id, matching.issue.id));
+    }
+
+    const idempotencyKey = `ci_completed:${repository}:${pullRequestNumber}:${headSha}`;
     await options.assignmentWakeup(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
@@ -387,7 +429,7 @@ export function githubConnectionEventService(
         event: event.event,
         deliveryId: event.id,
       },
-      idempotencyKey: `ci_completed:${event.event}:${runId}:${headSha}`,
+      idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "system:github-ci",
       contextSnapshot: {

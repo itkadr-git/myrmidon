@@ -103,6 +103,8 @@ export interface KnowledgeRevisionDto {
   status: KnowledgeRevisionStatus;
   lang: KnowledgeRevisionLang;
   translationOf: string | null;
+  title: string | null;
+  summary: string | null;
   content: string;
   changeSummary: string | null;
   rolledBackFromRevisionId: string | null;
@@ -158,6 +160,8 @@ export interface DraftKnowledgeInput {
   lang?: KnowledgeRevisionLang;
   translationOf?: string | null;
   changeSummary?: string | null;
+  title?: string;
+  summary?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
@@ -231,6 +235,8 @@ function toRevisionDto(
     status: row.status,
     lang: row.lang,
     translationOf: row.translationOf,
+    title: row.title ?? null,
+    summary: row.summary ?? null,
     content: row.content,
     changeSummary: row.changeSummary,
     rolledBackFromRevisionId: row.rolledBackFromRevisionId,
@@ -452,6 +458,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           lang,
           translationOf: null,
+          title: input.title,
+          summary: input.summary ?? null,
           content: input.content,
           changeSummary: "created",
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -506,6 +514,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (current.status === "superseded") {
       throw new KnowledgeDomainError("superseded_read_only", 409, "A superseded item takes no new revisions.");
     }
+    if (input.title != null) assertSingleLine(input.title, "Title");
+    if (input.summary != null) assertSingleLine(input.summary, "Summary");
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
@@ -560,6 +570,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           throw new KnowledgeDomainError("invalid_translation_target", 400, "A translation must reference a canonical revision of the same item.");
         }
       }
+      const revisionTitle = input.title !== undefined ? input.title : locked!.title;
+      const revisionSummary = input.summary !== undefined ? (input.summary ?? null) : locked!.summary;
       const [revision] = await tx
         .insert(knowledgeRevisions)
         .values({
@@ -570,6 +582,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: input.submit ? "submitted" : "draft",
           lang,
           translationOf,
+          title: revisionTitle,
+          summary: revisionSummary,
           content: input.content,
           changeSummary: input.changeSummary ?? null,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -719,9 +733,14 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           .set({ status: "approved", approvedAt: now() })
           .where(eq(knowledgeRevisions.id, revision.id));
       }
+      const set: Partial<ItemRow> = { status: "published", deliveredRevisionId: revision.id, updatedAt: now() };
+      if (revision.title != null) {
+        set.title = revision.title;
+        set.summary = revision.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({ status: "published", deliveredRevisionId: revision.id, updatedAt: now() })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
       await appendEvent(tx, {
@@ -793,6 +812,10 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         assertItemTransition(current.status, "published");
         set.status = "published";
         set.deliveredRevisionId = revision.id;
+        if (revision.title != null) {
+          set.title = revision.title;
+          set.summary = revision.summary;
+        }
       } else if (current.status === "in_review") {
         set.status = "in_review";
       }
@@ -843,6 +866,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           itemId: current.id,
           revisionNumber: plan.newRevisionNumber,
           status: "approved",
+          title: target.title,
+          summary: target.summary,
           content: target.content,
           lang: target.lang,
           translationOf: target.translationOf,
@@ -872,14 +897,19 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       }
 
       const statusToDeliver = input.publish && current.status !== "published" ? "published" : current.status;
+      const set: Partial<ItemRow> = {
+        currentRevisionNumber: plan.newRevisionNumber,
+        deliveredRevisionId: copy!.id,
+        status: statusToDeliver,
+        updatedAt: now(),
+      };
+      if (target.title != null) {
+        set.title = target.title;
+        set.summary = target.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({
-          currentRevisionNumber: plan.newRevisionNumber,
-          deliveredRevisionId: copy!.id,
-          status: statusToDeliver,
-          updatedAt: now(),
-        })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
 
@@ -1385,6 +1415,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               itemId: item!.id,
               revisionNumber: 1,
               status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
+              title: page.title,
+              summary: page.summary ?? null,
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
@@ -1430,6 +1462,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
                 itemId: existing.id,
                 revisionNumber: existing.currentRevisionNumber + 1,
                 status: "draft",
+                title: page.title,
+                summary: page.summary ?? null,
                 content: page.content,
                 changeSummary: "import",
                 createdAt: timestamp,

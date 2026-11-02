@@ -26,6 +26,7 @@ import {
   type SubIssueProgressSummary,
 } from "../lib/issue-detail-subissues";
 import { groupBy } from "../lib/groupBy";
+import { groupIssuesByTopic } from "../lib/issue-grouping";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -145,7 +146,7 @@ export type BoardColumnPageSize = KanbanColumnPageSize;
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "topic" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   collapsedGroups: string[];
@@ -209,12 +210,16 @@ function getInitialViewState(
   key: string,
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
+  defaultGroupBy?: IssueViewState["groupBy"],
 ): IssueViewState {
   const hasStored = hasStoredViewState(key);
   const stored = getViewState(key);
-  const base = !hasStored && defaultSortField
+  let base = !hasStored && defaultSortField
     ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
     : stored;
+  if (!hasStored && defaultGroupBy) {
+    base = { ...base, groupBy: defaultGroupBy };
+  }
   if (!initialAssignees) return base;
   return {
     ...base,
@@ -228,8 +233,9 @@ function getInitialWorkspaceViewState(
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  defaultGroupBy?: IssueViewState["groupBy"],
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
+  const stored = getInitialViewState(key, initialAssignees, defaultSortField, defaultGroupBy);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -475,6 +481,7 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  defaultGroupBy?: IssueViewState["groupBy"];
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -694,6 +701,7 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
+  defaultGroupBy,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
@@ -762,7 +770,7 @@ export function IssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultGroupBy),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -784,7 +792,7 @@ export function IssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultGroupBy));
     }
   }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
 
@@ -1276,6 +1284,9 @@ export function IssuesList({
           items: groups[key]!,
         }));
     }
+    if (viewState.groupBy === "topic") {
+      return groupIssuesByTopic(filtered, labels, t("tasks.noTopicGroup"));
+    }
     // assignee
     const groups = groupBy(
       filtered,
@@ -1295,6 +1306,7 @@ export function IssuesList({
     filtered,
     issueFilterWorkspaceContext,
     viewState.groupBy,
+    labels,
     agents,
     agentName,
     currentUserId,
@@ -1568,7 +1580,7 @@ export function IssuesList({
     };
   }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
-  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
+  const newIssueDefaults = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     const groupKey = group?.key;
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
@@ -1608,6 +1620,13 @@ export function IssuesList({
         if (parentIssue) Object.assign(defaults, buildSubIssueDefaultsForViewer(parentIssue, currentUserId));
         else defaults.parentId = groupKey;
       }
+      else if (viewState.groupBy === "topic" && groupKey !== "__no_topic") {
+        if (groupKey.startsWith("title_topic:")) {
+          defaults.title = `[${group?.label ?? groupKey.slice("title_topic:".length)}] `;
+        } else {
+          defaults.labelIds = [groupKey];
+        }
+      }
     }
     return defaults;
   }, [
@@ -1622,7 +1641,7 @@ export function IssuesList({
 
   const createActionLabel = createIssueLabel ? t("area.issue-threads-runs-2.legacy-issues-list.createWithLabel", { label: createIssueLabel }) : t("area.issue-threads-runs-2.legacy-issues-list.createTask");
   const createButtonLabel = createIssueLabel ? t("area.issue-threads-runs-2.legacy-issues-list.newWithLabel", { label: createIssueLabel }) : t("tasks.createAction");
-  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
+  const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[]; label?: string | null }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
 
@@ -1882,6 +1901,7 @@ export function IssuesList({
                     ["project", t("tasks.groupBy.project")],
                     ["workspace", t("tasks.groupBy.workspace")],
                     ["parent", t("tasks.groupBy.parent")],
+                    ["topic", t("tasks.groupBy.topic")],
                     ["none", t("tasks.groupBy.none")],
                   ] as const)
                     .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")

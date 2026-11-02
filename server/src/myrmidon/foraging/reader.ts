@@ -1,6 +1,6 @@
 // server/src/myrmidon/foraging/reader.ts
 //
-// myrmidon(1.6-FORAGE): the only place the sweep talks to the outside world.
+// myrmidon(1.6-FORAGE / 1.7-KNOWLEDGE-L14): the reader's boundary to the outside world.
 //
 // An automatic, repeating call to a third-party host carries rules of its own
 // (docs/myrmidon, and the fleet's own external-call discipline): a pause between
@@ -9,16 +9,15 @@
 // here, on module state shared by every pass and every company of the process, so
 // two agents of two companies pointing at one host cannot double the rate.
 //
-// The read itself is plain `fetch`: the URL is the registry row's, the token (if
-// the instance named a secret) is a bearer header. The answer is capped at
-// `MAX_SOURCE_BYTES`; a larger answer is cut, not rejected — the point of a pass
-// is a comparable snapshot, not a full mirror.
+// Network access is delegated to vm-exec. vm-core never calls source URLs or
+// the Firecrawl provider directly; the answer remains capped for snapshots.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { logger } from "../../middleware/logger.js";
 import { MAX_SOURCE_BYTES } from "./domain.js";
 import type { ForagingReader, ForagingReaderResult } from "./service.js";
 import type { ForagingSourceRef } from "./domain.js";
+import { injectionScoreThreshold, scanForInjection } from "../guardrails/injection.js";
 
 /** The breaker: after this many consecutive failures a host is left alone. */
 export const BREAKER_FAILURE_THRESHOLD = 2;
@@ -83,71 +82,138 @@ export interface ForagingReaderDeps {
   readKey?: (companyId: string, secretName: string | null) => Promise<string | null>;
   now?: () => number;
   fetchImpl?: typeof fetch;
+  /** Calls the authenticated vm-exec gateway; injected for tests. */
+  edgeFetch?: (request: ForagingEdgeFetchRequest, signal: AbortSignal) => Promise<ForagingEdgeFetchResponse>;
   log?: Pick<typeof logger, "warn" | "error">;
 }
 
-/** The production reader: `fetch` under the host rules above. */
-export function createForagingReader(deps: ForagingReaderDeps): ForagingReader {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+export interface ForagingEdgeFetchRequest {
+  request_id: string;
+  url: string;
+  mode: "scrape";
+  max_depth: 0;
+  timeout_ms: number;
+  idempotency_key: string;
+}
+
+export interface ForagingEdgeFetchResponse {
+  request_id: string;
+  status: "succeeded";
+  pages: Array<{
+    url: string;
+    final_url: string;
+    title: string | null;
+    markdown: string;
+    fetched_at: string;
+    content_sha256: string;
+  }>;
+  truncated: boolean;
+}
+
+/** The fetch->doc interface implemented by the reader. */
+export interface ForagingFetcher {
+  fetch(source: ForagingSourceRef, signal?: AbortSignal): Promise<ForagingReaderResult>;
+}
+
+/** The production reader: fetches through vm-exec edge gateway under host rules above. */
+export function createForagingReader(deps: ForagingReaderDeps): ForagingReader & ForagingFetcher {
+  const edgeFetch = deps.edgeFetch ?? createHttpEdgeFetchClient(deps);
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? logger;
 
-  return {
-    async read(source: ForagingSourceRef, signal: AbortSignal): Promise<ForagingReaderResult> {
-      const host = hostOf(source.url);
-      const state = stateOf(host);
-      const at = now();
-      if (state.openUntil > at) throw new ForagingHostPausedError(host);
-      if (at - state.lastReadAt < deps.minHostIntervalMs) {
-        throw new ForagingHostThrottledError(host);
-      }
-      state.lastReadAt = at;
+  async function read(source: ForagingSourceRef, signal?: AbortSignal): Promise<ForagingReaderResult> {
+    const host = hostOf(source.url);
+    const state = stateOf(host);
+    const at = now();
+    if (state.openUntil > at) throw new ForagingHostPausedError(host);
+    if (at - state.lastReadAt < deps.minHostIntervalMs) {
+      throw new ForagingHostThrottledError(host);
+    }
+    state.lastReadAt = at;
 
-      const key = deps.readKey && source.companyId
-        ? await deps.readKey(source.companyId, deps.env?.MYRMIDON_FORAGING_KEY_SECRET?.trim() || null)
-        : null;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
-      if (typeof timer.unref === "function") timer.unref();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    if (signal) {
       signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
 
-      try {
-        const response = await fetchImpl(source.url, {
-          method: "GET",
-          redirect: "follow",
-          headers: {
-            accept: "text/plain, text/markdown, text/html;q=0.8, */*;q=0.5",
-            "user-agent": FORAGING_USER_AGENT,
-            ...(key ? { authorization: `Bearer ${key}` } : {}),
-          },
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`source answered ${response.status}`);
-        const body = await response.text();
-        // A snapshot is compared by content; a body over the cap is cut and the
-        // cut is visible in the hash the caller never sees — kept simple here.
-        const cut = body.length > MAX_SOURCE_BYTES ? body.slice(0, MAX_SOURCE_BYTES) : body;
-        state.failures = 0;
-        return { text: cut, bytes: cut.length };
-      } catch (err) {
-        state.failures += 1;
-        if (state.failures >= BREAKER_FAILURE_THRESHOLD) {
-          state.openUntil = now() + BREAKER_OPEN_MS;
-          log.warn(
-            { host, failures: state.failures, openUntil: state.openUntil },
-            "foraging: host breaker opened after repeated failures",
-          );
-        }
-        throw err;
-      } finally {
-        clearTimeout(timer);
+    try {
+      const requestId = randomUUID();
+      const fetched = await edgeFetch({
+        request_id: requestId,
+        url: source.url,
+        mode: "scrape",
+        max_depth: 0,
+        timeout_ms: READ_TIMEOUT_MS,
+        idempotency_key: requestId,
+      }, controller.signal);
+      if (fetched.request_id !== requestId || fetched.status !== "succeeded") {
+        throw new Error("foraging: edge fetch returned an invalid response");
       }
-    },
+      const page = fetched.pages[0];
+      if (!page || page.url !== source.url || !page.content_sha256 || !page.fetched_at) {
+        throw new Error("foraging: edge fetch response is missing source provenance");
+      }
+      const body = page.markdown;
+      const scannerVerdict = scanForInjection(body, injectionScoreThreshold(deps.env));
+      if (scannerVerdict.flagged) {
+        throw new Error(`foraging: edge fetch content rejected by injection scanner (${scannerVerdict.matched.join(",")})`);
+      }
+      // A snapshot is compared by content; a body over the cap is cut and the
+      // cut is visible in the hash the caller never sees — kept simple here.
+      const cut = body.length > MAX_SOURCE_BYTES ? body.slice(0, MAX_SOURCE_BYTES) : body;
+      state.failures = 0;
+      return {
+        text: cut,
+        bytes: cut.length,
+        page: { ...page, request_id: requestId, scanner_verdict: scannerVerdict },
+      };
+    } catch (err) {
+      state.failures += 1;
+      if (state.failures >= BREAKER_FAILURE_THRESHOLD) {
+        state.openUntil = now() + BREAKER_OPEN_MS;
+        log.warn(
+          { host, failures: state.failures, openUntil: state.openUntil },
+          "foraging: host breaker opened after repeated failures",
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    read,
+    fetch: read,
   };
 }
 
 /** A stable fingerprint of a snapshot; handy for logs and dedup in tests. */
 export function snapshotFingerprint(lines: readonly string[]): string {
   return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16);
+}
+
+function createHttpEdgeFetchClient(deps: ForagingReaderDeps): NonNullable<ForagingReaderDeps["edgeFetch"]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const gateway = deps.env?.MYRMIDON_VMEXEC_URL?.trim();
+  const token = deps.env?.MYRMIDON_VMEXEC_TOKEN?.trim();
+  if (!gateway || !token) {
+    return async () => {
+      throw new Error("foraging: vm-exec edge fetch is not configured");
+    };
+  }
+  const endpoint = new URL("/internal/v1/firecrawl/fetch", gateway).toString();
+  return async (request, signal) => {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      redirect: "error",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`foraging: vm-exec edge fetch answered ${response.status}`);
+    return await response.json() as ForagingEdgeFetchResponse;
+  };
 }

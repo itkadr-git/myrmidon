@@ -35,8 +35,13 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    previousJwtSecret = process.env.MYRMIDON_AGENT_JWT_SECRET;
+    if (previousJwtSecret === undefined) {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = "vitest-agent-jwt-secret";
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-task-drain-admission-release-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
@@ -77,6 +82,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousJwtSecret === undefined) {
+      delete process.env.MYRMIDON_AGENT_JWT_SECRET;
+    } else {
+      process.env.MYRMIDON_AGENT_JWT_SECRET = previousJwtSecret;
+    }
   });
 
   async function seedQueuedRun() {

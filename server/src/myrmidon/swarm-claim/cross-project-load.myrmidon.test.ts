@@ -61,8 +61,15 @@ describeDatabase("swarm cross-project claim load", () => {
   let db: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const { companyId, projectIds, engineerIds, reviewerId, taskIds } = seededScenario(SEED);
+  const outsiderId = stableUuid(6, 0);
   const projectByTask = new Map<string, string>();
-  const claimSettings = resolveSwarmClaimSettings({ env: {} }).settings;
+  // P2.12 (OPE-9202): the claim runs with the capacity policy ON, so the load
+  // also proves the policy-integrated queue keeps project scoping intact.
+  const baseSettings = resolveSwarmClaimSettings({ env: {} }).settings;
+  const claimSettings = {
+    ...baseSettings,
+    capacityPolicy: { ...baseSettings.capacityPolicy, enabled: true },
+  };
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-swarm-cross-project-");
@@ -93,6 +100,13 @@ describeDatabase("swarm cross-project claim load", () => {
       })),
       {
         id: reviewerId, companyId, name: "reviewer", role: "reviewer", status: "idle",
+        adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: {},
+      },
+      // An engineer in good standing that belongs to NO project: the
+      // cross-project acceptance case of P2.12 — with the capacity policy on,
+      // the real claim path must still refuse it every project task.
+      {
+        id: outsiderId, companyId, name: "outsider-engineer", role: "engineer", status: "idle",
         adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: {},
       },
     ]);
@@ -136,6 +150,15 @@ describeDatabase("swarm cross-project claim load", () => {
       isIssueCoolingDown: async () => false,
       isTaskBudgetBlocked: async () => false,
     } as unknown as SwarmMatcherDeps;
+
+    // Exercise the production matcher path with an engineer that is not a
+    // member of any project. The queue SQL applies projectScopedClaimGate;
+    // this test must not pre-filter candidates in memory.
+    const outsiderPass = await matchAgent(deps, outsiderId);
+    expect(outsiderPass).toBeNull();
+    const outsiderClaims = await db.select({ agentId: issueClaims.agentId })
+      .from(issueClaims).where(eq(issueClaims.agentId, outsiderId));
+    expect(outsiderClaims).toHaveLength(0);
 
     // The reviewer belongs to project 0 while its engineer tasks remain
     // available, so null exercises the caste guard rather than an empty queue.

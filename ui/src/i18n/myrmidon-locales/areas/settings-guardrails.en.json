@@ -1,0 +1,61 @@
+{
+  "area": {
+    "settings-guardrails": {
+      "guardrails-settings-panel": {
+        "title": "Guardrails",
+        "description": "A value saved here takes precedence over the server environment; until one is saved the environment value applies.",
+        "save": "Save guardrails",
+        "source": "Source: {{source}}",
+        "sourceEnv": "server environment",
+        "sourceUi": "saved setting",
+        "sourceDefault": "default",
+        "loading": "Loading settings...",
+        "loadFailed": "Unable to load settings.",
+        "saving": "Saving...",
+        "saveFailed": "Unable to save settings.",
+        "commaHint": "Comma-separated values.",
+        "jsonHint": "JSON array.",
+        "off": "Off",
+        "on": "On",
+        "egressMode": "Bot egress mode",
+        "toolBreakerFailures": "Tool failures before pause",
+        "toolBreakerCooldownMs": "Tool breaker pause (ms)",
+        "toolBreakerWindowMs": "Tool breaker window (ms)",
+        "toolTimeoutMaxMs": "Maximum tool timeout (ms)",
+        "toolTimeoutSlowMs": "Slow tool timeout (ms)",
+        "runEnvAllow": "Allowed inherited environment names"
+      },
+      "fleet-guardrails-settings-panel": {
+        "title": "Fleet guardrails",
+        "description": "A value saved here takes precedence over the server environment. Changes to allowlists and YOLO mode require confirmation.",
+        "confirm": "Confirm changing fleet allowlists or YOLO mode? These settings affect security boundaries.",
+        "invalidJson": "A JSON field is not valid JSON; nothing was saved.",
+        "save": "Save fleet settings",
+        "source": "Source: {{source}}",
+        "sourceEnv": "server environment",
+        "sourceUi": "saved setting",
+        "sourceDefault": "default",
+        "loading": "Loading settings...",
+        "loadFailed": "Unable to load settings.",
+        "saving": "Saving...",
+        "saveFailed": "Unable to save settings.",
+        "commaHint": "Comma-separated values.",
+        "jsonHint": "JSON array.",
+        "off": "Off",
+        "on": "On",
+        "botImageAllowlist": "Container image allowlist",
+        "botMountSources": "Container mount source allowlist",
+        "botGithubEnvAllowlist": "Container GitHub environment allowlist",
+        "botHindsightBanks": "Hindsight bank allowlist",
+        "botMcpServers": "MCP server definitions (JSON)",
+        "browserFleet": "Browser fleet registry (JSON)",
+        "botReconcileIntervalSec": "Container reconcile interval (seconds)",
+        "browserIdleTimeoutMin": "Browser idle timeout (minutes)",
+        "browserMaxDurationMin": "Browser maximum duration (minutes)",
+        "stackCheckIntervalSec": "Stack check interval (seconds; 0 disables)",
+        "botContainers": "Enable bot container reconciliation",
+        "botYolo": "Enable YOLO mode"
+      }
+    }
+  }
+}

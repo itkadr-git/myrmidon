@@ -165,6 +165,12 @@
    "method": "GET",
    "template": "myrmidon/disk",
    "noPrefix": true
+  },
+  {
+   "id": "A19",
+   "method": "GET",
+   "template": "myrmidon/events/oom",
+   "noPrefix": true
   }
  ]
 }

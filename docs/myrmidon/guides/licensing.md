@@ -80,6 +80,8 @@ and add the lines above to the board's compose. Mounting only the file
 license. When the directory is not mounted the screen warns, and saving answers
 with a clear error naming the path.
 
+If no accepted cache is available during rollback, the check fails closed with reason `denylist_rollback_no_cache` and logs a warning. Damaged or unverifiable incoming files are ignored and do not replace accepted state. Back up and restore both state files with the license directory; monitor logs for this rollback reason.
+
 ## Installation id
 
 The board owns the id, and there is exactly one. It is stored in the board

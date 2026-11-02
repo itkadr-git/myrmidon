@@ -20,6 +20,7 @@ needs one. It is an independent product maintained as a fork of
   cards, digests and escalations, group topics as a task inbox.
 - [Models and budgets](Models-and-keys) — model providers, budget
   enforcement, prompt-cost advice, run admission limits.
+- [Streaming cost overlay for LiteLLM v1.104.1](../myrmidon/guides/litellm-streaming-cost-overlay.md) ([Russian](../myrmidon/guides/litellm-streaming-cost-overlay.ru.md)) — operator runbook for deployment and verification of streaming spend accounting.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
 - [POST-TASK-REFLECT design](../myrmidon/design/post-task-reflect.md)

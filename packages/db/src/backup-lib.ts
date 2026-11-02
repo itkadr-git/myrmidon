@@ -91,8 +91,7 @@ const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
-const BACKUP_MIN_FREE_BYTES =
-  Number(process.env.MYRMIDON_BACKUP_MIN_FREE_BYTES) || 6 * 1024 * 1024 * 1024;
+const BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
 
 // myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
 // with its own completion marker. The JavaScript logical dump ends its
@@ -1093,9 +1092,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
                c.character_maximum_length, c.numeric_precision, c.numeric_scale,
                format_type(a.atttypid, a.atttypmod) AS formatted_type
         FROM information_schema.columns c
-        LEFT JOIN pg_namespace n ON n.nspname = c.table_schema
-        LEFT JOIN pg_class t ON t.relname = c.table_name AND t.relnamespace = n.oid
-        LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
+        LEFT JOIN pg_namespace ns ON ns.nspname = c.table_schema
+        LEFT JOIN pg_class cls ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
+        LEFT JOIN pg_attribute a ON a.attrelid = cls.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
         WHERE c.table_schema = ${schema_name} AND c.table_name = ${tablename}
         ORDER BY c.ordinal_position
       `;
@@ -1107,15 +1106,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       for (const col of columns) {
         let typeStr: string;
         if (col.data_type === "USER-DEFINED") {
-          const dimMatch = col.formatted_type?.match(/\(([^)]+)\)/);
-          typeStr = dimMatch
-            ? `${quoteQualifiedName(col.udt_schema, col.udt_name)}(${dimMatch[1]})`
-            : quoteQualifiedName(col.udt_schema, col.udt_name);
+          const modifier = col.formatted_type?.match(/\([^)]+\)$/)?.[0] ?? "";
+          typeStr = `${quoteQualifiedName(col.udt_schema, col.udt_name)}${modifier}`;
         } else if (col.data_type === "ARRAY") {
           const elementType = col.udt_name.replace(/^_/, "");
-          typeStr = col.udt_schema === "pg_catalog"
-            ? `${elementType}[]`
-            : `${quoteQualifiedName(col.udt_schema, elementType)}[]`;
+          const match = col.formatted_type ? col.formatted_type.match(/\(([^)]+)\)\[\]$/) : null;
+          const elementStr = col.udt_schema === "pg_catalog"
+            ? elementType
+            : (match
+                ? `${quoteQualifiedName(col.udt_schema, elementType)}(${match[1]})`
+                : quoteQualifiedName(col.udt_schema, elementType));
+          typeStr = `${elementStr}[]`;
         } else if (col.data_type === "character varying") {
           typeStr = col.character_maximum_length
             ? `varchar(${col.character_maximum_length})`
