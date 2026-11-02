@@ -47,7 +47,7 @@ async function waitForQueuedRun(
           eq(heartbeatRuns.status, "queued"),
         ),
       );
-    const matchingRun = runs.find((run) => run.id === queuedRunId);
+    const matchingRun = runs.find((run) => run.wakeupRequestId === queuedRunId);
     if (matchingRun) return matchingRun;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -58,7 +58,7 @@ async function waitForDeferredWakeRequest(
   db: Db,
   agentId: string,
   interactionId: string,
-  wakeupRequestId: string,
+  wakeupRunId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -78,6 +78,7 @@ async function waitForDeferredWakeRequest(
       ];
       return (
         request.id === interactionId ||
+        request.runId === wakeupRunId ||
         (request.payload as Record<string, unknown> | null)?.interactionId === interactionId ||
         (contextSnapshot as Record<string, unknown> | null)?.interactionId === interactionId
       );
