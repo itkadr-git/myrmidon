@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { notifySwarmIssueEvent, setSwarmEventSink } from "../swarm-claim/events.js";
 import {
+  extractReleasePrefix,
   generateJanitorReportMarkdown,
   judgeMergedPrClosure,
   judgeOverdueDeadline,
@@ -15,9 +16,12 @@ import {
   type WorkProductCandidate,
 } from "./policy.js";
 import {
+  BOARD_JANITOR_LAST_RUN_AT_KEY,
   isDueForDailyRun,
+  preserveBoardJanitorGeneralKey,
   readBoardJanitorSettings,
 } from "./settings.js";
+import { createBoardJanitorScheduler } from "./index.js";
 
 const BASE_NOW = new Date("2026-10-28T12:00:00.000Z");
 
@@ -157,14 +161,112 @@ describe("Rule 2: Stale block resolution vs question holding", () => {
       expect(judgment.snippet).toContain("согласование");
     }
   });
+
+  it("does NOT unblock if blockReason is human_decision", () => {
+    const task: IssueCandidate = {
+      id: "task-block-hd",
+      identifier: "OPE-201",
+      title: "Waiting on operator decision",
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "human_decision",
+      },
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    expect(judgeStaleBlock(task, 0, 0, null, BASE_NOW)).toBeNull();
+  });
+
+  it("does NOT unblock if blockReason is external_wait with future timeoutAt", () => {
+    const futureTimeout = new Date(BASE_NOW.getTime() + 3600 * 1000).toISOString();
+    const task: IssueCandidate = {
+      id: "task-block-ew-future",
+      identifier: "OPE-202",
+      title: "Waiting on external API",
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "external_wait",
+        timeoutAt: futureTimeout,
+      },
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    expect(judgeStaleBlock(task, 0, 0, null, BASE_NOW)).toBeNull();
+  });
+
+  it("unblocks if blockReason is external_wait with past/expired timeoutAt", () => {
+    const pastTimeout = new Date(BASE_NOW.getTime() - 3600 * 1000).toISOString();
+    const task: IssueCandidate = {
+      id: "task-block-ew-past",
+      identifier: "OPE-203",
+      title: "Waiting on external API that timed out",
+      status: "blocked",
+      blockerMetadata: {
+        blockReason: "external_wait",
+        timeoutAt: pastTimeout,
+      },
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    const judgment = judgeStaleBlock(task, 0, 0, null, BASE_NOW);
+    expect(judgment?.action).toBe("unblock_to_todo");
+    expect(judgment?.comment).toContain("блок снят: блокер закрыт/отсутствует");
+  });
+
+  it("does NOT unblock if unblock_descriptor.reasonRef.dueAt is in the future", () => {
+    const futureDue = new Date(BASE_NOW.getTime() + 7200 * 1000).toISOString();
+    const task: IssueCandidate = {
+      id: "task-block-due",
+      identifier: "OPE-204",
+      title: "Waiting until scheduled dueAt",
+      status: "blocked",
+      unblockDescriptor: {
+        reasonRef: {
+          dueAt: futureDue,
+        },
+      },
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    expect(judgeStaleBlock(task, 0, 0, null, BASE_NOW)).toBeNull();
+  });
+
+  it("does NOT unblock if monitorNextCheckAt is in the future (active monitor)", () => {
+    const futureCheck = new Date(BASE_NOW.getTime() + 1800 * 1000);
+    const task: IssueCandidate = {
+      id: "task-block-mon",
+      identifier: "OPE-205",
+      title: "Waiting for scheduled monitor check",
+      status: "blocked",
+      monitorNextCheckAt: futureCheck,
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    expect(judgeStaleBlock(task, 0, 0, null, BASE_NOW)).toBeNull();
+  });
+
+  it("unblocks empty block with no blockers, no metadata, and no children", () => {
+    const task: IssueCandidate = {
+      id: "task-block-empty",
+      identifier: "OPE-206",
+      title: "Empty blocked task",
+      status: "blocked",
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+    const judgment = judgeStaleBlock(task, 0, 0, null, BASE_NOW);
+    expect(judgment?.action).toBe("unblock_to_todo");
+    expect(judgment?.comment).toContain("блок снят: блокер закрыт/отсутствует");
+  });
 });
 
 describe("Rule 3: Unassigned release tasks", () => {
-  it("queues unassigned release task into role distribution", () => {
+  it("queues unassigned release task into role distribution based on label", () => {
     const task: IssueCandidate = {
       id: "task-3",
       identifier: "OPE-300",
-      title: "1.6.7 BOARD-JANITOR: cleanup routine",
+      title: "BOARD-JANITOR: cleanup routine",
+      labels: [{ name: "1.6.7" }],
       status: "todo",
       assigneeAgentId: null,
       assigneeUserId: null,
@@ -176,6 +278,31 @@ describe("Rule 3: Unassigned release tasks", () => {
     expect(judgment).not.toBeNull();
     expect(judgment?.shouldQueue).toBe(true);
     expect(judgment?.releasePrefix).toBe("1.6.7");
+  });
+
+  it("does NOT queue if release prefix is only in title but missing from labels", () => {
+    const task: IssueCandidate = {
+      id: "task-3-title-only",
+      identifier: "OPE-300t",
+      title: "1.6.7 BOARD-JANITOR: cleanup routine without label",
+      labels: [],
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdAt: BASE_NOW,
+      updatedAt: BASE_NOW,
+    };
+
+    expect(judgeUnassignedReleaseTask(task)).toBeNull();
+  });
+
+  it("extractReleasePrefix parses labels and raw strings correctly", () => {
+    expect(extractReleasePrefix("1.6.7")).toBe("1.6.7");
+    expect(extractReleasePrefix("v1.6.7")).toBe("1.6.7");
+    expect(extractReleasePrefix([{ name: "1.6.7" }])).toBe("1.6.7");
+    expect(extractReleasePrefix({ labels: [{ name: "1.6.7" }] })).toBe("1.6.7");
+    expect(extractReleasePrefix([])).toBeNull();
+    expect(extractReleasePrefix(null)).toBeNull();
   });
 
   it("ignores non-release task or assigned task", () => {
@@ -321,5 +448,91 @@ describe("Rule 6: Report generation", () => {
     expect(md).toContain("1055");
     expect(md).toContain("955");
     expect(md).toContain("OPE-100");
+  });
+});
+
+describe("Server restart and daily scheduler persistence", () => {
+  it("does NOT execute a second pass on server restart within the same day", async () => {
+    let persistedLastRunAt: Date | null = null;
+
+    const mockDb = {
+      select: () => ({
+        from: async () => [],
+      }),
+    } as any;
+
+    // First server instance: runs at 08:30 Irkutsk (00:30 UTC)
+    const runTimeInstance1 = new Date("2026-11-02T00:30:00.000Z"); // 08:30 IRK
+    let trackedPromises: Promise<unknown>[] = [];
+
+    const scheduler1 = createBoardJanitorScheduler({
+      db: mockDb,
+      track: (p) => trackedPromises.push(p),
+      now: () => runTimeInstance1,
+      getLastRunAt: async () => persistedLastRunAt,
+      setLastRunAt: async (d) => {
+        persistedLastRunAt = d;
+      },
+    });
+
+    // Tick 1 on server 1
+    scheduler1();
+    expect(trackedPromises.length).toBe(1);
+    await Promise.all(trackedPromises);
+    expect(persistedLastRunAt).toEqual(runTimeInstance1);
+
+    // Server restarts at 13:00 Irkutsk (05:00 UTC) on the same day!
+    // A new scheduler instance is created with fresh in-memory state.
+    trackedPromises = [];
+    const restartTime = new Date("2026-11-02T05:00:00.000Z"); // 13:00 IRK
+    const scheduler2 = createBoardJanitorScheduler({
+      db: mockDb,
+      track: (p) => trackedPromises.push(p),
+      now: () => restartTime,
+      getLastRunAt: async () => persistedLastRunAt,
+      setLastRunAt: async (d) => {
+        persistedLastRunAt = d;
+      },
+    });
+
+    // Tick on restarted server
+    scheduler2();
+    // It loads lastRunAt from storage and sees today was already run, so it does not persist a new date or run sweep
+    await Promise.all(trackedPromises);
+    expect(persistedLastRunAt).toEqual(runTimeInstance1); // Unchanged!
+
+    // Next day arrives at 08:30 Irkutsk (2026-11-03 00:30 UTC)
+    trackedPromises = [];
+    const nextDayTime = new Date("2026-11-03T00:30:00.000Z"); // 08:30 IRK next day
+    const scheduler3 = createBoardJanitorScheduler({
+      db: mockDb,
+      track: (p) => trackedPromises.push(p),
+      now: () => nextDayTime,
+      getLastRunAt: async () => persistedLastRunAt,
+      setLastRunAt: async (d) => {
+        persistedLastRunAt = d;
+      },
+    });
+
+    scheduler3();
+    await Promise.all(trackedPromises);
+    expect(persistedLastRunAt).toEqual(nextDayTime); // Updated to next day!
+  });
+
+  it("preserveBoardJanitorGeneralKey keeps the key across general updates", () => {
+    const general = { [BOARD_JANITOR_LAST_RUN_AT_KEY]: "2026-11-02T00:30:00.000Z", other: 123 };
+    const preserved = preserveBoardJanitorGeneralKey(general);
+    expect(preserved).toEqual({ [BOARD_JANITOR_LAST_RUN_AT_KEY]: "2026-11-02T00:30:00.000Z" });
+  });
+
+  it("evaluates isDueForDailyRun correctly across Irkutsk day boundaries", () => {
+    const irk0759 = new Date("2026-11-02T23:59:00.000Z"); // 07:59 IRK on Nov 3
+    expect(isDueForDailyRun(irk0759, null, 8)).toBe(false);
+
+    const irk0800 = new Date("2026-11-03T00:00:00.000Z"); // 08:00 IRK on Nov 3
+    expect(isDueForDailyRun(irk0800, null, 8)).toBe(true);
+
+    const irk1300SameDay = new Date("2026-11-03T05:00:00.000Z"); // 13:00 IRK on Nov 3
+    expect(isDueForDailyRun(irk1300SameDay, irk0800, 8)).toBe(false);
   });
 });
