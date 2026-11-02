@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { budgetLimitsRoutes } from "./routes.js";
-import type { BudgetLimitView, BudgetLimitChangeView, BudgetLimitUsage } from "@myrmidon/shared";
+import type { BudgetLimitView, BudgetLimitChangeView, BudgetLimitUsageView } from "@myrmidon/shared";
 import type { BudgetLimitUsageDeps } from "./usage.js";
 
 const boardActor = {
@@ -117,10 +117,10 @@ function appFor(
     computeUsage?: (
       deps: BudgetLimitUsageDeps,
       companyId: string,
-      level: BudgetLimitUsage["level"],
+      level: BudgetLimitUsageView["level"],
       ref: string,
-      period: BudgetLimitUsage["period"],
-    ) => Promise<BudgetLimitUsage>;
+      period: BudgetLimitUsageView["period"],
+    ) => Promise<BudgetLimitUsageView>;
   } = {},
 ) {
   const store = options.store ?? fakeStore();
