@@ -47,7 +47,7 @@ describe("metrics self-check probe", () => {
     // The five capacity-dashboard metrics remain available without database reads.
     // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
     // The scent classifier alarm is process-local as well.
-    expect(result.families_ok).toBe(35);
+    expect(result.families_ok).toBe(40);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
