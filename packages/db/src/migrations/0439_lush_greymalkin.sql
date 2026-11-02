@@ -2,15 +2,14 @@
 -- terminal runs older than cutoff that carry uncompacted keys.
 -- The partial index keeps the scan off tens of thousands of already compacted runs.
 --
--- Production rollout follows the 0307/0308/0415 pattern: the index is created by
--- hand on the production board database BEFORE the deploy (ADM 30.10,
--- pg_get_indexdef-identical statement):
+-- The index is created concurrently on production before deploy to avoid a
+-- write-blocking table lock. Per repository migration practice (0307/0308/0415),
+-- the transactional Drizzle migration uses plain CREATE INDEX IF NOT EXISTS;
+-- the matching prebuilt index makes this a no-op on production.
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx"
 --     ON "heartbeat_runs" USING btree ("company_id","created_at")
 --     WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
 --
--- CONCURRENTLY takes no SHARE lock. This migration is then a no-op on production
--- (CREATE INDEX IF NOT EXISTS keeps the hand-made index; deploy-time lock window is zero)
--- and builds the index on fresh databases / CI / local setups.
--- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally so CONCURRENTLY is unavailable; the index exists on the production instance already (built concurrently by operator per ADM 30.10) and this statement is a no-op there.
+-- On fresh databases / CI / local setups, this creates the index from scratch.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; production index must be built concurrently before deployment (ADM 30.10), making this a no-op there.
 CREATE INDEX IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
