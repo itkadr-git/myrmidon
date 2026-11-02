@@ -316,6 +316,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           next();
           return;
         }
+        if (session && (!session.user?.id || !session.session?.id)) {
+          req.actorNoneReason = "session_invalid";
+        }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       if (req.actor.type === "none" && !req.actorNoneReason) {
@@ -374,6 +377,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
         const context = unverifiedAgentTokenContext(token);
+        req.actorNoneReason = context.expired ? "agent_token_expired" : "agent_token_invalid";
         logger.warn(
           {
             agentId: context.agentId,
@@ -396,15 +400,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        req.actorNoneReason = "agent_token_agent_mismatch";
         next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
         return;
       }
 
       if (agentRecord.status === "terminated") {
+        req.actorNoneReason = "agent_token_agent_terminated";
         next(unauthorized("Agent is terminated and cannot authenticate"));
         return;
       }
       if (agentRecord.status === "pending_approval") {
+        req.actorNoneReason = "agent_token_agent_pending";
         next(unauthorized("Agent is pending approval and cannot authenticate"));
         return;
       }
@@ -486,14 +493,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
+      req.actorNoneReason = "agent_key_agent_mismatch";
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
       return;
     }
     if (agentRecord.status === "terminated") {
+      req.actorNoneReason = "agent_key_agent_terminated";
       next(unauthorized("Agent is terminated and cannot authenticate"));
       return;
     }
     if (agentRecord.status === "pending_approval") {
+      req.actorNoneReason = "agent_key_agent_pending";
       next(unauthorized("Agent is pending approval and cannot authenticate"));
       return;
     }
