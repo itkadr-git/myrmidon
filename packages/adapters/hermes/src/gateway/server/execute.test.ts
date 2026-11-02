@@ -471,7 +471,9 @@ describe("execute", () => {
     // Launcher bodies are public program text: no capability, no token.
     const launcherText = JSON.stringify(body.github_launcher);
     expect(launcherText).not.toContain("broker-capability-token");
-    expect(launcherText).not.toContain("paperclip-server-1");
+    // The non-container launcher must use the internal board candidate without
+    // embedding any capability or token in the staged program body.
+    expect(launcherText).toContain("paperclip-server-1");
   });
 
   it("omits the github_launcher field when no broker env is configured, and ignores payloadTemplate attempts to forge one", async () => {
