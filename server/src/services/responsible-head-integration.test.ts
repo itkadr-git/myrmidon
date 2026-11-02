@@ -38,7 +38,7 @@ async function waitForQueuedRun(
 ) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const [run] = await db
+    const runs = await db
       .select()
       .from(heartbeatRuns)
       .where(
@@ -47,8 +47,12 @@ async function waitForQueuedRun(
           eq(heartbeatRuns.status, "queued"),
         ),
       );
-    const matchingRun = run?.contextSnapshot as Record<string, unknown> | null;
-    if (matchingRun?.interactionId === interactionId) return run;
+    const matchingRun = runs.find(
+      (run) =>
+        (run.contextSnapshot as Record<string, unknown> | null)?.interactionId ===
+        interactionId,
+    );
+    if (matchingRun) return matchingRun;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   return null;
