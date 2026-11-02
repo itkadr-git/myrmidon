@@ -887,11 +887,18 @@ describeEmbeddedPostgres(
 
       it("keeps an operational card (no human addressee) board-only", async () => {
         const fixture = await seedFixture();
-        await instanceSettingsService(db).updateGeneral({
-          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
-        });
-        // Operational request with a human-only effective resolver policy:
-        // governance explicitly requires an owner decision, so delivery is valid.
+        for (const resolverPolicy of ["anyone", "not_creator"] as const) {
+          const interaction = await createCard(fixture, { resolverPolicy });
+          const publications = await publicationsForInteraction(
+            fixture.companyId,
+            interaction.id,
+          );
+          expect(publications).toEqual([]);
+        }
+      });
+
+      it("delivers an operational request with an explicit human-only audience as text", async () => {
+        const fixture = await seedFixture();
         const interaction = await createCard(fixture, {
           resolverPolicy: "human_only",
         });
