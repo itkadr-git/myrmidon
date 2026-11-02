@@ -43,4 +43,18 @@ describe("agent role is a caste key (format only)", () => {
     expect(() => updateAgentSchema.parse({ role: "not a key" })).toThrow();
     expect(() => updateAgentSchema.parse({ role: "a".repeat(61) })).toThrow();
   });
+
+  it("accepts valid budgetMonthlyCents within 0..MAX_BUDGET_LIMIT_CENTS", () => {
+    expect(createAgentSchema.parse({ ...base, budgetMonthlyCents: 50_000 }).budgetMonthlyCents).toBe(50_000);
+    expect(createAgentSchema.parse({ ...base, budgetMonthlyCents: 0 }).budgetMonthlyCents).toBe(0);
+    expect(createAgentSchema.parse({ ...base, budgetMonthlyCents: 1_000_000_000 }).budgetMonthlyCents).toBe(1_000_000_000);
+    expect(updateAgentSchema.parse({ budgetMonthlyCents: 75_000 }).budgetMonthlyCents).toBe(75_000);
+  });
+
+  it("rejects negative or excessive budgetMonthlyCents", () => {
+    expect(() => createAgentSchema.parse({ ...base, budgetMonthlyCents: -1 })).toThrow();
+    expect(() => createAgentSchema.parse({ ...base, budgetMonthlyCents: 1_000_000_001 })).toThrow();
+    expect(() => updateAgentSchema.parse({ budgetMonthlyCents: -500 })).toThrow();
+    expect(() => updateAgentSchema.parse({ budgetMonthlyCents: 1_000_000_001 })).toThrow();
+  });
 });
