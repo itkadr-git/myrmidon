@@ -393,6 +393,11 @@ function buildHeaders(input: {
   apiKey: string;
   sessionKey: string | null;
   runId: string;
+  // myrmidon(OPE-10602): the board's own run id (always ctx.runId, never
+  // modelAttemptId). The hermes gateway binds this header's value as
+  // $PAPERCLIP_RUN_ID for the run's children, so agents mutate the board
+  // under the heartbeat_runs row this run actually owns.
+  paperclipRunId?: string;
   extraHeaders: Record<string, string>;
   accept: string;
   contentType?: string;
@@ -403,6 +408,7 @@ function buildHeaders(input: {
     Accept: input.accept,
     ...(input.contentType ? { "Content-Type": input.contentType } : {}),
     "Idempotency-Key": input.runId,
+    ...(input.paperclipRunId ? { "X-Paperclip-Run-Id": input.paperclipRunId } : {}),
     ...(input.sessionKey ? { "X-Hermes-Session-Key": input.sessionKey } : {}),
   };
 }
@@ -2507,6 +2513,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    // myrmidon(OPE-10602): the board's run id for the gateway to bind as
+    // $PAPERCLIP_RUN_ID — always ctx.runId (see buildHeaders note).
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "application/json",
     contentType: "application/json",
@@ -2515,6 +2524,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "text/event-stream",
   });
