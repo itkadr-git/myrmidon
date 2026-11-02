@@ -218,7 +218,12 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
       ownerReplyCommentId: COMMENT_ID,
     });
     const answers = [{ questionId: "deploy-window", optionIds: ["morning"] }];
-    const response = await request(buildApp())
+    const issueRouter = express.Router();
+    issueRouter.post("/issues/:id/interactions/:interactionId/:action", (req, res) => {
+      handedOver.push({ actor: req.actor, body: req.body, params: req.params as Record<string, string> });
+      res.json({ handedOver: true });
+    });
+    const response = await request(buildApp(issueRouter))
       .post("/api/myrmidon/owner-message/resolve")
       .send(resolveBody({ action: "respond", body: { answers } }));
     expect(response.status).toBe(200);
