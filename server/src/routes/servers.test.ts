@@ -337,7 +337,9 @@ describe("POST /api/companies/:companyId/servers/ssh-dry-run", () => {
       .post(`/api/companies/${COMPANY_ID}/servers/ssh-dry-run`)
       .send(dryRunBody({ auth: { password: PASSWORD_MARKER } }));
 
-    const logged = logSpy.mock.calls.map((c) => JSON.stringify(c)).join("\n");
+    const logged = logSpy.mock.calls
+      .map((c: unknown[]) => JSON.stringify(c))
+      .join("\n");
     expect(logged).not.toContain(PASSWORD_MARKER);
     expect(logged).not.toContain(PRIVATE_KEY_MARKER);
   });

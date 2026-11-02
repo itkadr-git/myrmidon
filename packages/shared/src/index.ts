@@ -2548,6 +2548,9 @@ export {
   type BlockUserInput,
   auditQuerySchema,
   type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
