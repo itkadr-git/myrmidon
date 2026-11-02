@@ -15913,13 +15913,13 @@ export function issueRoutes(
                     });
                     Object.assign(issueUpdateData, monitorPatch.patch);
                     if (typeof monitorPatch.patch.executionState !== "undefined") {
-                      updated.executionState = monitorPatch.patch.executionState;
+                      updated.executionState = monitorPatch.patch.executionState as Record<string, unknown> | null;
                     }
                     if (typeof monitorPatch.patch.monitorNextCheckAt !== "undefined") {
-                      updated.monitorNextCheckAt = monitorPatch.patch.monitorNextCheckAt;
+                      updated.monitorNextCheckAt = monitorPatch.patch.monitorNextCheckAt as Date | null;
                     }
                     if (typeof monitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
-                      updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt;
+                      updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt as Date | null;
                     }
                   }
                 }
