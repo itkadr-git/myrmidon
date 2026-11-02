@@ -3629,6 +3629,13 @@ export function issueThreadInteractionService(
           (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
         ) {
           recipientCandidate = { agentId: issueContextRow.createdByAgentId };
+        } else if (
+          normalizedData.kind === "request_confirmation"
+        ) {
+          // Confirmations are also emitted by agent/tool execution paths where
+          // no human user exists. Keep those legacy interactions on the board
+          // queue; human-only input remains strict below.
+          recipientCandidate = { serviceQueue: "default" };
         } else if (policy.effectiveResolverPolicy === "human_only") {
           if (
             issueContextRow?.responsibleUserId &&
