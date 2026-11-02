@@ -70,7 +70,10 @@ function sanitizePrCreateBase(args) {
 
 async function main() {
   let env = { ...process.env };
-  const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+  const diagnostic = (code) => {
+    if (code === 'broker_transport_unavailable' || code === 'broker_response_unavailable') return;
+    process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+  };
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
   // fallback deliberately cannot load the host's gh authentication files.
@@ -120,7 +123,8 @@ async function main() {
     // myrmidon(P6): walk up to six broker candidates instead of one URL.
     // myrmidon(GITHUB-SHARED-IDENTITY): and name the repository this command
     // targets, so an App identity serves it.
-    const brokerBaseUrls = paperclipBrokerCandidateUrls(env);
+      const candidateEnv = { ...env, MYRMIDON_BOT_BOARD_URL: env.MYRMIDON_BOT_BOARD_URL || 'http://paperclip-server-1:3100' };
+      const brokerBaseUrls = paperclipBrokerCandidateUrls(candidateEnv);
     try {
     let response;
     if (brokerBaseUrls.length > 0 && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
