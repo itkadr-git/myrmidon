@@ -42,7 +42,9 @@ import {
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
-// myrmidon(OPE-10045): a final review approval given before the PR is merged.
+// myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
+import { createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import type { ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -389,6 +391,7 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
+import { isRegisteredEventKey } from "../myrmidon/stale-block/index.js";
 import {
   BLOCKED_LOOP_SIGNATURE_KEY,
   blockedLoopMessage,
@@ -3715,6 +3718,7 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
   } = {},
 ) {
   const router = Router();
@@ -14533,6 +14537,19 @@ export function issueRoutes(
           );
         }
       }
+      if (transition.decision?.outcome === "changes_requested") {
+        const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+          companyId: existing.companyId,
+          issueId: existing.id,
+        });
+        if (ci.state === "pending" || ci.state === "unknown") {
+          throw unprocessable(
+            ci.state === "pending"
+              ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+              : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+          );
+        }
+      }
       if (transition.recoveryInteraction) {
         const targetAgentId =
           existing.responsibleAgentId &&
@@ -14647,6 +14664,33 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (nextStatus === "blocked") {
+        const effectiveDescriptor =
+          descriptor ?? (enteringBlocked ? (existing.unblockDescriptor as typeof descriptor) : null);
+        if (
+          effectiveDescriptor &&
+          typeof effectiveDescriptor === "object" &&
+          effectiveDescriptor.reasonRef &&
+          typeof effectiveDescriptor.reasonRef === "object" &&
+          effectiveDescriptor.reasonRef.kind === "event"
+        ) {
+          const reasonRef = effectiveDescriptor.reasonRef;
+          if (reasonRef.dueAt) {
+            const dueAtMs = Date.parse(reasonRef.dueAt);
+            const maxDueAtMs = Date.now() + 24 * 60 * 60 * 1000;
+            if (!Number.isFinite(dueAtMs) || dueAtMs > maxDueAtMs) {
+              res.status(422).json({ error: "reasonRef.dueAt cannot exceed 24 hours (dueAt > 24 ч)" });
+              return;
+            }
+          }
+          if (!isRegisteredEventKey(reasonRef.eventKey ?? "") && !reasonRef.dueAt) {
+            res.status(422).json({
+              error: "Unregistered eventKey requires dueAt (blockedByIssueIds для другой задачи; для внешнего сервиса — dueAt ≤ 2 ч)",
+            });
+            return;
+          }
+        }
+      }
       if (enteringBlocked && blockerMetadataRaw == null) {
         const missingFields = [
           "blockReason",
@@ -15371,7 +15415,9 @@ export function issueRoutes(
               id,
               issueUpdateData,
               tx,
-              postCommitActivityPublications,
+              shouldCollectCompletionPublication || humanUnblockPossible
+                ? postCommitActivityPublications
+                : undefined,
               postCommitIssueActions,
             );
           }
@@ -15572,6 +15618,19 @@ export function issueRoutes(
             }
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
+            if (lockedTransition.decision?.outcome === "changes_requested") {
+              const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+                companyId: lockedExisting.companyId,
+                issueId: lockedExisting.id,
+              });
+              if (ci.state === "pending" || ci.state === "unknown") {
+                throw unprocessable(
+                  ci.state === "pending"
+                    ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
+                    : "REQUEST CHANGES rejected: CI status for the current pull request head is unavailable. Resolve CI access/status and submit the review verdict again.",
+                );
+              }
+            }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const hasHumanDecisionBlocker = lockedExisting.blockerMetadata?.blockReason === "human_decision";
               const openBlockers = await tx

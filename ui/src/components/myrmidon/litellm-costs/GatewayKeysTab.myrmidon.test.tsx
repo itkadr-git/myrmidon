@@ -36,6 +36,40 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
     expect(rows[0]!.present).toBe(true);
   });
 
+  it("preserves model allowlist and defaults undefined to empty array", () => {
+    const rows = keyRows(
+      [
+        view({
+          agentId: "agent-a",
+          present: true,
+          models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
+        }),
+        view({ agentId: "agent-b", present: true, models: undefined }),
+      ],
+      new Map([
+        ["agent-a", "alpha"],
+        ["agent-b", "beta"],
+      ]),
+    );
+    expect(rows[0]!.models).toEqual(["openai/gpt-4o", "anthropic/claude-3-5-sonnet"]);
+    expect(rows[1]!.models).toEqual([]);
+  });
+
+  it("projects an agent key budget into the display row", () => {
+    const budget = {
+      amountUsd: 9.5,
+      periodHours: 24,
+      mode: "block" as const,
+      effectiveMode: "soft" as const,
+      caste: "engineer",
+    };
+    const [row] = keyRows(
+      [view({ agentId: "agent-a", budget, role: "engineer" })],
+      new Map([["agent-a", "alpha"]]),
+    );
+    expect(row?.budget).toEqual(budget);
+  });
+
   it("counts how many agents have a key of their own", () => {
     expect(countKeyedAgents([view({ present: true }), view({ agentId: "b" })])).toEqual({ keyed: 1, total: 2 });
   });

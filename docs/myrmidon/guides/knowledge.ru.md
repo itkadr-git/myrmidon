@@ -98,6 +98,14 @@ POST /api/myrmidon/companies/:companyId/knowledge/mcp
 `knowledge_tool_access_denied`, 409 `knowledge_approval_required`, …), поэтому
 клиент реагирует на коды, а не на текст сообщения.
 
+## Единый inbox и разбор предложений (KNOWLEDGE-2.0 L-1, 1.7)
+
+Предложения знаний со статусом `pending` из `/api/myrmidon/companies/:companyId/knowledge/suggestions` включены напрямую в единый входящий ящик (`/inbox`, как в Streamlined UI, так и в стандартном представлении) наряду с задачами, алертами запусков и запросами на присоединение.
+
+- **Тип элемента**: предложения отображаются с `kind: "knowledge"` и стабильным уникальным ключом (`knowledge:<suggestionId>`).
+- **Фильтр по типу**: выпадающий фильтр входящих содержит категорию **Знания** (**Knowledge**), позволяя отфильтровать входящие исключительно по предложениям знаний либо комбинировать с другими типами. Выбор категории сохраняется в локальных настройках фильтрации.
+- **Маршрут разбора**: переход по элементу знаний (кликом мыши или клавишей Enter) открывает экран `/knowledge/review`, где можно ознакомиться с названием, обоснованием, источниками и текстом предложения, а также принять или отклонить его.
+
 ## Где код
 
 - `server/src/myrmidon/knowledge/routes.ts` — REST-роутер и его гейты.
@@ -106,4 +114,7 @@ POST /api/myrmidon/companies/:companyId/knowledge/mcp
 - `packages/shared/src/myrmidon-knowledge-tools.ts` — имена инструментов,
   `auto`-разделы, стабильные коды.
 - `packages/shared/src/myrmidon-autonomy.ts` — классы действий и умолчания.
-- Тесты: `server/src/myrmidon/knowledge/routes.myrmidon.test.ts` (П1–П4).
+- `ui/src/lib/inbox.ts` и `ui/src/pages/Inbox.tsx` / `ui/src/pages/LegacyInbox.tsx` — интеграция с единым inbox и тип элемента `knowledge`.
+- `ui/src/components/IssueFiltersPopover.tsx` — фильтр категории `knowledge` и сохранение выбора.
+- `ui/src/pages/KnowledgeReview.tsx` — экран разбора предложений по маршруту `/knowledge/review`.
+- Тесты: `server/src/myrmidon/knowledge/routes.myrmidon.test.ts` (П1–П4), `ui/src/lib/inbox.test.ts`, `ui/src/pages/Inbox.test.tsx`.

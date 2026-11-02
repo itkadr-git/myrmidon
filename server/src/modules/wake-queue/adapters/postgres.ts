@@ -1138,6 +1138,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         : [];
       const result: ReleaseTransactionResult & { run: RunSnapshot } = await db.transaction(async (rawTx: unknown): Promise<ReleaseTransactionResult & { run: RunSnapshot }> => {
         const tx = rawTx as unknown as Db;
+        // A contended issue lock must fail quickly. Keeping a pool connection
+        // waiting for the role-level statement_timeout can starve the holder
+        // and turn concurrent idle-pickup attempts into a pool deadlock.
+        await tx.execute(sql`set local lock_timeout = '5s'`);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
@@ -1227,7 +1231,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
           legacyExecutionNeedsReconciliation:
-            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
+            !input.ignoreUnrecordedReconciliation &&
+            // Once recovery has restored a task to the unassigned ready queue,
+            // this terminal run is historical evidence only. Do not let a later
+            // replay sweep turn it back into a permanent hold.
+            Boolean(issueRow?.assigneeAgentId) &&
+            legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.

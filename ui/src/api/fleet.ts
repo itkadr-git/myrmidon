@@ -3,12 +3,22 @@ import type { EnrollBody } from "../lib/remoteSites";
 
 export interface FleetHost { name: string; origin: "victoriametrics" | "zabbix" | "none"; cpuPercent: number | null; memoryPercent: number | null; diskPercent: number | null; ageSec: number | null; }
 export interface FleetContainer { name: string; state: "running" | "stopped" | "unknown"; cpuPercent: number | null; memoryBytes: number | null; }
+export interface FleetOomSummary {
+  windowStartedAt: string;
+  total24h: number;
+  previous24h: number;
+  increaseAlert: boolean;
+  byAgent: Array<{ agentId: string; agentName: string; role: string | null; count: number }>;
+  byRole: Array<{ role: string; count: number }>;
+}
+
 export interface FleetDashboard {
   ok: boolean;
   generatedAt: string;
   sources: Array<{ name: string; ok: boolean; latency_ms: number | null; error: string | null }>;
   hosts: FleetHost[];
   containers: FleetContainer[];
+  oomSummary: FleetOomSummary;
   blockerPanels: {
     blockedAgeSeconds: number | null;
     rootFanout: Array<{ root: string; fanout: number }>;
@@ -54,6 +64,7 @@ const q = encodeURIComponent;
 export const fleetApi = {
   sites: (companyId: string) => api.get<{ sites: FleetSiteBadge[] }>(`/myrmidon/fleet/sites?companyId=${encodeURIComponent(companyId)}`, { cache: "no-store" }),
   dashboard: (companyId: string) => api.get<FleetDashboard>(`/myrmidon/monitoring/dashboard?companyId=${encodeURIComponent(companyId)}`, { cache: "no-store" }),
+  oomSummary: (companyId: string) => api.get<FleetOomSummary>(`/myrmidon/monitoring/oom?companyId=${q(companyId)}`, { cache: "no-store" }),
   sitesOverview: (companyId: string) => api.get<{ sites: FleetSiteOverview[] }>(`/myrmidon/fleet/sites/overview?companyId=${q(companyId)}`, { cache: "no-store" }),
   siteBots: (companyId: string, site: string) => api.get<{ site: string; bots: FleetSiteBot[] }>(`/myrmidon/fleet/sites/${q(site)}/bots?companyId=${q(companyId)}`, { cache: "no-store" }),
   drainSite: (companyId: string, site: string) => api.post<{ status: string; changed: boolean }>(`/myrmidon/fleet/sites/${q(site)}/drain?companyId=${q(companyId)}`, {}),
