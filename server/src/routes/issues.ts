@@ -15415,7 +15415,9 @@ export function issueRoutes(
               id,
               issueUpdateData,
               tx,
-              postCommitActivityPublications,
+              shouldCollectCompletionPublication || humanUnblockPossible
+                ? postCommitActivityPublications
+                : undefined,
               postCommitIssueActions,
             );
           }
