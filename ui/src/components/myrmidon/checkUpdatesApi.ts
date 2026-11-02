@@ -1,6 +1,8 @@
 // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): manual update availability API client
 import { api } from "@/api/client";
-import type { CheckUpdatesRequest, CheckUpdatesResponse } from "@myrmidon/shared";
+import type { CheckUpdatesRequest, CheckUpdatesResponse, UpdateChannel } from "@myrmidon/shared";
+
+export type CheckUpdatesResponseLike = CheckUpdatesResponse;
 
 export const checkUpdatesQueryKey = ["system", "check-updates"] as const;
 
