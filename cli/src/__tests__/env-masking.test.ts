@@ -151,8 +151,8 @@ describe("container environment diagnostic wrapper (OPE-1177 / OPE-3100)", () =>
   it("satisfies diagnostic criteria: piped to sed 's/(_URL=).*/\\1***/' outputs DATABASE_URL=***", () => {
     const customEnv = {
       ...process.env,
-      DATABASE_URL: "postgres://paperclip_app:ci_raw_database_password@db.prod.internal:5432/paperclip",
-      POSTGRES_PASSWORD: "ci_raw_postgres_password",
+      DATABASE_URL: "postgres://paperclip_app:raw_db_password_for_test@db.prod.internal:5432/paperclip",
+      POSTGRES_PASSWORD: "raw_pg_password_abc",
     };
 
     const envOutput = execFileSync(wrapperScript, [], {
