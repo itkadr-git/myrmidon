@@ -4,6 +4,7 @@ import {
   DEFAULT_EMBEDDING_MODEL,
   RagflowApiError,
   isReusableEmbedding,
+  isWithinChunkTolerance,
   stableUuid,
   type RagflowChunk,
   type RagflowDocument,
@@ -18,6 +19,8 @@ export interface RagflowDryRunOptions {
   embeddingModel?: string;
   embeddingDimensions?: number;
   chunkCountTolerance?: number;
+  /** myrmidon(OPE-10668): when set, only datasets whose name is in this list are inventoried. */
+  datasetNames?: readonly string[];
   onProgress?: (progress: RagflowDryRunProgress) => void;
 }
 
@@ -105,7 +108,10 @@ export async function dryRunRagflowImport(options: RagflowDryRunOptions): Promis
   const report = () => options.onProgress?.({ ...progress });
   report();
 
-  const datasets = await options.source.listDatasets();
+  const datasets = (await options.source.listDatasets()).filter((dataset) => {
+    if (!options.datasetNames || options.datasetNames.length === 0) return true;
+    return options.datasetNames.includes(dataset.name ?? "");
+  });
 
   const documentsByDataset = new Map<string, RagflowDocument[]>();
   const expectedChunksByDocument = new Map<string, number>();
@@ -140,7 +146,10 @@ export async function dryRunRagflowImport(options: RagflowDryRunOptions): Promis
       const endpointChunkCount = options.source.countChunks
         ? sourceCount(await options.source.countChunks(dataset.id, document.id))
         : undefined;
-      if (declaredChunks !== undefined && endpointChunkCount !== undefined && declaredChunks !== endpointChunkCount) {
+      // myrmidon(OPE-10668): per-document totals can drift by one on a live
+      // RAGFlow instance; apply the configured tolerance like the importer.
+      if (declaredChunks !== undefined && endpointChunkCount !== undefined
+        && !isWithinChunkTolerance(declaredChunks, endpointChunkCount, tolerance)) {
         throw new RagflowApiError(
           `RAGFlow chunk count mismatch for ${document.id}: document reports ${declaredChunks}, source endpoint reports ${endpointChunkCount}`,
         );
@@ -154,7 +163,8 @@ export async function dryRunRagflowImport(options: RagflowDryRunOptions): Promis
     }
 
     const declaredChunks = sourceCount(dataset.chunk_count, dataset.chunk_num);
-    if (declaredChunks !== undefined && declaredChunks !== datasetChunks) {
+    // myrmidon(OPE-10668): dataset totals drift the same way; apply tolerance.
+    if (declaredChunks !== undefined && !isWithinChunkTolerance(declaredChunks, datasetChunks, tolerance)) {
       throw new RagflowApiError(
         `RAGFlow chunk count mismatch for dataset ${dataset.id}: source reports ${declaredChunks}, listed documents report ${datasetChunks}`,
       );
