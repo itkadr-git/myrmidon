@@ -5,8 +5,7 @@
 Где делается повседневная настройка доски. В боковом меню настроек компании UI 2.0
 сейчас доступны «Общие», «Участники», «Доступ», «Секреты», «Бюджеты»,
 «Автономия» и «Касты агентов», а также разделы, реализованные в таблице
-маршрутов UI 2.0. «Guardrails» намеренно не показывается: экран и маршрут для
-него в этом выпуске ещё не реализованы. Источники: раздел «Настройка»
+маршрутов UI 2.0.
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.ru.md) и
 руководства оператора в
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).
@@ -20,6 +19,10 @@
 ещё переменные окружения (`MYRMIDON_*`, все по умолчанию выключены),
 перечислены в
 [SETTINGS.ru.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md).
+
+## Настройки injection-защиты
+
+Раздел «Параметры компании → Guardrails» сохраняет `guardrailModes.injectionConfig` (`enabled`, `scoreThreshold`) и показывает эффективные значения с источником. Приоритет: переопределение окружением, настройка интерфейса, значение по умолчанию (порог по умолчанию `0.6`, диапазон 0–1). Явное `false` в окружении учитывается. См. [описание изменения injection-защиты](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-8319-injection-config.md).
 
 ## Лимиты запусков (инстанс)
 
