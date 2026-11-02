@@ -13,7 +13,7 @@ import {
 } from "@myrmidon/db";
 import { installPgvectorIntoEmbeddedCluster } from "@myrmidon/corpus";
 import { configureCorpusAdapters, resolveCorpusPorts, createCorpusParseWorker } from "./index.js";
-import { createCorpusPorts } from "./adapters.js";
+import { createCorpusPorts, createSqlExecutor } from "./adapters.js";
 import type { CorpusPortContext } from "./ports.js";
 import type { Config } from "../../config.js";
 
@@ -26,6 +26,10 @@ const run = support.supported && pgvector.ok ? describe : describe.skip;
 if (!support.supported || !pgvector.ok) {
   console.warn(`[corpus] production adapter test skipped: ${pgvector.reason ?? support.reason}`);
 }
+
+afterAll(async () => {
+  await pgvector.cleanup();
+});
 
 run("production corpus adapters", () => {
   let database: EmbeddedPostgresTestDatabase | undefined;
@@ -219,6 +223,121 @@ run("production corpus adapters", () => {
     const failedDocument = await ports.store.getDocument(companyId, document.id);
     expect(failedDocument?.status).toBe("failed");
     expect(failedDocument?.error).toBeTruthy();
+    await db.$client.end();
+  });
+
+  it("rolls back multi-step writes atomically in withTransaction when an error occurs on real PostgreSQL", async () => {
+    const db = createDb(database!.connectionString);
+    const sqlExecutor = createSqlExecutor(db);
+    const companyId = randomUUID();
+    const datasetId = randomUUID();
+    const documentId = randomUUID();
+    await db.execute(sql`
+      insert into companies (id, name, issue_prefix) values (${companyId}, 'tx-test', 'CTX')
+    `);
+    await db.execute(sql`
+      insert into corpus_datasets (id, company_id, name) values (${datasetId}, ${companyId}, 'tx-dataset')
+    `);
+
+    // Multi-step write (document + job) where failure midway aborts the transaction
+    await expect(
+      sqlExecutor.withTransaction(async (tx) => {
+        await tx.query(
+          `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+           values ($1, $2, $3, $4, $5, $6)`,
+          [documentId, companyId, datasetId, "Mid-failure Doc", "queued", "source://test"],
+        );
+
+        // Verify document is temporarily visible inside the uncommitted transaction
+        const inTx = await tx.query<{ id: string }>(
+          `select id from corpus_documents where id = $1`,
+          [documentId],
+        );
+        expect(inTx).toHaveLength(1);
+
+        // Mid-step failure
+        throw new Error("simulated mid-write failure");
+      }),
+    ).rejects.toThrow("simulated mid-write failure");
+
+    // Outside the aborted transaction: no partial data must remain
+    const documentsAfterRollback = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [documentId],
+    );
+    expect(documentsAfterRollback).toEqual([]);
+
+    // Verify SET LOCAL works inside withTransaction (Alex's review note on PR #1339)
+    await sqlExecutor.withTransaction(async (tx) => {
+      await tx.query("set local hnsw.ef_search = 120");
+      const ef = await tx.query<{ ef_search: string }>("select current_setting('hnsw.ef_search', true) as ef_search");
+      expect(ef[0]?.ef_search).toBe("120");
+    });
+
+    // Verify successful multi-step writes commit atomically
+    const committedDocId = randomUUID();
+    const committedJobId = randomUUID();
+    await sqlExecutor.withTransaction(async (tx) => {
+      await tx.query(
+        `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [committedDocId, companyId, datasetId, "Committed Doc", "queued", "source://test"],
+      );
+      await tx.query(
+        `insert into corpus_parse_jobs (id, company_id, document_id, parser_version, status, attempts, max_attempts)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [committedJobId, companyId, committedDocId, "v1", "pending", 0, 3],
+      );
+    });
+
+    const docs = await sqlExecutor.query<{ id: string; title: string }>(
+      `select id, title from corpus_documents where id = $1`,
+      [committedDocId],
+    );
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.title).toBe("Committed Doc");
+
+    const jobs = await sqlExecutor.query<{ id: string; document_id: string }>(
+      `select id, document_id from corpus_parse_jobs where id = $1`,
+      [committedJobId],
+    );
+    expect(jobs).toHaveLength(1);
+
+    // Verify nested withTransaction creates a real savepoint that rolls back independently
+    const outerDocId = randomUUID();
+    const nestedAbortedDocId = randomUUID();
+    await sqlExecutor.withTransaction(async (outerTx) => {
+      await outerTx.query(
+        `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [outerDocId, companyId, datasetId, "Outer Doc", "queued", "source://outer"],
+      );
+      try {
+        await outerTx.withTransaction(async (innerTx) => {
+          await innerTx.query(
+            `insert into corpus_documents (id, company_id, dataset_id, title, status, source_uri)
+             values ($1, $2, $3, $4, $5, $6)`,
+            [nestedAbortedDocId, companyId, datasetId, "Nested Aborted Doc", "queued", "source://inner"],
+          );
+          throw new Error("nested abort");
+        });
+      } catch (err) {
+        expect((err as Error).message).toBe("nested abort");
+      }
+    });
+
+    const outerDocs = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [outerDocId],
+    );
+    expect(outerDocs).toHaveLength(1);
+
+    const nestedDocs = await sqlExecutor.query<{ id: string }>(
+      `select id from corpus_documents where id = $1`,
+      [nestedAbortedDocId],
+    );
+    expect(nestedDocs).toEqual([]);
+
     await db.$client.end();
   });
 });

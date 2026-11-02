@@ -140,6 +140,7 @@ function runScript(sandbox, mode, extraEnv = {}) {
   return spawnSync("bash", [SCRIPT, mode], {
     env: {
       ...process.env,
+      BASH_ENV: "",
       SANDBOX: sandbox.dir,
       PATH: `${sandbox.bin}:${process.env.PATH}`,
       GITHUB_REPOSITORY: REPO,

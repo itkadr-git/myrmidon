@@ -10,6 +10,13 @@ export {
   unregisterServerAdapter,
   requireServerAdapter,
 } from "./registry.js";
+export {
+  listGatewayModels,
+  refreshGatewayModels,
+  resetGatewayModelsCacheForTests,
+  resolveGatewayApiKey,
+  resolveGatewayBaseUrl,
+} from "./hermes-gateway-models.js";
 export type {
   ServerAdapterModule,
   AcpTargetDescriptor,

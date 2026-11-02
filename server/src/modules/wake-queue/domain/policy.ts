@@ -215,6 +215,8 @@ export type ReleaseRecoveryReviewParticipantFacts = {
 export type ReleaseRecoveryImmediateFacts = {
   /** True when the issue is todo/in_progress, unassigned to a user, not hidden, still assigned to the finishing run's agent, and the run ended failed/timed_out/cancelled. */
   applies: boolean;
+  /** True when the issue is in status todo (recovery must not flip todo to in_progress without new inputs, OPE-4519). */
+  isTodoIssue?: boolean;
   /** True when the finishing run itself carried the disposition-repair retry reason. */
   isDispositionRepairRetry: boolean;
   hasExplicitBlockerPath: boolean;
@@ -408,6 +410,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
   if (shared.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
 
   const shouldBlockImmediately =
+    immediate.isTodoIssue === true ||
     immediate.sourceRequiresExplicitRecovery === true ||
     !shared.recoveryAgentInvokable ||
     !shared.recoveryAgentPresent ||

@@ -281,6 +281,37 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect((await readIssue(seeded.issueId)).status).toBe("blocked");
   });
 
+  it("schedules the next check after GitHub's rate limit reset (OPE-10246)", async () => {
+    const seeded = await seed();
+    // The reset is far in the future: the wait must not wake before it.
+    const resetEpochSeconds = Math.ceil((Date.now() + 3 * 60 * 60 * 1000) / 1000);
+    const { service, wakes } = createService({
+      state: "unknown",
+      pullRequestUrl: PR_URL,
+      headSha: "abc123",
+      reason: "pull:http_403_rate_limited",
+      rateLimit: { remaining: 0, limit: 15000, resetEpochSeconds },
+    });
+
+    const result = await escalate(service, seeded);
+
+    expect(result).toBeTruthy();
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.status).toBe("in_review");
+    expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThanOrEqual(resetEpochSeconds * 1000);
+    const rows = await deferrals(seeded.issueId);
+    expect(rows[0]!.details).toMatchObject({
+      kind: "ci_wait",
+      ciState: "unknown",
+      ciUnknownReason: "pull:http_403_rate_limited",
+      rateLimitRemaining: 0,
+      rateLimitResetEpoch: resetEpochSeconds,
+    });
+    const notes = String((issue.executionPolicy as { monitor?: { notes?: string } }).monitor?.notes ?? "");
+    expect(notes).toContain(`rate limit reset at ${new Date(resetEpochSeconds * 1000).toISOString()}`);
+  });
+
   it("wakes the reviewer once more with the explicit decision request when CI is finished", async () => {
     const seeded = await seed();
     const { service, wakes } = createService({ state: "complete", pullRequestUrl: PR_URL, headSha: "abc123" });

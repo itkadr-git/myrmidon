@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, mayNeedDefaultEscalationChain, normalizeIssueExecutionPolicy, safeNormalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@myrmidon/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -35,6 +35,33 @@ function approvalOnlyPolicy() {
 }
 
 describe("normalizeIssueExecutionPolicy", () => {
+  it("normalizes legacy mode=sequential to normal and preserves stages and monitor", () => {
+    const result = normalizeIssueExecutionPolicy({
+      mode: "sequential",
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", notes: "test monitor" },
+    });
+    expect(result?.mode).toBe("normal");
+    expect(result?.stages).toHaveLength(1);
+    expect(result?.stages[0].participants[0].agentId).toBe(qaAgentId);
+    expect(result?.monitor?.notes).toBe("test monitor");
+    expect(result?.monitor?.nextCheckAt).toBe("2026-04-11T12:30:00.000Z");
+  });
+
+  it("safeNormalizeIssueExecutionPolicy normalizes legacy mode=sequential without throwing", () => {
+    const result = safeNormalizeIssueExecutionPolicy({
+      mode: "sequential",
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    });
+    expect(result?.mode).toBe("normal");
+  });
+
+  it("safeNormalizeIssueExecutionPolicy returns null on invalid policy without throwing", () => {
+    expect(safeNormalizeIssueExecutionPolicy({ mode: "nonexistent_mode", stages: [{ type: "invalid" }] })).toBeNull();
+    expect(safeNormalizeIssueExecutionPolicy(null)).toBeNull();
+    expect(safeNormalizeIssueExecutionPolicy(undefined)).toBeNull();
+  });
+
   it("returns null for null/undefined input", () => {
     expect(normalizeIssueExecutionPolicy(null)).toBeNull();
     expect(normalizeIssueExecutionPolicy(undefined)).toBeNull();

@@ -3,16 +3,109 @@
 // myrmidon(1.6.1 MODEL-PROVIDERS B): LiteLLM admin API client.
 //
 // Calls LiteLLM's /model/new, /model/update, /model/delete, /model/info endpoints using the
-// admin key. Never sends credential values - only secret name references.
+// admin key. Credential values are sent as values: LiteLLM encrypts them in its own DB
+// (its secret manager is not configured on our deployments, so `secrets/<name>`
+// references would never resolve).
 
 import { unprocessable } from "../../errors.js";
-import { LitellmSyncPort } from "./port.js";
+import { LitellmSyncPort, type LitellmChannelView } from "./port.js";
+/**
+ * Strips or redacts any sensitive keys or tokens from an error string.
+ */
+export function sanitizeErrorMessage(message: string): string {
+  if (!message) return "";
+  return message
+    .replace(/(Bearer\s+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/(authorization["':\s=]+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/\b(sk-[A-Za-z0-9_-]{6,})\b/gi, "<redacted>")
+    .replace(/\b(pcp_[A-Za-z0-9_]+)\b/gi, "<redacted>")
+    .replace(/(:\/\/[^:]+:)[^@]+(@)/g, "$1<redacted>$2")
+    .replace(/(api[_-]?key["':\s=]+)[A-Za-z0-9_.-]+/gi, "$1<redacted>")
+    .replace(/(secrets\/)[A-Za-z0-9_.-]+/gi, "$1<redacted>");
+}
+
+/**
+ * Parses a LiteLLM deployment/channel entry from /model/info into a safe,
+ * key-free channel view.
+ */
+export function parseLitellmChannel(item: any): LitellmChannelView {
+  const litellmParams =
+    item && typeof item.litellm_params === "object" && item.litellm_params !== null
+      ? item.litellm_params
+      : {};
+  const modelInfo =
+    item && typeof item.model_info === "object" && item.model_info !== null
+      ? item.model_info
+      : {};
+
+  const group = String(item?.model_name || item?.id || "unknown");
+
+  let provider = String(
+    litellmParams.provider ||
+      modelInfo.custom_llm_provider ||
+      litellmParams.custom_llm_provider ||
+      modelInfo.provider ||
+      "",
+  );
+
+  let providerModel = String(
+    litellmParams.model || modelInfo.model || item?.model || "",
+  );
+
+  if (!provider && providerModel.includes("/")) {
+    provider = providerModel.split("/")[0];
+  }
+  if (!providerModel) {
+    providerModel = group;
+  }
+  if (!provider) {
+    provider = "unknown";
+  }
+
+  const rawId = modelInfo.id ?? item?.id ?? null;
+  const id = typeof rawId === "string" ? rawId : null;
+
+  const rawOrder = litellmParams.order ?? modelInfo.order ?? item?.order;
+  const order =
+    typeof rawOrder === "number" && !Number.isNaN(rawOrder)
+      ? rawOrder
+      : typeof rawOrder === "string" && !Number.isNaN(Number(rawOrder))
+        ? Number(rawOrder)
+        : null;
+
+  const rawWeight = litellmParams.weight ?? modelInfo.weight ?? item?.weight;
+  const weight =
+    typeof rawWeight === "number" && !Number.isNaN(rawWeight)
+      ? rawWeight
+      : typeof rawWeight === "string" && !Number.isNaN(Number(rawWeight))
+        ? Number(rawWeight)
+        : null;
+
+  return {
+    id,
+    group,
+    provider,
+    providerModel,
+    order,
+    weight,
+  };
+}
 
 export interface LitellmSyncClientDeps {
   /** The base URL of the LiteLLM instance. */
   litellmBaseUrl: string;
   /** The admin key for LiteLLM model management. */
   litellmAdminKey: string;
+}
+
+/** LiteLLM provider prefix for a board connector type. */
+export function litellmProviderPrefix(providerType: string): string {
+  // These board connectors expose OpenAI-compatible APIs. LiteLLM routes them
+  // through its `openai` provider; `openai-compatible` is not a LiteLLM prefix.
+  if (providerType === "openai-compatible" || providerType === "dashscope" || providerType === "google") {
+    return "openai";
+  }
+  return providerType;
 }
 
 export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyncPort {
@@ -29,9 +122,27 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
     });
 
     if (!response.ok) {
-      throw unprocessable(`LiteLLM ${path} answered ${response.status}`, {
+      let detail: string | undefined;
+      try {
+        const text = await response.text();
+        try {
+          const parsed = JSON.parse(text);
+          detail = parsed?.error?.message ?? parsed?.detail ?? parsed?.message ?? text;
+        } catch {
+          detail = text;
+        }
+      } catch {
+        // ignore read error
+      }
+
+      const message = detail
+        ? `LiteLLM ${path} answered ${response.status}: ${detail}`
+        : `LiteLLM ${path} answered ${response.status}`;
+
+      throw unprocessable(message, {
         code: "litellm_request_failed",
         status: response.status,
+        detail,
       });
     }
 
@@ -43,12 +154,19 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       const payload = {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? "",
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
           ...input.additionalConfig,
+        },
+        model_info: {
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
         },
       };
 
@@ -59,14 +177,21 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/model/update", {
         model_name: input.litellmModelName,
         litellm_params: {
-          model: input.litellmModelName,
-          provider: input.providerType,
+          model: `${litellmProviderPrefix(input.providerType)}/${input.litellmModelName}`,
+          provider: litellmProviderPrefix(input.providerType),
           api_base: input.baseUrl || undefined,
-          // Pass the secret name reference, not the value
-          api_key: `secrets/${input.credentialSecretName}`,
+          api_key: input.credentialValue ?? "",
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
           ...input.additionalConfig,
         },
-        model_info: { id: input.modelId },
+        model_info: {
+          id: input.modelId,
+          ...(input.order !== undefined ? { order: input.order, priority: input.order } : {}),
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.disabled !== undefined ? { disabled: input.disabled } : {}),
+        },
       });
     },
 
@@ -107,6 +232,46 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
         baseUrl: model.litellm_params?.api_base || null,
         credentialSecretName: extractSecretName(model.litellm_params?.api_key) || "",
       }));
+    },
+
+    async listChannels() {
+      let response: Response;
+      try {
+        response = await fetch(url("/model/info"), {
+          headers: {
+            Authorization: `Bearer ${deps.litellmAdminKey}`,
+          },
+        });
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`LiteLLM connection error: ${sanitizeErrorMessage(raw)}`, {
+          code: "litellm_connection_failed",
+        });
+      }
+
+      if (!response.ok) {
+        let errorText = "";
+        try {
+          errorText = await response.text();
+        } catch {}
+        const safeError = sanitizeErrorMessage(errorText || `HTTP ${response.status}`);
+        throw unprocessable(`LiteLLM /model/info answered ${response.status}: ${safeError}`, {
+          code: "litellm_request_failed",
+          status: response.status,
+        });
+      }
+
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        throw unprocessable("LiteLLM /model/info answered with invalid JSON", {
+          code: "litellm_invalid_response",
+        });
+      }
+
+      const models = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      return models.map(parseLitellmChannel);
     },
   };
 }

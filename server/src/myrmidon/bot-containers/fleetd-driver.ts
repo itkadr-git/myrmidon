@@ -29,6 +29,7 @@ import https from "node:https";
 import { logger } from "../../middleware/logger.js";
 
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { DriverOomEvent } from "./container-oom.js";
 import type { CompiledProfile } from "./types.js";
 
 /** The token header fleetd requires on every call. */
@@ -289,6 +290,15 @@ export function fleetdBotContainerDriver(
         method: "POST",
         path: `/bots/${encodeURIComponent(botKey)}/stop`,
         timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
+    async getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+      const q = sinceNano ? `?since=${sinceNano}` : "";
+      return callJson<DriverOomEvent[]>({
+        method: "GET",
+        path: `/v1/events/oom${q}`,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
     },
   };

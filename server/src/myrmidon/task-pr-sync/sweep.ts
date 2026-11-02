@@ -47,6 +47,8 @@ import {
   readLastMergedSha,
   readPullRequestMetadata,
   taskPrReference,
+  buildNonMainBaseComment,
+  buildForeignBotBaseWarningComment,
   type TaskPrSyncDecision,
   type TaskPrSyncFacts,
   type TaskPrSyncPrFact,
@@ -86,7 +88,7 @@ function loadTaskPrSyncServices() {
 }
 
 /** Statuses the sweep may rewrite; a task in any other status is not a candidate. */
-const CANDIDATE_ISSUE_STATUSES = ["in_progress", "in_review"] as const;
+const CANDIDATE_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(["done", "cancelled"]);
 const ACTIVE_REVIEW_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 
@@ -94,6 +96,8 @@ export const TASK_PR_SYNC_ACTIVITY_ACTOR = "task_pr_sync";
 export const TASK_PR_SYNC_SETTLED_ACTION = "myrmidon.task_pr_sync.settled";
 export const TASK_PR_SYNC_RETURNED_ACTION = "myrmidon.task_pr_sync.returned";
 export const TASK_PR_SYNC_CONFLICT_ACTION = "myrmidon.task_pr_sync.conflict";
+export const TASK_PR_SYNC_NON_MAIN_ACTION = "myrmidon.task_pr_sync.non_main_base";
+export const TASK_PR_SYNC_WARN_FOREIGN_BASE_ACTION = "myrmidon.task_pr_sync.warn_foreign_bot_base";
 
 /** A resolved PR fact plus the bookkeeping the sweep needs but the policy does not. */
 export interface TaskPrSyncResolvedPr extends TaskPrSyncPrFact {
@@ -174,6 +178,93 @@ function readMonitorNextCheckAt(policy: unknown): string | null {
   if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return null;
   const nextCheckAt = (monitor as Record<string, unknown>).nextCheckAt;
   return typeof nextCheckAt === "string" ? nextCheckAt : null;
+}
+
+
+let lastClosedTaskReconcileAt = 0;
+
+/** Periodically reconcile every non-terminal issue that has linked PR work products. */
+export async function reconcileClosedIssuePullRequests(input: {
+  db: Db;
+  resolvePullRequestDetails: PullRequestMergeDetailsResolver;
+  limit?: number;
+  now?: Date;
+}): Promise<{ scanned: number; synced: number }> {
+  const candidates = await input.db.selectDistinct({
+    id: issues.id,
+    companyId: issues.companyId,
+    status: issues.status,
+    updatedAt: issues.updatedAt,
+  }).from(issues).innerJoin(
+    issueWorkProducts,
+    and(
+      eq(issueWorkProducts.issueId, issues.id),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.status, "open"),
+    ),
+  ).where(inArray(issues.status, ["done", "cancelled"]))
+    .orderBy(asc(issues.updatedAt)).limit(input.limit ?? 500);
+  const { extractGitHubPullRequestReferences } = await loadTaskPrSyncServices();
+  lastClosedTaskReconcileAt = (input.now ?? new Date()).getTime();
+  let synced = 0;
+
+  for (const issue of candidates) {
+    try {
+      const products = await input.db.select().from(issueWorkProducts).where(and(
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.status, "open"),
+      ));
+      for (const product of products) {
+        const metadata = product.metadata && typeof product.metadata === "object" && !Array.isArray(product.metadata)
+          ? product.metadata as Record<string, unknown>
+          : {};
+        const { repo, number } = readPullRequestMetadata({ metadata });
+        const reference = extractGitHubPullRequestReferences([
+          product.url,
+          repo && number ? `${repo}#${number}` : null,
+        ])[0];
+        if (!reference) continue;
+
+        let details: PullRequestMergeDetails;
+        try {
+          details = await input.resolvePullRequestDetails(issue.companyId, reference);
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not refresh a closed-task PR work product",
+          );
+          continue;
+        }
+
+        const state = resolvedPullRequestState(details);
+        if (state !== "merged" && state !== "closed") continue;
+        const mergedSha = details.headSha ?? readLastMergedSha({ metadata });
+        if (state === product.status && mergedSha === readLastMergedSha({ metadata })) continue;
+
+        try {
+          await input.db.update(issueWorkProducts).set({
+            status: state,
+            metadata: { ...metadata, state, draft: false, ...(state === "merged" && mergedSha ? { lastMergedSha: mergedSha } : {}) },
+            updatedAt: input.now ?? new Date(),
+          }).where(eq(issueWorkProducts.id, product.id));
+          synced++;
+        } catch (err) {
+          logger.warn(
+            { errorKind: "closed_task_pr_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed closed-task PR state",
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { errorKind: "closed_task_pr_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
+        "failed reconciling PR work products for a closed task",
+      );
+    }
+  }
+
+  return { scanned: candidates.length, synced };
 }
 
 /** Map the resolver's answer to the state the policy understands. */
@@ -262,13 +353,21 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
       if (reference) {
         try {
           details = await deps.resolvePullRequestDetails(issue.companyId, reference);
-        } catch {
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_lookup_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not resolve pull-request state during task PR sync",
+          );
           // A resolver failure is not a merge; the policy sees `unknown` and waits.
           details = null;
         }
       }
       const resolvedState = details ? resolvedPullRequestState(details) : undefined;
       const state = effectivePullRequestState({ storedStatus: product.status, resolvedState });
+      const productMeta = (product.metadata ?? {}) as Record<string, unknown>;
+      const baseRef = details?.baseRef ?? (typeof productMeta.baseRef === "string" ? productMeta.baseRef : null);
+      const defaultBranch = details?.defaultBranch ?? (typeof productMeta.defaultBranch === "string" ? productMeta.defaultBranch : "main");
+      const headRef = details?.headRef ?? (typeof productMeta.headRef === "string" ? productMeta.headRef : null);
       facts.push({
         workProductId: product.id,
         state,
@@ -276,6 +375,9 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         number: number ?? reference?.number ?? null,
         mergedSha: details?.headSha ?? null,
         mergeable: details?.mergeable ?? null,
+        baseRef,
+        defaultBranch,
+        headRef,
         recordedSha: readLastMergedSha(product),
         recordedUpdatedAt: product.updatedAt,
       });
@@ -289,10 +391,16 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               ...(product.metadata ?? {}),
               state: resolvedState,
               draft: resolvedState === "draft",
+              ...(baseRef ? { baseRef } : {}),
+              ...(defaultBranch ? { defaultBranch } : {}),
+              ...(headRef ? { headRef } : {}),
             },
           });
-        } catch {
-          // Bookkeeping only; the policy still acts on the fresh facts.
+        } catch (err) {
+          logger.warn(
+            { errorKind: "task_pr_sync_state_persist_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id, workProductId: product.id },
+            "could not persist refreshed pull-request state",
+          );
         }
       }
     }
@@ -352,6 +460,8 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               state: "merged",
               draft: false,
               ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+              ...(pr.baseRef ? { baseRef: pr.baseRef } : {}),
+              ...(pr.defaultBranch ? { defaultBranch: pr.defaultBranch } : {}),
             },
           })
           .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
@@ -542,6 +652,147 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
     return true;
   }
 
+  async function hasRecentNonMainComment(issueId: string, baseRef: string): Promise<boolean> {
+    const comments = await deps.db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(5);
+    return comments.some((c) => c.body.includes(`PR влит в ${baseRef}, не в main`));
+  }
+
+  async function warnNonMainBase(
+    issue: { id: string; companyId: string; identifier?: string | null; status: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "non_main_base" }>,
+    prFacts: TaskPrSyncResolvedPr[],
+    at: Date,
+  ): Promise<boolean> {
+    const body = buildNonMainBaseComment({ baseRef: decision.baseRef });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const warned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+
+      for (const pr of prFacts) {
+        if (pr.state !== "merged") continue;
+        const [product] = await tx
+          .select({ id: issueWorkProducts.id, metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)))
+          .limit(1);
+        if (!product) continue;
+        await tx
+          .update(issueWorkProducts)
+          .set({
+            status: "merged",
+            metadata: {
+              ...((product.metadata && typeof product.metadata === "object") ? product.metadata as Record<string, unknown> : {}),
+              state: "merged",
+              draft: false,
+              ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+              ...(pr.baseRef ? { baseRef: pr.baseRef } : {}),
+              ...(pr.defaultBranch ? { defaultBranch: pr.defaultBranch } : {}),
+            },
+          })
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
+      }
+
+      const svc = services.issueService(deps.db);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_NON_MAIN_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          currentStatus: locked.status,
+          prRefs: decision.prRefs,
+          baseRef: decision.baseRef,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!warned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
+  async function hasRecentForeignBotBaseWarning(issueId: string, baseRef: string): Promise<boolean> {
+    const comments = await deps.db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(5);
+    return comments.some((c) => c.body.includes(`база ${baseRef} является чужой веткой bot/*`));
+  }
+
+  async function warnForeignBotBase(
+    issue: { id: string; companyId: string; identifier?: string | null; status: string },
+    decision: Extract<TaskPrSyncDecision, { kind: "warn_foreign_bot_base" }>,
+  ): Promise<boolean> {
+    const body = buildForeignBotBaseWarningComment({
+      baseRef: decision.baseRef,
+      prRefs: decision.prRefs,
+    });
+    const services = await loadTaskPrSyncServices();
+    const publications: ActivityPublication[] = [];
+    const actions: IssuePostCommitAction[] = [];
+    const warned = await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return false;
+      if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+
+      const svc = services.issueService(deps.db);
+      const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+
+      await logActivity(txDb, {
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: TASK_PR_SYNC_ACTIVITY_ACTOR,
+        action: TASK_PR_SYNC_WARN_FOREIGN_BASE_ACTION,
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          currentStatus: locked.status,
+          prRefs: decision.prRefs,
+          baseRef: decision.baseRef,
+          commentId: comment.id,
+        },
+      }, publications);
+      return true;
+    });
+    if (!warned) return false;
+    for (const publication of publications) publishActivity(publication);
+    await services.executeIssuePostCommitActions(deps.db, actions);
+    return true;
+  }
+
   return {
     /** Runs one pass. Options exist for tests; production reads settings and the clock. */
     sweep: async (opts?: {
@@ -650,7 +901,14 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
           result.scanned += 1;
           try {
             const products = productsByIssue.get(issue.id) ?? [];
+            // Keep PR work-product state fresh for inactive issues, but do not let
+            // their statuses flow into the automatic settle/return policy.
+            const shouldSkipPolicy = issue.status === "backlog" || issue.status === "todo" || issue.status === "blocked";
             const prFacts = await resolvePrFacts(issue, products);
+            if (shouldSkipPolicy) {
+              result.skipped += 1;
+              continue;
+            }
             const openGate = await hasOpenPostDeployGate(
               deps.db,
               { id: issue.id, executionPolicy: issue.executionPolicy },
@@ -705,6 +963,40 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
               continue;
             }
 
+            if (decision.kind === "warn_foreign_bot_base") {
+              if (await hasRecentForeignBotBaseWarning(issue.id, decision.baseRef)) {
+                result.deduped += 1;
+                continue;
+              }
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const warned = await warnForeignBotBase(issue, decision);
+              if (warned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
+            if (decision.kind === "non_main_base") {
+              const merged = prFacts.filter((pr) => pr.state === "merged");
+              const alreadyRecorded =
+                merged.length > 0 &&
+                merged.every((pr) => pr.mergedSha !== null && pr.recordedSha === pr.mergedSha);
+              if (alreadyRecorded || (await hasRecentNonMainComment(issue.id, decision.baseRef))) {
+                result.deduped += 1;
+                continue;
+              }
+              if (settings.settleDisabled) {
+                result.skipped += 1;
+                continue;
+              }
+              const warned = await warnNonMainBase(issue, decision, prFacts, at);
+              if (warned) result.returned += 1;
+              else result.skipped += 1;
+              continue;
+            }
+
             // settle_done: dedup by the merge sha already recorded on the products.
             const merged = prFacts.filter((pr) => pr.state === "merged");
             const alreadyRecorded =
@@ -725,7 +1017,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id, errorName: err instanceof Error ? err.name : typeof err },
+              { errorKind: "task_pr_sync_issue_failed", errorName: err instanceof Error ? err.name : typeof err, issueId: issue.id },
               "task PR sync failed for one task",
             );
           }

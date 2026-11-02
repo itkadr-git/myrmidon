@@ -1,4 +1,4 @@
-// myrmidon(OPE-9253): durable OOM observations, independent of recovery factory.
+// myrmidon(OPE-9934, OPE-9253): durable OOM observations, independent of recovery factory.
 import { and, eq, gte, lte, or, isNull, desc, sql } from "drizzle-orm";
 import { activityLog, agents, heartbeatRuns, type Db } from "@myrmidon/db";
 import type { ContainerOomObservation } from "./container-oom.js";
@@ -9,7 +9,9 @@ import type { ContainerOomObservation } from "./container-oom.js";
 export function containerOomRecorder(db: Db) {
   return async (agentId: string, observation: ContainerOomObservation): Promise<void> => {
     const occurredAt = new Date(observation.occurredAt);
-    const eventKey = `${observation.containerId}:${observation.occurredAt}`;
+    const { source: obsSource, ...restObs } = observation;
+    const source = obsSource || "docker.inspect";
+    const eventKey = `${observation.containerId}:${observation.occurredAt}:${source}`;
     await db.transaction(async (tx) => {
       // Serialize only this event, including concurrent readers in another board process.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`container-oom:${agentId}:${eventKey}`}, 0))`);
@@ -33,7 +35,7 @@ export function containerOomRecorder(db: Db) {
         companyId: agent.companyId, actorType: "system", actorId: "myrmidon-container-oom",
         agentId, runId, action: "agent.container_oom", entityType: "container_oom", entityId: eventKey,
         details: {
-          kind: "resource.oom", source: "docker.inspect", ...observation, role: agent.role,
+          kind: "resource.oom", ...restObs, source, role: agent.role,
           correlation: runId ? "event_time" : candidates.length > 1 ? "ambiguous" : "unmatched",
           // This is a configured limit, not a measured peak. Do not invent a peak/command.
           peakMemoryBytes: null,
@@ -42,3 +44,49 @@ export function containerOomRecorder(db: Db) {
     });
   };
 }
+
+/**
+ * Returns the durable OOM count recorded in the database for an agent (and optionally a specific run).
+ * Matches kernel OOM kill events reported by journalctl -k / cgroup memory.events oom_kill.
+ */
+export async function countAgentContainerOom(
+  db: Db,
+  agentId: string,
+  runId?: string,
+  options?: { distinctContainers?: boolean },
+): Promise<number> {
+  const conditions = [
+    eq(activityLog.agentId, agentId),
+    eq(activityLog.action, "agent.container_oom"),
+    eq(activityLog.entityType, "container_oom"),
+  ];
+  if (runId) {
+    conditions.push(eq(activityLog.runId, runId));
+  }
+  const countExpression = options?.distinctContainers
+    ? sql<number>`count(distinct ${activityLog.details}->>'containerId')::int`
+    : sql<number>`count(*)::int`;
+  const rows = await db
+    .select({ count: countExpression })
+    .from(activityLog)
+    .where(and(...conditions));
+  return Number(rows[0]?.count ?? 0);
+}
+
+export async function getAgentContainerOomEvents(db: Db, agentId: string, runId?: string) {
+  const conditions = [
+    eq(activityLog.agentId, agentId),
+    eq(activityLog.action, "agent.container_oom"),
+    eq(activityLog.entityType, "container_oom"),
+  ];
+  if (runId) {
+    conditions.push(eq(activityLog.runId, runId));
+  }
+  return db
+    .select()
+    .from(activityLog)
+    .where(and(...conditions))
+    .orderBy(desc(activityLog.createdAt));
+}
+
+export type ContainerOomEvidenceEvent = Awaited<ReturnType<typeof getAgentContainerOomEvents>>[number];

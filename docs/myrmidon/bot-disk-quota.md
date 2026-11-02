@@ -100,3 +100,32 @@ opening the server log.
 
 Stable string: `BOT_DISK_QUOTA_EXCEEDED:` — the same contract as the other
 workspace admission refusals (`WORKTREE_MISSING:` …). A bot may match on it.
+
+## Verified Retention & Lifecycle Policies (OPE-9330 / OPE-9714)
+
+- **Archive Retention (7 days / verified OneDrive gate)**:
+  Archives older than 7 days (and archives evicted under disk quota pressure) are
+  deleted only after verified upload to OneDrive. The backup receipt must be
+  independently verified for presence, exact byte size, and matching SHA-256 hash.
+  If upload fails or receipt verification mismatches, deletion is aborted and
+  local archives remain intact. Unverified archives are never deleted.
+- **Media Retention (30 days / aiИсходники transfer & reminder)**:
+  Media files under the bot volume strictly older than 30 days are transferred
+  to cloud storage (OneDrive folder `aiИсходники`). Deletion of local media requires
+  confirmed transfer receipt; untransferred or unconfirmed files are never removed.
+  A 30-day reminder card / notification is preserved for operators.
+- **Cache Lifecycle (3 days max age on mtime / LRU under pressure)**:
+  Cache cleanup runs strictly on `mtime` (last modification time), ignoring `atime`.
+  Entries older than 3 days are purged. Under quota pressure, eviction orders
+  candidates strictly by LRU (oldest `mtime` first).
+- **Workspace Cleanup (Closed + Merged)**:
+  Workspaces are transitioned to closing and removed only when the task's PR is
+  merged (`closed + merged`). Copies with unmerged or closed-unmerged PRs remain
+  preserved or archived. `state.db` and authentication/session tokens are
+  permanently protected and never deleted automatically.
+- **Security & Durability Guarantees**:
+  All file drop operations employ strict symlink rejection, path traversal
+  rejection outside the designated root, and TOCTOU race protection (opening with
+  `O_NOFOLLOW` and verifying inode and device match before unlinking). Real deletions
+  record a durable two-phase audit journal (`delete-intent` followed by `deleted`),
+  while dry-run previews write zero files or journal entries to disk.
