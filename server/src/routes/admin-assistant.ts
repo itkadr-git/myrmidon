@@ -3,6 +3,14 @@ import { Router, type Request, type Response } from "express";
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, heartbeatRuns, issues } from "@myrmidon/db";
+import type {
+  AdminAssistantDryRunDiagnostics,
+  AdminAssistantDryRunProbeResult,
+} from "@myrmidon/shared";
+import {
+  sanitizeDryRunDiagnostics,
+  toSafeDryRunDiagnosticsJson,
+} from "@myrmidon/shared";
 import { assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 import { badRequest } from "../errors.js";
 import { redactSensitive } from "../middleware/redact-sensitive.js";
@@ -59,24 +67,8 @@ export interface CollectClusterHealthOptions {
 
 export type DryRunProbeStatus = "ok" | "degraded";
 
-export interface DryRunProbeResult {
-  name: string;
-  status: DryRunProbeStatus;
-  durationMs: number;
-  detail?: Record<string, unknown>;
-  error?: string;
-}
-
-export interface AdminAssistantDryRunDiagnostics {
-  dry_run: true;
-  timestamp: string;
-  probes: DryRunProbeResult[];
-  summary: {
-    total: number;
-    ok: number;
-    degraded: number;
-  };
-}
+export type DryRunProbeResult = AdminAssistantDryRunProbeResult;
+export type { AdminAssistantDryRunDiagnostics };
 
 /** Default per-probe timeout. Each probe runs in isolation; a slow probe
  * degrades its own result without hiding the error or blocking siblings. */
@@ -468,10 +460,16 @@ export function adminAssistantRoutes(db: Db): Router {
     assertInstanceAdmin(req);
 
     const diagnostics = await collectDryRunDiagnostics(db);
-    // Defense in depth: run the payload through the same redaction walker
-    // used for HTTP log lines so a probe that accidentally surfaces a
-    // credential-shaped key never leaves the process unmasked.
-    res.json(redactSensitive(diagnostics));
+    // Layer 1: typed DTO sanitizer — removes secret-bearing fields from every
+    // probe detail before the payload reaches the serializer.  This is the
+    // authoritative redaction contract; Layer 2 is a defensive back-stop.
+    const sanitized = toSafeDryRunDiagnosticsJson(
+      sanitizeDryRunDiagnostics(diagnostics),
+    );
+    // Layer 2: run the already-sanitized payload through the same string-level
+    // redaction walker used for HTTP log lines so a credential-shaped value
+    // that slipped through Layer 1 is still masked.
+    res.json(redactSensitive(sanitized));
   }
 
   router.get("/companies/:companyId/admin-assistant/cluster-health", handleClusterHealth);
