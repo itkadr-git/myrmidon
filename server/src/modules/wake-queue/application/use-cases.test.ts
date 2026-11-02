@@ -276,7 +276,7 @@ describe("releaseIssueExecution", () => {
         }),
       ];
       const transaction = createFakeTransaction({
-        findIssue: vi.fn(async () => ({ ...ISSUE, status: authorizedFailedChatRetry ? "done" : "in_progress" })),
+        findIssue: vi.fn(async () => ({ ...ISSUE, status: "in_progress" })),
         findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
         getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: ["original-comment"], containedSelfAuthoredComment: false })),
       });
