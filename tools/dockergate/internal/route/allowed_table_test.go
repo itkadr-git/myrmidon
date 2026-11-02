@@ -52,6 +52,8 @@ var allowedTable = []allowedEntry{
 	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + LegacySkillsReadQuery, Suffixes: []string{""}},
 	// A14: the partition and the project quotas; not a Docker call, so no API prefix.
 	{ID: A14, Method: "GET", Template: strings.TrimPrefix(DiskTarget, "/"), NoPrefix: true},
+	// A19: OOM events transport (OPE-9934); not a Docker call, so no API prefix.
+	{ID: A19, Method: "GET", Template: strings.TrimPrefix(EventsOomTarget, "/"), NoPrefix: true},
 }
 
 const fixtureRelPath = "../../contract/allowed-routes.json"
@@ -129,7 +131,7 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16} {
+	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16, A19} {
 		if !seen[id] {
 			t.Errorf("route %s is not in the allowed table", id)
 		}

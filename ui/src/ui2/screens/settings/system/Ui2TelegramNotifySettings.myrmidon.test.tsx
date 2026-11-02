@@ -66,6 +66,11 @@ function defaultSettings(): TelegramNotifySettings {
       topicId: null,
     },
     proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+    updates: {
+      enabled: false,
+      chatId: null,
+      topicId: null,
+    },
   };
 }
 

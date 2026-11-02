@@ -53,7 +53,7 @@ const ALLOWLIST = [
   "\"Paperclip\"", "\"Paperclip …\"",
   "paperclip:2026.", "paperclipVersionMin",
   "Copyright (c) 2025 Paperclip",
-  "Based on Paperclip",
+  "Based on Paperclip", "Base: Paperclip",
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",

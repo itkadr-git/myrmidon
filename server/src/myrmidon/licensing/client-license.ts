@@ -45,6 +45,8 @@ export const MODULE_PLUGIN_KEYS: Readonly<Record<string, string>> = Object.freez
   "myrmidon.google-ai": "google-ai",
   "myrmidon.chatgpt-pool": "chatgpt-pool",
   "myrmidon.antigravity": "antigravity",
+  "myrmidon.alibaba-image": "alibaba-image",
+  "myrmidon.client-1": "client-1",
 });
 export const MODULE_ADAPTER_TYPES: Readonly<Record<string, string>> = Object.freeze({
   antigravity_local: "antigravity",

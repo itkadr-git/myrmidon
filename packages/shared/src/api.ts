@@ -2,6 +2,7 @@ export const API_PREFIX = "/api";
 
 export const API = {
   health: `${API_PREFIX}/health`,
+  haStandby: `${API_PREFIX}/ha/standby`,
   companies: `${API_PREFIX}/companies`,
   companyFolders: `${API_PREFIX}/companies/:companyId/folders`,
   companyFolder: `${API_PREFIX}/companies/:companyId/folders/:folderId`,

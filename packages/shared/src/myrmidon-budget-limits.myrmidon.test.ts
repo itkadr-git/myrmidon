@@ -7,6 +7,9 @@
 import { describe, expect, it } from "vitest";
 import {
   budgetLimitWindow,
+  budgetLimitsExportQuerySchema,
+  budgetLimitsReportToCsv,
+  escapeCsvCell,
   isBudgetLimitOver,
   normalizeBudgetLimitsSettings,
   resolveBudgetLimitsSignalOnly,
@@ -73,5 +76,48 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) shared contract", () => {
     expect(isBudgetLimitOver({ amountCents: 100, isActive: true }, 0)).toBe(false);
     expect(isBudgetLimitOver({ amountCents: 100, isActive: false }, 1_000)).toBe(false);
     expect(isBudgetLimitOver({ amountCents: 0, isActive: true }, 1)).toBe(true);
+  });
+
+  describe("report export contract", () => {
+    it("validates export query format with defaults", () => {
+      expect(budgetLimitsExportQuerySchema.parse({})).toEqual({ format: "json" });
+      expect(budgetLimitsExportQuerySchema.parse({ format: "csv" })).toEqual({ format: "csv" });
+      expect(budgetLimitsExportQuerySchema.parse({ format: "json", level: "caste" })).toEqual({
+        format: "json",
+        level: "caste",
+      });
+      expect(() => budgetLimitsExportQuerySchema.parse({ format: "yaml" })).toThrow();
+      expect(() => budgetLimitsExportQuerySchema.parse({ level: "invalid" })).toThrow();
+    });
+
+    it("escapes CSV cells safely", () => {
+      expect(escapeCsvCell("simple")).toBe("simple");
+      expect(escapeCsvCell('with, comma and "quotes"')).toBe('"with, comma and ""quotes"""');
+      expect(escapeCsvCell("multiline\ntext")).toBe('"multiline\ntext"');
+      expect(escapeCsvCell(null)).toBe("");
+      expect(escapeCsvCell(undefined)).toBe("");
+      expect(escapeCsvCell(1234)).toBe("1234");
+    });
+
+    it("serializes rows to CSV including headers", () => {
+      const csv = budgetLimitsReportToCsv([
+        {
+          level: "nest",
+          ref: "company",
+          period: "calendar_month_utc",
+          mode: "soft",
+          amountCents: 50000,
+          spentCents: 12500,
+          events: 10,
+          overLimit: false,
+          isActive: true,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ]);
+      const lines = csv.split("\n");
+      expect(lines[0]).toBe("level,ref,period,mode,amount_cents,spent_cents,events,over_limit,is_active,created_at,updated_at");
+      expect(lines[1]).toBe("nest,company,calendar_month_utc,soft,50000,12500,10,false,true,2026-10-01T00:00:00.000Z,2026-10-01T00:00:00.000Z");
+    });
   });
 });

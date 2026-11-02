@@ -64,6 +64,7 @@
         "fieldRuns": "История прогонов",
         "fieldActivity": "Журнал активности",
         "fieldAccess": "Журналы аудита доступа",
+        "fieldLiteLLM": "События расходов LiteLLM",
         "fieldDays": "{{label}}, дней",
         "invalidDays": "Введите целое число дней (0 или больше)",
         "never": "никогда",

@@ -175,6 +175,11 @@ export interface GitHubApprovalClient {
     body?: string;
     token: string;
   }): Promise<{ id?: number | string; skipped?: boolean }>;
+  listReviews?(input: {
+    repository: string;
+    number: number;
+    token: string;
+  }): Promise<Array<{ id: number | string; state: string; commitId?: string }>>;
 }
 
 export function createDefaultGitHubApprovalClient(
@@ -261,6 +266,25 @@ export function createDefaultGitHubApprovalClient(
 
       const data = (await res.json()) as Record<string, unknown>;
       return { id: data.id as number | string | undefined };
+    },
+
+    async listReviews({ repository, number, token }) {
+      const res = await fetchFn(`${apiBase}/repos/${repository}/pulls/${number}/reviews`, {
+        headers: ghHeaders(token),
+      });
+      if (!res.ok) {
+        return [];
+      }
+      const data = (await res.json()) as unknown[];
+      if (!Array.isArray(data)) return [];
+      return data.map((item) => {
+        const record = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+        return {
+          id: record.id as number | string,
+          state: String(record.state ?? ""),
+          commitId: typeof record.commit_id === "string" ? record.commit_id : undefined,
+        };
+      });
     },
   };
 }
@@ -358,7 +382,10 @@ export async function propagateReviewApprovalToPullRequest(
   const tokenProvider = deps.tokenProvider ?? ((c, r) => resolveGitHubTokenForApproval(deps.db, c, r));
 
   // Requirement 3: Negative path verification
-  if (!isApprovalOutcome(input.decisionOutcome, input.verdictBody)) {
+  const isNonApproval =
+    (input.decisionOutcome != null && !isApprovalOutcome(input.decisionOutcome, input.verdictBody)) ||
+    (input.verdictBody != null && NON_APPROVAL_VERDICT_PATTERN.test(input.verdictBody));
+  if (isNonApproval) {
     if (input.issueId) {
       await logActivity(deps.db, {
         companyId: input.companyId,
@@ -578,8 +605,9 @@ export async function propagateReviewApprovalToPullRequest(
     };
   }
 
-  // Requirement 2: Current-head guard
-  if (reviewedHead && !headMatches(reviewedHead, prDetails.headSha)) {
+  // Requirement 2: Current-head guard (fail-closed if reviewed head is missing or moved)
+  if (!reviewedHead || !headMatches(reviewedHead, prDetails.headSha)) {
+    const reason = !reviewedHead ? "missing_reviewed_head" : "head_mismatch";
     if (input.issueId) {
       await logActivity(deps.db, {
         companyId: input.companyId,
@@ -595,26 +623,44 @@ export async function propagateReviewApprovalToPullRequest(
           pullRequestNumber: targetNumber,
           currentHeadSha: prDetails.headSha,
           reviewedHeadSha: reviewedHead,
-          reason: "head_mismatch",
+          reason,
         },
       }).catch(() => {});
     }
     return {
       success: false,
       action: "skipped",
-      reason: "head_mismatch",
+      reason,
       repository: targetRepo,
       pullRequestNumber: targetNumber,
       currentHeadSha: prDetails.headSha,
-      reviewedHeadSha: reviewedHead,
+      reviewedHeadSha: reviewedHead ?? undefined,
     };
   }
 
-  // Requirement 4: Idempotency
+  // Requirement 4: Idempotency & Recovery
   const alreadyLabeled = prDetails.labels.includes(REVIEW_APPROVED_LABEL);
 
-  // If already tagged with review-approved: no-op
-  if (alreadyLabeled) {
+  // Check if an approving GitHub review is already submitted on this head
+  let alreadyHasApprovedReview = false;
+  let canCheckReviews = false;
+  if (typeof client.listReviews === "function") {
+    canCheckReviews = true;
+    try {
+      const existingReviews = await executeWithRetry(
+        () => client.listReviews!({ repository: targetRepo!, number: targetNumber!, token }),
+        deps.retryOptions,
+      );
+      alreadyHasApprovedReview = existingReviews.some(
+        (r) => r.state === "APPROVED" && (!r.commitId || headMatches(r.commitId, prDetails.headSha)),
+      );
+    } catch {
+      // Best-effort check; proceed to ensure review/label
+    }
+  }
+
+  // If already labeled, and either client cannot inspect reviews or an approving review is already present: complete no-op
+  if (alreadyLabeled && (!canCheckReviews || alreadyHasApprovedReview)) {
     return {
       success: true,
       action: "noop",
@@ -628,35 +674,39 @@ export async function propagateReviewApprovalToPullRequest(
 
   // Requirement 1: Tag with review-approved and/or submit approving PR review
   let labelAdded = false;
-  try {
-    await executeWithRetry(
-      () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
-      deps.retryOptions,
-    );
-    labelAdded = true;
-  } catch (err) {
-    logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
+  if (!alreadyLabeled) {
+    try {
+      await executeWithRetry(
+        () => client.addLabel({ repository: targetRepo!, number: targetNumber!, label: REVIEW_APPROVED_LABEL, token }),
+        deps.retryOptions,
+      );
+      labelAdded = true;
+    } catch (err) {
+      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to add review-approved label to PR");
+    }
   }
 
   let reviewSubmitted = false;
-  try {
-    const reviewRes = await executeWithRetry(
-      () =>
-        client.submitReview({
-          repository: targetRepo!,
-          number: targetNumber!,
-          headSha: prDetails.headSha,
-          event: "APPROVE",
-          body: input.verdictBody ?? "Approved by board review",
-          token,
-        }),
-      deps.retryOptions,
-    );
-    if (reviewRes && !reviewRes.skipped) {
-      reviewSubmitted = true;
+  if (!alreadyHasApprovedReview) {
+    try {
+      const reviewRes = await executeWithRetry(
+        () =>
+          client.submitReview({
+            repository: targetRepo!,
+            number: targetNumber!,
+            headSha: prDetails.headSha,
+            event: "APPROVE",
+            body: input.verdictBody ?? "Approved by board review",
+            token,
+          }),
+        deps.retryOptions,
+      );
+      if (reviewRes && !reviewRes.skipped) {
+        reviewSubmitted = true;
+      }
+    } catch (err) {
+      logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to submit approving PR review");
     }
-  } catch (err) {
-    logger.warn({ err, repository: targetRepo, number: targetNumber }, "failed to submit approving PR review");
   }
 
   // Update matched work product metadata if present

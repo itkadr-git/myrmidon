@@ -17,6 +17,7 @@ import { sql, and, eq, inArray, desc, isNull } from "drizzle-orm";
 import {
   activityLog,
   agentWakeupRequests,
+  agentCastes,
   agents,
   companies,
   externalObjects,
@@ -51,7 +52,10 @@ export interface InReviewIssueRow extends RoutingIssue {
 
 export interface ReviewerAgentRow {
   id: string;
+  name?: string | null;
   role: string;
+  model?: string | null;
+  metadata?: Record<string, unknown> | null;
   invokable?: boolean;
 }
 
@@ -73,6 +77,8 @@ export interface ReviewRoutingStore {
   countBlockedWithoutAssignee(): Promise<number>;
   /** Invokable agents of the company whose role is one of `roles`. */
   listReviewerAgents(companyId: string, roles: readonly string[]): Promise<ReviewerAgentRow[]>;
+  getAgentModel?(companyId: string, agentId: string): Promise<string | null>;
+  getAgent(companyId: string, agentId: string): Promise<ReviewerAgentRow | null>;
   /** Tasks in flight (in progress + in review) per assignee agent. */
   loadByAgent(companyId: string): Promise<Map<string, number>>;
   countActiveRunsForAgent(companyId: string, agentId: string): Promise<number>;
@@ -321,25 +327,72 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
     async listReviewerAgents(companyId, roles) {
       if (roles.length === 0) return [];
       const rows = await db
-        .select({ id: agents.id, role: agents.role, status: agents.status })
+        .select({
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          metadata: agents.metadata,
+          status: agents.status,
+          model: sql<string | null>`coalesce(${agents.adapterConfig}->>'model', (select ${agentCastes.defaultModel} from ${agentCastes} where ${agentCastes.companyId} = ${agents.companyId} and ${agentCastes.key} = ${agents.role} limit 1))`,
+          lastRunModel: sql<string | null>`(select ${heartbeatRuns.usageJson}->>'model' from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.companyId} = ${agents.companyId} and ${heartbeatRuns.status} = 'completed' order by ${heartbeatRuns.finishedAt} desc nulls last, ${heartbeatRuns.id} desc limit 1)`,
+        })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, [...roles])));
-      return rows.map(({ id, role, status }) => ({ id, role, invokable: isAgentStatusInvokable(status) }));
+      return rows.map(({ id, name, role, metadata, status, model, lastRunModel }) => ({
+        id,
+        name,
+        role,
+        metadata: (metadata as Record<string, unknown> | null) ?? null,
+        model: lastRunModel ?? model,
+        invokable: isAgentStatusInvokable(status),
+      }));
+    },
+
+    async getAgentModel(companyId, agentId) {
+      const [row] = await db
+        .select({
+          model: sql<string | null>`coalesce(${agents.adapterConfig}->>'model', (select ${agentCastes.defaultModel} from ${agentCastes} where ${agentCastes.companyId} = ${agents.companyId} and ${agentCastes.key} = ${agents.role} limit 1))`,
+          lastRunModel: sql<string | null>`(select ${heartbeatRuns.usageJson}->>'model' from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${agents.id} and ${heartbeatRuns.companyId} = ${agents.companyId} and ${heartbeatRuns.status} = 'completed' order by ${heartbeatRuns.finishedAt} desc nulls last, ${heartbeatRuns.id} desc limit 1)`,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+        .limit(1);
+      return row ? (row.lastRunModel ?? row.model ?? null) : null;
+    },
+
+    async getAgent(companyId, agentId) {
+      const [row] = await db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          role: agents.role,
+          metadata: agents.metadata,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+      if (!row) return null;
+      return {
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+        invokable: isAgentStatusInvokable(row.status),
+      };
     },
 
     async loadByAgent(companyId) {
       const rows = await db
-        .select({ agentId: issues.assigneeAgentId, count: sql<number>`count(*)::int` })
-        .from(issues)
+        .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
         .where(
           and(
-            eq(issues.companyId, companyId),
-            isNull(issues.hiddenAt),
-            sql`${issues.status} in ('in_progress', 'in_review')`,
-            sql`${issues.assigneeAgentId} is not null`,
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.agentId} is not null`,
           ),
         )
-        .groupBy(issues.assigneeAgentId);
+        .groupBy(heartbeatRuns.agentId);
       const load = new Map<string, number>();
       for (const row of rows) if (row.agentId) load.set(row.agentId, row.count);
       return load;
@@ -769,7 +822,8 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
             typeof metadata[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] === "string"
               ? (metadata[REVIEW_ROUTING_PR_HEAD_SHA_METADATA_KEY] as string)
               : (typeof metadata.headSha === "string" ? metadata.headSha : null);
-          if (!taskHeadSha) return true;
+          // Fail-safe: require explicit reviewed head SHA. If missing, do not match.
+          if (!taskHeadSha) continue;
           const a = taskHeadSha.toLowerCase();
           const b = headSha.toLowerCase();
           if (a.startsWith(b) || b.startsWith(a)) return true;

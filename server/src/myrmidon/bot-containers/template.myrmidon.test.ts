@@ -583,6 +583,7 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     partitionThresholdPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent,
     partitionRefuseOpenPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent,
     partitionCriticalPercent: WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent,
+    sessionRetentionDays: WS_BOT_DISK_SETTING_DEFAULTS.sessionRetentionDays,
   };
 
   it("writes the C7 variables with their values, and no interval when none is set", () => {
@@ -592,6 +593,7 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
       [WS_PROFILE_ENV.partitionCriticalPercent]: "95",
       [WS_PROFILE_ENV.graceClosingMinutes]: "30",
       [WS_PROFILE_ENV.scratchTtlHours]: "24",
+      [WS_PROFILE_ENV.sessionRetentionDays]: "30",
       [WS_PROFILE_ENV.boardUrl]: "http://board.example.com:3100",
       // The key travels as the NAME of the .env variable holding it — never the value.
       [WS_PROFILE_ENV.boardKeyEnv]: WS_BOTD_BOARD_KEY_ENV_VALUE,
@@ -609,6 +611,22 @@ describe("botdProfileEnv (1.6.5-BOT-DISK-H5c)", () => {
     const withInterval = botdProfileEnv({ ...resolvedDefaults, botdIntervalSec: 300 }, "http://board:3100");
     expect(withInterval[WS_PROFILE_ENV.botdIntervalSec]).toBe("300");
     expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.botdIntervalSec);
+  });
+
+  it("writes hermesPruneEnabled, hermesPruneDays, and gitMigrationEnabled when set", () => {
+    const withPrune = botdProfileEnv(
+      {
+        ...resolvedDefaults,
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      },
+      "http://board:3100",
+    );
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneEnabled]).toBe("1");
+    expect(withPrune[WS_PROFILE_ENV.hermesPruneDays]).toBe("14");
+    expect(withPrune[WS_PROFILE_ENV.gitMigrationEnabled]).toBe("1");
+    expect(botdProfileEnv(resolvedDefaults, "http://board:3100")).not.toHaveProperty(WS_PROFILE_ENV.hermesPruneEnabled);
   });
 
   it("is deterministic: the same mechanics and board give byte-identical entries", () => {

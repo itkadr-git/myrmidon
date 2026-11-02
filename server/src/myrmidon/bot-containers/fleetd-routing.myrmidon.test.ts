@@ -449,4 +449,59 @@ describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => 
       expect(fleetA.calls).toEqual([]);
     });
   });
+
+  describe("getOomEvents", () => {
+    it("collects OOM events across local and all fleet drivers, handling rejected fleet hosts gracefully", async () => {
+      const local = recordingDriver("local");
+      local.getOomEvents = async () => [
+        {
+          containerId: "cid-local",
+          botKey: "bot-local",
+          time: 100,
+          timeNano: 100_000_000_000,
+          source: "docker.events",
+        },
+      ];
+      const fleetA = recordingDriver("fleet-a");
+      fleetA.getOomEvents = async () => [
+        {
+          containerId: "cid-fleet-a",
+          botKey: "bot-fleet",
+          time: 200,
+          timeNano: 200_000_000_000,
+          source: "docker.events",
+        },
+      ];
+      const fleetB = recordingDriver("fleet-b");
+      fleetB.getOomEvents = async () => {
+        throw new Error("fleet-b unreachable");
+      };
+
+      const d: FleetRoutingDeps = {
+        local,
+        fleet: new Map([
+          ["host-a", fleetA],
+          ["host-b", fleetB],
+        ]),
+      };
+      const routed = fleetRoutingDriver(d, () => agent(null));
+      const events = await routed.getOomEvents!(50);
+      expect(events).toEqual([
+        {
+          containerId: "cid-local",
+          botKey: "bot-local",
+          time: 100,
+          timeNano: 100_000_000_000,
+          source: "docker.events",
+        },
+        {
+          containerId: "cid-fleet-a",
+          botKey: "bot-fleet",
+          time: 200,
+          timeNano: 200_000_000_000,
+          source: "docker.events",
+        },
+      ]);
+    });
+  });
 });

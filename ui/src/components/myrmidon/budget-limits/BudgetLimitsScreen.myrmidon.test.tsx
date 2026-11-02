@@ -61,6 +61,7 @@ interface Handlers {
   onSaveLimit: Mock<(level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void>;
   onDeleteLimit: Mock<(level: BudgetLimitLevel, ref: string) => void>;
   onToggleSignalOnly: Mock<(signalOnly: boolean) => void>;
+  onExport: Mock<(format: "csv" | "json") => void>;
 }
 
 function render(options: {
@@ -68,10 +69,12 @@ function render(options: {
   usage?: BudgetLimitUsageRow[];
   journal?: BudgetLimitChangeView[];
   signalOnly?: BudgetLimitsSignalOnlyView | null;
+  onExport?: (format: "csv" | "json") => void;
 }): Handlers {
   const onSaveLimit = vi.fn<(level: BudgetLimitLevel, ref: string, body: BudgetLimitUpsertBody) => void>();
   const onDeleteLimit = vi.fn<(level: BudgetLimitLevel, ref: string) => void>();
   const onToggleSignalOnly = vi.fn<(signalOnly: boolean) => void>();
+  const onExport = vi.fn<(format: "csv" | "json") => void>(options.onExport);
   flushSync(() => {
     root.render(
       <BudgetLimitsScreenView
@@ -83,12 +86,13 @@ function render(options: {
         onSaveLimit={onSaveLimit}
         onDeleteLimit={onDeleteLimit}
         onToggleSignalOnly={onToggleSignalOnly}
+        onExport={onExport}
         pending={false}
         error={null}
       />,
     );
   });
-  return { onSaveLimit, onDeleteLimit, onToggleSignalOnly };
+  return { onSaveLimit, onDeleteLimit, onToggleSignalOnly, onExport };
 }
 
 function row(key: string): HTMLElement {
@@ -159,6 +163,24 @@ describe("BudgetLimitsScreenView — the limit tree", () => {
     render({ limits: undefined });
     expect(byTestId("myrmidon-budget-limits-loading")).not.toBeNull();
     expect(container.querySelector("[data-testid='budget-limits-tree']")).toBeNull();
+  });
+
+  it("renders export buttons and notifies on click", () => {
+    const { onExport } = render({ limits: [COMPANY] });
+    const csvButton = byTestId("budget-limits-export-csv");
+    const jsonButton = byTestId("budget-limits-export-json");
+    expect(csvButton).not.toBeNull();
+    expect(jsonButton).not.toBeNull();
+
+    act(() => {
+      csvButton.click();
+    });
+    expect(onExport).toHaveBeenCalledWith("csv");
+
+    act(() => {
+      jsonButton.click();
+    });
+    expect(onExport).toHaveBeenCalledWith("json");
   });
 });
 

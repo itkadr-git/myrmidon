@@ -54,6 +54,10 @@ if (!support.supported || !pgvector.ok) {
   console.warn(`[corpus] end-to-end test skipped: ${pgvector.reason ?? support.reason}`);
 }
 
+afterAll(async () => {
+  await pgvector.cleanup();
+});
+
 const DIMENSIONS = 1024;
 const COMPANY = randomUUID();
 const OTHER_COMPANY = randomUUID();

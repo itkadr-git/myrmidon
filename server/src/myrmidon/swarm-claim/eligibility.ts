@@ -18,6 +18,8 @@
 //                 succeeded AFTER the failure lifts the hold. A failure of any other
 //                 kind is not a quota fact and never holds anyone.
 
+import type { CapacityDecision } from "@myrmidon/shared";
+
 /** The assigned statuses that occupy an executor (`todo` is a reservation). */
 export const SWARM_LOAD_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 
@@ -37,9 +39,16 @@ export interface IssueReadinessFacts {
   onHold: boolean;
   hasProjectOrCaste: boolean;
   assignmentCompatible: boolean;
+  capacity?: CapacityDecision;
 }
 
-export type IssueNotReadyReason = "open_blocker" | "on_hold" | "missing_project_or_caste" | "incompatible_assignment";
+export type IssueNotReadyReason =
+  | "open_blocker"
+  | "on_hold"
+  | "missing_project_or_caste"
+  | "incompatible_assignment"
+  | "project_limit"
+  | "caste_limit";
 export type IssueReadiness = { ready: true; reason: null } | { ready: false; reason: IssueNotReadyReason };
 
 /** Pure decision function; callers obtain blocker and hold facts from shared predicates. */
@@ -48,6 +57,9 @@ export function isIssueReady(facts: IssueReadinessFacts): IssueReadiness {
   if (facts.onHold) return { ready: false, reason: "on_hold" };
   if (!facts.hasProjectOrCaste) return { ready: false, reason: "missing_project_or_caste" };
   if (!facts.assignmentCompatible) return { ready: false, reason: "incompatible_assignment" };
+  if (facts.capacity && !facts.capacity.allowed) {
+    return { ready: false, reason: facts.capacity.reason === "caste_limit" ? "caste_limit" : "project_limit" };
+  }
   return { ready: true, reason: null };
 }
 

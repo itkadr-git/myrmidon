@@ -24,6 +24,9 @@ export const FULL_TRIGGERS = [
   { pattern: /^\.github\/workflows\/myrmidon-ci\.yml$/, reason: "CI workflow" },
   { pattern: /^scripts\/myrmidon\/ci\//, reason: "CI test selection" },
   { pattern: /^scripts\/myrmidon\/deploy\/predeploy-board-check\.(sh|test\.mjs)$/, reason: "predeploy compatibility gate" },
+  // The vendor-name policy and its snapshots gate the built interface and the
+  // server answers: a change there must run the build lane (the gate itself).
+  { pattern: /^scripts\/myrmidon\/vendor-name\//, reason: "vendor-name policy" },
   { pattern: /^packages\/db\//, reason: "database package" },
   { pattern: /^packages\/shared\//, reason: "shared package" },
   { pattern: /^packages\/plugins\/sdk\//, reason: "plugin SDK" },
@@ -51,6 +54,7 @@ export const MAX_FAST_FILES_PER_PACKAGE = 60;
 // affected selection cannot discover them.
 export const SHARED_GUARD_TESTS = [
   "server/src/__tests__/app-private-hostname-gate.test.ts",
+  "server/src/__tests__/openapi-routes.test.ts",
   "server/src/myrmidon/channel-connectors/bridge/bridge.myrmidon.test.ts",
   "server/src/myrmidon/flags-killswitch.myrmidon.test.ts",
   "server/src/myrmidon/monitoring/alerts/guard.myrmidon.test.ts",
@@ -67,6 +71,15 @@ const SHARED_GUARD_TRIGGERS = [
   "server/src/myrmidon/app-plugin.ts",
   "docs/myrmidon/FLAGS.md",
   "docs/myrmidon/SETTINGS.md",
+];
+
+const ROUTE_GUARD_TRIGGER = /^server\/src\/routes\//;
+
+// Guard suites that must run whenever a server route file changes without its
+// OpenAPI description: openapi-routes fails on main exactly in this case
+// (OPE-10350), so the fast tier must never skip it for routes changes.
+export const ROUTE_GUARD_TESTS = [
+  "server/src/__tests__/openapi-routes.test.ts",
 ];
 
 /**
@@ -250,11 +263,14 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
     selected.get(pkg.name).files.set(file, why);
   };
 
-  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file))) {
+  if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file) || ROUTE_GUARD_TRIGGER.test(file))) {
     const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
     const server = packages.find((pkg) => pkg.name === "@myrmidon/server");
-    for (const file of SHARED_GUARD_TESTS) {
-      if (testFilesByPath.has(file)) add(server, file, "shared-source guard");
+    const routesOnly = changedFiles.some((file) => ROUTE_GUARD_TRIGGER.test(file)) &&
+      !changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file));
+    const guards = routesOnly ? ROUTE_GUARD_TESTS : SHARED_GUARD_TESTS;
+    for (const file of guards) {
+      if (testFilesByPath.has(file)) add(server, file, routesOnly ? "routes guard" : "shared-source guard");
     }
   }
 

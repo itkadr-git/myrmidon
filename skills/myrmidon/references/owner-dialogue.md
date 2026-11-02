@@ -98,3 +98,14 @@ chat after your explanation (`403 no_owner_reply`), you are the author of the in
 fits its kind (`422 action_kind_mismatch`). Silence, your own reasoning, or someone else's words never close a
 decision. Tool-action confirmations, secret proposals and connection authorizations are not handled this way;
 they stay explicit decisions on the board.
+
+## Owner ideas ("Ideas" project, 1.6.7 IDEAS)
+
+Any thought or idea from Alex ("we should", "it would be great if", suggestion, hypothesis) that does not become a task in the current release immediately must be captured as a card in the "Идеи" (Ideas) project in the same turn:
+- Project: «Идеи» (on the Paperclip board).
+- Status: «идея» (without assignee or due date).
+- Mandatory origin field («откуда») in the issue description:
+  * Session / chat: session identifier or link to the conversation.
+  * Date: conversation date (YYYY-MM-DD).
+  * Speaker: Alex (or the agent's name).
+Do not lose owner ideas in conversation threads and do not clutter releases with them. A weekly routine has the lead or architect review the Ideas project (into release, reject with reason, or keep).

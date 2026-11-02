@@ -210,9 +210,11 @@ npx paperclipai secrets doctor --company-id <company-id>
 
 | Variable | Description |
 |----------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
+| `MYRMIDON_SECRETS_MASTER_KEY` (alias: `PAPERCLIP_SECRETS_MASTER_KEY`) | 32-byte key as base64, hex, or raw string |
+| `MYRMIDON_SECRETS_MASTER_KEY_FILE` (alias: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) | Custom key file path |
+| `MYRMIDON_SECRETS_STRICT_MODE` (alias: `PAPERCLIP_SECRETS_STRICT_MODE`) | Set to `true` to enforce secret refs |
+
+Canonical variable names use the `MYRMIDON_*` prefix; legacy `PAPERCLIP_*` variable names are supported aliases. If both are set, `MYRMIDON_*` takes precedence.
 
 ## Strict Mode
 

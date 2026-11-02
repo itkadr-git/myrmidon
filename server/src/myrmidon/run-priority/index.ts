@@ -5,6 +5,7 @@
 // (see service.ts), so changed weights reach the queue without a restart.
 
 import type { Db } from "@myrmidon/db";
+import { assertRunPriorityQueueInvariant } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
 import { scheduleQueuedResweep } from "../run-admission.js";
@@ -65,6 +66,7 @@ export function myrmidonRunPriorityRoutes(db: Db) {
 export async function startRunPriority(db: Db): Promise<void> {
   try {
     const view = await runPriorityService(db, defaultDeps(db)).read();
+    assertRunPriorityQueueInvariant(view.settings);
     applyRunPrioritySettings(view.settings);
     logger.info(
       { settings: view.settings, source: view.source },
