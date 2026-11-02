@@ -1713,6 +1713,16 @@ function applyDocumentFixups(document: any): any {
           unscoped: { actor: "board", instanceAdmin: true },
         };
       }
+      if (key === "GET /api/admin-assistant/dry-run") {
+        // The dry-run diagnostics endpoint is intentionally stricter than the
+        // cluster-health routes: instance admin is always required, even when
+        // a companyId query parameter is present, because probes may return
+        // instance-wide results that cross company boundaries.
+        operation["x-paperclip-authorization"] = {
+          actor: "board",
+          instanceAdmin: true,
+        };
+      }
 
       if (authLevel !== "public") {
         const responses = (operation.responses ??= {}) as Record<
@@ -5549,6 +5559,21 @@ registry.registerPath({
       path: z.string().optional(),
       diskPath: z.string().optional(),
     }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/dry-run",
+  tags: ["admin-assistant"],
+  summary: "Read-only dry-run diagnostics (instance admin only)",
+  description:
+    "Collects a health summary through strictly read-only probes (SELECT queries and fs.statfs only). " +
+    "Each probe has an independent timeout; a slow or failing probe degrades its own result without " +
+    "hiding the error. The payload is marked with dry_run=true and credential-shaped values are redacted.",
+  request: {
+    query: z.object({}).optional(),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
