@@ -3,10 +3,10 @@ import { alias } from "drizzle-orm/pg-core";
 import { issueRelations, issueThreadInteractions, issues, type Db } from "../../../packages/db/src/index.js";
 import { blockerOpenCondition } from "../../../server/src/myrmidon/blocker-resolved.js";
 
-/**
- * List blocked issues with no live blocker, pending interaction, child, or
- * blocker metadata. The transaction is marked read-only before the query so
- * this inventory cannot change board state.
+/*
+ * A completed blocker relation is useful historical migration evidence: it
+ * can explain why a task remains blocked without excluding it from inventory.
+ * Active blockers still exclude the row and are never silently removed.
  */
 export async function listLegacyBlocked(db: Db) {
   const blockingIssues = alias(issues, "legacy_blocking_issue");
