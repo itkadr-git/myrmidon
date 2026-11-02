@@ -44,6 +44,8 @@ const (
 	// A14 is GET /myrmidon/disk: the one route outside the Docker API prefix. It
 	// reads the bot partition (statfs and the project quotas), never the daemon.
 	A14 = "A14"
+	// A19 is GET /myrmidon/events/oom: transports OOM events (docker events oom / cgroup memory.events oom_kill).
+	A19 = "A19"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -79,6 +81,9 @@ const diskQuotaTail = "/quota"
 // DiskTarget is the request-target of A14 (contract C5). It has no API prefix:
 // it is not a call to the daemon.
 const DiskTarget = "/myrmidon/disk"
+
+// EventsOomTarget is the request-target of A19 (OPE-9934). It has no API prefix.
+const EventsOomTarget = "/myrmidon/events/oom"
 
 // diskPrefix is where every disk route lives; what is under it and is not a
 // route of this list is refused as route_not_allowed.
@@ -280,6 +285,12 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 	if target == DiskTarget {
 		if method == "GET" {
 			return &Route{ID: A14, Method: method}, nil
+		}
+		return nil, notAllowed()
+	}
+	if target == EventsOomTarget || strings.HasPrefix(target, EventsOomTarget+"?") {
+		if method == "GET" {
+			return &Route{ID: A19, Method: method}, nil
 		}
 		return nil, notAllowed()
 	}

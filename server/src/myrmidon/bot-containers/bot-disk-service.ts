@@ -12,6 +12,8 @@
 // Every request's read-write-audit sequence runs through one queue, so two
 // overlapping PATCHes cannot commit in one order and audit in the other.
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { agents, type Db } from "@myrmidon/db";
 import { eq } from "drizzle-orm";
 import {
@@ -285,16 +287,27 @@ export async function readCloneIdleTtlSecForRole(db: Db, role: string | null | u
   return config.enabled ? Math.max(1, Math.round(config.idleTtlMs / 1000)) : 0;
 }
 
+import { botHasGitAlternates } from "./bot-disk-alternates.js";
+export { botHasGitAlternates };
+
 /** Same for the driver, which knows the bot key (= agent id) and not the role. */
 export async function readBotCacheLayoutForBot(
   db: Db,
   botKey: string,
+  options?: { volumeRoot?: string },
 ): Promise<{ path?: string; gitMirror: boolean }> {
   const layout = await readBotDiskLayout(db);
   if (!layout.sharedPackageCachePath) return { gitMirror: false };
   const rows = await db.select({ role: agents.role }).from(agents).where(eq(agents.id, botKey)).limit(1);
   if (!botRoleGetsSharedCache(layout.sharedCacheRoles, rows[0]?.role)) return { gitMirror: false };
-  return { path: layout.sharedPackageCachePath, gitMirror: layout.gitMirrorRepos.length > 0 };
+  let gitMirror = layout.gitMirrorRepos.length > 0;
+  if (!gitMirror && options?.volumeRoot) {
+    const hasAlternates = await botHasGitAlternates(options.volumeRoot, botKey);
+    if (hasAlternates) {
+      gitMirror = true;
+    }
+  }
+  return { path: layout.sharedPackageCachePath, gitMirror };
 }
 
 /**

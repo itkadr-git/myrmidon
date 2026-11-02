@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { buildContinuationKey } from "@myrmidon/shared";
+import { tryClaimContinuationKey } from "../services/continuation-dedupe.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -18,6 +20,8 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
+  issueComments,
+  issueContinuationKeys,
   issues,
   projects,
 } from "@myrmidon/db";
@@ -631,6 +635,76 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(promotedRun?.status).toBe("queued");
   });
 
+  it.each([MAX_TURN_CONTINUATION_RETRY_REASON, INTERACTION_CONTINUATION_INFRA_RETRY_REASON])(
+    "dedupes a live registry claim without a successor for %s", async (retryReason) => {
+      const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+      const key = buildContinuationKey({ issueId, event: "issue_continuation_needed", head: `${retryReason}:${runId}` });
+      await tryClaimContinuationKey(db, { companyId, issueId, key, ttl: 3_600_000 });
+      const result = await heartbeat.scheduleBoundedRetry(runId, { now, retryReason, maxAttempts: 2, delayMs: 1_000 });
+      expect(result).toMatchObject({ outcome: "not_scheduled", reason: "Continuation retry already claimed" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(source.scheduledRetryAttempt).toBe(0);
+    },
+  );
+
+  it("creates a new head for a new human comment, but ignores agent and system comments", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    const options = { now, retryReason: MAX_TURN_CONTINUATION_RETRY_REASON, maxAttempts: 2, delayMs: 1_000 };
+    const first = await heartbeat.scheduleBoundedRetry(runId, options);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") throw new Error("Expected first retry");
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, first.run.id));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(issueComments).values([
+      { companyId, issueId, authorType: "agent", authorAgentId: first.run.agentId, body: "heartbeat", createdAt: new Date(now.getTime() + 1) },
+      { companyId, issueId, authorType: "system", body: "notice", createdAt: new Date(now.getTime() + 2) },
+    ]);
+    expect(await heartbeat.scheduleBoundedRetry(runId, options)).toMatchObject({ outcome: "not_scheduled", reason: "Continuation retry already claimed" });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: "responsible-user", authorType: "user", body: "Continue with this input", createdAt: new Date(now.getTime() + 3) });
+    const second = await heartbeat.scheduleBoundedRetry(runId, options);
+    expect(second.outcome).toBe("scheduled");
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes.map((wake) => wake.idempotencyKey)).toEqual(expect.arrayContaining([
+      buildContinuationKey({ issueId, event: "issue_continuation_needed", head: `${options.retryReason}:${runId}` }),
+      buildContinuationKey({ issueId, event: "issue_continuation_needed", head: `${options.retryReason}:${commentId}` }),
+    ]));
+    expect(wakes).toHaveLength(2);
+  });
+
+  it("uses distinct claim namespaces for both continuation retry reasons", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    for (const retryReason of [MAX_TURN_CONTINUATION_RETRY_REASON, INTERACTION_CONTINUATION_INFRA_RETRY_REASON]) {
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      expect((await heartbeat.scheduleBoundedRetry(runId, { now, retryReason, maxAttempts: 2, delayMs: 1_000 })).outcome).toBe("scheduled");
+    }
+    const claims = await db.select().from(issueContinuationKeys).where(eq(issueContinuationKeys.companyId, companyId));
+    expect(claims).toHaveLength(2);
+    expect(new Set(claims.map((claim) => claim.key)).size).toBe(2);
+    for (const claim of claims) expect(claim.expiresAt.getTime() - claim.createdAt.getTime()).toBeGreaterThanOrEqual(3_599_000);
+  });
+
+  it.each(["null", "throw"])("releases the claim after an enqueue %s and permits retry", async (failure) => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    // PostgreSQL trigger injects failure in the real wake insert, inside the savepoint.
+    await db.execute(sql.raw(`CREATE OR REPLACE FUNCTION test_retry_enqueue_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${failure === "null" ? "RETURN NULL;" : "RAISE EXCEPTION 'test enqueue failure';"} END; $$`));
+    await db.execute(sql.raw("CREATE TRIGGER test_retry_enqueue_failure BEFORE INSERT ON agent_wakeup_requests FOR EACH ROW EXECUTE FUNCTION test_retry_enqueue_failure()"));
+    const options = { now, retryReason: MAX_TURN_CONTINUATION_RETRY_REASON, maxAttempts: 2, delayMs: 1_000 };
+    try {
+      if (failure === "throw") await expect(heartbeat.scheduleBoundedRetry(runId, options)).rejects.toThrow();
+      else expect((await heartbeat.scheduleBoundedRetry(runId, options)).outcome).toBe("not_scheduled");
+      expect(await db.select().from(issueContinuationKeys).where(eq(issueContinuationKeys.companyId, companyId))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER test_retry_enqueue_failure ON agent_wakeup_requests"));
+      await db.execute(sql.raw("DROP FUNCTION test_retry_enqueue_failure()"));
+    }
+    expect((await heartbeat.scheduleBoundedRetry(runId, options)).outcome).toBe("scheduled");
+  });
+
   it("schedules max-turn continuations with distinct retry metadata", async () => {
     const { runId, now } = await seedMaxTurnFixture();
 
@@ -829,7 +903,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       id: retryRuns[0]?.wakeupRequestId,
       coalescedCount: 1,
     });
-    expect(wakeups[0]?.idempotencyKey).toContain(`:${issueId}:${runId}:1`);
+    expect(wakeups[0]?.idempotencyKey).toBe(buildContinuationKey({
+      issueId, event: "issue_continuation_needed", head: `${retryOptions.retryReason}:${runId}`,
+    }));
   });
 
   it.each([
@@ -1368,7 +1444,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       id: retryRuns[0]?.wakeupRequestId,
       coalescedCount: 1,
     });
-    expect(wakeups[0]?.idempotencyKey).toContain(`:${issueId}:${runId}:1`);
+    expect(wakeups[0]?.idempotencyKey).toBe(buildContinuationKey({
+      issueId, event: "issue_continuation_needed", head: `${retryOptions.retryReason}:${runId}`,
+    }));
 
     const issue = await db
       .select({ executionRunId: issues.executionRunId })

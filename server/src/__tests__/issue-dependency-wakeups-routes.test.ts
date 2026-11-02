@@ -294,6 +294,14 @@ describe("issue dependency wakeups in issue routes", () => {
       .send({
         status: "blocked",
         blockedByIssueIds: [childIssueId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: "11111111-1111-4111-8111-111111111111" },
+          blockedByIssueIds: [childIssueId],
+          nextCheckAt: "2026-08-04T18:00:00.000Z",
+          timeoutAt: "2026-08-10T18:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
       });
 
@@ -641,6 +649,14 @@ describe("issue dependency wakeups in issue routes", () => {
       .send({
         status: "blocked",
         blockedByIssueIds: [childIssueId],
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: "11111111-1111-4111-8111-111111111111" },
+          blockedByIssueIds: [childIssueId],
+          nextCheckAt: "2026-08-04T18:00:00.000Z",
+          timeoutAt: "2026-08-10T18:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
         unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
       });
 

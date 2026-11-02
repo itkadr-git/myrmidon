@@ -70,6 +70,7 @@ interface Harness {
     canaryApiKey: ReturnType<typeof vi.fn>;
   };
   smoke: ReturnType<typeof vi.fn>;
+  notifyUpdate: ReturnType<typeof vi.fn>;
   setHealth(value: string): void;
   appliedImages: string[];
 }
@@ -89,6 +90,7 @@ function harness(options: {
   const agents = (options.agents ?? [CANARY, "agent-b", "agent-c", "agent-d"]).map(agent);
   let health = options.health ?? "running";
   const smokeOk = options.smokeOk ?? true;
+  const notifyUpdate = vi.fn(async () => ({ sent: true }));
 
   const runtime: BotCanaryRuntimePort = {
     listAgents: vi.fn(async () => agents),
@@ -133,6 +135,7 @@ function harness(options: {
     } as BotCanaryProbeDeps,
     logActivity: (async () => ({})) as unknown as BotCanaryServiceDeps["logActivity"],
     smoke: smoke as unknown as BotCanaryServiceDeps["smoke"],
+    notifyUpdate,
     env: { MYRMIDON_BOT_CONTAINERS: "1" },
   };
 
@@ -142,6 +145,7 @@ function harness(options: {
     store,
     runtime: runtime as unknown as Harness["runtime"],
     smoke: smoke as unknown as Harness["smoke"],
+    notifyUpdate,
     setHealth(value: string) {
       health = value;
     },
@@ -704,5 +708,55 @@ describe("bot canary service: preview", () => {
   it("refuses a malformed reference in preview", async () => {
     const h = harness();
     await expect(h.service.preview("latest")).rejects.toThrow(/sha256/);
+  });
+});
+
+describe("bot canary service: update notifications", () => {
+  it("delivers canary_started when canary is started", async () => {
+    const h = harness();
+    await h.service.create({ reference: GOOD }, ACTOR);
+    await h.service.tick();
+    expect(h.notifyUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "canary_started",
+        version: VERSION,
+      }),
+    );
+  });
+
+  it("delivers rollout_succeeded when canary finishes and whole fleet is updated", async () => {
+    const h = harness();
+    await h.service.create({ reference: GOOD }, ACTOR);
+    for (let i = 0; i < 15; i++) {
+      await h.service.tick();
+    }
+    const current = await h.service.current();
+    expect(current.job?.status).toBe("succeeded");
+    expect(h.notifyUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "rollout_succeeded",
+        version: VERSION,
+      }),
+    );
+  });
+
+  it("delivers rollback_started and rollback_completed when smoke fails with autoRollback", async () => {
+    const h = harness({ smokeOk: false, autoRollback: true });
+    await h.service.create({ reference: GOOD }, ACTOR);
+    for (let i = 0; i < 15; i++) {
+      await h.service.tick();
+    }
+    const current = await h.service.current();
+    expect(current.job?.status).toBe("rolled_back");
+    expect(h.notifyUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "rollback_started",
+      }),
+    );
+    expect(h.notifyUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "rollback_completed",
+      }),
+    );
   });
 });

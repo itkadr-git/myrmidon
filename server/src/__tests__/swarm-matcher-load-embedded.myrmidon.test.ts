@@ -33,7 +33,7 @@ import {
   projects,
 } from "@myrmidon/db";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { resolveSwarmClaimSettings } from "@myrmidon/shared";
+import { DEFAULT_SWARM_MAX_ACTIVE_TASKS, resolveSwarmClaimSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -182,7 +182,11 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
 
   function deps(
     wakes: string[],
-    overrides: { maxActiveTasks?: number | null; now?: Date } = {},
+    overrides: {
+      maxActiveTasks?: number | null;
+      now?: Date;
+      casteDirectory?: SwarmMatcherDeps["casteDirectory"];
+    } = {},
   ): SwarmMatcherDeps {
     return {
       db,
@@ -195,10 +199,14 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       settings: {
         ...baseSettings,
         enabled: true,
-        maxActiveTasks: overrides.maxActiveTasks === undefined ? 3 : overrides.maxActiveTasks,
+        maxActiveTasks:
+          overrides.maxActiveTasks === undefined
+            ? DEFAULT_SWARM_MAX_ACTIVE_TASKS
+            : overrides.maxActiveTasks,
       },
       hostGateOpen: true,
       now: overrides.now ?? NOW,
+      ...(overrides.casteDirectory ? { casteDirectory: overrides.casteDirectory } : {}),
     } as unknown as SwarmMatcherDeps;
   }
 
@@ -233,16 +241,59 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(wakes).toEqual([free]);
     });
 
-    it("counts reserved todo and in_progress tasks against the ceiling, not only leases", async () => {
+    it("leaves a ready task queued when every engineer has reached the default ceiling", async () => {
       const companyId = await seedCompany();
-      const agent = await seedAgent(companyId, "agent-a");
-      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      const agent = await seedAgent(companyId, "agent-at-capacity");
       await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
       await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
       const task = await seedTask(companyId);
       const wakes: string[] = [];
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
+
+      expect(result.pairs).toEqual([]);
+      expect(result.unmatched).toBe(1);
+      expect(await assigneeOf(task)).toBeNull();
+      expect(wakes).toEqual([]);
+    });
+
+    it("caps an agent at two tasks even when caste maxActiveTasks is greater than two", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-caste-five", { role: "engineer" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      const result = await matchCompany(
+        deps(wakes, {
+          casteDirectory: async () => [
+            {
+              role: "engineer",
+              casteKey: "engineer",
+              maxActiveTasks: 5,
+              description: "Engineer caste with maxActiveTasks 5",
+            },
+          ],
+        }),
+        companyId,
+      );
+
+      expect(result.pairs).toEqual([]);
+      expect(result.unmatched).toBe(1);
+      expect(await assigneeOf(task)).toBeNull();
+      expect(wakes).toEqual([]);
+    });
+
+    it("counts reserved todo and in_progress tasks against the ceiling, not only leases", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-a");
+      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs).toEqual([]);
       expect(result.unmatched).toBe(1);
@@ -256,11 +307,10 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");
       await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
-      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
       const task = await seedTask(companyId);
       const wakes: string[] = [];
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs.map((pair) => pair.issueId)).toEqual([task]);
       expect(await assigneeOf(task)).toBe(agent);
@@ -287,7 +337,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect((await openTasksOf(agent))).toHaveLength(3);
       expect((await openLoadByAgent(db, companyId)).get(agent) ?? 0).toBe(0);
 
-      const result = await matchCompany(deps(wakes, { maxActiveTasks: 3 }), companyId);
+      const result = await matchCompany(deps(wakes), companyId);
 
       expect(result.pairs.map((pair) => pair.issueId)).toEqual([readyTask]);
       expect(result.pairs.map((pair) => pair.agentId)).toEqual([agent]);

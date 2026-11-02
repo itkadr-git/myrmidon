@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import tempfile
@@ -114,6 +115,73 @@ class FacadeHttp(unittest.TestCase):
                 r = mcp_call(c, "tools/call", {"name": "generate_image",
                                                "arguments": {"prompt": "a cat", "model": "nope"}}, sid=sid)
                 self.assertIn("invalid_model", json.dumps(r.json()))
+
+
+    def test_file_get_small_file_over_mcp(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg, app = make(Path(t))
+            store = Store(cfg.data_dir, cfg.bot_quota_bytes, cfg.max_file_bytes, cfg.file_ttl_hours)
+            meta = store.put_bytes("bot-a", PNG, "cat.png")
+            with TestClient(app, base_url="http://image-mcp:8080") as c:
+                first = c.post("/mcp", json=INIT, headers=MCP_HEADERS)
+                sid = first.headers.get("mcp-session-id")
+                if sid:
+                    c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                           headers={**MCP_HEADERS, "Mcp-Session-Id": sid})
+                r = mcp_call(c, "tools/call", {"name": "file_get",
+                                               "arguments": {"file_id": meta["id"]}}, sid=sid)
+                self.assertEqual(r.status_code, 200)
+                payload = r.json()
+                self.assertFalse(payload.get("result", {}).get("isError", False), msg=payload)
+                data = json.loads(payload["result"]["content"][0]["text"])
+                self.assertEqual(data["file_id"], meta["id"])
+                self.assertEqual(data["id"], meta["id"])
+                self.assertEqual(data["name"], "cat.png")
+                self.assertEqual(data["bytes"], len(PNG))
+                self.assertEqual(data["size"], len(PNG))
+                self.assertEqual(data["download"], f"/v1/files/{meta['id']}")
+                self.assertEqual(data["base64"], base64.b64encode(PNG).decode())
+                self.assertNotIn("inline_skipped", data)
+
+    def test_file_get_large_file_over_mcp_and_download(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg, app = make(Path(t), max_inline_result_bytes=10)
+            store = Store(cfg.data_dir, cfg.bot_quota_bytes, cfg.max_file_bytes, cfg.file_ttl_hours)
+            meta = store.put_bytes("bot-a", PNG, "large.png")
+            with TestClient(app, base_url="http://image-mcp:8080") as c:
+                first = c.post("/mcp", json=INIT, headers=MCP_HEADERS)
+                sid = first.headers.get("mcp-session-id")
+                if sid:
+                    c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                           headers={**MCP_HEADERS, "Mcp-Session-Id": sid})
+                r = mcp_call(c, "tools/call", {"name": "file_get",
+                                               "arguments": {"file_id": meta["id"]}}, sid=sid)
+                self.assertEqual(r.status_code, 200)
+                payload = r.json()
+                self.assertFalse(payload.get("result", {}).get("isError", False), msg=payload)
+                data = json.loads(payload["result"]["content"][0]["text"])
+                self.assertEqual(data["file_id"], meta["id"])
+                self.assertNotIn("base64", data)
+                self.assertIn("inline_skipped", data)
+                self.assertIn("larger than 10 bytes", data["inline_skipped"])
+
+                # Verify large-file download path
+                dl = c.get(data["download"], headers=AUTH_A)
+                self.assertEqual(dl.status_code, 200)
+                self.assertEqual(dl.content, PNG)
+
+    def test_file_get_not_found_over_mcp(self):
+        with tempfile.TemporaryDirectory() as t:
+            _, app = make(Path(t))
+            with TestClient(app, base_url="http://image-mcp:8080") as c:
+                first = c.post("/mcp", json=INIT, headers=MCP_HEADERS)
+                sid = first.headers.get("mcp-session-id")
+                r = mcp_call(c, "tools/call", {"name": "file_get",
+                                               "arguments": {"file_id": "0123456789abcdef0123456789abcdef"}}, sid=sid)
+                self.assertEqual(r.status_code, 200)
+                payload = r.json()
+                self.assertTrue(payload.get("result", {}).get("isError", False))
+                self.assertIn("no such file", json.dumps(payload))
 
 
 if __name__ == "__main__":

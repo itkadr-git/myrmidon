@@ -26,6 +26,7 @@ import type { Db } from "@myrmidon/db";
 import { toolApplications, toolCatalogEntries, toolConnections } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
+import { liveSavedSetting } from "./behavior-settings/live.js";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -68,14 +69,20 @@ function readPositiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number):
   return value > 0 ? value : fallback;
 }
 
-/** Read at call time, so a changed environment applies without a code change. */
+/**
+ * Read at call time, so a changed environment applies without a code change.
+ * A value saved from the UI wins over the environment (the contract of the
+ * behavior-settings resolver); without one the environment reading is unchanged.
+ */
 export function toolGatewayResilienceSettings(env: NodeJS.ProcessEnv = process.env): ToolGatewayResilienceSettings {
+  const saved = (key: string): number | undefined =>
+    env === process.env ? liveSavedSetting<number>(key) : undefined;
   return {
-    breakerFailures: readNonNegativeInt(env, TOOL_BREAKER_FAILURES_ENV, DEFAULT_BREAKER_FAILURES),
-    breakerCooldownMs: readPositiveInt(env, TOOL_BREAKER_COOLDOWN_MS_ENV, DEFAULT_BREAKER_COOLDOWN_MS),
-    breakerWindowMs: readPositiveInt(env, TOOL_BREAKER_WINDOW_MS_ENV, DEFAULT_BREAKER_WINDOW_MS),
-    timeoutMaxMs: readPositiveInt(env, TOOL_TIMEOUT_MAX_MS_ENV, DEFAULT_TIMEOUT_MAX_MS),
-    timeoutSlowMs: readPositiveInt(env, TOOL_TIMEOUT_SLOW_MS_ENV, DEFAULT_TIMEOUT_SLOW_MS),
+    breakerFailures: saved("tool_breaker_failures") ?? readNonNegativeInt(env, TOOL_BREAKER_FAILURES_ENV, DEFAULT_BREAKER_FAILURES),
+    breakerCooldownMs: saved("tool_breaker_cooldown_ms") ?? readPositiveInt(env, TOOL_BREAKER_COOLDOWN_MS_ENV, DEFAULT_BREAKER_COOLDOWN_MS),
+    breakerWindowMs: saved("tool_breaker_window_ms") ?? readPositiveInt(env, TOOL_BREAKER_WINDOW_MS_ENV, DEFAULT_BREAKER_WINDOW_MS),
+    timeoutMaxMs: saved("tool_timeout_max_ms") ?? readPositiveInt(env, TOOL_TIMEOUT_MAX_MS_ENV, DEFAULT_TIMEOUT_MAX_MS),
+    timeoutSlowMs: saved("tool_timeout_slow_ms") ?? readPositiveInt(env, TOOL_TIMEOUT_SLOW_MS_ENV, DEFAULT_TIMEOUT_SLOW_MS),
   };
 }
 

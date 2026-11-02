@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const PREVIOUS_AGENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -248,12 +248,24 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue update comment wakeups", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
     mockPauseGate.mockResolvedValue(null);

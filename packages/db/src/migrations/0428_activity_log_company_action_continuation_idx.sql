@@ -1,0 +1,43 @@
+-- myrmidon(DB-CARE / 1.6.6 DEFECT): the second half of the rc.15 board
+-- outage fix (see 0415). The rc.16 acceptance run (25.10, EXPLAIN ANALYZE on
+-- production with a real company_id) confirmed the chat-holds health leg —
+--   select max(created_at) from activity_log
+--   where company_id = $1 and action = 'issue.execution_recovery_settled'
+--     and created_at >= $3
+--     and details ->> 'continuation' = 'chat_owner_message'
+-- — still scans ~16k heap rows: the 0415 (company_id, action, created_at
+-- DESC) index resolves the action slice, but the details->>'continuation'
+-- residual is evaluated per heap row (Rows Removed by Filter 16028, 36-52 ms
+-- warm, up to 256 ms cold), so the <50 ms gate is not met stably. The action
+-- slice is not "a few rows": every settled execution replay of the fleet
+-- lands there, and only the continuation filter narrows it to the lift lines.
+--
+-- This expression index carries the filter key inside the index: the planner
+-- can use (company_id, action, (details->>'continuation'), created_at DESC)
+-- directly for the leg, evaluating no details residual on the heap at all.
+-- It is not partial: the production statement binds the details key and value
+-- as parameters (`details ->> $4 = $5`), and a partial index predicate with a
+-- constant value can only be implied from a constant comparison — a bound
+-- parameter never implies it (neither in custom nor in generic plans), so a
+-- partial index would be dead weight for the very query it was built for.
+-- An expression column matches regardless: drizzle's sql fragment inlines the
+-- key as a literal (ports.ts activityWhere, precedent:
+-- details->'_previous'->>'assigneeAgentId' in bot-workspaces-service.ts).
+--
+-- The 0415 index stays: it still serves the swarm-claim leg (no details
+-- filter) and any other (company, action, created_at) probe.
+--
+-- Production rollout follows the 0307/0308/0415 pattern: the index is created
+-- by hand on the production board database BEFORE the deploy (ADM_ACTION,
+-- pg_get_indexdef-identical statement, see the PR description):
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS "activity_log_company_action_continuation_idx"
+--     ON "activity_log" USING btree
+--     ("company_id","action",((details ->> 'continuation')),"created_at" DESC);
+-- CONCURRENTLY takes no SHARE lock, so activity_log writes continue during the
+-- build. This migration is then a no-op on production (CREATE INDEX IF NOT
+-- EXISTS keeps the hand-made index; the deploy-time lock window is zero) and
+-- only builds the index on a fresh installation where the table is small or
+-- empty. The deploy gate (<50 ms for the chat-holds leg) is measured after
+-- the manual CONCURRENTLY build, before the rollout.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; the index is created by hand on production before the deploy (0307/0308/0415 pattern) and this statement is a no-op there.
+CREATE INDEX IF NOT EXISTS "activity_log_company_action_continuation_idx" ON "activity_log" USING btree ("company_id","action",((details ->> 'continuation')),"created_at" DESC);

@@ -14,6 +14,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./acpx-engine/execute.js": "./src/acpx-engine/execute.ts",
+    "./acpx-engine/execute": "./src/acpx-engine/execute.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -22,6 +24,14 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./acpx-engine/execute.js": {
+        "types": "./dist/acpx-engine/execute.d.ts",
+        "import": "./dist/acpx-engine/execute.js"
+      },
+      "./acpx-engine/execute": {
+        "types": "./dist/acpx-engine/execute.d.ts",
+        "import": "./dist/acpx-engine/execute.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",

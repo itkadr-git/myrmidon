@@ -5,35 +5,35 @@ summary: Onboard, run, doctor, and configure
 
 Instance setup and diagnostics commands.
 
-## `paperclipai run`
+## `myrmidon run`
 
 One-command bootstrap and start:
 
 ```sh
-pnpm paperclipai run
+pnpm myrmidon run
 ```
 
 Does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `myrmidon doctor` with repair enabled
 3. Starts the server when checks pass
 
 Choose a specific instance:
 
 ```sh
-npx paperclipai run --instance dev
+npx myrmidon run --instance dev
 ```
 
-## `paperclipai onboard`
+## `myrmidon onboard`
 
 Interactive first-time setup:
 
 ```sh
-pnpm paperclipai onboard
+pnpm myrmidon onboard
 ```
 
-If Myrmidon is already configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to change settings on an existing install.
+If Myrmidon is already configured, rerunning `onboard` keeps the existing config in place. Use `myrmidon configure` to change settings on an existing install.
 
 First prompt:
 
@@ -43,13 +43,13 @@ First prompt:
 Start immediately after onboarding:
 
 ```sh
-pnpm paperclipai onboard --run
+pnpm myrmidon onboard --run
 ```
 
 Quickstart defaults + immediate start:
 
 ```sh
-pnpm paperclipai onboard --yes
+pnpm myrmidon onboard --yes
 ```
 
 When onboarding starts Myrmidon from an interactive terminal, it opens the
@@ -58,19 +58,19 @@ Suppress browser opening explicitly for headless or automated runs with either
 environment variable:
 
 ```sh
-PAPERCLIP_NO_BROWSER=1 pnpm paperclipai onboard --yes
-PAPERCLIP_OPEN_ON_LISTEN=false pnpm paperclipai onboard --yes
+PAPERCLIP_NO_BROWSER=1 pnpm myrmidon onboard --yes
+PAPERCLIP_OPEN_ON_LISTEN=false pnpm myrmidon onboard --yes
 ```
 
 On an existing install, `--yes` now preserves the current config and just starts Myrmidon with that setup.
 
-## `paperclipai doctor`
+## `myrmidon doctor`
 
 Health checks with optional auto-repair:
 
 ```sh
-pnpm paperclipai doctor
-pnpm paperclipai doctor --repair
+pnpm myrmidon doctor
+pnpm myrmidon doctor --repair
 ```
 
 Validates:
@@ -82,14 +82,14 @@ Validates:
 - Storage configuration
 - Missing key files
 
-## `paperclipai configure`
+## `myrmidon configure`
 
 Update configuration sections:
 
 ```sh
-pnpm paperclipai configure --section server
-pnpm paperclipai configure --section secrets
-pnpm paperclipai configure --section storage
+pnpm myrmidon configure --section server
+pnpm myrmidon configure --section secrets
+pnpm myrmidon configure --section storage
 ```
 
 `--section secrets` updates the deployment-level provider used as the fallback
@@ -99,22 +99,22 @@ coming-soon GCP/Vault) live in the board UI under
 `Company Settings → Secrets → Provider vaults` and the
 `/api/companies/{companyId}/secret-provider-configs` API.
 
-## `paperclipai env`
+## `myrmidon env`
 
 Show resolved environment configuration:
 
 ```sh
-pnpm paperclipai env
+pnpm myrmidon env
 ```
 
 This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
 
-## `paperclipai allowed-hostname`
+## `myrmidon allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-npx paperclipai allowed-hostname my-tailscale-host
+npx myrmidon allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths
@@ -130,12 +130,12 @@ npx paperclipai allowed-hostname my-tailscale-host
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
+PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm myrmidon run
 ```
 
 Or pass `--data-dir` directly on any command:
 
 ```sh
-npx paperclipai run --data-dir ./tmp/paperclip-dev
-npx paperclipai doctor --data-dir ./tmp/paperclip-dev
+npx myrmidon run --data-dir ./tmp/paperclip-dev
+npx myrmidon doctor --data-dir ./tmp/paperclip-dev
 ```

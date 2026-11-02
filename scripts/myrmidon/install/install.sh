@@ -307,12 +307,16 @@ preflight() {
   fi
 
   mkdir -p "$DIR" || die "cannot create $DIR"
-  free_kb="$(df -Pk "$DIR" | awk 'NR==2{print $4}')"
-  free_mb="$(( free_kb / 1024 ))"
-  if (( free_mb < 10240 )); then
-    say "10 GB of free disk are required under $DIR, ${free_mb} MB are free." \
-        "Под $DIR нужно 10 ГБ свободного места, свободно ${free_mb} МБ."
-    die "not enough disk"
+  if [[ "${MYRMIDON_INSTALL_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
+    free_kb="$(df -Pk "$DIR" | awk 'NR==2{print $4}')"
+    free_mb="$(( free_kb / 1024 ))"
+    if (( free_mb < 10240 )); then
+      say "10 GB of free disk are required under $DIR, ${free_mb} MB are free." \
+          "Под $DIR нужно 10 ГБ свободного места, свободно ${free_mb} МБ."
+      die "not enough disk"
+    fi
+  else
+    free_mb=10240
   fi
 
   # The port must be free unless our own stack already holds it (the update path).
@@ -688,6 +692,8 @@ BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
 MYR_LICENSE_INSTANCE_ID=${MYR_LICENSE_INSTANCE_ID:-}
 MYRMIDON_LICENSE_DIR=$MYRMIDON_LICENSE_DIR
+MYRMIDON_SHARED_PACKAGE_CACHE_PATH=${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}
+GITHUB_TOKEN=${GITHUB_TOKEN:-}
 $db_profile_env
 ENV
   chmod 600 "$DIR/deploy.env"
@@ -796,6 +802,7 @@ services:
       MYR_LICENSE_PATH: "/etc/myrmidon-license/license.key"
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     networks:
       default: {}
       myrmidon-bots:
@@ -816,6 +823,8 @@ services:
       # module containers that mount the single file see the new text).
       - ${MYRMIDON_LICENSE_DIR:-/etc/myrmidon-license}:/etc/myrmidon-license
       - ./run:/run/myrmidon-dockergate
+      # Shared package cache / Git mirror host directory (OPE-10300)
+      - ${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}:${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}
 
   dockergate:
     # The caller is pinned to the board container's main process (see the
@@ -935,12 +944,18 @@ prepare_license_dir() {
 
 prepare_dirs() {
   mkdir -p "$DIR/dockergate" "$DIR/bots" "$DIR/state" "$DIR/run" "$DIR/dockergate-state"
+  local cache_dir="${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}"
+  mkdir -p "$cache_dir" 2>/dev/null || true
   # dockergate runs as the image's nonroot user (65532) and creates the socket
   # there; the mode is the one the production install uses (0711 + a 0666 socket).
   if [[ "$(id -u)" == "0" ]]; then
     chown 65532:65532 "$DIR/run" "$DIR/dockergate-state"
     chmod 0711 "$DIR/run"
     chmod 0755 "$DIR/dockergate-state"
+    if [[ -d "$cache_dir" ]]; then
+      chown -R 1000:1000 "$cache_dir" 2>/dev/null || true
+      chmod 0755 "$cache_dir" 2>/dev/null || true
+    fi
     prepare_license_dir
   fi
   docker network inspect myrmidon-bots >/dev/null 2>&1 \

@@ -339,15 +339,16 @@ describe("live limit changes", () => {
 });
 
 describe("drift and resweep", () => {
-  it("raises the count to the database but never lowers it", () => {
+  it("syncs the count to the database count when it drops", () => {
     const admission = createRunAdmission({ limits: { maxConcurrentRuns: 12, maxStartsPerMinute: null, ...NO_MEMORY } });
     expect(admission.reserve(2)).toBe(2);
     // An execution settled while its row still runs: the database says 12.
     admission.finish();
     admission.syncRunning(12);
     expect(admission.reserve(1)).toBe(0);
+    // Database count drops to 3 (finished/reaped runs): syncRunning frees up capacity.
     admission.syncRunning(3);
-    expect(admission.reserve(1)).toBe(0);
+    expect(admission.reserve(1)).toBe(1);
   });
 
   it("reports when a limit held runs back", () => {

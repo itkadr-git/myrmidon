@@ -19,13 +19,22 @@ export interface RoutingIssue {
   // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only wait is never routed to
   // an agent reviewer — the verdict belongs to a person by policy.
   reviewPolicy?: string | null;
+  /** Explicit recovery evaluation; omitted by callers that do not evaluate age. */
+  reviewPathRecoveryEligible?: boolean;
+  /** Current evaluation clock and issue timestamp, supplied by recovery callers. */
+  reviewRecoveryNow?: Date;
+  reviewRecoveryUpdatedAt?: Date;
 }
 
 export interface ReviewerCandidate {
   id: string;
+  name?: string | null;
   role: string;
-  /** Tasks the agent holds in flight (in progress + in review). */
+  model?: string | null;
+  metadata?: Record<string, unknown> | null;
+  /** Active runs in flight (queued + running). */
   load: number;
+  readonly invokable?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -54,6 +63,11 @@ export function issueNeedsReviewer(issue: RoutingIssue): boolean {
   // myrmidon(HUMAN-REVIEW-WAIT): see the RoutingIssue field.
   if (issue.reviewPolicy === "human_only") return false;
   if (policyHasReviewerParticipant(issue.executionPolicy)) return false;
+  if (issue.reviewPathRecoveryEligible === false) return false;
+  if (issue.reviewPathRecoveryEligible === true) {
+    if (!issue.reviewRecoveryNow || !issue.reviewRecoveryUpdatedAt) return false;
+    if (issue.reviewRecoveryUpdatedAt.getTime() > issue.reviewRecoveryNow.getTime() - 15 * 60 * 1000) return false;
+  }
   const state = asRecord(issue.executionState);
   if (state) {
     if (typeof state.status === "string" && state.status !== "idle") return false;
@@ -97,11 +111,58 @@ export function isReviewOverdue(input: { since: Date; now: Date; afterHours: num
   return input.afterHours > 0 && input.now.getTime() - input.since.getTime() >= input.afterHours * 3_600_000;
 }
 
-/** Agent ids that must never review this task: its author, its assignee, and `extra`. */
+/** True when a stage or execution state has changesRequestedCount >= 3 (escalated). */
+export function isEscalatedReviewStage(issue: RoutingIssue): boolean {
+  const state = asRecord(issue.executionState);
+  if (state?.escalationReason === "review_round_limit") return true;
+  if (state && typeof state.changesRequestedCount === "number" && state.changesRequestedCount >= 3) {
+    return true;
+  }
+  const policy = asRecord(issue.executionPolicy);
+  const stages = policyStages(policy);
+  for (const stage of stages) {
+    if (typeof stage.changesRequestedCount === "number" && stage.changesRequestedCount >= 3) {
+      return true;
+    }
+    const rec = asRecord(stage);
+    if (typeof rec?.changesRequestedCount === "number" && rec.changesRequestedCount >= 3) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The agent whose group anchors the reviewer pool: the assignee engineer, else the task author. */
+export function issueAnchorAgentId(issue: RoutingIssue): string | null {
+  return issue.assigneeAgentId ?? issue.createdByAgentId ?? null;
+}
+
+export function resolveAgentGroupKey(agent?: { name?: string | null; metadata?: unknown } | null): string {
+  if (!agent) return "";
+  if (agent.metadata && typeof agent.metadata === "object" && !Array.isArray(agent.metadata)) {
+    const tg = (agent.metadata as Record<string, unknown>).telegramGroup;
+    if (typeof tg === "string" && tg.trim()) return tg.trim().toLowerCase();
+  }
+  const name = agent.name ?? "";
+  const prefix = name.trim().toLowerCase().split("-")[0] ?? "";
+  if (prefix.startsWith("adm")) return "adm";
+  if (prefix.startsWith("bbq")) return "bbq";
+  if (prefix.startsWith("work")) return "work";
+  return prefix;
+}
+
+/** Agent ids that must never review this task: its author, its assignee, returnAssignee, and `extra`. */
 export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string> = []): Set<string> {
   const excluded = new Set<string>(extra);
   if (issue.createdByAgentId) excluded.add(issue.createdByAgentId);
   if (issue.assigneeAgentId) excluded.add(issue.assigneeAgentId);
+  const pending = readPendingAgentReview(issue);
+  if (pending?.returnAssigneeAgentId) excluded.add(pending.returnAssigneeAgentId);
+  const state = asRecord(issue.executionState);
+  const returnAssignee = asRecord(state?.returnAssignee);
+  if (returnAssignee?.type === "agent" && typeof returnAssignee.agentId === "string") {
+    excluded.add(returnAssignee.agentId);
+  }
   return excluded;
 }
 
@@ -109,14 +170,45 @@ export function excludedReviewerIds(issue: RoutingIssue, extra: Iterable<string>
  * Least-loaded eligible reviewer. Candidates at or above `maxLoad` and
  * excluded ids are skipped; ties break by id so the choice is deterministic.
  */
+export interface ReviewerAvailability {
+  selected: ReviewerCandidate | null;
+}
+
+/** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
+export function evaluateReviewerAvailability(input: {
+  reviewers: readonly { id: string; role: string; invokable?: boolean; model?: string | null }[];
+  loadByAgent: ReadonlyMap<string, number>;
+  issue: RoutingIssue;
+  maxLoad: number;
+  authorModel?: string | null;
+}): ReviewerAvailability {
+  return {
+    selected: pickReviewer({
+      candidates: input.reviewers.map((reviewer) => ({
+        id: reviewer.id,
+        role: reviewer.role,
+        invokable: reviewer.invokable,
+        model: reviewer.model,
+        load: input.loadByAgent.get(reviewer.id) ?? 0,
+      })),
+      excluded: excludedReviewerIds(input.issue),
+      maxLoad: input.maxLoad,
+      authorModel: input.authorModel,
+    }),
+  };
+}
+
 export function pickReviewer(input: {
   candidates: readonly ReviewerCandidate[];
   excluded: ReadonlySet<string>;
   maxLoad: number;
+  authorModel?: string | null;
 }): ReviewerCandidate | null {
-  const eligible = input.candidates.filter(
-    (candidate) => !input.excluded.has(candidate.id) && candidate.load < input.maxLoad,
-  );
+  const eligible = input.candidates.filter((candidate) => {
+    if (candidate.invokable === false) return false;
+    if (input.authorModel != null && candidate.model === input.authorModel) return false;
+    return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
+  });
   if (eligible.length === 0) return null;
   return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
 }

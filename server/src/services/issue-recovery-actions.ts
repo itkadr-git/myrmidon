@@ -1,8 +1,13 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, companies, issueRecoveryActions, issueRelations, issues } from "@myrmidon/db";
-import { recoveryFactoryRequestSchema } from "@myrmidon/shared";
-import type { RecoveryFactoryMetrics, RecoveryFactoryRequest, RecoveryFactoryResult } from "@myrmidon/shared";
+import {
+  recoveryFactoryMetrics,
+  recoveryFactoryRequestSchema,
+  type RecoveryFactoryMetrics,
+  type RecoveryFactoryRequest,
+  type RecoveryFactoryResult,
+} from "@myrmidon/shared";
 import type {
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -124,7 +129,10 @@ function isUniqueRecoveryActionConflict(error: unknown) {
   );
 }
 
-export function issueRecoveryActionService(db: Db, metrics?: RecoveryFactoryMetrics) {
+export function issueRecoveryActionService(
+  db: Db,
+  metrics: RecoveryFactoryMetrics = recoveryFactoryMetrics,
+) {
   async function ensureRecoveryIssue(request: RecoveryFactoryRequest): Promise<RecoveryFactoryResult> {
     const input = recoveryFactoryRequestSchema.parse(request);
     const result = await db.transaction(async (tx): Promise<RecoveryFactoryResult> => {
@@ -584,6 +592,10 @@ export function issueRecoveryActionService(db: Db, metrics?: RecoveryFactoryMetr
       })
       .where(and(...predicates))
       .returning();
+
+    if (updated && (updated.status === "resolved" || input.status === "resolved")) {
+      metrics.succeeded(updated.kind as IssueRecoveryActionKind);
+    }
 
     return updated ? toReadModel(updated) : null;
   }

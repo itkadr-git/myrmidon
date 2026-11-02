@@ -66,6 +66,27 @@ describe("reconcileGatewayPaperclipSkills", () => {
     expect(readFile).toHaveBeenCalledTimes(2);
   });
 
+  it("OPE-10086: a subsequent run sees the updated skill version after an in-place skill edit", async () => {
+    let skillBody = "version 1";
+    const readFile = vi.fn(async (path: string) => {
+      if (path === "/skills/alpha/SKILL.md") return `---\nname: alpha\n---\n${skillBody}`;
+      throw new Error(`unexpected read: ${path}`);
+    });
+    const config = skillConfig([skillEntry("company/alpha", "alpha", "/skills/alpha")]);
+    config.paperclipSkillSync = { desiredSkills: ["company/alpha"] };
+
+    // Run 1 runs with skill v1
+    const run1Result = await reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR, readFile });
+    expect(run1Result!.skills[0]).toMatchObject({ name: "alpha", content: expect.stringContaining("version 1") });
+
+    // Skill is edited in place (e.g. company skill file updated)
+    skillBody = "version 2";
+
+    // Run 2 runs and sees updated skill v2
+    const run2Result = await reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR, readFile });
+    expect(run2Result!.skills[0]).toMatchObject({ name: "alpha", content: expect.stringContaining("version 2") });
+  });
+
   it("throws the board-facing message when a desired skill's source is missing", async () => {
     // Missing sources come through as sourceStatus: "missing" with a
     // placeholder source path (normalizeConfiguredPaperclipRuntimeSkills

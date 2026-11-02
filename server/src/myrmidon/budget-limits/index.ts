@@ -15,6 +15,13 @@ export { createBudgetLimitStore, resolveEffectiveBudgetLimit, validateBudgetLimi
 export type { BudgetLimitStore, BudgetLimitRow, BudgetLimitActor, BudgetLimitAction } from "./store.js";
 export { computeBudgetLimitUsage, issueIdsOfRole } from "./usage.js";
 export type { BudgetLimitUsage, BudgetLimitUsageDeps } from "./usage.js";
+export { decideBudgetLimitAdmission, evaluateBudgetLimitAdmission } from "./admission.js";
+export type {
+  BudgetLimitAdmissionBlock,
+  BudgetLimitAdmissionDecision,
+  BudgetLimitAdmissionInput,
+  BudgetLimitAdmissionPorts,
+} from "./admission.js";
 export { budgetLimitsRoutes } from "./routes.js";
 export type { BudgetLimitRoutesDeps } from "./routes.js";
 

@@ -5,7 +5,13 @@ import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentRuntimeState,
+  companySkills,
+  heartbeatRunEvents,
+  heartbeatRuns,
   agentWakeupRequests,
+  agentTaskSessions,
+  issueComments,
   issues,
 } from "@myrmidon/db";
 import {
@@ -15,33 +21,111 @@ import {
   seedCompanyWithBoardAccess,
   useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 // myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
 // must be written in the same database transaction via PATCH /api/issues/:id.
 
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
+    // Await background wake/run handlers before taking table locks: a handler
+    // may need those relations while it finishes its transaction.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.transaction(async (tx) => {
-      // Freeze writers to every table whose rows are drained below. The lock
-      // mode conflicts with INSERT on these tables, so no dependent wake/activity
-      // row can appear between cleanup statements and the agent delete.
+      // Prevent new wake/activity writers while deleting their rows and issues.
       await tx.execute(
-        sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
+        sql`LOCK TABLE activity_log, agent_runtime_state, agent_task_sessions, agent_wakeup_requests, issue_comments, issues, agents, company_skills IN SHARE ROW EXCLUSIVE MODE`,
       );
-      await tx.delete(agentWakeupRequests);
+      await tx.delete(heartbeatRunEvents);
+      await tx.update(agentTaskSessions).set({ lastRunId: null });
       await tx.delete(activityLog);
+      await tx.delete(heartbeatRuns);
+      await tx.delete(agentWakeupRequests);
+      await tx.delete(issueComments);
       await tx.delete(issues);
+      await tx.delete(agentRuntimeState);
+      await tx.delete(agentTaskSessions);
       await tx.delete(agents);
+      await tx.delete(companySkills);
       await resetCompanyIssueFixtures(tx as typeof db);
     });
   },
 });
 
 describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", () => {
+  it("raises one no_reviewer signal on real PATCH when no eligible reviewer exists", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission no reviewer");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "Task Author",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "No reviewer route regression",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const first = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(first.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const repeated = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(repeated.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Eligible Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: randomUUID(),
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
+    const assigned = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ executionPolicy: policy });
+    expect(assigned.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
+  });
+
   it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission atomic");
+    resetReviewRoutingSignals();
     const reviewerAgentId = randomUUID();
     await ctx.db.insert(agents).values({
       id: reviewerAgentId,
@@ -111,6 +195,131 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(wakes[0]?.reason).toBe("execution_review_requested");
     expect(wakes[0]?.status).toBe("queued");
     expect(wakes[0]?.payload).toMatchObject({ issueId });
+  });
+
+  it("routes a review PATCH to a reviewer whose model differs from the author", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission routing");
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    const selectedReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: selectedReviewerId,
+        companyId,
+        name: "Different Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-b" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Automatic reviewer selection",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: selectedReviewerId,
+    });
+    expect(res.body.assigneeAgentId).toBe(selectedReviewerId);
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${selectedReviewerId}`));
+    expect(wakes).toHaveLength(1);
+    const rejectedCandidateWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${sameModelReviewerId}`));
+    expect(rejectedCandidateWakes).toHaveLength(0);
+  });
+
+  it("raises no_reviewer signal when only reviewers with matching model are available", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission matching model only");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    const sameModelReviewerId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sameModelReviewerId,
+        companyId,
+        name: "Same Model Reviewer",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "model-a" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Matching model only",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+    });
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.assigneeAgentId).toBeNull();
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
   });
 
   it("rolls back review transition and does not leave issue in_review when wake persistence fails", async () => {

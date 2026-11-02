@@ -9,6 +9,9 @@ import { Ui2InstanceSecretSettings } from "./Ui2InstanceSecretSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 import { ui2Messages, type Ui2Locale, type Ui2MessageKey } from "../../../i18n/locales";
 
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1" }) }));
+vi.mock("@/i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+
 const mockApi = vi.hoisted(() => ({ list: vi.fn(), setRef: vi.fn(), clearRef: vi.fn(), migrationPlan: vi.fn() }));
 const mockSecretsApi = vi.hoisted(() => ({ list: vi.fn() }));
 

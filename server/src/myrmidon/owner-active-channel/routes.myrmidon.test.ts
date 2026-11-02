@@ -1,0 +1,330 @@
+// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel routes.
+//
+// The routes run over the real service with fake ports (settings row, audit
+// sink) and a fake db that answers the activity reads, so validation,
+// permissions, the audit record and the channel decision are all exercised
+// without a database.
+import express from "express";
+import request from "supertest";
+import { describe, expect, it, vi } from "vitest";
+import type { Db } from "@myrmidon/db";
+import { OWNER_ACTIVE_THRESHOLD_ENV } from "@myrmidon/shared";
+import { errorHandler } from "../../middleware/index.js";
+import { ownerActiveChannelRoutes } from "./routes.js";
+import {
+  OWNER_ACTIVE_CHANNEL_ACTION,
+  ownerActiveChannelService,
+  type OwnerActiveChannelServiceDeps,
+} from "./service.js";
+import { invalidateOwnerActiveChannelSettingsCache } from "./settings.js";
+
+const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
+
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+};
+const admin = { ...member, userId: "user-b", isInstanceAdmin: true };
+const outsider = { ...member, userId: "user-c", companyIds: [] };
+
+interface HarnessOptions {
+  stored?: unknown;
+  env?: Record<string, string | undefined>;
+  /** ISO stamps per channel for the fake activity table. */
+  activity?: Record<string, string | null>;
+  /** When set, the fake activity rows belong to this user id only. */
+  activityUser?: string;
+}
+
+function harness(options: HarnessOptions = {}) {
+  const current = { stored: options.stored as unknown };
+  const activity = { ...(options.activity ?? {}) } as Record<string, string | null>;
+  const audits: Array<Record<string, unknown>> = [];
+  const deps: Partial<OwnerActiveChannelServiceDeps> = {
+    getGeneral: async () => ({ ownerActiveChannel: current.stored }),
+    updateGeneral: async (patch) => {
+      current.stored = patch.ownerActiveChannel;
+      return {};
+    },
+    listCompanyIds: async () => [COMPANY_ID],
+    logActivity: async (entry) => {
+      audits.push(entry as unknown as Record<string, unknown>);
+    },
+    env: options.env ?? {},
+  };
+
+  // The activity read is injected (the service takes it as a dep): stamps
+  // answer only for their owner id, so unknown users read as empty.
+  deps.readActivity = async (userId) => {
+    const owner = options.activityUser ?? member.userId;
+    const userActivity = userId === owner ? activity : {};
+    return {
+      web: (userActivity.web as string | null | undefined) ?? null,
+      telegram: (userActivity.telegram as string | null | undefined) ?? null,
+    };
+  };
+  const db = {} as unknown as Db;
+
+  const service = ownerActiveChannelService(db, deps);
+
+  const withActor = (actor: unknown) => {
+    const scoped = express();
+    scoped.use(express.json());
+    scoped.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = actor;
+      next();
+    });
+    scoped.use("/api", ownerActiveChannelRoutes(db, service, async (_db, input) => {
+      activity[input.channel] = new Date().toISOString();
+    }));
+    scoped.use(errorHandler);
+    return scoped;
+  };
+  return { app: withActor(member), withActor, audits, current };
+}
+
+const URL = "/api/myrmidon/owner/active-channel";
+const CHANNELS_URL = "/api/myrmidon/owner/channels";
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+describe("POST /api/owner/heartbeat", () => {
+  it("records the authenticated member web touch and returns the updated view", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness();
+    const response = await request(app).post("/api/owner/heartbeat").send({}).expect(200);
+    expect(response.body.channel).toBe("web");
+    expect(response.body.lastActiveAt.web).toEqual(expect.any(String));
+    expect(response.body.lastActiveAt.telegram).toBeNull();
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("rejects outsiders and actors without a board user identity", async () => {
+    const { withActor } = harness();
+    await request(withActor(outsider)).post("/api/owner/heartbeat").send({}).expect(403);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await request(withActor({ ...member, userId: undefined }))
+        .post("/api/owner/heartbeat").send({}).expect(400);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET the active channel", () => {
+  it("answers telegram when the freshest touch is a Telegram message", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({
+      stored: { thresholdMin: 120 },
+      activity: { web: minutesAgo(90), telegram: minutesAgo(1) },
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.channel).toBe("telegram");
+    expect(res.body.thresholdMin).toBe(120);
+    expect(res.body.thresholdSource).toBe("settings");
+    expect(res.body.lastActiveAt.telegram).toBeTruthy();
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("null when every channel is older than the threshold", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({
+      stored: { thresholdMin: 5 },
+      activity: { web: minutesAgo(60), telegram: minutesAgo(30) },
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.channel).toBeNull();
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("the environment value is a forced override with its source shown", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({
+      stored: { thresholdMin: 120 },
+      env: { [OWNER_ACTIVE_THRESHOLD_ENV]: "15" },
+      activity: { web: minutesAgo(10), telegram: null },
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body).toMatchObject({ channel: "web", thresholdMin: 15, thresholdSource: "env" });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("an outsider board member is refused; a member reads their own status", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({ activity: { web: null, telegram: null } });
+    await request(withActor(outsider)).get(URL).expect(403);
+    await request(withActor(member)).get(URL).expect(200);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("?userId needs instance admin; an unknown user answers with empty touches", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({
+      activity: { web: minutesAgo(2), telegram: null },
+      activityUser: "user-z",
+    });
+    await request(withActor(member)).get(`${URL}?userId=user-z`).expect(403);
+    const adminApp = withActor(admin);
+    const ok = await request(adminApp).get(`${URL}?userId=user-z`).expect(200);
+    expect(ok.body.channel).toBe("web");
+    const empty = await request(adminApp).get(`${URL}?userId=ghost`).expect(200);
+    expect(empty.body.channel).toBeNull();
+    expect(empty.body.lastActiveAt).toEqual({ web: null, telegram: null });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+});
+
+describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: GET owner channel list", () => {
+  it("returns the canonical empty list and never errors when no activity exists", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: {} });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: null, active: false },
+        { channel: "telegram", lastSeenAt: null, active: false },
+      ],
+    });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("returns both channels from the shared activity source and exposes no secrets", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const web = minutesAgo(10);
+    const telegram = minutesAgo(130);
+    const { app } = harness({ stored: { thresholdMin: 120 }, activity: { web, telegram } });
+    const response = await request(app).get(CHANNELS_URL).expect(200);
+    expect(response.body).toEqual({
+      userId: member.userId,
+      thresholdMin: 120,
+      thresholdSource: "settings",
+      channels: [
+        { channel: "web", lastSeenAt: web, active: true },
+        { channel: "telegram", lastSeenAt: telegram, active: false },
+      ],
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(/token|secret|chat.?id|bot/i);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("requires board organization access and instance admin for another userId", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({ activity: {} });
+    await request(withActor(outsider)).get(CHANNELS_URL).expect(403);
+    await request(withActor(member)).get(`${CHANNELS_URL}?userId=user-z`).expect(403);
+    const adminResponse = await request(withActor(admin))
+      .get(`${CHANNELS_URL}?userId=user-z`)
+      .expect(200);
+    expect(adminResponse.body.userId).toBe("user-z");
+    expect(adminResponse.body.channels).toEqual([
+      { channel: "web", lastSeenAt: null, active: false },
+      { channel: "telegram", lastSeenAt: null, active: false },
+    ]);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+});
+
+describe("myrmidon(1.7-ACTIVE-CHANNEL) routes: PATCH the threshold", () => {
+  it("instance admin saves the threshold; a plain member cannot", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { app, withActor, audits, current } = harness({ stored: { thresholdMin: 120 } });
+    await request(app).patch(URL).send({ thresholdMin: 30 }).expect(403);
+
+    const res = await request(withActor(admin)).patch(URL).send({ thresholdMin: 30 }).expect(200);
+    expect(res.body).toEqual({ thresholdMin: 30, thresholdSource: "settings" });
+    expect(current.stored).toEqual({ thresholdMin: 30 });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      action: OWNER_ACTIVE_CHANNEL_ACTION,
+      companyId: COMPANY_ID,
+      entityType: "instance_settings",
+    });
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("the saved threshold applies to the very next read without a restart", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness({
+      stored: { thresholdMin: 120 },
+      activity: { web: minutesAgo(60), telegram: null },
+      activityUser: admin.userId,
+    });
+    const adminApp = withActor(admin);
+    const before = await request(adminApp).get(URL).expect(200);
+    expect(before.body.channel).toBe("web");
+    await request(adminApp).patch(URL).send({ thresholdMin: 30 }).expect(200);
+    const after = await request(adminApp).get(URL).expect(200);
+    expect(after.body.channel).toBeNull();
+    expect(after.body.thresholdMin).toBe(30);
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+
+  it("a body outside the bounds is rejected with 400 and standard validation error format", async () => {
+    invalidateOwnerActiveChannelSettingsCache();
+    const { withActor } = harness();
+    const adminApp = withActor(admin);
+
+    const resTooLow = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: 2 })
+      .expect(400);
+    expect(resTooLow.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "too_small",
+        }),
+      ]),
+    });
+
+    const resTooHigh = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: 99999 })
+      .expect(400);
+    expect(resTooHigh.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "too_big",
+        }),
+      ]),
+    });
+
+    const resInvalidType = await request(adminApp)
+      .patch(URL)
+      .send({ thresholdMin: "not-a-number" })
+      .expect(400);
+    expect(resInvalidType.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          path: ["thresholdMin"],
+          code: "invalid_type",
+        }),
+      ]),
+    });
+
+    const resUnknown = await request(adminApp)
+      .patch(URL)
+      .send({ unknown: 1 })
+      .expect(400);
+    expect(resUnknown.body).toMatchObject({
+      error: "Validation error",
+      details: expect.arrayContaining([
+        expect.objectContaining({
+          code: "unrecognized_keys",
+        }),
+      ]),
+    });
+
+    invalidateOwnerActiveChannelSettingsCache();
+  });
+});

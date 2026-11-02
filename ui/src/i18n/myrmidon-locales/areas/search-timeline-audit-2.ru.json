@@ -74,6 +74,22 @@
           "minutes": "{{minutes}} мин {{seconds}} с"
         },
         "routineRunFallback": "Прогон рутины",
+        "tabs": {
+          "allRuns": "Все прогоны",
+          "runsWithResult": "Прогоны с результатом"
+        },
+        "resultsPanel": {
+          "title": "Прогоны с результатом",
+          "description": "Прогоны агентов, завершившиеся с результатом, с фильтрацией по агенту и причине пробуждения.",
+          "wakeReason": "Причина пробуждения",
+          "allReasons": "Все причины",
+          "empty": "Прогонов с результатом пока нет.",
+          "emptyFiltered": "Нет прогонов с результатом по выбранным фильтрам.",
+          "tableLabel": "Таблица прогонов с результатом",
+          "colRun": "Прогон",
+          "colResult": "Результат",
+          "colStarted": "Запущен"
+        },
         "routineScoped": {
           "loading": "Загрузка прогонов рутины…",
           "tryAgain": "Повторить",
@@ -100,6 +116,53 @@
           "listLabel": "Последние прогоны",
           "sourceRun": "Прогон: {{source}}",
           "footer": "Показаны последние прогоны: {{limit}}."
+        },
+        "outcomePanel": {
+          "title": "Прогоны с результатом",
+          "description": "Доля результативных прогонов, модельные вызовы, расход токенов и стоимость по агентам и причинам пробуждения.",
+          "kpi": {
+            "outcomeRate": "Доля с результатом",
+            "outcomeRateSub": "{{numerator}} / {{denominator}} завершённых",
+            "modelCalls": "Вызовы модели",
+            "modelCallsSub": "{{outcomeCalls}} с результатом · {{idleCalls}} холостых",
+            "tokens": "Токены",
+            "tokensSub": "вход: {{input}} · кэш: {{cached}} · выход: {{output}}",
+            "totalCost": "Стоимость вызовов",
+            "idleCost": "Стоимость прогонов без результата",
+            "idleCostSub": "без результата: {{cost}}"
+          },
+          "filters": {
+            "wakeReason": "Причина пробуждения",
+            "allWakeReasons": "Все причины",
+            "timeRange": "Период",
+            "periods": {
+              "6h": "За 6 часов",
+              "24h": "За 24 часа",
+              "48h": "За 48 часов",
+              "7d": "За 7 дней",
+              "all": "За всё время"
+            }
+          },
+          "categories": {
+            "title": "Разбивка по исходам",
+            "artifact": "Артефакт",
+            "commit_push": "Коммит / PR",
+            "status": "Смена статуса",
+            "other_work_product": "Рабочий продукт",
+            "comment_only": "Только комментарий",
+            "nothing": "Без результата"
+          },
+          "reasonsTable": {
+            "title": "Разбивка по причинам пробуждения",
+            "wakeReason": "Причина пробуждения",
+            "totalRuns": "Всего",
+            "outcomeRuns": "С результатом",
+            "rate": "Доля",
+            "calls": "Вызовы",
+            "tokens": "Токены",
+            "totalCost": "Стоимость",
+            "idleCost": "Холостая стоимость"
+          }
         }
       },
       "audit-feed-production": {

@@ -1,7 +1,14 @@
-import type { AgentAdapterType, BoardApiKeyScopeKind, JoinRequest, PermissionKey } from "@myrmidon/shared";
+import type {
+  AgentAdapterType,
+  BoardApiKeyScopeKind,
+  HumanCompanyMembershipRole,
+  JoinRequest,
+  MembershipStatus,
+  PermissionKey,
+} from "@myrmidon/shared";
 import { api } from "./client";
 
-export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
+export type HumanCompanyRole = HumanCompanyMembershipRole;
 
 type InviteSummary = {
   id: string;
@@ -421,8 +428,18 @@ export const accessApi = {
   cancelCliAuthChallenge: (id: string, token: string) =>
     api.post<{ cancelled: boolean; status: string }>(`/cli-auth/challenges/${id}/cancel`, { token }),
 
-  searchAdminUsers: (query: string) =>
-    api.get<AdminUserDirectoryEntry[]>(`/admin/users?query=${encodeURIComponent(query)}`),
+  searchAdminUsers: (filters: {
+    query?: string;
+    role?: HumanCompanyMembershipRole;
+    status?: MembershipStatus;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.query) params.set("query", filters.query);
+    if (filters.role) params.set("role", filters.role);
+    if (filters.status) params.set("status", filters.status);
+    const suffix = params.toString();
+    return api.get<AdminUserDirectoryEntry[]>(`/admin/users${suffix ? `?${suffix}` : ""}`);
+  },
 
   promoteInstanceAdmin: (userId: string) =>
     api.post(`/admin/users/${userId}/promote-instance-admin`, {}),

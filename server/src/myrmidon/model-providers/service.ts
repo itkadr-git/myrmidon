@@ -42,6 +42,7 @@ import {
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
+import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
@@ -595,15 +596,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
-    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || 0);
+    const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
     const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
-    const state = typeof raw.state === "string" ? raw.state : "unknown";
+    const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
+    const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
+      ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
+      ...(Array.isArray(raw.usage?.recentErrors) ? raw.usage.recentErrors.map((e: any) => e?.message) : [])]
+      .find((value) => typeof value === "string" && /resets?\s+in\s+/i.test(value));
+    const parsedReset = parseResetAfterText(resetText, now().getTime());
     const limitedUntil =
-      typeof raw.limited_until === "number"
-        ? raw.limited_until
-        : typeof raw.limitedUntil === "number"
-          ? raw.limitedUntil
-          : null;
+      typeof raw.limited_until === "number" ? raw.limited_until
+        : typeof raw.limitedUntil === "number" ? raw.limitedUntil
+          : parsedReset;
     const lastOk =
       typeof raw.last_ok === "number"
         ? raw.last_ok
@@ -665,6 +669,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       state === "banned" ||
       state === "token_expired" ||
       Boolean(raw.banned) ||
+      Boolean(raw.isBanned) ||
       Boolean(
         rawUsage.recentErrors?.some(
           (e: any) => e.status === 401 || e.status === 403,
@@ -690,6 +695,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         primaryExhausted ||
         secondaryExhausted);
 
+    const rawModels = Array.isArray(raw.models)
+      ? raw.models
+      : Array.isArray(raw.available_models)
+        ? raw.available_models
+        : Array.isArray(raw.availableModels)
+          ? raw.availableModels
+          : undefined;
+
     return {
       n,
       label,
@@ -697,6 +710,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       state,
       stateRu: mapStateToRu(state),
       plan: raw.plan || rawUsage.plan || null,
+      models: rawModels,
       limitedUntil,
       lastOk,
       windows: {
@@ -717,7 +731,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       },
       isBanned,
       isExhausted,
-      error: raw.error || null,
+      error: latestAccountError(raw),
     };
   }
 
@@ -727,7 +741,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   ): Promise<ModelProviderChannelsView> {
     const provider = await loadProvider(companyId, providerId);
     const connector = getModelProviderConnector(provider.type);
-    if (provider.type !== "chatgpt-pool" && (!connector || !connector.supportsChannels)) {
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
       return {
         providerId: provider.id,
         providerType: provider.type,
@@ -768,12 +783,24 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const channels = rawAccounts.map(mapRawAccountToChannel);
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    const summary = {
+      total: channels.length,
+      live: channels.filter((channel) => !channel.isBanned && !channel.isExhausted).length,
+      exhausted: channels.filter((channel) => channel.isExhausted).length,
+      banned: channels.filter((channel) => channel.isBanned).length,
+      nextResetAt:
+        channels
+          .flatMap((channel) => [channel.limitedUntil, channel.windows.primary?.resetsAt, channel.windows.secondary?.resetsAt])
+          .filter((value): value is number => typeof value === "number" && value > 0)
+          .sort((a, b) => a - b)[0] ?? null,
+    };
 
     return {
       providerId: provider.id,
       providerType: provider.type,
       channels,
       signals,
+      summary,
     };
   }
 
@@ -794,7 +821,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const aggregated: PoolAccountRoleSignal[] = [];
     for (const p of providers) {
       const connector = getModelProviderConnector(p.type);
-      if (p.type === "chatgpt-pool" || connector?.supportsChannels) {
+      if (
+        ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(p.type) ||
+        connector?.supportsChannels
+      ) {
         try {
           const channelsView = await listChannels(companyId, p.id);
           aggregated.push(...channelsView.signals);

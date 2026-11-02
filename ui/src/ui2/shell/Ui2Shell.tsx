@@ -11,6 +11,7 @@
 import type { ReactNode } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useIsMobileViewport } from "../useIsMobileViewport";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { Ui2Rail } from "./Ui2Rail";
 import { Ui2TopBar } from "./Ui2TopBar";
 import { Ui2SettingsSidebar } from "./Ui2SettingsSidebar";
@@ -25,20 +26,25 @@ export function Ui2Shell({ children, lang }: { children?: ReactNode; lang?: stri
   const isMobile = useIsMobileViewport();
   const location = useLocation();
   const content = children ?? <Outlet />;
+  const ui2I18n = useUi2I18nOptional();
+  const currentLang = lang ?? ui2I18n?.locale;
   // The app pins `body { overflow: hidden }` (index.css), so the document
   // never scrolls: the shell has to own the scroll container itself, or any
   // screen taller than the window is cut off (OPE-5957).
-  const rootProps = lang ? { lang } : {};
+  const rootProps = currentLang ? { lang: currentLang } : {};
 
   if (isMobile) {
     return (
       <div
         className="myr-ui2"
-        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "auto" }}
+        style={{ display: "flex", flexDirection: "column", height: "100dvh", overflowY: "hidden" }}
         {...rootProps}
       >
         <Ui2PhoneHeader />
-        <main style={{ flex: 1, minWidth: 0, paddingBottom: "calc(var(--myr-phone-tabbar-height) + var(--myr-phone-plugins-height, 0px))" }}>
+        <main
+          data-testid="ui2-main"
+          style={{ flex: 1, minWidth: 0, overflowY: "auto", paddingBottom: "calc(var(--myr-phone-tabbar-height) + var(--myr-phone-plugins-height, 0px))" }}
+        >
           {content}
         </main>
         <Ui2PhoneTabBar />
