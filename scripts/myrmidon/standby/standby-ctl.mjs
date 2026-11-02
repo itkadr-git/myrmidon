@@ -43,6 +43,12 @@ export const DEFAULT_CONFIG = {
   containerPassfilePath: "/var/lib/postgresql/data/.pgpass",
   rpoMaxSeconds: 900, // RPO <= 15 min
   rtoTargetSeconds: 1800, // RTO <= 30 min
+  // D9: execution mode for PostgreSQL client binaries. The myr-vm1 standby host has
+  // no host-level PostgreSQL installation; binaries run inside a short-lived
+  // pgvector/pgvector:pg18 container (or via docker exec into the standby container).
+  pgRunner: process.env.STANDBY_PG_RUNNER || "docker", // "docker" | "host"
+  pgImage: process.env.STANDBY_PG_IMAGE || "pgvector/pgvector:pg18",
+  pgContainer: process.env.STANDBY_PG_CONTAINER || "myrmidon-pg-standby",
 };
 
 export function resolvePrimaryPort(options = {}, target = "board") {
@@ -76,6 +82,51 @@ export const defaultFsOps = {
   readdirSync: fs.readdirSync,
   chmodSync: fs.chmodSync,
 };
+
+/**
+ * Build the docker CLI prefix that runs a PostgreSQL binary inside a container.
+ * D9: myr-vm1 has no host-level PostgreSQL; use the pgvector image (same as the
+ * standby service) so psql / pg_basebackup / pg_ctl are always available.
+ */
+export function dockerPgPrefix(config = DEFAULT_CONFIG) {
+  const image = config.pgImage || DEFAULT_CONFIG.pgImage;
+  return ["run", "--rm", "--user", "999", image];
+}
+
+/**
+ * Rewrite a PG command + args for docker execution.
+ * Host paths under /srv or /var are bind-mounted read-write at the same path.
+ */
+export function wrapPgForDocker(cmd, args, config = DEFAULT_CONFIG) {
+  const prefix = dockerPgPrefix(config);
+  const mounts = [];
+  const seen = new Set();
+  for (const a of args) {
+    if (typeof a === "string" && (a.startsWith("/srv/") || a.startsWith("/var/") || a.startsWith("/etc/"))) {
+      if (!seen.has(a)) {
+        seen.add(a);
+        mounts.push("-v", `${a}:${a}`);
+      }
+    }
+  }
+  return { cmd: "docker", args: [...prefix, ...mounts, cmd, ...args] };
+}
+
+/**
+ * Create a runner that executes PG binaries either on the host or inside docker.
+ */
+export function createPgRunner(baseRunner, options = {}, config = DEFAULT_CONFIG) {
+  const mode = options.pgRunner || config.pgRunner || DEFAULT_CONFIG.pgRunner;
+  return (cmd, args, runnerOptions = {}) => {
+    if (cmd === "psql" || cmd === "pg_basebackup" || cmd === "pg_ctl" || cmd === "pg_isready") {
+      if (mode === "docker") {
+        const wrapped = wrapPgForDocker(cmd, args, config);
+        return baseRunner(wrapped.cmd, wrapped.args, runnerOptions);
+      }
+    }
+    return baseRunner(cmd, args, runnerOptions);
+  };
+}
 
 export function defaultRunner(cmd, args = [], options = {}) {
   const res = spawnSync(cmd, args, {
@@ -406,8 +457,9 @@ export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, 
  * Setup warm standby replication for cluster / target DB.
  */
 export function setupStandby(target = "board", options = {}, deps = {}) {
-  const runner = deps.runner || defaultRunner;
+  const rawRunner = deps.runner || defaultRunner;
   const fsOps = deps.fsOps || defaultFsOps;
+  const runner = createPgRunner(rawRunner, options);
   const isBoard = target === "board";
 
   const dataDir = options.dataDir || (isBoard
@@ -896,7 +948,8 @@ export function checkLag(target = "all", options = {}, deps = {}) {
  * Execute promotion and application switchover.
  */
 export function executeFailover(target = "board", options = {}, deps = {}) {
-  const runner = deps.runner || defaultRunner;
+  const rawRunner = deps.runner || defaultRunner;
+  const runner = createPgRunner(rawRunner, options);
   const isBoard = target === "board";
   const plan = planFailover(target, options);
 
@@ -1131,7 +1184,8 @@ export function executeSwitchback(target = "board", options = {}, deps = {}) {
  * Verifies recovery promotion and smoke tests BOTH databases (paperclip, myrmidon_hindsight) in one replica.
  */
 export function executeRehearsal(target = "board", options = {}, deps = {}) {
-  const runner = deps.runner || defaultRunner;
+  const rawRunner = deps.runner || defaultRunner;
+  const runner = createPgRunner(rawRunner, options);
   const fsOps = deps.fsOps || defaultFsOps;
   const isBoard = target === "board";
   const plan = planRehearsal(target, options);
@@ -1200,7 +1254,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
 
   // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
   const basebackupTimeoutMs = options.basebackupTimeoutMs || 3600000; // 1h default for 45GB
-  const snapRes = runner("pg_basebackup", [
+  const snapshotArgs = [
     "-h", "127.0.0.1",
     "-p", String(standbyPort),
     "-U", replUser,
@@ -1208,7 +1262,11 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     "-Fp",
     "-Xs",
     "-R",
-  ], {
+  ];
+  if (options.maxRate) {
+    snapshotArgs.push(`--max-rate=${options.maxRate}`);
+  }
+  const snapRes = runner("pg_basebackup", snapshotArgs, {
     timeoutMs: basebackupTimeoutMs,
     env: {
       ...process.env,
@@ -1255,6 +1313,10 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     try {
       fsOps.rmSync(drillDir, { recursive: true, force: true });
     } catch {}
+  } else if (options.composeFile) {
+    // D6: with --keep-drill also start the drill-only board service so the
+    // release-component image and fleet visibility can be verified manually.
+    runner("docker", ["compose", "-f", options.composeFile, "up", "-d", "myrmidon-board"]);
   }
 
   const durationMs = Date.now() - startTime;
@@ -1382,6 +1444,18 @@ export function runCli(argv = process.argv.slice(2), env = process.env, deps = {
   if (flags["drill-port"] !== undefined) {
     flags.drillPort = Number(flags["drill-port"]);
   }
+  if (flags["max-rate"] !== undefined) {
+    flags.maxRate = flags["max-rate"];
+  }
+  if (flags["pg-runner"] !== undefined) {
+    flags.pgRunner = flags["pg-runner"];
+  }
+  if (flags["pg-image"] !== undefined) {
+    flags.pgImage = flags["pg-image"];
+  }
+  if (flags["keep-drill"] !== undefined) {
+    flags.keepDrill = true;
+  }
 
   switch (command) {
     case "setup": {
@@ -1453,6 +1527,12 @@ Options:
   --rpo-max-seconds=<sec>          Maximum acceptable lag in seconds (default: 900)
   --offline                        Measure standby without querying primary
   --target=<target>                board, hindsight, or all (default: all)
+  --max-rate=<rate>                Pass --max-rate to pg_basebackup (e.g. 30M) to throttle I/O
+  --pg-runner=docker|host          Execution mode for PG binaries (default: docker). docker runs
+                                   them inside a short-lived pgvector/pgvector:pg18 container;
+                                   host requires a local PostgreSQL 18 client installation.
+  --pg-image=<image>               Container image for --pg-runner=docker (default: pgvector/pgvector:pg18)
+  --keep-drill                     Keep the ephemeral drill cluster and board container after rehearsal
 `);
       return command === "help" ? 0 : 1;
     }

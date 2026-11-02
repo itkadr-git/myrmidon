@@ -52,3 +52,6 @@ services:
     depends_on:
       myrmidon-pg-standby:
         condition: service_healthy
+    # D6: drill-only board service. Override image via COMPOSE_BOARD_IMAGE
+    # to pin the exact release-component digest during rehearsal.
+    image: ${COMPOSE_BOARD_IMAGE:-ghcr.io/itkadr-git/myrmidon:latest}

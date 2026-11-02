@@ -46,6 +46,14 @@ This runbook defines the operational procedures for the central database warm st
    - Run as a non-root OS user that owns the standby data directory and the docker socket group. `pg_ctl` (promote/start/stop) refuses to run as root, and `pg_basebackup`/`psql` invocations from `standby-ctl.sh` inherit that user.
    - Docker with the `pgvector/pgvector:pg18` image pre-pulled (no on-host image build — board image comes from CI per release policy).
 
+6. **D9: Docker-runner mode (no host PostgreSQL client needed)**:
+   If the standby host lacks host-level PostgreSQL client binaries, `standby-ctl.sh` can run all PG commands inside a Docker container. In this mode:
+   - `standby-ctl.sh` still requires `node` (or falls back to `docker run node:20-alpine` if `node` is absent).
+   - All `psql`, `pg_basebackup`, `pg_ctl`, and `pg_isready` calls are executed via `docker run --rm pgvector/pgvector:pg18 ...` with the data directory bind-mounted into the container.
+   - The host data directory must be writable by container UID 999 (`postgres`). Set ownership with `chown -R 999:999 /srv/standby/myrmidon-pg/data` before running `setup`.
+   - The Docker socket must be accessible to the invoking user (member of the `docker` group).
+   - Use `--pg-runner=docker` (default) or `--pg-runner=host` to force host binaries if they are installed.
+
 **Mandatory primary-side PostgreSQL settings** (validated by `setup` and `check-lag`, fail-closed):
 
 > **D7 note (02.11, ADM):** production runs `wal_level=logical` and `archive_mode=off`,

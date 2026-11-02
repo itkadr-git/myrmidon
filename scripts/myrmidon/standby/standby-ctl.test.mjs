@@ -16,6 +16,9 @@ import {
   executeRehearsal,
   runCli,
   DEFAULT_CONFIG,
+  dockerPgPrefix,
+  wrapPgForDocker,
+  createPgRunner,
 } from "./standby-ctl.mjs";
 
 test("parseLsn parses valid PostgreSQL LSN strings into BigInt", () => {
@@ -178,7 +181,7 @@ test("setupStandby creates physical replication slot before basebackup", () => {
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = setupStandby("board", { replicatorPassword: "pw" }, { runner: mockRunner, fsOps: mockFs });
+  const res = setupStandby("board", { replicatorPassword: "pw", pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.ok(
     executedCmds.some((c) => c.cmd === "psql" && c.args.some((a) => a.includes("pg_create_physical_replication_slot"))),
@@ -316,7 +319,7 @@ test("setupStandby executes directory setup, basebackup, and config writes", () 
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = setupStandby("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.equal(res.inRecovery, true);
   assert.equal(res.streamingActive, true);
@@ -344,7 +347,7 @@ test("setupStandby fails closed if data directory is non-empty without --force",
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = setupStandby("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = setupStandby("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, false);
   assert.match(res.error, /exists but is not empty/);
   // Ensure pg_basebackup was NOT run
@@ -371,7 +374,7 @@ test("setupStandby with --force stops container, wipes dataDir, and sets up stan
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = setupStandby("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  const res = setupStandby("board", { force: true, pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.equal(res.inRecovery, true);
   assert.equal(res.streamingActive, true);
@@ -399,7 +402,7 @@ test("setupStandby fails if WAL receiver stream is not active (walReceivers === 
 
   const res = setupStandby(
     "board",
-    { replicatorPassword: "test_secret", readinessAttempts: 3, readinessDelayMs: 0 },
+    { replicatorPassword: "test_secret", readinessAttempts: 3, readinessDelayMs: 0, pgRunner: "host" },
     { runner: mockRunner, fsOps: mockFs }
   );
   assert.equal(res.success, false);
@@ -428,7 +431,7 @@ test("executeFailover promotes standby, polls recovery exit, and restarts app", 
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = executeFailover("board", { restartApp: true, checkHealth: true }, { runner: mockRunner });
+  const res = executeFailover("board", { restartApp: true, checkHealth: true, pgRunner: "host" }, { runner: mockRunner });
   assert.equal(res.success, true);
   assert.equal(res.promoted, true);
   assert.equal(res.inRecovery, false);
@@ -469,7 +472,7 @@ test("executeSwitchback resynchronizes standby from active primary", () => {
     rmSync: () => {},
   };
 
-  const res = executeSwitchback("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  const res = executeSwitchback("board", { force: true, pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.equal(res.resynchronized, true);
   assert.equal(res.inRecovery, true);
@@ -503,7 +506,7 @@ test("executeSwitchback refuses to discard writes on a promoted (non-recovery) s
   };
 
   // Even with --force the promoted standby must be protected without the explicit discard flag
-  const res = executeSwitchback("board", { force: true }, { runner: mockRunner, fsOps: mockFs });
+  const res = executeSwitchback("board", { force: true, pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, false);
   assert.match(res.error, /NOT in recovery/);
   assert.match(res.error, /--discard-promoted-standby/);
@@ -580,7 +583,7 @@ test("executeRehearsal conducts isolated drill, smoke tests both databases, and 
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = executeRehearsal("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, true);
   assert.equal(res.promoted, true);
   assert.equal(res.smokeTestPassed, true);
@@ -641,11 +644,11 @@ test("runCli commands output structured JSON and return correct exit codes", () 
   assert.equal(codeFailoverDry, 0);
 
   // failover real execution -> exit 0
-  const codeFailover = runCli(["failover", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  const codeFailover = runCli(["failover", "board", "--pg-runner=host"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(codeFailover, 0);
 
   // rehearse real execution -> exit 0
-  const codeRehearse = runCli(["rehearse", "board"], {}, { runner: mockRunner, fsOps: mockFs });
+  const codeRehearse = runCli(["rehearse", "board", "--pg-runner=host"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(codeRehearse, 0);
 });
 
@@ -672,7 +675,7 @@ test("setupStandby uses credential path, sets PGPASSFILE env on basebackup, and 
 
   const res = setupStandby(
     "board",
-    { credentialPath: "/etc/standby/pgpass" },
+    { credentialPath: "/etc/standby/pgpass", pgRunner: "host" },
     { runner: mockRunner, fsOps: mockFs }
   );
 
@@ -720,7 +723,7 @@ test("executeRehearsal fails closed if promotion verification fails (in_recovery
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = executeRehearsal("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, false);
   assert.equal(res.promoted, false);
   assert.match(res.error, /Promotion verification failed/);
@@ -758,7 +761,7 @@ test("executeRehearsal fails closed if smoke test fails for database", () => {
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const res = executeRehearsal("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = executeRehearsal("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, false);
   assert.equal(res.promoted, true);
   assert.equal(res.smokeTestPassed, false);
@@ -790,7 +793,7 @@ test("checkLag verifies both databases on shared standby cluster port 5433 witho
   };
 
   // Run checkLag with target="all"
-  const res = checkLag("all", {}, { runner: mockRunner });
+  const res = checkLag("all", { pgRunner: "host" }, { runner: mockRunner });
   assert.equal(res.success, true);
   assert.equal(res.rpoOk, true);
   assert.equal(res.target, "all");
@@ -893,7 +896,7 @@ test("runCli rehearse respects --drill-dir and --drill-port and executes success
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const code = runCli(["rehearse", "all", "--drill-dir=/tmp/test-drill-dir", "--drill-port=5599"], {}, { runner: mockRunner, fsOps: mockFs });
+  const code = runCli(["rehearse", "all", "--drill-dir=/tmp/test-drill-dir", "--drill-port=5599", "--pg-runner=host"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(code, 0);
   assert.ok(dirsCreated.includes("/tmp/test-drill-dir"));
 
