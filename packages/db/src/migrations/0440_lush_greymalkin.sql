@@ -1,15 +1,2 @@
--- myrmidon(1.6.6 OPE-9967): retention compaction scans heartbeat_runs for
--- terminal runs older than cutoff that carry uncompacted keys.
--- The partial index keeps the scan off tens of thousands of already compacted runs.
---
--- The index is created concurrently on production before deploy to avoid a
--- write-blocking table lock. Per repository migration practice (0307/0308/0415),
--- the transactional Drizzle migration uses plain CREATE INDEX IF NOT EXISTS;
--- the matching prebuilt index makes this a no-op on production.
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx"
---     ON "heartbeat_runs" USING btree ("company_id","created_at")
---     WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
---
--- On fresh databases / CI / local setups, this creates the index from scratch.
--- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; production index must be built concurrently before deployment (ADM 30.10), making this a no-op there.
-CREATE INDEX IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');
+-- OPE-9967: concurrent partial index for context compaction.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_ctx_compact_pending_idx" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation');

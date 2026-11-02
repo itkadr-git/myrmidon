@@ -111,6 +111,12 @@ function splitMigrationStatements(content: string): string[] {
     .filter((statement) => statement.length > 0);
 }
 
+function migrationRequiresNonTransactionalExecution(statements: readonly string[]): boolean {
+  return statements.some((statement) => /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+    statement.replace(/^\s*--.*$/gm, "").trim(),
+  ));
+}
+
 export type MigrationState =
   | {
       status: "upToDate";
@@ -504,20 +510,31 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
-      await runInTransaction(sql, async () => {
-        for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+      const statements = splitMigrationStatements(migrationContent);
+      const recordHistory = () => recordMigrationHistoryEntry(
+        sql,
+        qualifiedTable,
+        columnNames,
+        migrationFile,
+        hash,
+        folderMillisByFileName.get(migrationFile) ?? Date.now(),
+      );
+      if (migrationRequiresNonTransactionalExecution(statements)) {
+        // PostgreSQL forbids CREATE INDEX CONCURRENTLY in a transaction.
+        // Require a single statement, then persist its history separately.
+        if (statements.length !== 1) {
+          throw new Error(`Non-transactional migration must contain one statement: ${migrationFile}`);
         }
-
-        await recordMigrationHistoryEntry(
-          sql,
-          qualifiedTable,
-          columnNames,
-          migrationFile,
-          hash,
-          folderMillisByFileName.get(migrationFile) ?? Date.now(),
-        );
-      });
+        const statement = statements[0];
+        if (!statement) throw new Error(`Empty concurrent migration: ${migrationFile}`);
+        await sql.unsafe(statement);
+        await runInTransaction(sql, recordHistory);
+      } else {
+        await runInTransaction(sql, async () => {
+          for (const statement of statements) await sql.unsafe(statement);
+          await recordHistory();
+        });
+      }
     }
   } finally {
     await sql.end();
@@ -616,6 +633,9 @@ async function indexExists(
       WHERE n.nspname = 'public'
         AND c.relkind = 'i'
         AND c.relname = ${indexName}
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_index i WHERE i.indexrelid = c.oid AND NOT i.indisvalid
+        )
     ) AS exists
   `;
   return rows[0]?.exists ?? false;
@@ -735,9 +755,10 @@ async function migrationStatementAlreadyApplied(
     );
   }
 
-  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
+  const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: CONCURRENTLY)?(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
-    return indexExists(sql, createIndexMatch[1]);
+    const isValid = await indexExists(sql, createIndexMatch[1]);
+    return isValid;
   }
 
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);

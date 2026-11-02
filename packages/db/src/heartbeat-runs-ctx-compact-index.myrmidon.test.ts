@@ -25,7 +25,7 @@ import {
 const MIGRATION_FILE = "./migrations/0440_lush_greymalkin.sql";
 const INDEX_NAME = "heartbeat_runs_ctx_compact_pending_idx";
 const CREATE_STATEMENT =
-  `CREATE INDEX IF NOT EXISTS "${INDEX_NAME}" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation')`;
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS "${INDEX_NAME}" ON "heartbeat_runs" USING btree ("company_id","created_at") WHERE jsonb_exists("heartbeat_runs"."context_snapshot", 'executionContinuation') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWake') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipWakeComment') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipTaskMarkdownCompact') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipSessionHandoffMarkdown') or jsonb_exists("heartbeat_runs"."context_snapshot", 'paperclipContinuationSummary') or jsonb_exists("heartbeat_runs"."context_snapshot", 'externalChatContinuation')`;
 
 /** The candidate batch query verbatim shape from datastore-care/retention/compact.ts. */
 const CANDIDATE_BATCH_QUERY = `
@@ -77,10 +77,7 @@ describe("heartbeat_runs context compact index migration (static checks)", () =>
       .filter((s) => s.length > 0);
     expect(statements.length).toBe(1);
     expect(statements[0]!.endsWith(`${CREATE_STATEMENT};`)).toBe(true);
-    expect(migrationSql).toContain(
-      "-- paperclip:migration-safety-ignore large-create-index-not-concurrently:",
-    );
-    expect(migrationSql).not.toMatch(/CONCURRENTLY\s+"?heartbeat_runs/);
+    expect(statements[0]).toMatch(/^CREATE INDEX CONCURRENTLY IF NOT EXISTS/i);
   });
 
   it("registers the migration in the journal and the snapshot with matching index name", async () => {
