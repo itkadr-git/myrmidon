@@ -445,6 +445,7 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import { tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 import {
   classifyEmptyRun,
   evaluateCompletionGate,
@@ -4083,6 +4084,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  continuationEventId?: string | null;
   contextSnapshot?: Record<string, unknown>;
   externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
@@ -29568,6 +29570,10 @@ export function heartbeatService(
   }
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    const continuationEventId = opts.continuationEventId ??
+      readNonEmptyString(opts.payload?.continuationEventId) ??
+      readNonEmptyString(opts.contextSnapshot?.continuationEventId) ??
+      null;
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -29796,21 +29802,30 @@ export function heartbeatService(
       }
     }
 
-    if (opts.failedRunId) {
+    if (opts.failedRunId && (reason === "retry_failed_run" || reason === "issue_continuation_needed")) {
       const failed = await getRun(opts.failedRunId);
-      if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
-          reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
-          !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
-          !["failed", "timed_out"].includes(failed.status) ||
-          (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId) {
+      if (reason === "retry_failed_run" && (
+        opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
+        source !== "on_demand" || triggerDetail !== "manual" ||
+        !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
+        !["failed", "timed_out"].includes(failed.status) ||
+        (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId
+      )) {
         throw conflict("The selected failed run cannot be retried for this task.");
       }
-      if (!activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
+      if (reason === "issue_continuation_needed" && failed && (
+        failed.companyId !== agent.companyId || failed.agentId !== agentId ||
+        (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId
+      )) {
+        throw conflict("The selected failed run cannot be retried for this task.");
+      }
+      if (failed && !activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
         await sweepPendingCleanupLeases({ explicitRetry: {
-          companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
+          companyId: failed.companyId, runId: failed.id,
+          actorId: opts.requestedByActorId ?? agent.id,
         } });
       }
-      if (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner") {
+      if (failed && (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner")) {
         enrichedContextSnapshot.previousRunId = failed.id;
         enrichedContextSnapshot.forceFreshSession = true;
       }
@@ -31558,6 +31573,113 @@ export function heartbeatService(
             }
           }
 
+          // Claim continuation identity before active-run coalescing. A duplicate
+          // wake must be rejected by the durable claim, not merged into the
+          // already queued run (which would make every delivery look admitted).
+          if (
+            reason === "issue_continuation_needed" &&
+            issueId === issue.id &&
+            !readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) &&
+            !readNonEmptyString(payload?.continuationClaimKey)
+          ) {
+            // Do not claim the most recent activity blindly: after a run has
+            // completed, that activity may be the same event that was already
+            // consumed.  The admission claim must use the same post-run event
+            // boundary as the continuation gate below.
+            const continuationRecovery = Boolean(
+              readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
+              readNonEmptyString(payload?.retryOfRunId) ??
+              readNonEmptyString(opts.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.failedRunId) ??
+              readNonEmptyString(payload?.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.continuationHead) ??
+              readNonEmptyString(payload?.continuationHead) ??
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId) ??
+              enrichedContextSnapshot.issueRecovery ??
+              payload?.issueRecovery ??
+              enrichedContextSnapshot.recoveryMode ??
+              payload?.recoveryMode ??
+              (typeof enrichedContextSnapshot.source === "string" && (
+                enrichedContextSnapshot.source.startsWith("issue.") ||
+                enrichedContextSnapshot.source.includes("recovery") ||
+                enrichedContextSnapshot.source.includes("stranded")
+              ))
+            );
+
+            const lastRunRows = continuationRecovery
+              ? []
+              : await tx
+                  .select({
+                    finishedAt: heartbeatRuns.finishedAt,
+                    contextSnapshot: heartbeatRuns.contextSnapshot,
+                  })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agentId),
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                    sql`${heartbeatRuns.finishedAt} is not null`,
+                  ))
+                  .orderBy(desc(heartbeatRuns.finishedAt))
+                  .limit(1);
+            const continuationEventConditions = [
+              eq(activityLog.companyId, agent.companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+              ...(lastRunRows[0]?.finishedAt
+                ? [gt(activityLog.createdAt, lastRunRows[0].finishedAt)]
+                : []),
+              ...(readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)
+                ? [ne(activityLog.id, readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)!)]
+                : []),
+            ];
+            const [latestContinuationEvent] = continuationRecovery
+              ? []
+              : await tx
+                  .select({ id: activityLog.id })
+                  .from(activityLog)
+                  .where(and(...continuationEventConditions))
+                  .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+                  .limit(1);
+            if (latestContinuationEvent) {
+              const continuationRevision = latestContinuationEvent.id;
+              const continuationClaimKey = buildContinuationKey({
+                issueId: issue.id,
+                event: `${reason}:${agentId}`,
+                head: continuationRevision,
+              });
+              enrichedContextSnapshot.continuationEventId = continuationRevision;
+              enrichedContextSnapshot.continuationEventRevision = continuationRevision;
+              payload = {
+                ...(payload ?? {}),
+                issueId,
+                continuationEventId: continuationRevision,
+                continuationEventRevision: continuationRevision,
+              };
+              const claimOutcome = await tryClaimContinuationKey(tx as unknown as Db, {
+                companyId: agent.companyId,
+                key: continuationClaimKey,
+                issueId: issue.id,
+                ttl: 365 * 24 * 60 * 60 * 1000,
+              });
+              if (claimOutcome === "deduped") {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields,
+                  companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                  payload: { ...(payload ?? {}), issueId, continuationEventRevision: continuationRevision, duplicateContinuation: true },
+                  status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
+              enrichedContextSnapshot.continuationClaimKey = continuationClaimKey;
+              payload = { ...(payload ?? {}), continuationClaimKey };
+            }
+          }
+
           if (activeExecutionRun) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
@@ -31764,6 +31886,7 @@ export function heartbeatService(
                 id: heartbeatRuns.id,
                 status: heartbeatRuns.status,
                 finishedAt: heartbeatRuns.finishedAt,
+                contextSnapshot: heartbeatRuns.contextSnapshot,
                 stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
                 stderrExcerpt: heartbeatRuns.stderrExcerpt,
                 responsibleUserId: heartbeatRuns.responsibleUserId,
@@ -31805,6 +31928,9 @@ export function heartbeatService(
                 );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
+              const latestRevision = readNonEmptyString(
+                recentTerminalRuns[0]?.contextSnapshot?.continuationEventId,
+              );
               const newInputRows = lastRunFinishedAt
                 ? await tx
                     .select({ id: activityLog.id })
@@ -31815,6 +31941,7 @@ export function heartbeatService(
                         eq(activityLog.entityType, "issue"),
                         eq(activityLog.entityId, issue.id),
                         gt(activityLog.createdAt, lastRunFinishedAt),
+                        ...(latestRevision ? [ne(activityLog.id, latestRevision)] : []),
                         inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
@@ -32074,6 +32201,157 @@ export function heartbeatService(
               successorRunId: explicitContinuationRunId,
               requestedByActorType: "user", requestedByActorId: opts.requestedByActorId,
             });
+          }
+
+          if (
+            reason === "issue_continuation_needed" &&
+            source === "automation" &&
+            (opts.requestedByActorType === "system" || !opts.requestedByActorType)
+          ) {
+            const recoveryParentRunId =
+              readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ??
+              readNonEmptyString(payload?.retryOfRunId) ??
+              readNonEmptyString(opts.failedRunId) ??
+              readNonEmptyString(enrichedContextSnapshot.failedRunId) ??
+              readNonEmptyString(payload?.failedRunId);
+
+            const recoveryHead =
+              readNonEmptyString(enrichedContextSnapshot.continuationHead) ??
+              readNonEmptyString(payload?.continuationHead) ??
+              readNonEmptyString(enrichedContextSnapshot.interactionId) ??
+              readNonEmptyString(payload?.interactionId);
+
+            const isRecovery = Boolean(
+              recoveryParentRunId ||
+              recoveryHead ||
+              continuationEventId?.startsWith("recovery:") ||
+              enrichedContextSnapshot.issueRecovery ||
+              payload?.issueRecovery ||
+              enrichedContextSnapshot.recoveryMode ||
+              payload?.recoveryMode ||
+              (typeof enrichedContextSnapshot.source === "string" && (
+                enrichedContextSnapshot.source.startsWith("issue.") ||
+                enrichedContextSnapshot.source.includes("recovery") ||
+                enrichedContextSnapshot.source.includes("stranded")
+              ))
+            );
+
+            const recoveryToken =
+              recoveryParentRunId ??
+              recoveryHead ??
+              (typeof enrichedContextSnapshot.source === "string" ? enrichedContextSnapshot.source : "recovery");
+
+            const lastRunRows = isRecovery
+              ? []
+              : await tx
+                  .select({
+                    finishedAt: heartbeatRuns.finishedAt,
+                    contextSnapshot: heartbeatRuns.contextSnapshot,
+                  })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agentId),
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                    sql`${heartbeatRuns.finishedAt} is not null`,
+                  ))
+                  .orderBy(desc(heartbeatRuns.finishedAt))
+                  .limit(1);
+            const lastFinishedAt = lastRunRows[0]?.finishedAt ?? null;
+            const eventConditions = [
+              eq(activityLog.companyId, agent.companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+              inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+              ...(readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)
+                ? [ne(activityLog.id, readNonEmptyString(lastRunRows[0]?.contextSnapshot?.continuationEventId)!)]
+                : []),
+            ];
+            if (lastFinishedAt) {
+              eventConditions.push(gt(activityLog.createdAt, lastFinishedAt));
+            }
+            const eventRows = continuationEventId
+              ? [{ id: continuationEventId }]
+              : await tx
+                  .select({
+                    id: activityLog.id,
+                    action: activityLog.action,
+                    actorType: activityLog.actorType,
+                    actorId: activityLog.actorId,
+                    details: activityLog.details,
+                    createdAt: activityLog.createdAt,
+                  })
+                  .from(activityLog)
+                  .where(and(...eventConditions))
+                  .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+
+            const lastRunContinuationRevision = readNonEmptyString(
+              lastRunRows[0]?.contextSnapshot?.continuationEventId,
+            );
+            const selectedEventId =
+              eventRows.find((event) => event.id !== lastRunContinuationRevision)?.id ?? null;
+            const continuationRevision = isRecovery && recoveryParentRunId
+              ? `recovery:${recoveryParentRunId}`
+              : selectedEventId;
+
+            if (!isRecovery && !continuationRevision) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
+                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
+
+            const revision = continuationRevision!;
+
+            const alreadyClaimedKey =
+              readNonEmptyString(enrichedContextSnapshot.continuationClaimKey) ??
+              readNonEmptyString(payload?.continuationClaimKey);
+
+            if (!alreadyClaimedKey) {
+              const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
+              const claimOutcome = await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
+                companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
+              });
+              if (claimOutcome === "deduped") {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
+                  status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
+            }
+
+            enrichedContextSnapshot.continuationEventId = revision;
+            enrichedContextSnapshot.continuationEventRevision = revision;
+            if (
+              reason === "issue_continuation_needed" &&
+              isRecovery &&
+              !recoveryParentRunId &&
+              typeof continuationRevision === "string" &&
+              continuationRevision.startsWith("recovery:")
+            ) {
+              enrichedContextSnapshot.recoveryParentRunId = recoveryToken;
+            }
+            if (recoveryParentRunId) enrichedContextSnapshot.retryOfRunId = recoveryParentRunId;
+            const extraRecoveryProps = {
+              ...(recoveryParentRunId ? { retryOfRunId: recoveryParentRunId } : {}),
+              ...(recoveryHead ? { continuationHead: recoveryHead } : {}),
+              ...(alreadyClaimedKey ? { continuationClaimKey: alreadyClaimedKey } : {}),
+            };
+            payload = {
+              ...(payload ?? {}),
+              issueId,
+              continuationEventId: revision,
+              continuationEventRevision: revision,
+              ...extraRecoveryProps,
+            };
           }
 
           const wakeupRequest = await tx

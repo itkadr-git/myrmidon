@@ -2263,7 +2263,7 @@ export function recoveryService(
     if (input.reason === "issue_continuation_needed") {
       const key = buildContinuationKey({
         issueId: input.issueId,
-        event: "issue_continuation_needed",
+        event: `issue_continuation_needed:${input.agentId}`,
         head: input.continuationHead ?? "unversioned",
       });
       const claimed = await tryClaimContinuationKey(db, {
@@ -2332,6 +2332,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
@@ -7206,6 +7207,11 @@ export function recoveryService(
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        extraContext: {
+          issueRecovery: true,
+          recoveryMode: "stranded_assigned_issue",
+          ...(latestRun?.id ? { continuationHead: latestRun.id } : {}),
+        },
       });
       if (queued) {
         result.continuationRequeued += 1;
