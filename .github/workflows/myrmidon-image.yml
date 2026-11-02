@@ -210,13 +210,24 @@ jobs:
             -e 'PGHOST=db.prod.internal' \
             "$REF" -c 'while :; do sleep 3600; done' >/dev/null
           trap 'docker rm -f paperclip-server-1 >/dev/null 2>&1 || true' EXIT
-          output="$(docker exec paperclip-server-1 env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/')"
-          printf '%s\n' "$output"
-          ! grep -Fq 'ci_raw_database_password' <<<"$output"
-          ! grep -Fq 'ci_raw_postgres_password' <<<"$output"
-          grep -Fq 'DATABASE_URL=***' <<<"$output"
-          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$output"
-          raw_count="$(grep -Ec 'ci_raw_database_password|ci_raw_postgres_password' <<<"$output" || true)"
+
+          # 1. Directly execute installed product wrapper /usr/local/bin/env
+          wrapper_output="$(docker exec paperclip-server-1 /usr/local/bin/env | grep -iE 'DATABASE|PG|POSTGRES')"
+          printf '%s\n' "$wrapper_output"
+          ! grep -Fq 'ci_raw_database_password' <<<"$wrapper_output"
+          ! grep -Fq 'ci_raw_postgres_password' <<<"$wrapper_output"
+          grep -Fq 'DATABASE_URL=postgres://paperclip_app:***@db.prod.internal:5432/paperclip' <<<"$wrapper_output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$wrapper_output"
+
+          # 2. Test diagnostic env command with sed pipeline as specified in OPE-3100
+          diag_output="$(docker exec paperclip-server-1 env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/')"
+          printf '%s\n' "$diag_output"
+          ! grep -Fq 'ci_raw_database_password' <<<"$diag_output"
+          ! grep -Fq 'ci_raw_postgres_password' <<<"$diag_output"
+          grep -Fq 'DATABASE_URL=***' <<<"$diag_output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$diag_output"
+
+          raw_count="$(grep -Ec 'ci_raw_database_password|ci_raw_postgres_password' <<<"$wrapper_output"$'\n'"$diag_output" || true)"
           [ "$raw_count" -eq 0 ]
           echo "diagnostic raw-secret count: $raw_count"
 
