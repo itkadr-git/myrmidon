@@ -40,7 +40,12 @@ case "$1" in
         # flag or a --format value.
         ref=""
         for a in "\${@:3}"; do
-          case "$a" in --*) continue ;; esac
+          case "$a" in
+          -f) skip_format=1; continue ;;
+          --format=*) continue ;;
+          -*) continue ;;
+          esac
+          if [ "\${skip_format:-0}" = 1 ]; then skip_format=0; continue; fi
           case "$a" in \{*|*\}*) continue ;; esac
           ref="$a"; break
         done
