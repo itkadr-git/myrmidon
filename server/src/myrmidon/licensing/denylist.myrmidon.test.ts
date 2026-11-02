@@ -59,7 +59,13 @@ function setup(id: string | null = "lic-1", k: { privateKey: KeyObject; publicKe
     MYR_LICENSE_DENY_PATH: path.join(dir, "license.deny.json"),
   } as NodeJS.ProcessEnv;
   const warnings: string[] = [];
-  const reader = createDenyListReader({ env: () => env, trustedKeys: [k.publicKey], warn: (m) => warnings.push(m) });
+  const counters: string[] = [];
+  const reader = createDenyListReader({
+    env: () => env,
+    trustedKeys: [k.publicKey],
+    warn: (m) => warnings.push(m),
+    incrementCounter: (name) => counters.push(name),
+  });
   const text = license(k.privateKey, k.publicKey, id);
   const status = () =>
     moduleStatuses({
@@ -70,7 +76,7 @@ function setup(id: string | null = "lic-1", k: { privateKey: KeyObject; publicKe
       installed: ["google-ai"],
       denyList: reader,
     }).find((s) => s.module === "google-ai")!;
-  return { k, env, reader, warnings, status, denyPath: env.MYR_LICENSE_DENY_PATH as string, text };
+  return { k, env, reader, warnings, counters, status, denyPath: env.MYR_LICENSE_DENY_PATH as string, text };
 }
 
 describe("license payload id", () => {
@@ -146,8 +152,15 @@ describe("deny-list in the licensing check", () => {
     rmSync(path.join(dir, "license.deny.accepted"));
     writeFileSync(s.denyPath, denyFile(s.k.privateKey, { serial: 4 }));
     const freshWarnings: string[] = [];
-    const fresh = createDenyListReader({ env: () => s.env, trustedKeys: [s.k.publicKey], warn: (m) => freshWarnings.push(m) });
+    const freshCounters: string[] = [];
+    const fresh = createDenyListReader({
+      env: () => s.env,
+      trustedKeys: [s.k.publicKey],
+      warn: (m) => freshWarnings.push(m),
+      incrementCounter: (name) => freshCounters.push(name),
+    });
     expect(fresh.revoked({ licenseId: "lic-1" })).toBe(true);
+    expect(freshCounters).toEqual(["denylist_rollback_no_cache"]);
     expect(freshWarnings.some((w) => w.includes("denylist_rollback_no_cache"))).toBe(true);
   });
 

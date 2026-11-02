@@ -198,6 +198,7 @@ export function createDenyListReader(input: {
   env: () => NodeJS.ProcessEnv;
   trustedKeys: readonly TrustedIssuerKey[];
   warn?: (message: string) => void;
+  incrementCounter?: (name: string) => void;
 }): DenyListReader {
   let maxSerial: number | null = null;
   let accepted: DenyList | null = null;
@@ -266,6 +267,7 @@ export function createDenyListReader(input: {
       const cached = accepted ?? loadAccepted(acceptedPath);
       if (cached) return cached;
       warnOnce(DENY_ROLLBACK_NO_CACHE, `${DENY_ROLLBACK_NO_CACHE}: rollback with no stored accepted list; failing closed`);
+      input.incrementCounter?.("denylist_rollback_no_cache");
       return { ids: [], instance_ids: [], kids: [], serial: highest, issued_at: 0, rollbackNoCache: true } as DenyList & { rollbackNoCache: true };
     }
     if (highest === null || data.serial > highest) {

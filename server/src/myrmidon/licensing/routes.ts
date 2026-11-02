@@ -77,6 +77,8 @@ export interface LicensingRoutesOptions {
   installedModules?: () => Promise<string[]>;
   /** Test seam: trust anchors; production always uses TRUSTED_ISSUER_KEYS. */
   trustedKeys?: readonly TrustedIssuerKey[];
+  /** Records named licensing counters for monitoring and tests. */
+  incrementCounter?: (name: string) => void;
   /** Test seam for the "is the license file shared with the host" probe. */
   hostShare?: HostShareOptions;
 }
@@ -90,6 +92,7 @@ export function licensingRoutes(options: LicensingRoutesOptions): Router {
   const denyList = createDenyListReader({
     env: () => env(),
     trustedKeys,
+    incrementCounter: options.incrementCounter,
     warn: (message) => logger.warn(message),
   });
   const installed = async () => {
