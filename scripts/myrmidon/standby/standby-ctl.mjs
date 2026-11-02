@@ -615,7 +615,7 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
 
   // 3. Run pg_basebackup with PGPASSFILE in environment
   // D1: configurable timeout — 45 GB cluster at ~100 MB/s needs ~8 min; default 3600s (1 h).
-  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 3600000;
+  const setupBasebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min for 45GB at ~10MB/s
   const baseRes = runner(basebackup.executable, basebackup.args, {
     timeoutMs: setupBasebackupTimeoutMs,
     env: {
@@ -1253,7 +1253,7 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   }
 
   // 1. Snapshot from standby (D1: configurable timeout for large clusters; D5: PGPASSFILE)
-  const basebackupTimeoutMs = options.basebackupTimeoutMs || 3600000; // 1h default for 45GB
+  const basebackupTimeoutMs = options.basebackupTimeoutMs || 5400000; // 90 min default for 45GB at ~10MB/s
   const snapshotArgs = [
     "-h", "127.0.0.1",
     "-p", String(standbyPort),
