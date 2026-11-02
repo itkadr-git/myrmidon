@@ -47,11 +47,7 @@ async function waitForQueuedRun(
           eq(heartbeatRuns.status, "queued"),
         ),
       );
-    const matchingRun = runs.find(
-      (run) =>
-        (run.contextSnapshot as Record<string, unknown> | null)?.interactionId ===
-        interactionId,
-    );
+    const matchingRun = runs.find((run) => run.id === interactionId);
     if (matchingRun) return matchingRun;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -75,9 +71,15 @@ async function waitForDeferredWakeRequest(
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
         ),
       );
-    const matchingRequest = requests.find(
-      (request) => (request.payload as Record<string, unknown> | null)?.interactionId === interactionId,
-    );
+    const matchingRequest = requests.find((request) => {
+      const contextSnapshot = (request.payload as Record<string, unknown> | null)?.[
+        "__deferredWakeContext"
+      ];
+      return (
+        (contextSnapshot as Record<string, unknown> | null)?.interactionId ===
+        interactionId
+      );
+    });
     if (matchingRequest) return matchingRequest;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
