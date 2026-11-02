@@ -164,7 +164,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders the spend tiles from the mocked costs summary", async () => {
     await renderScreen();
 
-    expect(mockCostsApi.summary).toHaveBeenCalledWith(COMPANY_ID);
+    expect(mockCostsApi.summary).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String));
     const tileValues = [...container.querySelectorAll(".ui2-tile-value")].map(
       (tile) => tile.textContent,
     );
@@ -182,7 +182,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders accessible spend breakdown rows for agents", async () => {
     await renderScreen();
 
-    const chart = container.querySelector(".ui2-costs-chart");
+    const chart = container.querySelector(".ui2-costs-agents");
     expect(chart).not.toBeNull();
     expect(chart?.hasAttribute("role")).toBe(false);
     expect(chart?.textContent).toContain("agent-a");
@@ -195,8 +195,8 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byAgent.mockResolvedValue([]);
     await renderScreen();
 
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
-    expect(container.textContent).toContain("No spend in this period");
+    expect(container.querySelector(".ui2-costs-agents")).toBeNull();
+    expect(container.textContent).toContain("No agent spend in this period");
   });
 
   it("keeps the zero budget amount without a redundant budget hint", async () => {
@@ -262,6 +262,15 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(chart?.getAttribute("data-total-cents")).toBe("157400");
     expect(mockCostsApi.byDay).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String));
     expect(mockCostsApi.byIssue).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String), 10);
+  });
+
+  it("shows empty state for empty daily costs and issue results", async () => {
+    mockCostsApi.byDay.mockResolvedValue([]);
+    mockCostsApi.byIssue.mockResolvedValue([]);
+    await renderScreen();
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.textContent).toContain("No spend is recorded");
+    expect(container.textContent).toContain("No expensive tasks");
   });
 
   it("renders the per-agent table from the mocked by-agent data", async () => {
