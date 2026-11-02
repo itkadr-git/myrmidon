@@ -105,6 +105,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   codex_pool_alert: { label: "Codex pool alert" },
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
+  provider_usage_warning: { label: "Provider usage" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -303,6 +304,8 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "generic":
       return quote(detail.summaryExcerpt);
+    case "provider_usage":
+      return `${detail.provider}: ${Math.round(detail.usedPercent)}% used (warning at ${detail.thresholdPercent}%, resets ${detail.resetsAt})`;
     default:
       return null;
   }

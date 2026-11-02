@@ -66,6 +66,7 @@ import {
   type UpdateSecretProviderConfigInput,
 } from "../api/secrets";
 import { ApiError } from "../api/client";
+import { costsApi } from "../api/costs";
 import { accessApi, type CompanyUserDirectoryEntry } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { envKeyFromSecretName } from "../components/environment-variables-editor/model";
@@ -800,6 +801,14 @@ export function Secrets() {
     retry: false,
   });
 
+  const providerUsageQuery = useQuery({
+    queryKey: ["provider-usage", selectedCompanyId],
+    queryFn: () => costsApi.providerUsage(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
   const proposalsQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
@@ -814,6 +823,10 @@ export function Secrets() {
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
+  const usageByCredential = useMemo(
+    () => new Map((providerUsageQuery.data?.usage ?? []).map((usage) => [usage.credentialRef, usage])),
+    [providerUsageQuery.data],
+  );
   const selectedSecret = useMemo(
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? null,
     [secrets, selectedSecretId],
@@ -1675,6 +1688,22 @@ export function Secrets() {
     return <span className="truncate font-medium text-foreground">{name}</span>;
   }
 
+  function renderProviderUsage(secret: CompanySecret) {
+    // Adapters report usage under an opaque credentialRef. A secret is matched by an
+    // explicit providerMetadata.usageCredentialRef when one is set, otherwise by its own
+    // key or id — so the widget works without any extra configuration step.
+    const metadata = secret.providerMetadata as Record<string, unknown> | null | undefined;
+    const explicitRef = metadata?.usageCredentialRef;
+    const candidates = [typeof explicitRef === "string" ? explicitRef : "", secret.key, secret.id].filter(Boolean);
+    const usage = candidates.map((ref) => usageByCredential.get(ref)).find(Boolean);
+    if (!usage) return null;
+    const metric = usage.warning?.metric ?? (typeof usage.remainingPercent.requests === "number" ? "requests" : "tokens");
+    const remainingPercent = usage.remainingPercent[metric];
+    const remaining = usage.remaining[metric];
+    if (typeof remainingPercent !== "number" || typeof remaining !== "number") return null;
+    return <div className="mt-1 text-xs text-muted-foreground" data-testid="provider-usage-remaining">{metric}: {remaining} remaining ({Math.round(remainingPercent)}%) · resets {formatRelative(usage.resetsAt)}</div>;
+  }
+
   function renderFolderTableRow(folder: SecretPathFolder) {
     return (
       <Link
@@ -2105,6 +2134,7 @@ export function Secrets() {
                                 </Tooltip>
                               )}
                             </div>
+                            {row.kind === "company" ? renderProviderUsage(row.secret) : null}
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>
@@ -2166,6 +2196,7 @@ export function Secrets() {
                             <div className="min-w-0 truncate">
                               {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                             </div>
+                            {row.kind === "company" ? renderProviderUsage(row.secret) : null}
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
                             </code>

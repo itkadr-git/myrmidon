@@ -139,6 +139,8 @@ export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
 export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
+export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
+export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
