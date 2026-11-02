@@ -32224,6 +32224,7 @@ export function heartbeatService(
             const isRecovery = Boolean(
               recoveryParentRunId ||
               recoveryHead ||
+              continuationEventId?.startsWith("recovery:") ||
               enrichedContextSnapshot.issueRecovery ||
               payload?.issueRecovery ||
               enrichedContextSnapshot.recoveryMode ||
