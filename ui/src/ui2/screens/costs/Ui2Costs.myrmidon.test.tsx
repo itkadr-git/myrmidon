@@ -234,10 +234,10 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(container.querySelector(".ui2-costs-chart")?.getAttribute("data-total-cents")).toBe("157400");
   });
 
-  it("renders an API error state for failed daily costs", async () => {
+  it("shows an API error state for failed daily costs", async () => {
     mockCostsApi.byDay.mockRejectedValue(new Error("daily endpoint unavailable"));
     await renderScreen();
-    expect(container.textContent).toContain("Something went wrong");
+    expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("daily endpoint unavailable");
     expect(container.querySelector(".ui2-costs-issues a")).toBeNull();
   });
