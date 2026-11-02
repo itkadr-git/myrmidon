@@ -3068,8 +3068,19 @@ function buildExecutionStageWakeup(input: {
       nextState.currentParticipant?.type === "agent"
         ? (nextState.currentParticipant.agentId ?? null)
         : null;
+    const isExecutionReviewParticipantRecovery =
+      input.requestedByActorType === "agent" &&
+      nextState.currentStageType === "review" &&
+      input.interruptedRunId !== null &&
+      previousState?.status === "pending" &&
+      previousState.currentStageId === nextState.currentStageId &&
+      executionPrincipalsEqual(
+        previousState.currentParticipant ?? null,
+        nextState.currentParticipant ?? null,
+      );
     const stageChanged =
       input.reenteringReview === true ||
+      isExecutionReviewParticipantRecovery ||
       previousState?.status !== "pending" ||
       previousState?.currentStageId !== nextState.currentStageId ||
       !executionPrincipalsEqual(
@@ -3081,7 +3092,9 @@ function buildExecutionStageWakeup(input: {
     const reason =
       nextState.currentStageType === "approval"
         ? "execution_approval_requested"
-        : "execution_review_requested";
+        : isExecutionReviewParticipantRecovery
+          ? "execution_review_participant_recovery"
+          : "execution_review_requested";
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
       wakeRole:
@@ -15828,13 +15841,13 @@ export function issueRoutes(
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
               });
+              const ciAdmissionCandidate =
+                stageWake?.wakeup.reason === "execution_review_requested" ||
+                stageWake?.wakeup.reason === "execution_review_participant_recovery";
               let reviewerAdmissionDeferred = false;
               if (stageWake?.agentId) {
                 let admitReviewer = true;
-                if (
-                  stageWake.wakeup.reason === "execution_review_requested" ||
-                  stageWake.wakeup.reason === "execution_review_participant_recovery"
-                ) {
+                if (ciAdmissionCandidate) {
                   const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                     companyId: updated.companyId,
                     issueId: updated.id,
@@ -16901,6 +16914,23 @@ export function issueRoutes(
         reenteringReview:
           existing.status !== "in_review" && issue.status === "in_review",
       });
+      let deferExecutionReviewWakeForCi = false;
+      if (
+        issue.status === "in_review" &&
+        executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery"
+      ) {
+        deferExecutionReviewWakeForCi = true;
+      }
+      if (
+        issue.status === "in_review" &&
+        executionStageWakeup?.wakeup.reason === "execution_review_requested"
+      ) {
+        const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        deferExecutionReviewWakeForCi = reviewCi.state !== "complete";
+      }
 
       if (closesRecoveryIssue) {
         try {
@@ -17068,13 +17098,14 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true) {
+        if (executionStageWakeup && deferWakeForGoal !== true && !deferExecutionReviewWakeForCi) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
-          deferWakeForGoal !== true
+          deferWakeForGoal !== true &&
+          !deferExecutionReviewWakeForCi
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",

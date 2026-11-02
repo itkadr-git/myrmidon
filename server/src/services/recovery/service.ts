@@ -5983,6 +5983,18 @@ export function recoveryService(
         currentParticipant?.type === "agent"
           ? currentParticipant.agentId
           : null;
+      const pendingReviewStage =
+        issue.status === "in_review" && pendingExecutionState?.currentStageType === "review";
+      if (pendingReviewStage) {
+        const reviewCi = await resolveReviewPullRequestCi({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (reviewCi.state === "pending" || reviewCi.state === "unknown" || reviewCi.state === "no_pull_request") {
+          result.skipped += 1;
+          continue;
+        }
+      }
       const agentId =
         issue.status === "in_review" && participantAgentId
           ? participantAgentId

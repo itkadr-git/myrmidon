@@ -169,6 +169,51 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(issue?.monitorNextCheckAt).toBeInstanceOf(Date);
   });
 
+  it("does not wake the review participant during recovery while CI is pending", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review participant recovery waits for CI");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Recovery CI Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const policy = {
+      mode: "normal",
+      stages: [{ id: stageId, type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "agent", agentId: reviewerAgentId, userId: null }] }],
+    };
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Participant recovery must wait for CI",
+      status: "in_review",
+      priority: "medium",
+      executionPolicy: policy,
+      executionState: { status: "pending", currentStageId: stageId, stages: policy.stages },
+    });
+    const pendingCiRoutes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+
+    const response = await request(routeApp(ctx.db, actor, pendingCiRoutes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review", executionPolicy: policy, executionState: { status: "pending", currentStageId: stageId, stages: policy.stages } });
+
+    expect(response.status).toBe(200);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_review");
+    const wakes = await ctx.db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, `issue-review-admission:${issueId}:${reviewerAgentId}`));
+    expect(wakes).toHaveLength(0);
+  });
+
   it("records one operator activity when exact-head CI is unreadable", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission unreadable CI");
     const reviewerAgentId = randomUUID();
@@ -254,7 +299,10 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       executionPolicy: policy,
     });
 
-    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "success", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+    const res = await request(routeApp(ctx.db, actor, routesWithSuccessCi as any))
       .patch(`/api/issues/${issueId}`)
       .send({
         status: "in_review",
