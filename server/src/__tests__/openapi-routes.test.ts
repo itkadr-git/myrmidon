@@ -148,6 +148,13 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): aliases are intentionally
+  // mounted by the implementation route but are not part of the public OpenAPI
+  // document yet.
+  "GET /api/myrmidon/system/check-updates",
+  "POST /api/myrmidon/system/check-updates",
+  "GET /api/instance-settings/check-updates",
+  "POST /api/instance-settings/check-updates",
 ]);
 
 function createApp() {
