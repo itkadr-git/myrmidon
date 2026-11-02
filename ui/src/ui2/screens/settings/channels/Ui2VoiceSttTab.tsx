@@ -102,7 +102,9 @@ export function Ui2VoiceSttTab() {
     return (
       <div data-testid="ui2-voice-stt-load-error">
         <Ui2ErrorState
-          error={settingsQuery.error instanceof Error ? settingsQuery.error.message : t("ui2.settings.channels.voice.loadError")}
+          message={t("ui2.settings.channels.voice.loadError")}
+          detail={t("ui2.settings.channels.voice.loadErrorDetail")}
+          retryLabel={t("ui2.settings.channels.voice.retry")}
           onRetry={() => void settingsQuery.refetch()}
         />
       </div>

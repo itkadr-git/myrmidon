@@ -385,6 +385,7 @@ export const en = {
             saved: "Settings saved",
             saveError: "Could not save settings",
             loadError: "Could not load voice STT settings",
+            loadErrorDetail: "The settings request failed. Check your connection and retry.",
             retry: "Retry",
           },
         },
@@ -858,7 +859,7 @@ export type Ui2Catalog = {
         channels: {
           title: string; subtitle: string;
           tabs: { voice: string };
-          voice: { title: string; subtitle: string; enabled: string; enabledDesc: string; backend: string; backendDesc: string; language: string; languageDesc: string; languageAuto: string; languageRu: string; model: string; modelDesc: string; modelPlaceholder: string; diarization: string; diarizationDesc: string; maxDuration: string; maxDurationDesc: string; save: string; saving: string; saved: string; saveError: string; loadError: string; retry: string };
+          voice: { title: string; subtitle: string; enabled: string; enabledDesc: string; backend: string; backendDesc: string; language: string; languageDesc: string; languageAuto: string; languageRu: string; model: string; modelDesc: string; modelPlaceholder: string; diarization: string; diarizationDesc: string; maxDuration: string; maxDurationDesc: string; save: string; saving: string; saved: string; saveError: string; loadError: string; loadErrorDetail: string; retry: string };
         },
         system: {
           changelog: {
