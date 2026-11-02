@@ -5808,14 +5808,14 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
 
-    if (patchData.budgetMonthlyCents !== undefined) {
+    if (typeof patchData.budgetMonthlyCents === "number") {
       const actorUserId = req.actor.type === "agent" ? null : (req.actor.userId ?? null);
       await budgets.upsertPolicy(
         agent.companyId,
         {
           scopeType: "agent",
           scopeId: agent.id,
-          amount: patchData.budgetMonthlyCents!,
+          amount: patchData.budgetMonthlyCents,
           windowKind: "calendar_month_utc",
         },
         actorUserId,
