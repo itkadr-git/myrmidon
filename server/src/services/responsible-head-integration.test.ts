@@ -33,7 +33,7 @@ import {
 async function waitForQueuedRun(
   db: Db,
   agentId: string,
-  queuedRunId: string,
+  wakeupRequestId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -44,10 +44,10 @@ async function waitForQueuedRun(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.status, "queued"),
+          eq(heartbeatRuns.wakeupRequestId, wakeupRequestId),
         ),
       );
-    const matchingRun = runs.find((run) => run.wakeupRequestId === queuedRunId);
+    const matchingRun = runs[0];
     if (matchingRun) return matchingRun;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -58,7 +58,7 @@ async function waitForDeferredWakeRequest(
   db: Db,
   agentId: string,
   interactionId: string,
-  wakeupRunId: string,
+  _wakeupReceiptId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -78,7 +78,7 @@ async function waitForDeferredWakeRequest(
       ];
       return (
         request.id === interactionId ||
-        request.runId === wakeupRunId ||
+        request.idempotencyKey === `interaction-pending:${interactionId}` ||
         (request.payload as Record<string, unknown> | null)?.interactionId === interactionId ||
         (contextSnapshot as Record<string, unknown> | null)?.interactionId === interactionId
       );
@@ -557,7 +557,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
 
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
-      expect(targetRun?.id).toBe(wakeResult?.id);
+      expect(targetRun?.wakeupRequestId).toBe(wakeResult?.id);
 
       // Verify no queued runs for owner or engineer
       const allQueuedRuns = await db
@@ -656,7 +656,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
-      expect(targetRun?.id).toBe(wakeResult?.id);
+      expect(targetRun?.wakeupRequestId).toBe(wakeResult?.id);
     });
 
     it("queued dispatch: defers wake when head is busy and does not fail with 422 responsible_user_unresolved", async () => {
