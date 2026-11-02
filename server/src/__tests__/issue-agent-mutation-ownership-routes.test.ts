@@ -1209,8 +1209,6 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({ status: "done" }),
       expect.anything(),
-      expect.anything(),
-      expect.any(Array),
     );
   });
 
