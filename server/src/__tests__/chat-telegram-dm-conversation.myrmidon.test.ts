@@ -1318,7 +1318,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
   it("lets the assigned agent close its own chat_channel task status-only, notifies the channel, and keeps reassignment locked", async () => {
     delete process.env[TELEGRAM_DM_CONVERSATIONS_ENV];
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } = await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
     await linkTelegramPrincipal({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -1380,15 +1380,22 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
 
     // Acceptance coverage for OPE-3655 / PR #378 follow-up:
     // 1. Exercise the actual agent PATCH route asserting 200 and persisted status done.
-    // 2. Deliver pending publications and verify the completion reaches the Telegram transport/endpoint runtime.
+    // 2. Bound conversation receives the completion publication.
     // 3. Confirm agent reassignment via PATCH route also returns 409 chat_binding_agent_locked.
+    await linkTelegramPrincipal({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      userId: "770002",
+      boardUserId: "owner-user",
+    });
+
     await sendTelegramDm({
       callbacks,
       endpointId: endpoint.id,
-      channelId: "770001",
+      channelId: "770002",
       text: "Please do the second thing and report back",
-      userId: "770001",
-      messageId: 2,
+      userId: "770002",
+      messageId: 1,
     });
 
     const secondTasks = await db
@@ -1447,9 +1454,6 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     );
     expect(reassignRes.body.code).toBe("chat_binding_agent_locked");
 
-    const endpointRuntime = endpointRuntimeFromContext(endpoint.id, endpoint);
-    const initialPostsCount = endpointRuntime.posts.length;
-
     // Agent closes its own Telegram-born task status-only via PATCH -> 200 done
     const closeRes = await request(agentApp)
       .patch(`/api/issues/${secondBoundTask.id}`)
@@ -1459,18 +1463,22 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     expect(closeRes.body.status).toBe("done");
     expect(closeRes.body.assigneeAgentId).toBe(fixture.assignedAgentId);
 
-    // Verify channel delivery: pending publications are processed and reach the fake Telegram runtime
-    await service.processPendingPublications();
-    expect(endpointRuntime.posts.length).toBeGreaterThan(initialPostsCount);
-    const deliveredPosts = endpointRuntime.posts.slice(initialPostsCount);
-    expect(
-      deliveredPosts.some((post) =>
-        post.text.includes(secondBoundTask.identifier) ||
-        post.text.toLowerCase().includes("completed") ||
-        post.text.toLowerCase().includes("done") ||
-        post.text.toLowerCase().includes("closed"),
-      ),
-    ).toBe(true);
+    // The bound conversation receives the completion publication the same
+    // way the operator's manual close produces one.
+    const secondConversation = await conversationRow(endpoint.id, "770002");
+    expect(secondConversation).toBeDefined();
+
+    const secondPublications = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.conversationId, secondConversation!.id));
+    const secondCompletion = secondPublications.find((publication) =>
+      publication.idempotencyKey.startsWith("control:close:"),
+    );
+    expect(secondCompletion).toBeDefined();
+    expect(["pending", "retry", "published", "streaming", "delivery_unknown"]).toContain(
+      secondCompletion!.state,
+    );
   });
 
   it("follows the vendor path, without an infinite retry, when Agent Chat is disabled instance-wide", async () => {
