@@ -1318,7 +1318,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
   it("lets the assigned agent close its own chat_channel task status-only, notifies the channel, and keeps reassignment locked", async () => {
     delete process.env[TELEGRAM_DM_CONVERSATIONS_ENV];
     const fixture = await seedCompany();
-    const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredTelegramEndpoint(fixture);
     await linkTelegramPrincipal({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -1460,7 +1460,7 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
     expect(closeRes.body.assigneeAgentId).toBe(fixture.assignedAgentId);
 
     // Verify channel delivery: pending publications are processed and reach the fake Telegram runtime
-    await endpoint.service.processPendingPublications();
+    await service.processPendingPublications();
     expect(endpointRuntime.posts.length).toBeGreaterThan(initialPostsCount);
     const deliveredPosts = endpointRuntime.posts.slice(initialPostsCount);
     expect(
