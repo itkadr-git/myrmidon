@@ -151,7 +151,7 @@ export function interactionContinuationOutboxKey(
  * only on the positive resolution (accepted / answered).
  */
 export function continuationPolicyWakesOnResolution(
-  policy: string,
+  policy: string | null | undefined,
   status: string,
 ): boolean {
   return (

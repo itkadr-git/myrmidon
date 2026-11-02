@@ -26,6 +26,7 @@ import {
   recordInteractionContinuationOutbox,
 } from "./interaction-continuation-outbox.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
+import type { RequestConfirmationSecretProposalPayload } from "@myrmidon/shared";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -999,14 +1000,16 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
   it("governed secret-proposal accept: writes intent atomically and rolls back on failure", async () => {
     const seeded = await seed();
     const svc = createSecretProposalsService(db);
-    const proposal = {
-      id: "prop-tx-test",
-      companyId: seeded.company.id,
-      interactionId: seeded.interaction.id,
-      originIssueId: seeded.issue.id,
+    const payload: RequestConfirmationSecretProposalPayload = {
+      version: 1, proposalId: "prop-tx-test", sourceSecretLabel: "source-label",
+      configPath: "secrets.target", targetAgentId: seeded.agent.id,
+      targetAgentName: "target-agent", justification: "transaction test",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
+    const proposal = { id: payload.proposalId, companyId: seeded.company.id,
+      interactionId: seeded.interaction.id, originIssueId: seeded.issue.id };
     await db.update(issueThreadInteractions).set({
-      payload: { secretProposal: { proposalId: "prop-tx-test" } },
+      continuationPolicy: "wake_assignee", payload: { secretProposal: payload },
     }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
 
     // Rollback test:
@@ -1032,14 +1035,16 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
   it("governed secret-proposal accept: enqueue failure + sweep delivery with canonical idempotency", async () => {
     const seeded = await seed();
     const svc = createSecretProposalsService(db);
-    const proposal = {
-      id: "prop-sweep-test",
-      companyId: seeded.company.id,
-      interactionId: seeded.interaction.id,
-      originIssueId: seeded.issue.id,
+    const payload: RequestConfirmationSecretProposalPayload = {
+      version: 1, proposalId: "prop-sweep-test", sourceSecretLabel: "source-label",
+      configPath: "secrets.target", targetAgentId: seeded.agent.id,
+      targetAgentName: "target-agent", justification: "sweep test",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
+    const proposal = { id: payload.proposalId, companyId: seeded.company.id,
+      interactionId: seeded.interaction.id, originIssueId: seeded.issue.id };
     await db.update(issueThreadInteractions).set({
-      payload: { secretProposal: { proposalId: "prop-sweep-test" } },
+      continuationPolicy: "wake_assignee", payload: { secretProposal: payload },
     }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
 
     // 1. Transaction records intent
