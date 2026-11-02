@@ -104,6 +104,11 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
+  // Admin-assistant health aliases are mounted by adminAssistantRoutes but
+  // intentionally do not have matching OpenAPI contract paths.
+  "GET /api/admin-assistant/health",
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted

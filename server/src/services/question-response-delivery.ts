@@ -254,6 +254,10 @@ function hydrateQuestionInteraction(
 ): AskUserQuestionsInteraction {
   return {
     ...row,
+    routeType: (row.routeType as AskUserQuestionsInteraction["routeType"]) ?? null,
+    escalationChain:
+      (row.escalationChain as AskUserQuestionsInteraction["escalationChain"]) ??
+      null,
     kind: "ask_user_questions",
     status: row.status as AskUserQuestionsInteraction["status"],
     continuationPolicy:
