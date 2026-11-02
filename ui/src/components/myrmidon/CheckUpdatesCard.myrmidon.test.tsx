@@ -29,7 +29,9 @@ afterEach(() => {
 
 const NOW = "2026-10-31T12:00:00.000Z";
 
-function response(overrides: Partial<checkUpdatesApi.CheckUpdatesResponseLike> = {}) {
+function response(
+  overrides: Partial<checkUpdatesApi.CheckUpdatesResponseLike> = {},
+): checkUpdatesApi.CheckUpdatesResponseLike {
   return {
     currentVersion: "1.6.6",
     currentCommit: "0123456",
