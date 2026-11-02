@@ -27,6 +27,9 @@ case "$1" in
     case "$2" in
       inspect)
         case "$*" in
+          *postgres:16-alpine*)
+            case "$*" in *-f*) echo /var/lib/postgresql/data ;; esac
+            exit 0 ;;
           *org.opencontainers.image.version*)
             # image_label: the label comes from the sandbox file, as before.
             cat "$SANDBOX/label-version"; exit 0 ;;
@@ -76,6 +79,9 @@ case "$1" in
         cat "$SANDBOX/component-image.json"; exit 0 ;;
     esac
     if [[ "$*" == *"imagetools inspect"* ]]; then
+      if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: registry image not found" >&2; exit 1; fi
+      if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
       if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
         jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
       fi
@@ -220,6 +226,10 @@ function sandbox({
     JSON.stringify({ architecture: "amd64", os: "linux", config: { Env: ["A=1"], Labels: labels } }),
   );
   if (registryMissing) fs.writeFileSync(path.join(dir, "registry-missing"), "");
+  if (registryLabels === null) fs.writeFileSync(path.join(dir, "registry-no-labels"), "");
+  if (registryLabels !== undefined && registryLabels !== null && !Object.hasOwn(registryLabels, "org.opencontainers.image.revision")) {
+    fs.writeFileSync(path.join(dir, "registry-no-revision"), "");
+  }
   const oldLabelRevision =
     newRevision === "0123456789abcdef0123456789abcdef01234568"
       ? "fedcba9876543210fedcba9876543210fedcba98"
@@ -354,7 +364,7 @@ function pathWithoutGit(sb) {
 }
 
 function run(sb, script, args, input, extraEnv = {}) {
-  const searchPath = sb.noGit ? pathWithoutGit(sb) : `${sb.bin}:${process.env.PATH}`;
+  const searchPath = sb.noGit ? `${sb.bin}:${pathWithoutGit(sb)}` : `${sb.bin}:${process.env.PATH}`;
   const result = spawnSync(bashPath(), [path.join(HERE, script), "--config", sb.config, ...args], {
     env: { ...process.env, BASH_ENV: "", ENV: "", PATH: searchPath, SANDBOX: sb.dir, ...(sb.env ?? {}), ...extraEnv },
     encoding: "utf8",
