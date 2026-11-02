@@ -3647,7 +3647,6 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           }
         } else if (
-          policy.effectiveResolverPolicy !== "human_only" &&
           actor.agentId &&
           actor.agentId === issueContextRow?.assigneeAgentId
         ) {
