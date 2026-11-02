@@ -71,7 +71,6 @@ function sanitizePrCreateBase(args) {
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => {
-    if (code === 'broker_response_unavailable') return;
     process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   };
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
