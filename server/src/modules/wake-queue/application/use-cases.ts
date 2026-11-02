@@ -425,6 +425,15 @@ async function promoteDeferredWake(
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
+    if (workingCandidate.deferredContextSeed.chatFailedRunRetry) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Failed-chat retry is not authorized for terminal task reopening",
+        now: input.now,
+      });
+      return null;
+    }
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,

@@ -276,6 +276,7 @@ describe("releaseIssueExecution", () => {
         }),
       ];
       const transaction = createFakeTransaction({
+        getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
         findIssue: vi.fn(async () => ({ ...ISSUE, status: "done" })),
         findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
         getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: ["original-comment"], containedSelfAuthoredComment: false })),
