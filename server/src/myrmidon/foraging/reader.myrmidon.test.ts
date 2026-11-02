@@ -125,7 +125,8 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     const result = await reader.read(source("https://example.com/direct"), new AbortController().signal);
     expect(result.text).toContain("Hello");
     expect(result.page?.final_url).toBe("https://example.com/direct");
-    expect(result.page?.content_sha256).toMatch(/^[a-f0-9]{64}$/);\n  });
+    expect(result.page?.content_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
 
   it("rejects direct redirects", async () => {
     resetForagingHostState();
