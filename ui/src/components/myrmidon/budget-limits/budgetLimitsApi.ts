@@ -36,6 +36,10 @@ export type BudgetLimitPeriod = (typeof BUDGET_LIMIT_PERIODS)[number];
 export const BUDGET_LIMIT_MODES = ["hard", "soft"] as const;
 export type BudgetLimitMode = (typeof BUDGET_LIMIT_MODES)[number];
 
+/** Warning thresholds when approaching a budget limit (80% and 95%). */
+export const BUDGET_LIMIT_WARNING_THRESHOLDS = [80, 95] as const;
+export type BudgetLimitWarningThreshold = (typeof BUDGET_LIMIT_WARNING_THRESHOLDS)[number];
+
 /** The nest ref of the company itself. */
 export const BUDGET_LIMIT_NEST_COMPANY_REF = "company";
 
@@ -61,6 +65,7 @@ export interface BudgetLimitUsageRow extends BudgetLimitView {
   spentCents: number;
   events: number;
   overLimit: boolean;
+  warningThreshold?: BudgetLimitWarningThreshold | null;
 }
 
 /** One journal entry: who, when, what. */
@@ -113,8 +118,17 @@ const limitPath = (companyId: string, level: BudgetLimitLevel, ref: string) =>
 export const budgetLimitsApi = {
   list: async (companyId: string): Promise<BudgetLimitView[]> =>
     (await api.get<{ limits: BudgetLimitView[] }>(base(companyId))).limits,
-  usage: async (companyId: string): Promise<BudgetLimitUsageRow[]> =>
-    (await api.get<{ usage: BudgetLimitUsageRow[] }>(`${base(companyId)}/usage`)).usage,
+  usage: async (
+    companyId: string,
+    options?: { threshold?: BudgetLimitWarningThreshold; level?: BudgetLimitLevel },
+  ): Promise<BudgetLimitUsageRow[]> => {
+    const params = new URLSearchParams();
+    if (options?.threshold !== undefined) params.set("threshold", String(options.threshold));
+    if (options?.level !== undefined) params.set("level", options.level);
+    const qs = params.toString();
+    const url = `${base(companyId)}/usage${qs ? `?${qs}` : ""}`;
+    return (await api.get<{ usage: BudgetLimitUsageRow[] }>(url)).usage;
+  },
   journal: async (companyId: string): Promise<BudgetLimitChangeView[]> =>
     (await api.get<{ journal: BudgetLimitChangeView[] }>(`${base(companyId)}/journal`)).journal,
   getSignalOnly: (companyId: string) =>

@@ -22,7 +22,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
-import { agentKeySecretName, readGatewayKeySettings } from "@myrmidon/shared";
+import { agentKeySecretName, DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 
@@ -63,6 +63,9 @@ export async function updateAgentAllowlistsForCompany(
   db: Db,
   agentGatewayKeys: AgentGatewayKeyDeps,
   companyId: string,
+  additionalModelNames: readonly string[] = [],
+  removedModelNames: readonly string[] = [],
+  allowEmpty = false,
 ): Promise<AllowlistSyncResult> {
   const skip = (reason: string): AllowlistSyncResult => ({ attempted: 0, updated: 0, skipped: [reason] });
 
@@ -73,7 +76,25 @@ export async function updateAgentAllowlistsForCompany(
   }
 
   const companyModels = await listCompanyModels(db, companyId);
-  const models = companyModels.filter((model) => model.enabled).map((model) => model.name);
+  const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
+  const models = [...new Set([
+    ...enabledNames,
+    ...additionalModelNames,
+  ])].filter((model) => !removedModelNames.includes(model));
+  if (models.length === 0 && !allowEmpty) {
+    // Nothing enabled yet: leave keys at their current lists rather than
+    // churning them on a pass with nothing to say.
+    return skip("no-enabled-models");
+  }
+  // LiteLLM (verified live against v1.103.2, isolated instance) treats
+  // /key/update with models:[] as "restrictions removed": the key may call
+  // EVERY registered model, including ones it never held. A disable pass that
+  // removed the last plugin's models must therefore never send an empty
+  // list — it would unlock the whole gateway for every agent key in the
+  // company. A sentinel name that is never registered denies every model
+  // instead (verified live: 403 for held and never-held models alike, and the
+  // key recovers when a real list is applied later).
+  const payloadModels = models.length > 0 ? models : [DISABLED_MODEL_SENTINEL];
 
   // The env carries the secret NAME; the gateway needs the VALUE. Resolve it
   // before the empty-registry guard so a configured-but-broken deployment is
@@ -86,12 +107,6 @@ export async function updateAgentAllowlistsForCompany(
   if (!gateway.setKeyAllowedModels) {
     return skip("gateway-port-without-allowlist-support");
   }
-  if (models.length === 0) {
-    // Nothing enabled yet: leave keys unrestricted rather than locking the
-    // fleet out with an empty allowlist.
-    return skip("no-enabled-models");
-  }
-
   const companyAgents = await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
@@ -121,19 +136,27 @@ export async function updateAgentAllowlistsForCompany(
         continue;
       }
       const current = keyInfo.models ?? [];
-      if (current.length === 0) {
+      if (current.length === 0 && !allowEmpty) {
         // An empty gateway list means ALL models. Never turn that into a
-        // restrictive list merely because the board owns some models.
+        // restrictive list merely because the board owns some models. On the
+        // disable path (allowEmpty) we still proceed: the operator asked to
+        // lock the fleet out, and the sentinel below denies every model.
         skipped.push(`key-all-models:${agent.id}`);
         continue;
       }
       // Merge: keep models the board does not own (other pools/tenants),
-      // add/revoke only the board-owned ones.
+      // add/revoke only the board-owned ones. The disable path (models empty)
+      // subtracts owned and explicitly removed names; a fully-empty result is
+      // replaced by the sentinel so we never send models:[] (which LiteLLM
+      // treats as "remove restrictions"). The enable path adds enabled and
+      // additional names on top of surviving non-board models.
       const ownedNames = new Set(companyModels.map((model) => model.name));
-      const next = [
-        ...current.filter((name) => !ownedNames.has(name)),
-        ...models,
-      ];
+      const survivors = current.filter((name) => !ownedNames.has(name) && !removedModelNames.includes(name));
+      const next = models.length > 0
+        ? [...survivors, ...payloadModels]
+        : survivors.length > 0
+          ? survivors
+          : [DISABLED_MODEL_SENTINEL];
       const applied = await gateway.setKeyAllowedModels({ alias, models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
@@ -191,6 +214,12 @@ export async function updateAgentGatewayKeyWithAllowlist(
     throw unprocessable("gateway port cannot update key allowlists", { code: "gateway_allowlist_unsupported" });
   }
 
-  const applied = await gateway.setKeyAllowedModels({ alias, models: allowlist.models });
+  const applied = await gateway.setKeyAllowedModels({
+    alias,
+    // Same live-verified hazard as the company pass: models: [] REMOVES the
+    // gateway's restrictions instead of denying everything (LiteLLM v1.103.2),
+    // so an empty request is translated into the unregistered sentinel.
+    models: allowlist.models.length > 0 ? allowlist.models : [DISABLED_MODEL_SENTINEL],
+  });
   return { secretName: alias, applied };
 }

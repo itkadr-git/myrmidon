@@ -150,7 +150,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
   async function seedIssue(input: {
     companyId: string;
-    agentId: string;
+    agentId?: string | null;
     status?: string;
     priority?: string;
     parentId?: string | null;
@@ -163,7 +163,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       title: "Ready task",
       status: input.status ?? "todo",
       priority: input.priority ?? "medium",
-      assigneeAgentId: input.agentId,
+      assigneeAgentId: input.agentId ?? null,
       ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.monitorNextCheckAt ? { monitorNextCheckAt: input.monitorNextCheckAt } : {}),
     });
@@ -1142,6 +1142,37 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
   // The manual-wake binding (WAKE-BIND) reuses this ranking: a wake without an
   // explicit issue must land on the same task the idle-pickup scheduler picks.
   describe("findTopReadyIssueForAgent", () => {
+    it("skips a higher-priority task with an open blocker and picks the next ready task (OPE-9556)", async () => {
+      const { companyId, agentId } = await seedAgent();
+      const blockerId = await seedIssue({ companyId, status: "in_progress" });
+      const blockedId = await seedIssue({
+        companyId,
+        agentId,
+        status: "todo",
+        priority: "critical",
+      });
+      const nextId = await seedIssue({
+        companyId,
+        agentId,
+        status: "todo",
+        priority: "low",
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedId,
+        type: "blocks",
+      });
+
+      const top = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+      expect(top?.id).toBe(nextId);
+
+      // When blocker resolves, the higher-priority task becomes eligible
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+      const unblockedTop = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+      expect(unblockedTop?.id).toBe(blockedId);
+    });
+
     it("returns the top ready task by the same ranking the sweep uses", async () => {
       const { companyId, agentId } = await seedAgent();
       const lowId = await seedIssue({ companyId, agentId, priority: "low" });

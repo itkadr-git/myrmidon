@@ -8,15 +8,23 @@
 // it reads the recent verdict comments of the reviewer agents, and puts the label
 // (and optionally enables native `gh pr merge --auto --squash`) on a pull request
 // only when ALL of this holds:
-//   1. the main branch CI is green (`mainCiConclusion` is `success`). If main is
-//      red or pending, batch merge / auto-merge is halted and backoff is applied;
+//   1. the main branch CI is green right now: the newest `CI result` check run on
+//      the main head is `completed success`. If main is red, pending, running, or
+//      has no registered run, merge / auto-merge is held and backoff is applied;
 //   2. the newest verdict line about that PR is an approval (a later RETURN,
 //      DEFERRED, or an unclear line cancels it);
 //   3. the PR is open and not a draft;
 //   4. the head did not move after the verdict: a verdict that names a head sha
 //      must match the current head; a verdict without one must be newer than the
 //      head commit;
-//   5. the check run `CI result` of the head commit is `success`.
+//   5. the check run `CI result` of the head commit is `success`;
+//   6. the PR base is not behind main: the PR's `base.sha` equals the current
+//      main head. A stale base never merges — the script asks GitHub to
+//      update-branch and waits for a fresh green CI on the new head;
+//   7. migration guard: a PR that rewrites an existing
+//      `packages/db/src/migrations/NNNN_*.sql` or `meta/NNNN_snapshot.json` file,
+//      or adds a snapshot numbered below the newest one already on main, is
+//      refused (no label, no auto-merge; an armed auto-merge is disabled).
 // A PR whose head moved after an approval is reported as `needs-rereview` (the
 // reviewer must look at the new commits only); the script never labels it.
 //
@@ -44,6 +52,33 @@ const execFileAsync = promisify(execFile);
 
 export const APPROVED_LABEL = "review-approved";
 export const CI_CHECK_NAME = "CI result";
+export const MIGRATION_SQL_RE = /^packages\/db\/src\/migrations\/(\d{4})_[^/]*\.sql$/;
+export const MIGRATION_SNAPSHOT_RE = /^packages\/db\/src\/migrations\/meta\/(\d{4})_snapshot\.json$/;
+
+/**
+ * Migration guard (OPE-10520): returns the reason a PR must not merge because of
+ * migration files, or null when the PR is clean.
+ * - `migration-overwrite`: the PR modifies a migration .sql or meta snapshot file
+ *   that already exists on main (SQL of an applied migration must never change);
+ * - `migration-stale-number`: the PR adds a migration/snapshot numbered below the
+ *   newest one already on main (breaks the snapshot chain, e.g. 0434 prevId != 0433 id).
+ */
+export function detectMigrationViolation(prFiles, mainFiles) {
+  const mainSet = new Set(mainFiles ?? []);
+  let newestMain = -1;
+  for (const path of mainSet) {
+    const m = MIGRATION_SQL_RE.exec(path) ?? MIGRATION_SNAPSHOT_RE.exec(path);
+    if (m) newestMain = Math.max(newestMain, Number(m[1]));
+  }
+  for (const path of prFiles ?? []) {
+    const m = MIGRATION_SQL_RE.exec(path) ?? MIGRATION_SNAPSHOT_RE.exec(path);
+    if (!m) continue;
+    const number = Number(m[1]);
+    if (mainSet.has(path)) return { reason: "migration-overwrite", path };
+    if (number < newestMain) return { reason: "migration-stale-number", path };
+  }
+  return null;
+}
 export const DEFAULT_REVIEWER_PATTERN = "^adm-dev-review";
 export const DEFAULT_SINCE_HOURS = 48;
 export const DEFAULT_BASE_BRANCH = "main";
@@ -176,11 +211,15 @@ function headMatches(pinned, actual) {
 }
 
 /**
- * The decision for one PR. `pr` is {state, draft, merged, headSha, labels, autoMerge},
+ * The decision for one PR. `pr` is {state, draft, merged, headSha, labels, autoMerge, baseSha},
  * `headCommittedAt` a Date or null, `ci` is the conclusion of the `CI result`
  * check run of the head ("success", "failure", "in_progress", "missing", ...),
- * `mainCi` is the conclusion of the `CI result` check run of main ("success", ...),
- * `isMainRed` indicates whether main auto-merge is currently held.
+ * `mainCi` is the resolved conclusion used for red-main backoff bookkeeping,
+ * `mainGreen` is true only when the newest `CI result` run on main is completed
+ * success right now (OPE-10520: merge only against a currently-green main),
+ * `isMainRed` indicates whether main auto-merge is currently held,
+ * `baseBehind` is true when the PR base no longer matches the main head,
+ * `migrationViolation` is a {reason, path} from `detectMigrationViolation` or null.
  */
 export function decideApproveLabel({
   verdict,
@@ -188,7 +227,10 @@ export function decideApproveLabel({
   headCommittedAt,
   ci,
   mainCi = "success",
+  mainGreen = true,
   isMainRed = false,
+  baseBehind = false,
+  migrationViolation = null,
   autoMerge = false,
 }) {
   if (!verdict) return { action: "skip", reason: "no-verdict" };
@@ -202,35 +244,63 @@ export function decideApproveLabel({
   }
   if (ci !== "success") return { action: "skip", reason: `ci-${ci}` };
 
+  // Migration guard (OPE-10520): refuse to merge PRs that rewrite applied
+  // migrations or add a snapshot below the newest on main. If auto-merge was
+  // armed before the violation appeared, disarm it and strip the label.
+  if (migrationViolation) {
+    return {
+      action: "refuse",
+      reason: migrationViolation.reason,
+      path: migrationViolation.path,
+      disableAutoMerge: Boolean(pr.autoMerge),
+      removeLabel: Boolean(pr.labels.includes(APPROVED_LABEL)),
+    };
+  }
+
+  // Stale base (OPE-10520): never merge a PR whose base is behind main — CI was
+  // green on an old tree. The caller asks GitHub to update-branch; the new head
+  // then needs a fresh verdict + green CI.
+  if (baseBehind) {
+    if (pr.autoMerge) {
+      return { action: "hold", disableAutoMerge: true, reason: "base-behind" };
+    }
+    return { action: "hold", reason: "base-behind" };
+  }
+
   const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
   const redMain = isMainRed || isRedMain(mainCi);
+  // OPE-10520: auto-merge is armed only while main is green right now. A running
+  // or missing main CI is held even if the last completed run was green.
+  const mergeAllowed = !redMain && mainGreen;
 
   // When main is red, auto-merge must not be enabled.
   // If native auto-merge was already turned on for the PR, disable it safely.
-  const shouldDisableAutoMerge = redMain && Boolean(pr.autoMerge);
-  const shouldEnableAutoMerge = !redMain && autoMerge && !pr.autoMerge;
+  const shouldDisableAutoMerge = (!mergeAllowed) && Boolean(pr.autoMerge);
+  const shouldEnableAutoMerge = mergeAllowed && autoMerge && !pr.autoMerge;
 
   if (alreadyLabeled) {
     if (shouldDisableAutoMerge) {
-      return { action: "hold", disableAutoMerge: true, reason: "main-red" };
+      const reason = redMain && isRedMain(mainCi) ? "main-red" : "main-not-green";
+      return { action: "hold", disableAutoMerge: true, reason };
     }
     if (shouldEnableAutoMerge) {
       return { action: "label", autoMerge: true, reason: "approved-head-green" };
     }
-    if (redMain && autoMerge) {
-      return { action: "hold", reason: "main-red" };
+    if (!mergeAllowed && autoMerge) {
+      const reason = redMain && isRedMain(mainCi) ? "main-red" : "main-not-green";
+      return { action: "hold", reason };
     }
     return { action: "noop", reason: "already-labeled" };
   }
 
   // The review-approved label is applied as soon as the PR head is approved and green,
-  // triggering CI pipelines. Auto-merge is held if main is red.
+  // triggering CI pipelines. Auto-merge is held if main is not green right now.
   const decision = {
     action: "label",
     autoMerge: shouldEnableAutoMerge,
     reason: "approved-head-green",
   };
-  if (redMain) decision.holdMerge = true;
+  if (!mergeAllowed) decision.holdMerge = true;
   if (shouldDisableAutoMerge) decision.disableAutoMerge = true;
   return decision;
 }
@@ -289,9 +359,36 @@ export function createGitHubPort(repo, options = {}) {
         draft: Boolean(data.draft),
         merged: Boolean(data.merged_at) || Boolean(data.merged),
         headSha: data.head?.sha ?? null,
+        baseSha: data.base?.sha ?? null,
         labels: (data.labels ?? []).map((label) => label.name),
         autoMerge: Boolean(data.auto_merge || data.autoMergeRequest),
       };
+    },
+    async pullRequestFiles(number) {
+      const data = await run([`repos/${repo}/pulls/${number}/files?per_page=100`]);
+      return (Array.isArray(data) ? data : []).map((file) => file.filename).filter(Boolean);
+    },
+    async mainMigrationFiles(baseBranch = DEFAULT_BASE_BRANCH) {
+      const trees = [];
+      for (const dir of ["packages/db/src/migrations", "packages/db/src/migrations/meta"]) {
+        try {
+          const data = await run([`repos/${repo}/contents/${dir}?ref=${encodeURIComponent(baseBranch)}&per_page=100`]);
+          if (Array.isArray(data)) {
+            for (const item of data) {
+              if (item.type === "file" && typeof item.path === "string") trees.push(item.path);
+            }
+          }
+        } catch {
+          // A missing directory or a permissions hiccup must not crash the gate:
+          // an empty list still catches overwrite-by-name below because the PR
+          // file check falls back to comparing against an empty main set only
+          // when no main files are listed; log is emitted by the caller.
+        }
+      }
+      return trees;
+    },
+    async updateBranch(number) {
+      await run(["-X", "PUT", `repos/${repo}/pulls/${number}/update-branch`]);
     },
     async headCommittedAt(sha) {
       const data = await run([`repos/${repo}/commits/${sha}`]);
@@ -339,6 +436,9 @@ export function createGitHubPort(repo, options = {}) {
         // fallback if commits query fails
       }
       return { status: current, conclusion: current, lastCompleted };
+    },
+    async removeLabel(number) {
+      await run(["-X", "DELETE", `repos/${repo}/issues/${number}/labels/${APPROVED_LABEL}`]);
     },
     async addLabel(number) {
       await run(["-X", "POST", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${APPROVED_LABEL}`]);
@@ -424,6 +524,10 @@ export async function runOnce({
   }
 
   const isMainRed = isRedMain(resolvedConclusion);
+  // OPE-10520: merge only when the newest main CI run is completed success right
+  // now. in_progress/queued/missing holds the merge even if the last completed
+  // run was green (the #1923 incident merged into a main whose fresh run was red).
+  const mainGreen = mainCiRaw === "success";
 
   const isBackoffActive = Boolean(
     state.backoffUntil && new Date(state.backoffUntil).getTime() > now.getTime()
@@ -466,7 +570,7 @@ export async function runOnce({
   const currentlyBackingOff = Boolean(
     backoffUntil && new Date(backoffUntil).getTime() > now.getTime()
   );
-  const holdAutoMerge = isMainRed || currentlyBackingOff;
+  const holdAutoMerge = isMainRed || currentlyBackingOff || !mainGreen;
 
   await stateStore?.save({
     consecutiveFailures,
@@ -475,6 +579,35 @@ export async function runOnce({
     lastCompletedStatus,
     lastCheckAt: now.toISOString(),
   });
+
+  // One main-head lookup shared by all candidates: the stale-base gate compares
+  // each PR's base.sha against it (OPE-10520, incident #2265).
+  let mainHeadSha = null;
+  if (checkMain && hasApproveCandidate && typeof github.mainHeadSha === "function") {
+    try {
+      mainHeadSha = await github.mainHeadSha(baseBranch);
+    } catch (err) {
+      log(`Failed to resolve ${baseBranch} head: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Migration guard listing from main, shared across candidates. An empty result
+  // fails closed on the merge path: auto-merge is held until the listing works.
+  let mainMigrationList = null;
+  let mainMigrationListOk = false;
+  if (hasApproveCandidate && typeof github.mainMigrationFiles === "function") {
+    try {
+      mainMigrationList = await github.mainMigrationFiles(baseBranch);
+      mainMigrationListOk = Array.isArray(mainMigrationList) && mainMigrationList.length > 0;
+      if (!mainMigrationListOk) {
+        log("Migration guard: no migration files listed on main; holding auto-merge until the listing works.");
+      }
+    } catch (err) {
+      log(`Migration guard: failed to list main migration files: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else {
+    mainMigrationListOk = true; // port does not support the listing: skip the guard
+  }
 
   for (const [prNumber, verdict] of candidatePrs) {
     if (verdict.outcome !== "approve") {
@@ -489,13 +622,39 @@ export async function runOnce({
         headCommittedAt = verdict.head ? null : await github.headCommittedAt(pr.headSha);
         ci = await github.ciConclusion(pr.headSha);
       }
+      // Stale base (OPE-10520): PR whose base.sha lags the main head never merges.
+      // If the main head could not be resolved, fail closed and treat the base as
+      // behind — an unverifiable base must not merge.
+      const baseBehind = Boolean(pr.baseSha) && (mainHeadSha ? pr.baseSha !== mainHeadSha : checkMain);
+      // Migration guard (OPE-10520): refuse PRs that rewrite applied migrations
+      // or add snapshots numbered below the newest on main.
+      let migrationViolation = null;
+      if (pr.state === "open" && !pr.draft && typeof github.pullRequestFiles === "function") {
+        try {
+          const prFiles = await github.pullRequestFiles(prNumber);
+          if (Array.isArray(prFiles) && mainMigrationListOk) {
+            migrationViolation = detectMigrationViolation(prFiles, mainMigrationList);
+          }
+        } catch (err) {
+          failed += 1;
+          results.push({
+            prNumber,
+            action: "error",
+            reason: `migration-guard-read-failed: ${err instanceof Error ? err.message.split("\n")[0] : "error"}`,
+          });
+          continue;
+        }
+      }
       const decision = decideApproveLabel({
         verdict,
         pr,
         headCommittedAt,
         ci,
         mainCi: resolvedConclusion,
+        mainGreen: mainGreen && mainMigrationListOk,
         isMainRed: holdAutoMerge,
+        baseBehind,
+        migrationViolation,
         autoMerge: autoMerge && !holdAutoMerge,
       });
 
@@ -507,13 +666,27 @@ export async function runOnce({
           await github.enableAutoMerge(prNumber);
         }
       }
-      if (decision.disableAutoMerge && !dryRun) {
+      if (decision.action === "refuse" && !dryRun) {
+        if (decision.disableAutoMerge) await github.disableAutoMerge(prNumber);
+        if (decision.removeLabel) await github.removeLabel(prNumber);
+      }
+      if (decision.disableAutoMerge && decision.action !== "refuse" && !dryRun) {
         await github.disableAutoMerge(prNumber);
+      }
+      if (decision.action === "hold" && decision.reason === "base-behind" && !dryRun) {
+        // Ask GitHub to bring the base up to date; the new head will then need a
+        // fresh verdict and a fresh green CI before any merge (OPE-10520).
+        try {
+          await github.updateBranch(prNumber);
+          decision.updateBranch = true;
+        } catch (err) {
+          log(`PR #${prNumber}: update-branch failed: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+        }
       }
       results.push({
         prNumber,
         ...decision,
-        dryRun: dryRun && (decision.action === "label" || decision.disableAutoMerge) ? true : undefined,
+        dryRun: dryRun && (decision.action === "label" || decision.disableAutoMerge || decision.action === "refuse") ? true : undefined,
       });
     } catch (err) {
       failed += 1;

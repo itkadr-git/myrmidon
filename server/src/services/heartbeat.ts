@@ -262,6 +262,7 @@ import {
 } from "../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
+import { recoverContainerOomForRun } from "../myrmidon/bot-containers/container-oom-recovery.js";
 import { logger } from "../middleware/logger.js";
 // myrmidon(BOARD-TOOLS-A): run-selection predicates moved with the assignment
 // logic into ./agent-assigned-tools.ts (import there).
@@ -742,6 +743,7 @@ import {
 import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 // myrmidon(WAKE-10.2 / OPE-9657): low-priority wake event accumulation & digest
 import {
+  boundEventDigest,
   classifyEventPriority,
   EVENT_PRIORITY_BY_TYPE,
   isDigestAccumulatedPriority,
@@ -1827,6 +1829,7 @@ const FORBIDDEN_ENV_BINDING_KEYS = new Set([
   "PAPERCLIP_GITHUB_BROKER_URL",
   "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
   "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+  "MEDIA_TOOLS_TOKEN",
 ]);
 const MANAGED_GITHUB_TOKEN_KEYS = new Set([
   "GH_TOKEN",
@@ -8466,7 +8469,7 @@ export async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    eventDigest: input.contextSnapshot.eventDigest ?? null,
+    eventDigest: boundEventDigest(input.contextSnapshot.eventDigest) ?? null,
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
@@ -20661,6 +20664,9 @@ export function heartbeatService(
           finalizedRun,
           parseObject(finalizedRun.resultJson),
         )) ?? finalizedRun;
+      await recoverContainerOomForRun(db, finalizedRun.id).catch((error) => {
+        logger.warn({ err: error, runId: finalizedRun.id }, "failed to classify OOM recovery evidence");
+      });
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
@@ -29759,6 +29765,9 @@ export function heartbeatService(
       if (stagedDigest) {
         enrichedContextSnapshot.eventDigest = stagedDigest;
       }
+    } else {
+      // A digest carried over from an earlier run snapshot is bounded too (OPE-9657 fix).
+      enrichedContextSnapshot.eventDigest = boundEventDigest(enrichedContextSnapshot.eventDigest);
     }
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
@@ -31136,11 +31145,27 @@ export function heartbeatService(
           // claimed running run. If zero rows matched, leave
           // `activeExecutionRun` populated so the defer path runs
           // normally against the now-running holder.
+          // myrmidon(OPE-10582 п.1): не отменять прогон участника этапа ревью
+          // (currentParticipant), даже если он не assignee. Иначе idle-pickup
+          // ставит прогон review-участнику, а охранник тут же его отменяет —
+          // бесконечный цикл холостых пробуждений.
+          const isReviewStageParticipant = (() => {
+            if (issue.status !== "in_review") return false;
+            const es = issue.executionState as Record<string, unknown> | null;
+            if (!es || typeof es !== "object") return false;
+            const cp = es.currentParticipant as Record<string, unknown> | null;
+            return (
+              cp?.type === "agent" &&
+              cp?.agentId === activeExecutionRun?.agentId
+            );
+          })();
+
           if (
             activeExecutionRun &&
             activeExecutionRun.status !== "running" &&
             issue.assigneeAgentId &&
-            activeExecutionRun.agentId !== issue.assigneeAgentId
+            activeExecutionRun.agentId !== issue.assigneeAgentId &&
+            !isReviewStageParticipant
           ) {
             const cancelled = await tx
               .update(heartbeatRuns)
@@ -33671,6 +33696,18 @@ export function heartbeatService(
 
         return {
           ...rest,
+          // Keep the thin fields in the response as first-class values. The
+          // contextSnapshot/resultJson objects below are compatibility views;
+          // consumers of the list endpoint should not need to unpack them to
+          // read the wake reason or the brief result.
+          contextWakeReason,
+          resultSummary: resultSummary ?? null,
+          resultResult: resultResult ?? null,
+          resultMessage: resultMessage ?? null,
+          resultError: resultError ?? null,
+          resultTotalCostUsd: resultTotalCostUsd ?? null,
+          resultCostUsd: resultCostUsd ?? null,
+          resultCostUsdCamel: resultCostUsdCamel ?? null,
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,

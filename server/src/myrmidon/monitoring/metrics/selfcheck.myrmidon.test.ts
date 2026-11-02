@@ -46,7 +46,8 @@ describe("metrics self-check probe", () => {
     // The continuation and claim counters are process-local too.
     // The five capacity-dashboard metrics remain available without database reads.
     // The guardrail trigger counter (1.6.6 GUARDRAILS OPE-10182) is process-local too.
-    expect(result.families_ok).toBe(34);
+    // The scent classifier alarm is process-local as well.
+    expect(result.families_ok).toBe(35);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" &&
@@ -59,6 +60,7 @@ describe("metrics self-check probe", () => {
         family !== "myrmidon_continuation_deduped_total" &&
         family !== "swarm_claim_conflicts_total" &&
         family !== "swarm_lease_recovered_total" &&
+        family !== "swarm_scent_classifier_alarm" &&
         family !== "myrmidon_readiness_ratio" &&
         family !== "myrmidon_queue_age_seconds" &&
         family !== "myrmidon_project_share" &&

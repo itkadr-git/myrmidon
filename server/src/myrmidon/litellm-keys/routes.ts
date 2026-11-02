@@ -31,6 +31,7 @@ import {
 import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
 import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
 import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
+import { readCompanyKeyBudgets } from "./key-budget-adapter.js";
 
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
@@ -53,6 +54,16 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       return;
     }
     res.json(await listAgentGatewayKeys(input.deps, companyId));
+  });
+
+  router.get("/myrmidon/companies/:companyId/litellm/key-budgets", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!settings().canManageKeys) {
+      disabled(res);
+      return;
+    }
+    res.json(await readCompanyKeyBudgets(input.deps, companyId));
   });
 
   router.get("/myrmidon/companies/:companyId/litellm/keys/:agentId", async (req, res) => {

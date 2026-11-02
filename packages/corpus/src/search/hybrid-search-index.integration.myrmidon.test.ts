@@ -101,12 +101,23 @@ async function resolveSearchStand(): Promise<SearchStand | null> {
       return null;
     }
 
-    const database = await embedded.startEmbeddedPostgresTestDatabase("corpus-search-test-");
-    return {
-      dsn: database.connectionString,
-      label: "the embedded PostgreSQL 18 test cluster",
-      release: () => database.cleanup(),
-    };
+    try {
+      const database = await embedded.startEmbeddedPostgresTestDatabase("corpus-search-test-");
+      return {
+        dsn: database.connectionString,
+        label: "the embedded PostgreSQL 18 test cluster",
+        release: async () => {
+          try {
+            await database.cleanup();
+          } finally {
+            await staged.cleanup();
+          }
+        },
+      };
+    } catch (error) {
+      await staged.cleanup().catch(() => {});
+      throw error;
+    }
   } catch (error) {
     skipReason = `the embedded PostgreSQL test cluster could not be started: ${String(error)}`;
     return null;
@@ -123,6 +134,12 @@ if (stand === null) {
 } else {
   console.log(`[corpus] hybrid search integration suite runs against ${stand.label}`);
 }
+
+afterAll(async () => {
+  if (stand) {
+    await stand.release().catch(() => {});
+  }
+});
 
 type PgClient = ReturnType<typeof postgres>;
 

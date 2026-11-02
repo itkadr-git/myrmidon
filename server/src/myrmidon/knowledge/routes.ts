@@ -71,6 +71,13 @@ import { assertRuleWriteGrade, builtinCasteSensitivity, type CasteSensitivityRes
 import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { KnowledgeDomainError } from "./domain.js";
 import type { KnowledgeItemStatus, KnowledgeKind } from "./domain.js";
+import {
+  countKnowledgeDeviations,
+  findStaleUnassignedDeviations,
+  listKnowledgeDeviations,
+  recordKnowledgeDeviation,
+  resolveKnowledgeDeviation,
+} from "./deviations.js";
 import { createKnowledgeModule, type KnowledgeModule } from "./service.js";
 import { guardrailsInjectionEnabled, injectionScoreThreshold, scanForInjection } from "../guardrails/injection.js";
 import { dbAutonomyStore, agentRoleFromDb } from "../autonomy/store.js";
@@ -82,6 +89,8 @@ import { dbAutonomyStore, agentRoleFromDb } from "../autonomy/store.js";
 export interface KnowledgeRoutesDeps {
   /** Bind the store to the path company. Tests inject a stub module. */
   moduleFor(companyId: string): KnowledgeModule;
+  /** Database handle for the meta/deviations ledger (1.6.6 KNOWLEDGE-ON-CHANGE). */
+  db?: Db;
   /**
    * The autonomy matrix resolver. Production reads `dbAutonomyStore(db)`;
    * tests inject a fixed matrix. Returns null when the matrix store is
@@ -325,6 +334,60 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     } catch (err) {
       throw toHttpError(err);
     }
+  });
+
+  // -------------------------------------------------- meta/deviations (1.6.6)
+
+  /** Read path of the deviation ledger: list + counter, nest-scoped. */
+  router.get("/myrmidon/companies/:companyId/knowledge/deviations", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_search");
+    const includeResolved = req.query.includeResolved === "true";
+    const items = await listKnowledgeDeviations(deps.db, companyId, { includeResolved });
+    const open = await countKnowledgeDeviations(deps.db, companyId);
+    const stale = await findStaleUnassignedDeviations(deps.db, companyId, deps.now?.() ?? new Date());
+    res.json({ items, open, alert: stale.length > 0 ? { unassignedOver24h: stale.length, items: stale } : null });
+  });
+
+  /** Record a wiki-vs-reality mismatch (page, was, became, howVerified, task). */
+  router.post("/myrmidon/companies/:companyId/knowledge/deviations", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_propose");
+    const actor = actorOf(req);
+    const body = req.body as {
+      page?: string;
+      was?: string;
+      became?: string;
+      howVerified?: string;
+      task?: string | null;
+      nestId?: string;
+    };
+    for (const [field, value] of [["page", body.page], ["was", body.was], ["became", body.became], ["howVerified", body.howVerified]] as const) {
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw unprocessable(`deviation.${field} is required`, { code: "knowledge_deviation_invalid" });
+      }
+      assertCleanWrite(value, `deviation.${field}`);
+    }
+    const deviation = await recordKnowledgeDeviation(deps.db, {
+      companyId,
+      nestId: body.nestId ?? companyId,
+      page: body.page!,
+      was: body.was!,
+      became: body.became!,
+      howVerified: body.howVerified!,
+      task: body.task ?? null,
+      createdByAgentId: actor.actorType === "agent" ? (actor.agentId ?? actor.actorId ?? null) : null,
+      createdByUserId: actor.actorType !== "agent" ? (actor.actorId ?? null) : null,
+    });
+    res.status(201).json({ deviation });
+  });
+
+  router.post("/myrmidon/companies/:companyId/knowledge/deviations/:id/resolve", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_propose");
+    const resolved = await resolveKnowledgeDeviation(deps.db, companyId, req.params.id as string);
+    if (!resolved) throw notFound(`No knowledge deviation ${JSON.stringify(req.params.id)} in this company.`);
+    res.json({ deviation: resolved });
   });
 
   router.get("/myrmidon/companies/:companyId/knowledge/items", async (req: Request, res: Response) => {
@@ -802,6 +865,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   return knowledgeRoutes({
     moduleFor: (companyId) => createKnowledgeModule(db, companyId),
+    db,
     casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     roleForAgent: agentRoleFromDb(db),
     matrixFor: async () => {

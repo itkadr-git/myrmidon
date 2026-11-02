@@ -1160,6 +1160,9 @@ importers:
       pino-pretty:
         specifier: ^13.1.3
         version: 13.1.3
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9(patch_hash=sryle6qd5qfmnxvoebal4gashi)
       sharp:
         specifier: ^0.35.4
         version: 0.35.4(@types/node@24.13.3)
