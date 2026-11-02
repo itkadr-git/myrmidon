@@ -157,27 +157,7 @@ export function classifyLegacyBlocked(
     }
   }
 
-  // A resolved blocker relation is still migration evidence when there is no
-  // stronger current explanation. Do not let historical links override an
-  // explicit human decision or another current classification.
-  if (candidates.size === 0) {
-    for (const link of facts.links ?? []) {
-      const linkStatus = normalized(link.status);
-      const relation = normalized(link.relation);
-      if (
-        link.type === "issue" &&
-        resolvedBlockerStatuses.has(linkStatus) &&
-        ["blocks", "blocked_by", "dependency"].includes(relation)
-      ) {
-        addCandidate(
-          candidates,
-          "dependency",
-          `Historical linked blocker fact: ${link.type} / ${relation} / ${link.label.trim()}.`,
-        );
-      }
-    }
-  }
-
+  // A resolved relation is historical context only, not evidence of a current blocker.
   for (const pr of facts.pullRequests ?? []) {
     const state = normalized(pr.state);
     const checks = normalized(pr.checksState);

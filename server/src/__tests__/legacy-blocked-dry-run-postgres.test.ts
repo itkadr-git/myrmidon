@@ -201,12 +201,6 @@ describeEmbeddedPostgres("legacy blocked dry-run postgres", () => {
         relatedIssueId: openBlockedId,
         type: "blocks",
       },
-      {
-        companyId,
-        issueId: resolvedBlockerId,
-        relatedIssueId: eligibleDecisionId,
-        type: "blocks",
-      },
     ]);
 
     // Pending interaction

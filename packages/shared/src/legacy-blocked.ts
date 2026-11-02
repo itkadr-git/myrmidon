@@ -56,12 +56,14 @@ export const legacyBlockedReportRowSchema = {
       return { success: false, error: classCheck.error };
     }
     const blockClass: LegacyBlockedClass = classCheck.data ?? "unknown";
-    if (blockClass === "unknown") {
+    if (blockClass === "unknown" || blockClass === "human_decision") {
       if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
         return { success: false, error: new Error("Invalid proposedOwner") };
       }
-    } else if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
-      return { success: false, error: new Error("Invalid proposedOwner") };
+    } else {
+      if (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0) {
+        return { success: false, error: new Error("Missing proposedOwner") };
+      }
     }
     if (r.proposedSlaMinutes !== undefined && (typeof r.proposedSlaMinutes !== "number" || !Number.isInteger(r.proposedSlaMinutes) || r.proposedSlaMinutes <= 0)) {
       return { success: false, error: new Error("Invalid proposedSlaMinutes") };

@@ -63,9 +63,10 @@ describeEmbeddedPostgres("legacy blocked apply postgres", () => {
 
     await db.insert(companies).values({ id: companyId, name: "legacy-blocked-apply-test", issuePrefix: "LBA" });
     await db.insert(agents).values({ id: ownerId, companyId, name: "Legacy Apply Owner", role: "engineer", status: "active" });
+    const recoveryIdentifier = `LBA-${randomUUID()}`;
     const terminalIdentifier = `LBA-${randomUUID()}`;
     await db.insert(issues).values([
-      { id: recoveryId, companyId, identifier: "LBA-1", title: "Recovery source", status: "blocked", priority: "high", assigneeAgentId: ownerId, description: "recovery task is required" },
+      { id: recoveryId, companyId, identifier: recoveryIdentifier, title: "Recovery source", status: "blocked", priority: "high", assigneeAgentId: ownerId, description: "recovery task is required" },
       { id: dependencyId, companyId, identifier: "LBA-2", title: "Dependency source", status: "blocked", priority: "high", assigneeAgentId: ownerId },
       { id: unknownId, companyId, identifier: "LBA-3", title: "Unknown source", status: "blocked", priority: "high", description: "unrecognized condition" },
       { id: terminalId, companyId, identifier: terminalIdentifier, title: "Terminal source", status: "blocked", priority: "high", assigneeAgentId: ownerId, description: "duplicate" },
