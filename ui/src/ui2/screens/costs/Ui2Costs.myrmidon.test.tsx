@@ -196,7 +196,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     await renderScreen();
 
     expect(container.querySelector(".ui2-costs-agents")).toBeNull();
-    expect(container.textContent).toContain("No agent spend in this period");
+    expect(container.textContent).toContain("No spend is recorded for this window.");
   });
 
   it("keeps the zero budget amount without a redundant budget hint", async () => {
