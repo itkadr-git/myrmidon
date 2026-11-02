@@ -300,6 +300,7 @@ describe("1.6.6 rc.19 MONITORING OPE-10046: runs execution phase metrics and wat
       agentErrorSignals: 0,
       llmCostCentsWindow: 0,
       scrapeErrors: 0,
+      emptyRunsByAgent: [],
       collectedAt: "2026-10-30T12:00:00.000Z",
       runsExecutionPhase: [
         { phase: "working", count: 8 },
