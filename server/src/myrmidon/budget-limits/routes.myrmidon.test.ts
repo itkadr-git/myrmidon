@@ -117,10 +117,10 @@ function appFor(
     computeUsage?: (
       deps: BudgetLimitUsageDeps,
       companyId: string,
-      level: BudgetLimitUsageView["level"],
+      level: BudgetLimitUsage["level"],
       ref: string,
-      period: BudgetLimitUsageView["period"],
-    ) => Promise<BudgetLimitUsageView>;
+      period: BudgetLimitUsage["period"],
+    ) => Promise<BudgetLimitUsage>;
   } = {},
 ) {
   const store = options.store ?? fakeStore();
