@@ -1660,7 +1660,12 @@ it.each([
       if (completedTerminalAck) {
         const before = replayRetirements[0]!;
         const after = replayRetirements[1]!;
-        expect(withheldTerminalFrames).toHaveLength(1);
+        // The replay snapshot can be recorded before the transport callback
+        // finishes observing the withheld terminal frame. Wait on the live
+        // capture rather than asserting against that stale scheduling point.
+        await vi.waitFor(() =>
+          expect(withheldTerminalFrames).toHaveLength(1),
+        );
         expect(withheldTerminalFrames[0]).toMatchObject({
           epoch: 0,
           direction:

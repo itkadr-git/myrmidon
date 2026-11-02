@@ -9,6 +9,7 @@ import {
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
+import { PRODUCT_NAME } from "../../myrmidon-product.js";
 
 interface AgentTokenOptions extends BaseClientOptions {
   companyId?: string;
@@ -59,7 +60,7 @@ interface BoardKeyRow {
 }
 
 export function registerTokenCommands(program: Command): void {
-  const token = program.command("token").description("Manage Paperclip API tokens");
+  const token = program.command("token").description(`Manage ${PRODUCT_NAME} API tokens`);
   const agent = token.command("agent").description("Manage agent API keys");
 
   addCommonClientOptions(

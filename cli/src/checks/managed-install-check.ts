@@ -7,6 +7,7 @@ import {
   type InstallStorePaths,
 } from "../install-store.js";
 import type { CheckResult } from "./index.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@myrmidon/shared/node-version";
 
 function pathContains(directory: string): boolean {
@@ -40,7 +41,7 @@ export function nodeRuntimeCheck(): CheckResult {
         name: "Node.js runtime",
         status: "fail",
         message: `Node.js ${process.versions.node} is unsupported`,
-        repairHint: `Install Node.js ${MINIMUM_NODE_VERSION} or newer before installing or running Paperclip`,
+        repairHint: `Install Node.js ${MINIMUM_NODE_VERSION} or newer before installing or running ${PRODUCT_NAME}`,
       };
 }
 
