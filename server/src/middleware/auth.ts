@@ -258,6 +258,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       (publicMcpGatewayProtocolPath.test(req.path) || monitoringAlertsWebhookPath.test(req.originalUrl))
     ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "public_path_bypass";
+      }
       next();
       return;
     }
@@ -278,6 +281,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         try {
           session = await opts.resolveSession(req);
         } catch (err) {
+          req.actorNoneReason = "session_resolution_error";
           logger.warn(
             { err, method: req.method, url: req.originalUrl },
             "Failed to resolve auth session from request headers",
@@ -314,6 +318,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "no_credentials";
+      }
       next();
       return;
     }

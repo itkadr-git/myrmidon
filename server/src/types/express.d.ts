@@ -33,6 +33,13 @@ declare global {
         identityContextId?: string | null;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "cloud_control" | "none";
       };
+      /**
+       * Populated by the actor middleware when the request ends up with an
+       * anonymous actor (`actor.type === "none"`). Routes and authz helpers
+       * use this to explain in server logs why an unauthenticated request
+       * reached a company-resource endpoint instead of a valid credential.
+       */
+      actorNoneReason?: string;
     }
   }
 }
