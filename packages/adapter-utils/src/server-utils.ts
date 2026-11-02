@@ -2340,6 +2340,27 @@ export function renderPaperclipWakePrompt(
   ]);
 }
 
+/**
+ * Replace unchanged static prompt blocks on resumed provider sessions with a
+ * compact hash reference. A missing prior digest (first turn or compaction)
+ * always sends the full block.
+ */
+export function renderWakeBlockDelta(
+  blocks: Record<string, string>,
+  previousDigests: Record<string, string> | null | undefined,
+): { blocks: Record<string, string>; digests: Record<string, string> } {
+  const digests: Record<string, string> = {};
+  const rendered: Record<string, string> = {};
+  for (const [key, block] of Object.entries(blocks)) {
+    const digest = createHash("sha256").update(block, "utf8").digest("hex");
+    digests[key] = digest;
+    rendered[key] = previousDigests?.[key] === digest
+      ? `без изменений (ревизия ${digest})`
+      : block;
+  }
+  return { blocks: rendered, digests };
+}
+
 function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
