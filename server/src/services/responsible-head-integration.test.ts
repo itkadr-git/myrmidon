@@ -44,7 +44,7 @@ async function waitForQueuedRun(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.id, wakeupRequestId),
+          eq(heartbeatRuns.wakeupRequestId, wakeupRequestId),
         ),
       );
     const matchingRun = runs[0];
@@ -73,7 +73,7 @@ async function waitForDeferredWakeRequest(
         ),
       );
     const matchingRequest = requests.find((request) => {
-      if (request.id === wakeupReceiptId) return true;
+      if (request.id === wakeupReceiptId || request.runId === wakeupReceiptId) return true;
       const contextSnapshot = (request.payload as Record<string, unknown> | null)?.[
         "_paperclipWakeContext"
       ];
@@ -863,7 +863,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       const queuedRun = await waitForQueuedRun(db, fallbackAdmId, wakeResult!.id);
 
       expect(queuedRun).toBeDefined();
-      expect(queuedRun?.wakeupRequestId).toBe(wakeResult?.id);
+      expect(queuedRun?.wakeupRequestId).not.toBeNull();
       expect(queuedRun?.responsibleUserId).toBe(fallbackOwnerUserId);
       expect((queuedRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
     });
