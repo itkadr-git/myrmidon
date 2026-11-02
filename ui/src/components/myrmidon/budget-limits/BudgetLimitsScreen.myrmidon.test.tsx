@@ -54,7 +54,10 @@ function limit(overrides: Partial<BudgetLimitView> & Pick<BudgetLimitView, "leve
 }
 
 function usage(row: BudgetLimitView, spentCents: number, overLimit = false): BudgetLimitUsageRow {
-  return { ...row, spentCents, events: 2, overLimit };
+  const warningThreshold = row.isActive
+    ? (spentCents >= row.amountCents * 0.95 ? 95 : spentCents >= row.amountCents * 0.8 ? 80 : null)
+    : null;
+  return { ...row, spentCents, events: 2, overLimit, warningThreshold };
 }
 
 interface Handlers {

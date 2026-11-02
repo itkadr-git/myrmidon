@@ -12,7 +12,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { budgetLimitsRoutes } from "./routes.js";
-import type { BudgetLimitView, BudgetLimitChangeView } from "@myrmidon/shared";
+import type { BudgetLimitView, BudgetLimitChangeView, BudgetLimitUsage } from "@myrmidon/shared";
+import type { BudgetLimitUsageDeps } from "./usage.js";
 
 const boardActor = {
   type: "board",
@@ -114,12 +115,12 @@ function appFor(
     settings?: ReturnType<typeof fakeSettings>;
     store?: FakeStore;
     computeUsage?: (
-      deps: unknown,
+      deps: BudgetLimitUsageDeps,
       companyId: string,
-      level: any,
+      level: BudgetLimitUsage["level"],
       ref: string,
-      period: any,
-    ) => Promise<{ spentCents: number; events: number }>;
+      period: BudgetLimitUsage["period"],
+    ) => Promise<BudgetLimitUsage>;
   } = {},
 ) {
   const store = options.store ?? fakeStore();
@@ -240,11 +241,15 @@ describe("myrmidon(1.7-BUDGET-CONFIG A) routes", () => {
 
       const { app } = appFor(boardActor, {
         store,
-        computeUsage: async (_cid, level) => {
-          if (level === "nest") return { spentCents: 5_000, events: 2 }; // 50% -> null
-          if (level === "caste") return { spentCents: 8_500, events: 5 }; // 85% -> 80
-          if (level === "foraging") return { spentCents: 9_600, events: 8 }; // 96% -> 95
-          return { spentCents: 0, events: 0 };
+        computeUsage: async (_deps, companyId, level, ref, period) => {
+          const usage = level === "nest"
+            ? { spentCents: 5_000, events: 2 } // 50% -> null
+            : level === "caste"
+              ? { spentCents: 8_500, events: 5 } // 85% -> 80
+              : level === "foraging"
+                ? { spentCents: 9_600, events: 8 } // 96% -> 95
+                : { spentCents: 0, events: 0 };
+          return { ...usage, companyId, level, ref, period };
         },
       });
 

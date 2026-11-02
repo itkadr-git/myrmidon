@@ -37,7 +37,10 @@ function limit(overrides: Partial<BudgetLimitView> & Pick<BudgetLimitView, "leve
 }
 
 function usage(row: BudgetLimitView, spentCents: number, overLimit = false): BudgetLimitUsageRow {
-  return { ...row, spentCents, events: 1, overLimit };
+  const warningThreshold = row.isActive
+    ? warningThresholdFromUsage(spentCents, row.amountCents)
+    : null;
+  return { ...row, spentCents, events: 1, overLimit, warningThreshold };
 }
 
 const PROJECT_ID = "11111111-2222-3333-4444-555555555555";
