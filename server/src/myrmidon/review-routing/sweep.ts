@@ -42,6 +42,7 @@ import {
   REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
+  REVIEW_ROUTING_WAKE_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
   type ReviewRoutingSettings,
@@ -55,12 +56,16 @@ import {
   buildReviewRoutingWakeContext,
   excludedReviewerIds,
   hoursSince,
+  isEscalatedReviewStage,
   isReviewOverdue,
+  issueAnchorAgentId,
   issueNeedsReviewer,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
+  type RoutingIssue,
 } from "./policy.js";
 import {
   prRoutingCoverageKey,
@@ -70,18 +75,37 @@ import {
   prTaskIsSuperseded,
   reviewTaskDueForHead,
   stewardTaskDueForHead,
+  shouldRouteOpenPrToReview,
 } from "./pr-policy.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
+import { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
+export { REVIEW_ROUTING_MAX_WAKES_PER_PASS, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS, REVIEW_ROUTING_MAX_MOVES_PER_PASS } from "./sweep-constants.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
 /** Tasks inspected per company per pass (oldest update first). */
 export const REVIEW_ROUTING_PAGE_SIZE = 200;
+
+/** True when some non-excluded pool member has strictly lower load than the current reviewer. */
+export function poolHasLessLoadedAlternative(
+  current: { id: string; load: number },
+  pool: readonly ReviewerCandidate[],
+  excluded: ReadonlySet<string>,
+): boolean {
+  return pool.some(
+    (candidate) => candidate.id !== current.id && !excluded.has(candidate.id) && candidate.load < current.load,
+  );
+}
+
+function routedReviewerIds(
+  history: ReadonlyMap<string, { lastAt: Date; reviewerAgentIds: string[] }>,
+  issueId: string,
+): string[] {
+  return history.get(issueId)?.reviewerAgentIds ?? [];
+}
 /** PR candidates inspected per company per pass. */
 export const REVIEW_ROUTING_PR_PAGE_SIZE = 100;
-/** Assignments and reassignments per company per pass. */
-export const REVIEW_ROUTING_MAX_MOVES_PER_PASS = 20;
 /** How long the card of a completed reassignment stays on the desk. */
 export const REVIEW_ROUTING_REASSIGN_SIGNAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const REVIEW_ROUTING_ACTOR_ID = "review_routing_sweep";
@@ -93,6 +117,8 @@ export interface ReviewRoutingSweepResult {
   reassigned: number;
   /** Tasks signalled (no reviewer, or overdue) in this pass. */
   signaled: number;
+  /** Targeted wakeups issued for stale reviewer stages. */
+  woken: number;
   failed: number;
   // --- PR lane (1.6.5, additive) ---------------------------------------------
   /** Open PR candidates this pass looked at. */
@@ -103,6 +129,8 @@ export interface ReviewRoutingSweepResult {
   stewardTasksCreated: number;
   /** Routed tasks cancelled because the PR head moved on. */
   prSuperseded: number;
+  /** Pull request review approvals propagated natively to GitHub. */
+  prApprovalsPropagated: number;
 }
 
 export interface ReviewRoutingSweepDeps {
@@ -110,6 +138,14 @@ export interface ReviewRoutingSweepDeps {
   readSettings: () => Promise<ReviewRoutingSettings>;
   /** GitHub head resolver; without it the PR lane stays inert (task lane only). */
   prResolver?: PullRequestHeadResolver;
+  /** PR approval propagator (propagates board review approvals to GitHub PR). */
+  approvalPropagator?: (input: {
+    companyId: string;
+    repository: string;
+    number: number;
+    headSha: string;
+    reviewedHeadSha?: string | null;
+  }) => Promise<{ success: boolean; action?: string }>;
   addComment: (
     issueId: string,
     body: string,
@@ -117,7 +153,7 @@ export interface ReviewRoutingSweepDeps {
   ) => Promise<unknown>;
   wakeReviewer: (
     agentId: string,
-    wake: { issueId: string; reason: string; mutation: string; executionStage: Record<string, unknown> },
+    wake: { issueId: string; reason: string; mutation: string; executionStage: Record<string, unknown>; retryAttempt?: number },
   ) => Promise<unknown>;
   logActivity: (input: {
     companyId: string;
@@ -187,6 +223,106 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       return liveReassignmentSignals(companyId, rowById, now);
     }
 
+    const liveSignals = liveReassignmentSignals(companyId, rowById, now);
+    const liveSignalIssues = new Set(liveSignals.map((signal) => signal.issueId));
+    const liveByReviewer = new Map<string, number>();
+    for (const [agentId, load] of await deps.store.loadByAgent(companyId)) {
+      liveByReviewer.set(agentId, load);
+    }
+    const activeStageIdsByIssue = new Map(pending.map(({ row }) => {
+      const policy = typeof row.executionPolicy === "object" && row.executionPolicy !== null
+        ? (row.executionPolicy as Record<string, unknown>)
+        : {};
+      const stages = Array.isArray(policy.stages) ? policy.stages : [];
+      const state = typeof row.executionState === "object" && row.executionState !== null
+        ? (row.executionState as Record<string, unknown>)
+        : {};
+      const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
+        ? (state.currentParticipant as Record<string, unknown>)
+        : {};
+      const ids = stages.filter((stage): stage is Record<string, unknown> => typeof stage === "object" && stage !== null)
+        .filter((stage) => stage.type === "review" && stage.id === state.currentStageId)
+        .filter((stage) => Array.isArray(stage.participants) && stage.participants.some((p) => {
+          if (typeof p !== "object" || p === null) return false;
+          const principal = p as Record<string, unknown>;
+          return principal.type === "agent" && principal.agentId === participant.agentId;
+        }))
+        .map((stage) => stage.id)
+        .filter((id): id is string => typeof id === "string");
+      return [row.id, new Set(ids)] as const;
+    }));
+    const activeStages = pending.filter(({ row, review }) => {
+      const state = typeof row.executionState === "object" && row.executionState !== null
+        ? (row.executionState as Record<string, unknown>)
+        : {};
+      const participant = typeof state.currentParticipant === "object" && state.currentParticipant !== null
+        ? (state.currentParticipant as Record<string, unknown>)
+        : {};
+      return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId && activeStageIdsByIssue.get(row.id)?.has(review.stageId) === true;
+    });
+    const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    const reviewersWoken = new Set<string>();
+    for (const { row, review } of orderedPending) {
+      if (reviewersWoken.has(review.reviewerAgentId)) continue;
+      try {
+        const wakeState = await deps.store.reviewWakeState({
+          companyId,
+          issueId: row.id,
+          reviewerAgentId: review.reviewerAgentId,
+          stageId: review.stageId,
+        });
+        if (wakeState.activeRun || wakeState.pendingWake) continue;
+        if (wakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+          await deps.store.recordReviewWakeEscalation({ companyId, issueId: row.id, reviewerAgentId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts, at: now });
+          log.warn({ companyId, issueId: row.id, reviewerId: review.reviewerAgentId, stageId: review.stageId, attempts: wakeState.attempts }, "review routing wake retries exhausted; escalation persisted for ADM");
+          continue;
+        }
+        // Cancelled runs for the same reviewer/task are direct evidence of a
+        // failed dispatch: retry on bounded backoff, without the initial stale delay.
+        const retryAnchor = wakeState.lastCancelledRunAt && (!wakeState.lastWakeAt || wakeState.lastCancelledRunAt > wakeState.lastWakeAt)
+          ? wakeState.lastCancelledRunAt
+          : wakeState.lastWakeAt;
+        if (retryAnchor) {
+          const backoffMs = Math.min(REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_RETRY_BACKOFF_MS * 2 ** Math.max(0, wakeState.attempts - 1));
+          if (now.getTime() - retryAnchor.getTime() < backoffMs) continue;
+        } else {
+          const lastActivity = row.updatedAt ?? row.createdAt;
+          if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
+        }
+        const attempt = wakeState.attempts + 1;
+        const wakeContext = buildReviewRoutingWakeContext(
+          (row.executionState ?? {}) as Record<string, unknown>,
+        );
+        const currentStage = review.stageId;
+        const activeRunCount = await deps.store.countActiveRunsForAgent(companyId, review.reviewerAgentId);
+        if (activeRunCount > 0) continue;
+        if (reviewersWoken.size >= REVIEW_ROUTING_MAX_WAKES_PER_PASS) break;
+        // Persist the wake request before dispatch: a failure while enqueuing
+        // still observes the cooldown on the next sweep rather than looping.
+        reviewersWoken.add(review.reviewerAgentId); // Reserve the per-reviewer dispatch budget even if dispatch rejects.
+        await deps.store.recordReviewWake({
+          companyId,
+          issueId: row.id,
+          reviewerAgentId: review.reviewerAgentId,
+          stageId: currentStage,
+          at: now,
+          attempt,
+        });
+        await deps.wakeReviewer(review.reviewerAgentId, {
+          issueId: row.id,
+          reason: "execution_review_requested",
+          mutation: "myrmidon_review_wakeup_retry",
+          executionStage: wakeContext as unknown as Record<string, unknown>,
+          retryAttempt: attempt,
+        });
+        liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
+        result.woken += 1;
+      } catch (err) {
+        result.failed += 1;
+        log.warn({ err, issueId: row.id, reviewerId: review.reviewerAgentId }, "review routing failed to wake a stale reviewer");
+      }
+    }
+
     const history = await deps.store.routingHistory(
       companyId,
       pending.map((entry) => entry.row.id),
@@ -198,22 +334,16 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         isReviewOverdue({ since: routed.lastAt, now, afterHours: settings.reassignAfterHours })
       );
     });
+    const overloaded = pending.filter((entry) => {
+      if (overdue.includes(entry)) return false;
+      if (isEscalatedReviewStage(entry.row)) return false;
+      const currentLoad = liveByReviewer.get(entry.review.reviewerAgentId) ?? 0;
+      return currentLoad > settings.queueThreshold;
+    });
 
     const signals: ReviewRoutingSignal[] = [];
     let moves = 0;
     let reviewerPool: ReviewerCandidate[] | null = null;
-    const managerChains = new Map<string, ReviewerCandidate[]>();
-    const managerCandidates = async (engineerId: string | null): Promise<ReviewerCandidate[]> => {
-      if (!engineerId) return [];
-      if (managerChains.has(engineerId)) return managerChains.get(engineerId)!;
-      const [agentRows, load] = await Promise.all([
-        deps.store.listManagerChainReviewerAgents(companyId, engineerId, settings.reviewerRoles),
-        deps.store.loadByAgent(companyId),
-      ]);
-      const candidates = agentRows.map((agent) => ({ id: agent.id, role: agent.role, load: load.get(agent.id) ?? 0 }));
-      managerChains.set(engineerId, candidates);
-      return candidates;
-    };
     const globalPool = async (): Promise<ReviewerCandidate[]> => {
       if (reviewerPool) return reviewerPool;
       const [agentRows, load] = await Promise.all([
@@ -222,16 +352,53 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       ]);
       reviewerPool = agentRows.map((agent) => ({
         id: agent.id,
+        name: agent.name,
         role: agent.role,
+        model: agent.model ?? null,
+        metadata: agent.metadata,
         invokable: agent.invokable ?? true,
         load: load.get(agent.id) ?? 0,
       }));
       return reviewerPool;
     };
     const pool = globalPool;
+    const agentGroupCache = new Map<string, string>();
+    const getAgentGroup = async (agentId?: string | null): Promise<string> => {
+      if (!agentId) return "";
+      const cached = agentGroupCache.get(agentId);
+      if (cached !== undefined) return cached;
+      const fromPool = (await pool()).find((c) => c.id === agentId);
+      if (fromPool) {
+        const key = resolveAgentGroupKey(fromPool);
+        agentGroupCache.set(agentId, key);
+        return key;
+      }
+      const fromStore = await deps.store.getAgent(companyId, agentId);
+      const key = resolveAgentGroupKey(fromStore);
+      agentGroupCache.set(agentId, key);
+      return key;
+    };
+    const getIssueGroupKey = async (row: RoutingIssue, currentReviewerId?: string): Promise<string> => {
+      const anchorId = issueAnchorAgentId(row);
+      if (anchorId) {
+        const group = await getAgentGroup(anchorId);
+        if (group) return group;
+      }
+      if (currentReviewerId) {
+        const group = await getAgentGroup(currentReviewerId);
+        if (group) return group;
+      }
+      return "";
+    };
+    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
+      const all = await pool();
+      if (!groupKey) return all;
+      const matching = all.filter((c) => resolveAgentGroupKey(c) === groupKey);
+      return matching.length > 0 ? matching : all;
+    };
     const bumpLoad = (agentId: string, delta: number) => {
-      for (const pool of [reviewerPool, ...managerChains.values()]) {
-        const candidate = pool?.find((entry) => entry.id === agentId);
+      if (reviewerPool) {
+        const candidate = reviewerPool.find((entry) => entry.id === agentId);
         if (candidate) candidate.load = Math.max(0, candidate.load + delta);
       }
     };
@@ -250,18 +417,22 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       try {
         let candidates: ReviewerCandidate[];
         try {
-          candidates = await managerCandidates(row.assigneeAgentId);
-          if (candidates.length === 0) candidates = await globalPool();
+          const groupKey = await getIssueGroupKey(row);
+          candidates = await poolForGroup(groupKey);
         } catch (error) {
           log.warn({ err: error, issueId: row.id, companyId }, "Review-routing reviewer lookup failed");
           signals.push(signal);
           result.failed += 1;
           continue;
         }
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
           candidates,
           excluded: excludedReviewerIds(row),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);
@@ -298,14 +469,20 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         continue;
       }
       try {
+        const groupKey = await getIssueGroupKey(row, review.reviewerAgentId);
+        const candidates = await poolForGroup(groupKey);
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
         const picked = pickReviewer({
-          candidates: await pool(),
+          candidates,
           excluded: excludedReviewerIds(row, [
             ...routed.reviewerAgentIds,
             review.reviewerAgentId,
             ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
           ]),
           maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
         });
         if (!picked) {
           signals.push(signal);
@@ -331,6 +508,70 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         signals.push(signal);
         result.failed += 1;
         log.warn({ err, issueId: row.id }, "review routing failed to reassign a reviewer");
+      }
+    }
+
+    for (const { row, review } of overloaded) {
+      const signal: ReviewRoutingSignal = {
+        kind: "review_overdue",
+        issueId: row.id,
+        companyId,
+        identifier: row.identifier,
+        title: row.title,
+        since: now.toISOString(),
+        hoursInReview: null,
+      };
+      if (moves >= REVIEW_ROUTING_MAX_MOVES_PER_PASS) {
+        signals.push(signal);
+        result.signaled += 1;
+        continue;
+      }
+      try {
+        const currentLoad = liveByReviewer.get(review.reviewerAgentId) ?? 0;
+        const groupKey = await getIssueGroupKey(row, review.reviewerAgentId);
+        const candidates = await poolForGroup(groupKey);
+        const authorModel = row.createdByAgentId
+          ? await deps.store.getAgentModel?.(companyId, row.createdByAgentId) ?? null
+          : null;
+        const picked = pickReviewer({
+          candidates,
+          excluded: excludedReviewerIds(row, [
+            ...routedReviewerIds(history, row.id),
+            review.reviewerAgentId,
+            ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
+          ]),
+          maxLoad: settings.maxLoadPerReviewer,
+          authorModel,
+        });
+        if (!picked || picked.load >= currentLoad) {
+          signals.push(signal);
+          result.signaled += 1;
+          continue;
+        }
+        const state = await reassign(row, review.reviewerAgentId, picked, 0, {
+          reason: "queue",
+          currentLoad,
+          threshold: settings.queueThreshold,
+        });
+        if (state) {
+          moves += 1;
+          result.reassigned += 1;
+          result.signaled += 1;
+          bumpLoad(picked.id, 1);
+          bumpLoad(review.reviewerAgentId, -1);
+          liveByReviewer.set(review.reviewerAgentId, Math.max(0, currentLoad - 1));
+          recentReassignments.set(row.id, {
+            signal,
+            untilMs: now.getTime() + REVIEW_ROUTING_REASSIGN_SIGNAL_TTL_MS,
+          });
+        } else {
+          signals.push(signal);
+          result.signaled += 1;
+        }
+      } catch (err) {
+        signals.push(signal);
+        result.failed += 1;
+        log.warn({ err, issueId: row.id }, "review routing failed to offload an overloaded reviewer");
       }
     }
 
@@ -385,6 +626,53 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     lastPrLaneAtMs = now.getTime();
 
     const signals: ReviewRoutingSignal[] = [];
+    const existingWork = await deps.store.listInProgressPrIssues(companyId, REVIEW_ROUTING_PR_PAGE_SIZE);
+    for (const row of existingWork) {
+      try {
+        const product = await deps.store.findPrWorkProduct(companyId, row.id);
+        if (!product) continue;
+        const head = await deps.prResolver.resolve({ companyId, repository: product.repository, number: product.number });
+        result.prScanned += 1;
+        if (head.reviewDecision !== null) continue;
+        if (!shouldRouteOpenPrToReview(head)) continue;
+        const [reviewerRows, boardLoad, openReviewLoad] = await Promise.all([
+          deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
+          deps.store.loadByAgent(companyId),
+          deps.store.openPrTaskLoadByAgent(companyId, "review"),
+        ]);
+        const picked = pickPrReviewer({
+          reviewers: reviewerRows.map((agent) => ({ ...agent, load: 0 })),
+          boardLoadByAgent: boardLoad,
+          openPrLoadByAgent: openReviewLoad,
+          excluded: new Set([row.assigneeAgentId ?? "", row.createdByAgentId ?? ""]),
+          maxLoadPerReviewer: settings.maxLoadPerReviewer,
+          maxOpenReviewsPerReviewer: prWatch.maxOpenReviewsPerReviewer,
+        });
+        if (!picked) continue;
+        const applied = await deps.store.applyPatch({
+          issueId: row.id,
+          companyId,
+          guard: (fresh) => fresh.status === "in_progress" && fresh.assigneeAgentId === row.assigneeAgentId,
+          build: (fresh) => buildReviewRoutingAssignPatch({ issue: fresh, reviewerAgentId: picked.id }),
+        });
+        if (!applied) continue;
+        await deps.logActivity({
+          companyId,
+          action: REVIEW_ROUTING_ASSIGNED_ACTION,
+          issueId: row.id,
+          details: { reviewerAgentId: picked.id, reviewerRole: picked.role, reason: "existing_pr_ci_wait", repository: product.repository, pullRequest: product.number, ci: head.ci },
+        });
+        await deps.addComment(row.id,
+          `Automatic review routing: ${product.repository}#${product.number} is open, non-draft, mergeable, and CI is pending or green. This task is now in review; the original assignee will resume only if changes are requested.`,
+          { presentation: notice("PR waiting for CI/review"), metadata: metadataFor({ "Pull request": `${product.repository}#${product.number}`, CI: head.ci, Reviewer: picked.id }) });
+        await wake(row, picked.id, applied.executionState, "myrmidon_review_routing_pr_wait");
+        result.assigned += 1;
+        result.prTasksCreated += 1;
+      } catch (err) {
+        result.failed += 1;
+        log.warn({ err, issueId: row.id }, "review routing failed to hand off an existing PR task");
+      }
+    }
     // Source (a): webhook-fed rows.
     const candidates = new Map<string, { repository: string; number: number }>();
     for (const row of await deps.store.listPrCandidates(companyId, REVIEW_ROUTING_PR_PAGE_SIZE)) {
@@ -493,6 +781,38 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           }
         }
         coverage.set(bucketKey, live);
+      }
+
+      // Native PR approval propagation from board review APPROVE decisions
+      // (or during PR sync review lane processing)
+      if (deps.approvalPropagator) {
+        const hasBoardApproval =
+          head.reviewDecision === "APPROVED" ||
+          (deps.store.hasApprovedBoardReview
+            ? await deps.store.hasApprovedBoardReview({
+                companyId,
+                repository: pr.repository,
+                number: pr.number,
+                headSha: head.headSha,
+              })
+            : false);
+
+        if (hasBoardApproval) {
+          try {
+            const propRes = await deps.approvalPropagator({
+              companyId,
+              repository: pr.repository,
+              number: pr.number,
+              headSha: head.headSha,
+              reviewedHeadSha: head.headSha,
+            });
+            if (propRes.success && propRes.action !== "noop" && propRes.action !== "skipped") {
+              result.prApprovalsPropagated += 1;
+            }
+          } catch (err) {
+            log.warn({ err, companyId, pr: `${pr.repository}#${pr.number}` }, "approval propagation failed during PR lane sweep");
+          }
+        }
       }
 
       const reviewDue = reviewTaskDueForHead(head);
@@ -645,6 +965,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     previousReviewerId: string,
     reviewer: ReviewerCandidate,
     hoursInReview: number,
+    overload?: { reason: "queue"; currentLoad: number; threshold: number },
   ) {
     const applied = await deps.store.applyPatch({
       issueId: row.id,
@@ -655,14 +976,22 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     if (!applied) return null;
     await deps.addComment(
       row.id,
-      `Automatic review routing: this review had no verdict for ${hoursInReview} h, so it was moved to ` +
-        "another reviewer. An attention card was raised for the operator.",
+      overload
+        ? `Automatic review routing: the reviewer's queue held ${overload.currentLoad} runs (threshold ${overload.threshold}), so the review was moved to the least-loaded pool member.`
+        : `Automatic review routing: this review had no verdict for ${hoursInReview} h, so it was moved to ` +
+            "another reviewer. An attention card was raised for the operator.",
       {
         presentation: { ...notice("Review reassigned"), tone: "warning" },
         metadata: metadataFor({
           "Previous reviewer": previousReviewerId,
           "New reviewer": reviewer.id,
-          "Hours in review": String(hoursInReview),
+          ...(overload
+            ? {
+                Reason: "reviewer-queue-overload",
+                "Queue size": String(overload.currentLoad),
+                Threshold: String(overload.threshold),
+              }
+            : { "Hours in review": String(hoursInReview) }),
         }),
       },
     );
@@ -676,6 +1005,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reviewerAgentId: reviewer.id,
         previousReviewerAgentId: previousReviewerId,
         hoursInReview,
+        ...(overload
+          ? { reason: "reviewer-queue-overload", currentLoad: overload.currentLoad, threshold: overload.threshold }
+          : {}),
       },
     });
     return applied;
@@ -692,11 +1024,21 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     mutation: string,
   ) {
     try {
+      const stageId = typeof state?.currentStageId === "string" ? state.currentStageId : "review";
+      const requestedAt = new Date().toISOString();
+      const lastWakeState = await deps.store.reviewWakeState({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId });
+      if (lastWakeState.attempts >= REVIEW_WAKE_MAX_ATTEMPTS) {
+        log.warn({ issueId: row.id, reviewerId, attempts: lastWakeState.attempts }, "review routing wake retry limit reached");
+        return null;
+      }
+      const attempt = lastWakeState.attempts + 1;
+      await deps.store.recordReviewWake({ companyId: row.companyId, issueId: row.id, reviewerAgentId: reviewerId, stageId, at: new Date(requestedAt), attempt });
       await deps.wakeReviewer(reviewerId, {
         issueId: row.id,
         reason: "execution_review_requested",
         mutation,
         executionStage: { ...buildReviewRoutingWakeContext(state ?? {}) },
+        retryAttempt: attempt,
       });
     } catch (err) {
       log.warn({ err, issueId: row.id, reviewerId }, "review routing wake failed after the assignment was committed");
@@ -717,11 +1059,13 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         assigned: 0,
         reassigned: 0,
         signaled: 0,
+        woken: 0,
         failed: 0,
         prScanned: 0,
         prTasksCreated: 0,
         stewardTasksCreated: 0,
         prSuperseded: 0,
+        prApprovalsPropagated: 0,
       };
       if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
         result.skippedPass = true;

@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { randomUUID } from "node:crypto";
@@ -12,6 +13,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueContinuationKeys,
   issueRecoveryActions,
   issues,
 } from "@myrmidon/db";
@@ -65,6 +67,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueContinuationKeys);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -623,6 +626,30 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow.executionRunId).toBe(runId);
   });
 
+  // A duplicate key must not abort the drain transaction or roll back its lease release.
+  it("keeps the drain transaction usable after a duplicate continuation claim", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const key = buildContinuationKey({ issueId, event: "issue_continuation_needed", head: runId });
+    await db.insert(issueContinuationKeys).values({ companyId, issueId, key, expiresAt: new Date(Date.now() + 60_000) });
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let claim: string | null = null;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      claim = await ports.transaction.claimContinuationKey({ companyId, issueId, key });
+      await ports.transaction.cancelDeferredWake({ companyId, wakeId, reason: "duplicate", now: new Date() });
+      await ports.transaction.releaseIssueExecutionLease({ companyId, issueId, runId });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(claim).toBe("deduped");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]?.status).toBe("cancelled");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.executionRunId).toBeNull();
+    expect(await db.select().from(issueContinuationKeys).where(eq(issueContinuationKeys.key, key))).toHaveLength(1);
+  });
+
   // Review defect: the reopen path must carry the company into every read,
   // lock, and write. A check before the write is not a boundary, because
   // `issues.company_id` can change between that check and the write.
@@ -811,6 +838,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(row.checkoutRunId).toBeNull();
     }
     await Promise.all([dbA.$client.end(), dbB.$client.end()]);
+  });
+
+  it("bounds N concurrent releases above a small pool without hanging", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runIds = await Promise.all(
+      Array.from({ length: 5 }, () => seedRun({ companyId, agentId, contextSnapshot: { issueId } })),
+    );
+    await db.update(issues).set({ executionRunId: runIds[0] }).where(eq(issues.id, issueId));
+
+    // Five workers contend for one issue through pools of two connections;
+    // this is deliberately larger than every pool and reproduces the former
+    // pool-starvation shape rather than merely checking two-way serialization.
+    const workerDbs = runIds.map(() => createDb(tempDb!.connectionString, { maxConnections: 2 }));
+    const adapters = workerDbs.map((workerDb) => createPostgresWakeQueueAdapter(workerDb, stubDeps));
+    const settled = await Promise.race([
+      Promise.all(runIds.map((runId, index) => adapters[index].withIssueExecutionLock(
+        { companyId, runId, now: new Date() },
+        async () => ({ outcome: { kind: "released" as const }, postCommitEffects: [] }),
+      ))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("concurrent release timed out")), 10_000)),
+    ]);
+    expect(settled).toHaveLength(runIds.length);
+    expect(settled.every((result) => result.outcome.kind === "released")).toBe(true);
+    await Promise.all(workerDbs.map((workerDb) => workerDb.$client.end()));
   });
 
   it("re-checks the interrupt queue under the lock: a queue dispatched by the lock holder while the release waits does not send it into the drain", async () => {

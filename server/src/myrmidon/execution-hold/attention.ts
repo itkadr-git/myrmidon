@@ -88,7 +88,7 @@ export async function listExecutionHoldCards(
       assigneeAgentId: issues.assigneeAgentId,
     })
     .from(issues)
-    .where(and(inArray(issues.id, issueIds), eq(issues.companyId, companyId), inArray(issues.status, ["todo", "in_progress", "in_review"])));
+    .where(and(inArray(issues.id, issueIds), eq(issues.companyId, companyId), inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"])));
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
 
   // Newest effective blocker per issue wins (the dispatcher's non-explicit
@@ -108,10 +108,11 @@ export async function listExecutionHoldCards(
   const cards: ExecutionHoldCardInput[] = [];
   for (const action of byIssue.values()) {
     const issue = issueById.get(action.sourceIssueId);
-    if (!issue || issue.assigneeAgentId == null) continue;
+    if (!issue) continue;
     const evidence = (action.evidence ?? {}) as Record<string, unknown>;
     const runIdRaw = evidence.runId ?? evidence.sourceRunId;
     const failedRunId = typeof runIdRaw === "string" && runIdRaw.length > 0 ? runIdRaw : null;
+    const lead = issue.assigneeAgentId ? leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "") : null;
     cards.push({
       actionId: action.id,
       issueId: issue.id,
@@ -122,9 +123,9 @@ export async function listExecutionHoldCards(
       failedRunId,
       nextAction: action.nextAction ?? null,
       activityAt: action.updatedAt.toISOString(),
-      responsibleAgentId: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "")?.id ?? null,
-      responsibleAgentName: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "")?.name ?? null,
-      responsibleUserId: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "") ? null : company?.defaultResponsibleUserId ?? null,
+      responsibleAgentId: lead?.id ?? null,
+      responsibleAgentName: lead?.name ?? null,
+      responsibleUserId: lead ? null : company?.defaultResponsibleUserId ?? null,
       decideByAt: new Date(action.updatedAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
     });
   }

@@ -2,6 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
@@ -91,7 +92,9 @@ describe("InstanceGeneralSettings sign-out", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -216,6 +219,13 @@ describe("InstanceGeneralSettings sign-out", () => {
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
   });
+
+  it("renders the link to secret references in the secrets area", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="system-secrets-link"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
+  });
 });
 
 describe("InstanceGeneralSettings operator-hidden sections", () => {
@@ -250,7 +260,9 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -344,7 +356,9 @@ describe("InstanceGeneralSettings backup retention keep-last-only", () => {
     flushSync(() => {
       root?.render(
         <QueryClientProvider client={queryClient}>
-          <InstanceGeneralSettings />
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });

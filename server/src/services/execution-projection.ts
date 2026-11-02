@@ -77,14 +77,37 @@ type Recovery = Pick<
     Pick<typeof issueRecoveryActions.$inferSelect, "status" | "evidence">
   >;
 
+export function sanitizeExecutionProjectionForActor(
+  projection: ExecutionProjection | null | undefined,
+  actor?: { type?: string } | null,
+): ExecutionProjection | null {
+  if (!projection) return null;
+  const clone: ExecutionProjection & { permittedActions?: unknown } = { ...projection };
+  delete clone.permittedActions;
+  if (actor?.type === "agent") {
+    delete clone.operatorActions;
+  }
+  return clone;
+}
+
+export type ExecutionProjectionOptions = {
+  liveSignalWindowSec?: number;
+  actor?: { type?: string } | null;
+};
+
 /** Batched reads; list consumers do not perform per-task polling. */
 export async function executionProjectionsForRuns(
   db: Db,
   companyId: string,
   runIds: string[],
   now = new Date(),
-  options?: { liveSignalWindowSec?: number },
+  optionsOrActor?: ExecutionProjectionOptions | { type?: string } | null,
 ) {
+  const options: ExecutionProjectionOptions | undefined =
+    optionsOrActor && "type" in optionsOrActor
+      ? { actor: optionsOrActor }
+      : (optionsOrActor as ExecutionProjectionOptions | undefined);
+  const actor = options?.actor;
   const projections = new Map<string, ExecutionProjection>();
   if (!runIds.length) return projections;
   const runs = await db
@@ -180,20 +203,21 @@ export async function executionProjectionsForRuns(
     );
     const action =
       matching.find((row) => row.status !== "resolved") ?? matching[0];
-    projections.set(
-      run.id,
-      projectExecution(
-        {
-          ...run,
-          lastEventAt: lastEventByRun.get(run.id) ?? null,
-        },
-        coordinatorByRun.get(run.id),
-        pending.filter((row) => row.issueId === issueId),
-        action,
-        now,
-        options,
-      ),
+    const raw = projectExecution(
+      {
+        ...run,
+        lastEventAt: lastEventByRun.get(run.id) ?? null,
+      },
+      coordinatorByRun.get(run.id),
+      pending.filter((row) => row.issueId === issueId),
+      action,
+      now,
+      options,
     );
+    const sanitized = sanitizeExecutionProjectionForActor(raw, actor);
+    if (sanitized) {
+      projections.set(run.id, sanitized);
+    }
   }
   return projections;
 }
@@ -203,10 +227,10 @@ export async function executionProjectionForRun(
   companyId: string,
   runId: string,
   now = new Date(),
-  options?: { liveSignalWindowSec?: number },
+  optionsOrActor?: ExecutionProjectionOptions | { type?: string } | null,
 ): Promise<ExecutionProjection | null> {
   return (
-    (await executionProjectionsForRuns(db, companyId, [runId], now, options)).get(
+    (await executionProjectionsForRuns(db, companyId, [runId], now, optionsOrActor)).get(
       runId,
     ) ?? null
   );
@@ -245,7 +269,7 @@ export function projectExecution(
     maxAttempts: 3,
     recoveryOwner: null,
     nextAction: text(detail.nextAction) ?? run.nextAction,
-    permittedActions: ["inspect_run"],
+    operatorActions: ["inspect_run"],
     predecessorRunId: run.retryOfRunId,
     successorRunId,
   };
@@ -340,7 +364,7 @@ export function projectExecution(
       text(detail.replacementDenied) ??
       projection.cause;
     projection.nextAction = recoveryAction?.nextAction ?? projection.nextAction;
-    projection.permittedActions.push("inspect_recovery");
+    projection.operatorActions?.push("inspect_recovery");
     return set("recovery_needed", "Recovery needed");
   }
   if (run.status === "succeeded") {

@@ -189,6 +189,7 @@ function getRoleRank(kind: string, candidate: NormalizedCandidate): number | nul
       return null;
 
     case "disk_space":
+    case "resource.oom":
       if (isMatch("devops", "infra", "sre")) return 1;
       if (isMatch("lead")) return 2;
       if (isMatch("engineer")) return 3;

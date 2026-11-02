@@ -6746,6 +6746,7 @@ export function IssueChatThread({
                     ) : null}
                     <IssueBlockedNotice
                       issueId={issueId}
+                      companyId={companyId}
                       issueStatus={issueStatus}
                       blockers={unresolvedBlockers}
                       allBlockers={blockedBy}

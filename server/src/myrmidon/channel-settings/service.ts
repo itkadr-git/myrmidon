@@ -91,8 +91,24 @@ export function channelSettingsService(
     ...overrides,
   };
   const env = deps.env ?? process.env;
+  const maskToken = (val: string): string => {
+    if (!val || val.trim().length === 0) return "";
+    if (val.trim().startsWith("secret:")) return val.trim();
+    return "********";
+  };
+  const maskSettings = (settings: ChannelSettings): ChannelSettings => ({
+    ...settings,
+    telegramPoolChatGptBotToken: {
+      ...settings.telegramPoolChatGptBotToken,
+      value: maskToken(settings.telegramPoolChatGptBotToken.value),
+    },
+    telegramPoolGeminiBotToken: {
+      ...settings.telegramPoolGeminiBotToken,
+      value: maskToken(settings.telegramPoolGeminiBotToken.value),
+    },
+  });
   const resolve = (stored: ChannelSettingsDocument): ChannelSettings =>
-    getEffectiveChannelSettings(stored, env);
+    maskSettings(getEffectiveChannelSettings(stored, env));
 
   return {
     read: async () => resolve(readStoredChannelSettings(await deps.settings.getGeneral())),
@@ -100,11 +116,33 @@ export function channelSettingsService(
     update: async (patch, actor) =>
       withChannelSettingsTransition(async () => {
         const general = await deps.settings.getGeneral();
-        const next = mergeChannelSettingsDocument(readStoredChannelSettings(general), patch);
-        const changedKeys = Object.keys(patch);
+        const stored = readStoredChannelSettings(general);
+        const cleanedPatch: ChannelSettingsPatch = { ...patch };
+        if (cleanedPatch.telegramPoolChatGptBotToken === "********") {
+          delete cleanedPatch.telegramPoolChatGptBotToken;
+        }
+        if (cleanedPatch.telegramPoolGeminiBotToken === "********") {
+          delete cleanedPatch.telegramPoolGeminiBotToken;
+        }
+        const next = mergeChannelSettingsDocument(stored, cleanedPatch);
+        const changedKeys = Object.keys(cleanedPatch);
 
         if (changedKeys.length > 0) {
           await deps.settings.updateGeneral({ channelSettings: next });
+
+          const auditChannel: Record<string, unknown> = { ...(next.channel ?? {}) };
+          if (
+            typeof auditChannel.telegramPoolChatGptBotToken === "string" &&
+            !auditChannel.telegramPoolChatGptBotToken.startsWith("secret:")
+          ) {
+            auditChannel.telegramPoolChatGptBotToken = "********";
+          }
+          if (
+            typeof auditChannel.telegramPoolGeminiBotToken === "string" &&
+            !auditChannel.telegramPoolGeminiBotToken.startsWith("secret:")
+          ) {
+            auditChannel.telegramPoolGeminiBotToken = "********";
+          }
 
           const companyIds = await deps.listCompanyIds();
           await Promise.all(
@@ -119,7 +157,7 @@ export function channelSettingsService(
                 action: CHANNEL_SETTINGS_ACTION,
                 entityType: "instance_settings",
                 entityId: CHANNEL_SETTINGS_GENERAL_KEY,
-                details: { changedKeys, channel: next.channel ?? {} },
+                details: { changedKeys, channel: auditChannel },
               }),
             ),
           );

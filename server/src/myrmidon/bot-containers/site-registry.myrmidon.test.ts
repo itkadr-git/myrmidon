@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   bootstrapFleetSitesFromEnv,
   bumpFleetRegistryVersion,
+  caCertFingerprint,
   createFleetClientManager,
   deleteFleetAffinity,
   getFleetRegistryVersion,
@@ -14,6 +15,7 @@ import {
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
 import { fleetSiteKey } from "./fleetd-hosts.js";
 import type { FleetdDriverConfig } from "./fleetd-driver.js";
+import { cleanupTestPki, generateEphemeralTestPki } from "./site-agent-pki.js";
 
 function fakeDriver(name: string): BotContainerDriver {
   return {
@@ -77,6 +79,8 @@ describe("site-registry — parseTlsCredentials", () => {
 
 describe("site-registry — createFleetClientManager", () => {
   it("resolves tokenSecret and client certificates, building mTLS agents for https sites", async () => {
+    const pki = generateEphemeralTestPki();
+    expect(pki.caCert).toContain("BEGIN CERTIFICATE");
     const sites: FleetSite[] = [
       {
         id: "site-1",
@@ -84,7 +88,9 @@ describe("site-registry — createFleetClientManager", () => {
         name: "myr-vm1",
         url: "https://myr-vm1.example.test:9443",
         tokenSecret: "myr-vm1-token",
-        caCert: "-----BEGIN CERTIFICATE-----\nFAKE CA\n-----END CERTIFICATE-----",
+        caCert: pki.caCert,
+        caCertFingerprint: caCertFingerprint(pki.caCert)!,
+        clientCert: pki.clientCert,
         clientCertSecretKey: "myr-vm1-client-key",
         status: "active",
         capacity: { maxCpus: 8, maxMemoryMb: 32768 },
@@ -97,8 +103,12 @@ describe("site-registry — createFleetClientManager", () => {
         id: "site-2",
         companyId: "company-1",
         name: "local-fleet",
-        url: "http://127.0.0.1:9100",
+        url: "https://127.0.0.1:9100",
         tokenSecret: "local-token",
+        caCert: pki.caCert,
+        caCertFingerprint: caCertFingerprint(pki.caCert)!,
+        clientCert: pki.clientCert,
+        clientCertSecretKey: "local-fleet-client-key",
         status: "active",
         capacity: { maxCpus: 4, maxMemoryMb: 16384 },
         profile: {},
@@ -128,9 +138,10 @@ describe("site-registry — createFleetClientManager", () => {
 
     const secretStore: Record<string, string> = {
       "myr-vm1-token": "secret-token-val-123",
-      "myr-vm1-client-key": "fake-client-key",
-      "myr-vm1-client-cert": "fake-client-cert",
+      "myr-vm1-client-key": pki.clientKey,
       "local-token": "local-token-val-456",
+      "local-fleet-client-key": pki.clientKey,
+      "token-row": "row-token",
     };
 
     const createdConfigs: FleetdDriverConfig[] = [];
@@ -143,35 +154,45 @@ describe("site-registry — createFleetClientManager", () => {
       },
     });
 
-    const clients = await manager.refresh();
-    expect(clients.has(fleetSiteKey("company-1", "myr-vm1"))).toBe(true);
-    expect(clients.has(fleetSiteKey("company-1", "local-fleet"))).toBe(true);
-    expect(clients.has(fleetSiteKey("company-1", "inactive-site"))).toBe(false);
+    try {
+      const clients = await manager.refresh();
+      expect(clients.has(fleetSiteKey("company-1", "myr-vm1"))).toBe(true);
+      expect(clients.has(fleetSiteKey("company-1", "local-fleet"))).toBe(true);
+      expect(clients.has(fleetSiteKey("company-1", "inactive-site"))).toBe(false);
 
-    const httpsConfig = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
-    expect(httpsConfig).toBeDefined();
-    expect(httpsConfig!.token).toBe("secret-token-val-123");
-    expect(httpsConfig!.caCert).toContain("FAKE CA");
-    expect(httpsConfig!.clientCert).toContain("fake-client-cert");
-    expect(httpsConfig!.clientKey).toContain("fake-client-key");
-    expect(httpsConfig!.httpsAgent).toBeDefined();
+      const httpsConfig = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
+      expect(httpsConfig).toBeDefined();
+      expect(httpsConfig!.token).toBe("secret-token-val-123");
+      expect(httpsConfig!.caCert).toContain(pki.caCert);
+      expect(httpsConfig!.clientCert).toContain(pki.clientCert);
+      expect(httpsConfig!.clientKey).toContain(pki.clientKey.trim());
+      expect(httpsConfig!.httpsAgent).toBeDefined();
 
-    const agentOptions = (httpsConfig!.httpsAgent as any).options;
-    expect(agentOptions.ca).toContain("FAKE CA");
-    expect(agentOptions.cert).toContain("fake-client-cert");
-    expect(agentOptions.key).toContain("fake-client-key");
-    expect(agentOptions.rejectUnauthorized).toBe(true);
+      const agentOptions = (httpsConfig!.httpsAgent as any).options;
+      expect(agentOptions.ca).toContain(pki.caCert);
+      expect(agentOptions.cert).toContain(pki.clientCert.trim());
+      expect(agentOptions.key).toContain(pki.clientKey.trim());
+      expect(agentOptions.rejectUnauthorized).toBe(true);
 
-    const httpConfig = createdConfigs.find((c) => c.baseUrl === "http://127.0.0.1:9100");
-    expect(httpConfig).toBeDefined();
-    expect(httpConfig!.token).toBe("local-token-val-456");
-    expect(httpConfig!.httpsAgent).toBeUndefined();
-
-    manager.close();
-    expect(manager.getClients().size).toBe(0);
+      const localConfig = createdConfigs.find((c) => c.baseUrl === "https://127.0.0.1:9100");
+      expect(localConfig).toBeDefined();
+      expect(localConfig!.token).toBe("local-token-val-456");
+      expect(localConfig!.clientCert).toContain(pki.clientCert.trim());
+      expect(localConfig!.clientKey).toContain(pki.clientKey.trim());
+      expect(localConfig!.httpsAgent).toBeDefined();
+      const localAgentOptions = (localConfig!.httpsAgent as any).options;
+      expect(localAgentOptions.cert).toContain(pki.clientCert.trim());
+      expect(localAgentOptions.key).toContain(pki.clientKey.trim());
+      expect(localAgentOptions.ca).toContain(pki.caCert);
+      expect(localAgentOptions.rejectUnauthorized).toBe(true);
+    } finally {
+      manager.close();
+      cleanupTestPki(pki);
+    }
   });
 
   it("resolves client certificate and private key from a single JSON bundle secret", async () => {
+    const pki = generateEphemeralTestPki();
     const sites: FleetSite[] = [
       {
         id: "site-bundle",
@@ -179,7 +200,8 @@ describe("site-registry — createFleetClientManager", () => {
         name: "myr-bundle",
         url: "https://myr-vm1.example.test:9443",
         clientCertSecretKey: "myr-bundle-secret",
-        caCert: "-----BEGIN CERTIFICATE-----\nBUNDLE CA\n-----END CERTIFICATE-----",
+        caCert: pki.caCert,
+        caCertFingerprint: caCertFingerprint(pki.caCert)!,
         status: "active",
         capacity: { maxCpus: 4, maxMemoryMb: 16384 },
         profile: {},
@@ -197,8 +219,8 @@ describe("site-registry — createFleetClientManager", () => {
 
     const secretStore: Record<string, string> = {
       "myr-bundle-secret": JSON.stringify({
-        cert: "bundle-client-cert",
-        key: "bundle-client-key",
+        cert: pki.clientCert,
+        key: pki.clientKey,
       }),
     };
 
@@ -212,30 +234,37 @@ describe("site-registry — createFleetClientManager", () => {
       },
     });
 
-    await manager.refresh();
-    const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
-    expect(config).toBeDefined();
-    expect(config!.clientCert).toContain("bundle-client-cert");
-    expect(config!.clientKey).toContain("bundle-client-key");
+    try {
+      await manager.refresh();
+      const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
+      expect(config).toBeDefined();
+      expect(config!.clientCert).toContain(pki.clientCert.trim());
+      expect(config!.clientKey).toContain(pki.clientKey.trim());
 
-    const agentOptions = (config!.httpsAgent as any).options;
-    expect(agentOptions.cert).toContain("bundle-client-cert");
-    expect(agentOptions.key).toContain("bundle-client-key");
-    expect(agentOptions.ca).toContain("BUNDLE CA");
-    expect(agentOptions.rejectUnauthorized).toBe(true);
-
-    manager.close();
+      const agentOptions = (config!.httpsAgent as any).options;
+      expect(agentOptions.cert).toContain(pki.clientCert.trim());
+      expect(agentOptions.key).toContain(pki.clientKey.trim());
+      expect(agentOptions.ca).toContain(pki.caCert);
+      expect(agentOptions.rejectUnauthorized).toBe(true);
+    } finally {
+      manager.close();
+      cleanupTestPki(pki);
+    }
   });
 
   it("uses clientCert stored directly in the database row alongside a key secret", async () => {
+    const pki = generateEphemeralTestPki();
     const sites: FleetSite[] = [
       {
         id: "site-row",
         companyId: "company-1",
         name: "myr-direct",
         url: "https://myr-vm1.example.test:9443",
-        clientCert: "row-client-cert",
+        clientCert: pki.clientCert,
         clientCertSecretKey: "myr-row-key",
+        caCert: pki.caCert,
+        caCertFingerprint: caCertFingerprint(pki.caCert)!,
+        tokenSecret: "token-row",
         status: "active",
         capacity: { maxCpus: 4, maxMemoryMb: 16384 },
         profile: {},
@@ -252,7 +281,8 @@ describe("site-registry — createFleetClientManager", () => {
     } as any;
 
     const secretStore: Record<string, string> = {
-      "myr-row-key": "row-client-key",
+      "token-row": "row-token",
+      "myr-row-key": pki.clientKey,
     };
 
     const createdConfigs: FleetdDriverConfig[] = [];
@@ -265,18 +295,22 @@ describe("site-registry — createFleetClientManager", () => {
       },
     });
 
-    await manager.refresh();
-    const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
-    expect(config).toBeDefined();
-    expect(config!.clientCert).toContain("row-client-cert");
-    expect(config!.clientKey).toContain("row-client-key");
+    try {
+      await manager.refresh();
+      const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
+      expect(config).toBeDefined();
+      expect(config!.clientCert).toContain(pki.clientCert.trim());
+      expect(config!.clientKey).toContain(pki.clientKey.trim());
 
-    const agentOptions = (config!.httpsAgent as any).options;
-    expect(agentOptions.cert).toContain("row-client-cert");
-    expect(agentOptions.key).toContain("row-client-key");
-    expect(agentOptions.rejectUnauthorized).toBe(true);
-
-    manager.close();
+      const agentOptions = (config!.httpsAgent as any).options;
+      expect(agentOptions.cert).toContain(pki.clientCert.trim());
+      expect(agentOptions.key).toContain(pki.clientKey.trim());
+      expect(agentOptions.ca).toContain(pki.caCert);
+      expect(agentOptions.rejectUnauthorized).toBe(true);
+    } finally {
+      manager.close();
+      cleanupTestPki(pki);
+    }
   });
 
   it("handles database errors gracefully during refresh without throwing", async () => {
@@ -352,6 +386,7 @@ describe("site-registry — tenant isolation", () => {
 });
 
 describe("site-registry — hot-reload and client lifecycle", () => {
+  const pki = generateEphemeralTestPki();
   const mkSite = (over: Partial<FleetSite> = {}): FleetSite =>
     ({
       id: "site-1",
@@ -359,6 +394,10 @@ describe("site-registry — hot-reload and client lifecycle", () => {
       name: "myr-vm1",
       url: "https://myr-vm1.example.test:9443",
       tokenSecret: "tok",
+      caCert: pki.caCert,
+      caCertFingerprint: caCertFingerprint(pki.caCert)!,
+      clientCert: pki.clientCert,
+      clientCertSecretKey: "client-key",
       status: "active",
       capacity: { maxCpus: 2, maxMemoryMb: 8192 },
       profile: {},
@@ -374,7 +413,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const fakeDb = { select: () => ({ from }) } as any;
     const manager = createFleetClientManager({
       db: fakeDb,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (companyId, name) => name === "client-key" ? "fake-client-key" : `secret:${companyId}:${name}`,
       createDriver: (c) => fakeDriver(c.baseUrl),
       refreshTtlMs: 60_000,
     });
@@ -396,7 +435,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const from = vi.fn(() => Promise.resolve([mkSite()]));
     const manager = createFleetClientManager({
       db: { select: () => ({ from }) } as any,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (companyId, name) => name === "client-key" ? "fake-client-key" : `secret:${companyId}:${name}`,
       createDriver: (c) => fakeDriver(c.baseUrl),
       refreshTtlMs: 30_000,
       now: () => t,
@@ -414,7 +453,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve([mkSite()]) }) } as any,
-      readCompanySecret: async () => value,
+      readCompanySecret: async (_companyId, name) => name === "client-key" ? "fake-client-key" : value,
       createDriver: (c) => {
         created.push(c);
         return fakeDriver(c.baseUrl);
@@ -457,7 +496,7 @@ describe("site-registry — hot-reload and client lifecycle", () => {
     const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
-      readCompanySecret: async () => "tok-1",
+      readCompanySecret: async (_companyId, name) => name === "client-key" ? "fake-client-key" : "tok-1",
       createDriver: (c) => {
         created.push(c);
         return fakeDriver(c.baseUrl);
@@ -549,6 +588,9 @@ describe("site-registry — client map and site status", () => {
     name,
     url,
     tokenSecret: `${name}-token`,
+    clientCert: "TEST CLIENT CERTIFICATE",
+    clientCertSecretKey: `${name}-key`,
+    caCert: "TEST CA CERTIFICATE",
     status,
     capacity: { maxCpus: 2, maxMemoryMb: 4096 },
     profile: {},
@@ -559,27 +601,32 @@ describe("site-registry — client map and site status", () => {
 
   it("keeps active and draining clients, drops quarantined ones, and exposes the transport of each kept client", async () => {
     let sites = [
-      site("up", "active", "http://127.0.0.1:9101"),
-      site("drained", "draining", "http://127.0.0.1:9102"),
-      site("held", "quarantined", "http://127.0.0.1:9103"),
+      site("up", "active", "https://127.0.0.1:9101"),
+      site("drained", "draining", "https://127.0.0.1:9102"),
+      site("held", "quarantined", "https://127.0.0.1:9103"),
     ];
+    const created: FleetdDriverConfig[] = [];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
       keepDrainingClients: true,
-      readCompanySecret: async (_c, name) => `value-of-${name}`,
-      createDriver: (config) => fakeDriver(config.baseUrl),
+      readCompanySecret: async (_c, name) => name === "up-key" || name === "drained-key" ? "fake-private-key" : `value-of-${name}`,
+      createDriver: (config) => {
+        created.push(config);
+        return fakeDriver(config.baseUrl);
+      },
     });
 
     const clients = await manager.refresh();
     expect([...clients.keys()].sort()).toEqual([fleetSiteKey("company-1", "drained"), fleetSiteKey("company-1", "up")]);
-    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toEqual({
-      baseUrl: "http://127.0.0.1:9102",
+    expect(manager.getTransports?.().get(fleetSiteKey("company-1", "drained"))).toMatchObject({
+      baseUrl: "https://127.0.0.1:9102",
       token: "value-of-drained-token",
+      mtls: true,
     });
     expect(manager.getTransports?.().has(fleetSiteKey("company-1", "held"))).toBe(false);
 
     // The monitor drains "up" and quarantines "drained": the client map follows the registry.
-    sites = [site("up", "draining", "http://127.0.0.1:9101"), site("drained", "quarantined", "http://127.0.0.1:9102")];
+    sites = [site("up", "draining", "https://127.0.0.1:9101"), site("drained", "quarantined", "https://127.0.0.1:9102")];
     await manager.refresh();
     expect([...manager.getClients().keys()]).toEqual([fleetSiteKey("company-1", "up")]);
     expect(manager.getTransports?.().has(fleetSiteKey("company-1", "drained"))).toBe(false);
@@ -588,10 +635,10 @@ describe("site-registry — client map and site status", () => {
   });
 
   it("without keepDrainingClients (MYRMIDON_SITE_HEALTH off) a draining site loses its client, as before", async () => {
-    const sites = [site("up", "active", "http://127.0.0.1:9101"), site("drained", "draining", "http://127.0.0.1:9102")];
+    const sites = [site("up", "active", "https://127.0.0.1:9101"), site("drained", "draining", "https://127.0.0.1:9102")];
     const manager = createFleetClientManager({
       db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
-      readCompanySecret: async (_c, name) => `value-of-${name}`,
+      readCompanySecret: async (_c, name) => name === "up-key" ? "fake-private-key" : `value-of-${name}`,
       createDriver: (config) => fakeDriver(config.baseUrl),
     });
     await manager.refresh();
@@ -623,32 +670,45 @@ describe("site-registry — CA pin and create", () => {
     expect(getFleetRegistryVersion()).toBeGreaterThan(before);
   });
 
-  it("builds no client when the stored CA no longer matches its enrolled fingerprint", async () => {
+  it("drops a cached client when the stored CA no longer matches its enrolled fingerprint", async () => {
     const { generateEphemeralTestPki, cleanupTestPki } = await import("./site-agent-pki.js");
     const { caCertFingerprint } = await import("./site-registry.js");
     const pki = generateEphemeralTestPki();
     try {
-      const mk = (fingerprint: string) =>
-        ({
-          id: "s1", companyId: "c", name: "x", url: "https://h:9100", status: "active", tokenSecret: "t",
-          caCert: pki.caCert, caCertFingerprint: fingerprint, capacity: {}, profile: {},
-          enrolledAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
-        }) as unknown as FleetSite;
-      for (const [fp, expected] of [[caCertFingerprint(pki.caCert)!, 1], ["0".repeat(64), 0]] as const) {
-        const created: FleetdDriverConfig[] = [];
-        const manager = createFleetClientManager({
-          db: { select: () => ({ from: () => Promise.resolve([mk(fp)]) }) } as any,
-          readCompanySecret: async () => "tok",
-          createDriver: (c) => {
-            created.push(c);
-            return fakeDriver(c.baseUrl);
-          },
-          log: { warn: () => {}, info: () => {} } as any,
-        });
-        await manager.refresh();
-        expect(created).toHaveLength(expected);
-        manager.close();
-      }
+      const site = {
+        id: "s1", companyId: "c", name: "x", url: "https://h:9100", status: "active", tokenSecret: "t",
+        caCert: pki.caCert, caCertFingerprint: caCertFingerprint(pki.caCert)!, clientCert: pki.clientCert,
+        clientCertSecretKey: "cert-key", capacity: {}, profile: {},
+        enrolledAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
+      } as unknown as FleetSite;
+      const created: FleetdDriverConfig[] = [];
+      const manager = createFleetClientManager({
+        db: { select: () => ({ from: () => Promise.resolve([site]) }) } as any,
+        readCompanySecret: async (_companyId, keyName) => keyName === "t" ? "tok" : keyName === "cert-key" ? pki.clientKey : null,
+        createDriver: (config) => {
+          created.push(config);
+          return fakeDriver(config.baseUrl);
+        },
+      });
+
+      await manager.refresh();
+      expect(created).toHaveLength(1);
+      expect(manager.getClients().size).toBe(1);
+      expect(manager.getTransports?.().size).toBe(1);
+
+      site.caCertFingerprint = "0".repeat(64);
+      await manager.refresh();
+      expect(manager.getClients().size).toBe(0);
+      expect(manager.getTransports?.().size).toBe(0);
+      expect(created).toHaveLength(1);
+
+      site.caCertFingerprint = caCertFingerprint(pki.caCert)!;
+      site.clientCert = undefined;
+      await manager.refresh();
+      expect(manager.getClients().size).toBe(0);
+      expect(manager.getTransports?.().size).toBe(0);
+      expect(created).toHaveLength(1);
+      manager.close();
     } finally {
       cleanupTestPki(pki);
     }

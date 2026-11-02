@@ -43,3 +43,15 @@ endpoint with the candidate key before anything is written:
 
 The successful answer is cached as `model_provider_models`, one row per model,
 with the `litellm_model_name` the gateway registration (part B) will use.
+
+## Safe LiteLLM synchronization rollout
+
+1. Ensure the LiteLLM admin key is available as a company secret.
+2. Set `MYRMIDON_LITELLM_BASE_URL` to the LiteLLM base URL.
+3. Set `MYRMIDON_LITELLM_ADMIN_KEY_SECRET` to the secret name. Do not set it to the key value.
+4. Deploy the board and check synchronization logs before enabling provider models.
+5. Enable one provider model and verify the LiteLLM model registry and an agent-key request.
+6. Before and after the change, export `/key/list`. Confirm that unrelated models remain unchanged.
+7. To roll back, disable the provider model, confirm its board-owned LiteLLM deployment is removed, then unset the admin-key setting. Existing unrelated LiteLLM models and agent-key allowlists remain untouched.
+
+The sync sends the resolved provider credential value to LiteLLM. LiteLLM stores and encrypts that value. The sync never sends `secrets/<name>` as a provider credential reference. Agent keys with an empty model list mean ALL models and are not changed by the board sync. For restricted keys, the sync adds or removes only models owned by the board provider registry.

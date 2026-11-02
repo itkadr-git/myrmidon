@@ -36,6 +36,14 @@ export function myrmidonBotLspRoutes(db: Db) {
             adapterConfig: row.lsp === null || row.lsp === undefined ? {} : { lsp: row.lsp },
           })),
         ),
+    listContainerMemoryMb: async () =>
+      db
+        .select({
+          memoryMb: sql<number | null>`case when (${agentsTable.adapterConfig} -> 'container' ->> 'enabled') = 'true' then coalesce(nullif((${agentsTable.adapterConfig} -> 'container' ->> 'memoryMb'), '')::int, 1024) else null end`,
+        })
+        .from(agentsTable)
+        .where(and(eq(agentsTable.adapterType, HERMES_GATEWAY_ADAPTER_TYPE), ne(agentsTable.status, "terminated")))
+        .then((rows) => rows.map((row) => row.memoryMb)),
   });
   return botLspRoutes(db, service);
 }
