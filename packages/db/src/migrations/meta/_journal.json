@@ -2592,6 +2592,13 @@
       "when": 1793323806003,
       "tag": "0436_knowledge_deviations",
       "breakpoints": true
+    },
+    {
+      "idx": 439,
+      "version": "7",
+      "when": 1793560000000,
+      "tag": "0439_guardrail_events_enforcement",
+      "breakpoints": true
     }
   ]
 }
