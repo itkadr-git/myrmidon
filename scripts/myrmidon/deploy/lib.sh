@@ -764,7 +764,9 @@ post_deploy_fleet_check() {
   local run_count="${MYRMIDON_DEPLOY_POSTCHECK_RUNS:-5}"
   local timeout_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC:-600}"
   local interval_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC:-10}"
-  if [[ ! "$run_count" =~ ^[1-9][0-9]*$ || ! "$timeout_sec" =~ ^[1-9][0-9]*$ || ! "$interval_sec" =~ ^[1-9][0-9]*$ ]]; then
+  if [[ "$run_count" == "0" ]]; then
+    :
+  elif [[ ! "$run_count" =~ ^[1-9][0-9]*$ || ! "$timeout_sec" =~ ^[1-9][0-9]*$ || ! "$interval_sec" =~ ^[1-9][0-9]*$ ]]; then
     log "degraded: invalid MYRMIDON_DEPLOY_POSTCHECK_RUNS settings"
     return 1
   fi

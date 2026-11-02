@@ -1176,14 +1176,17 @@ esac
   function callLib(sb, functionCall) {
     const libScript = path.join(sb.dir, "call-lib.sh");
     fs.writeFileSync(libScript, `source "$MYR_SCRIPT_DIR/lib.sh"; load_config "$LIB_CONFIG"; ${functionCall}\n`, { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: `${sb.bin}:${process.env.PATH}`,
+      SANDBOX: sb.dir,
+      LIB_CONFIG: sb.config,
+      MYR_SCRIPT_DIR: HERE,
+    };
+    delete env.BASH_ENV;
+    delete env.ENV;
     const result = spawnSync(bashPath(), [libScript], {
-      env: {
-        ...process.env,
-        PATH: `${sb.bin}:${process.env.PATH}`,
-        SANDBOX: sb.dir,
-        LIB_CONFIG: sb.config,
-        MYR_SCRIPT_DIR: HERE,
-      },
+      env,
       encoding: "utf8",
     });
     return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -1301,6 +1304,17 @@ esac
     assert.equal(code, 1, out);
     assert.match(out, /no successful hermes_gateway runs among the first 5 completed runs/);
     assert.match(out, /adapter_failed/);
+  });
+
+  it("post_deploy_fleet_check skips gateway run check when MYRMIDON_DEPLOY_POSTCHECK_RUNS=0", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=0\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /completed hermes_gateway run/);
+    assert.match(out, /no blocked issues in the deploy window, maintenance retired/);
   });
 
   it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {
