@@ -240,7 +240,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("daily endpoint unavailable");
     expect(container.querySelector(".ui2-costs-chart")).toBeNull();
-    expect(container.querySelector(".ui2-costs-issues")).toBeNull();
+    expect(container.querySelector(".ui2-costs-issues")).not.toBeNull();
   });
 
   it("shows empty state for empty daily costs and issue results", async () => {
