@@ -1,160 +1,109 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const ENTRYPOINT = path.join(REPO_ROOT, "docker/bot-runtime/entrypoint.sh");
+const DOCKERFILE = path.join(REPO_ROOT, "docker/bot-runtime/Dockerfile");
+
+function maintenanceFunction() {
+  const source = fs.readFileSync(ENTRYPOINT, "utf8");
+  const start = source.indexOf("run_live_session_maintenance() {");
+  const deadline = source.indexOf("local deadline=$(( $(date +%s) + ${MYRMIDON_BOTD_SESSION_HEALTH_WAIT_SEC:-180} ))", start);
+  const end = source.indexOf("\n}\n\n# Maintenance is intentionally detached", start) + 2;
+  assert.ok(start >= 0 && deadline >= 0 && end > deadline, "live maintenance function must be extractable");
+  return source.slice(start, end);
+}
 
 describe("1.6.6 BOT-DISK hermes session maintenance", () => {
-  it("entrypoint declares run_session_maintenance with a bounded, kill-after timeout before gateway_launch", () => {
+  it("starts the gateway before background session retention", () => {
     const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    const maintenanceDef = source.indexOf("run_session_maintenance()");
-    const maintenanceCall = source.indexOf(`timeout --signal=TERM --kill-after=10s "\${m_timeout}s" bash -c 'run_session_maintenance'`);
     const gatewayLaunch = source.indexOf('log "phase gateway_launch starting"');
+    const liveDefinition = source.indexOf("run_live_session_maintenance() {");
+    const liveCall = source.indexOf("run_live_session_maintenance >/dev/null 2>&1 &");
 
-    assert.ok(maintenanceDef >= 0, "run_session_maintenance must be defined");
-    assert.ok(maintenanceCall >= 0, "must invoke run_session_maintenance with a bounded timeout and --kill-after");
     assert.ok(gatewayLaunch >= 0, "gateway launch must be present");
-    assert.ok(maintenanceCall < gatewayLaunch, "session maintenance must run before gateway launch");
+    assert.ok(liveDefinition > gatewayLaunch, "live retention must be defined after gateway launch");
+    assert.ok(liveCall > gatewayLaunch, "live retention must be launched after gateway launch");
+    assert.equal(source.indexOf("run_session_maintenance", 0), -1, "obsolete startup maintenance must not be present");
   });
 
-  it("exports sessions older than N to jsonl.gz and prunes them, leaving pinned sessions untouched", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-maint-test-"));
-    const hermesHome = path.join(tmpDir, "hermes");
-    const binDir = path.join(tmpDir, "bin");
-    fs.mkdirSync(hermesHome, { recursive: true });
-    fs.mkdirSync(binDir, { recursive: true });
-
-    // Create a dummy state.db
-    fs.writeFileSync(path.join(hermesHome, "state.db"), "dummy sqlite db");
-
-    // Create a mock hermes CLI that simulates export, prune and optimize
-    const logFile = path.join(tmpDir, "hermes.log");
-    const mockHermes = path.join(binDir, "hermes");
-    fs.writeFileSync(
-      mockHermes,
-      `#!/bin/bash
-echo "$@" >> "${logFile}"
-if [ "$1" = "sessions" ] && [ "$2" = "export" ]; then
-  # Simulate exporting 1 old unpinned session (pinned is excluded by default)
-  echo '{"id":"old-session-1","pinned":false,"ended_at":"2026-09-01T00:00:00Z"}'
-  exit 0
-elif [ "$1" = "sessions" ] && [ "$2" = "prune" ]; then
-  # Simulate pruning only old unpinned session
-  echo "Pruned 1 session(s)."
-  exit 0
-elif [ "$1" = "sessions" ] && [ "$2" = "optimize" ]; then
-  exit 0
-fi
-exit 0
-`,
-      { mode: 0o755 }
-    );
-
-    // Run session maintenance bash routine extracted from entrypoint
-    const script = `
-      set -euo pipefail
-      export HERMES_HOME="${hermesHome}"
-      export MYRMIDON_BOTD_SESSION_RETENTION_DAYS="30"
-      export PATH="${binDir}:$PATH"
-      now_monotonic_ms() { date +%s%3N; }
-      log() { echo "$*"; }
-
-      # Source the function definition from entrypoint.sh
-      source <(sed -n '/run_session_maintenance() {/,/^}/p' "${ENTRYPOINT}")
-      run_session_maintenance
-    `;
-
-    execFileSync("bash", ["-c", script], { encoding: "utf8" });
-
-    // Verify hermes CLI calls
-    const calls = fs.readFileSync(logFile, "utf8");
-    assert.ok(calls.includes("sessions export --format jsonl --older-than 30 -"), "must export older-than 30");
-    assert.ok(calls.includes("sessions prune --older-than 30 --yes"), "must prune older-than 30 --yes");
-    assert.ok(!calls.includes("--include-pinned"), "must never include pinned sessions");
-    assert.ok(calls.includes("sessions optimize"), "must optimize after prune");
-
-    // Verify exported archive in archive directory
-    const archiveDir = path.join(hermesHome, ".myrmidon/archive");
-    assert.ok(fs.existsSync(archiveDir), "archive dir must exist");
-    const archives = fs.readdirSync(archiveDir).filter((f) => f.endsWith(".jsonl.gz"));
-    assert.equal(archives.length, 1, "must create exactly 1 session export archive");
-
-    // Verify manifest.json records the archive
-    const manifestPath = path.join(archiveDir, "manifest.json");
-    assert.ok(fs.existsSync(manifestPath), "manifest.json must exist");
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    assert.equal(manifest.archives.length, 1);
-    assert.equal(manifest.archives[0].key, "sessions");
-
-    // Verify session-prune.json report artifact
-    const reportPath = path.join(hermesHome, ".myrmidon/session-prune.json");
-    assert.ok(fs.existsSync(reportPath), "session-prune.json must exist");
-    const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-    assert.equal(report.deletedSessions, 1);
-    assert.equal(typeof report.stateDbBytesBefore, "number");
-    assert.equal(typeof report.stateDbBytesAfter, "number");
-
-    // Clean up
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  it("runs the live API contract against a mock gateway", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prune-"));
+    const previousMockEvents = process.env.MOCK_EVENTS;
+    try {
+    const bin = path.join(root, "bin");
+    const home = path.join(root, "home");
+    fs.mkdirSync(path.join(home, ".myrmidon"), { recursive: true });
+    fs.mkdirSync(bin);
+    const now = Math.floor(Date.now() / 1000);
+      const events = path.join(root, "events");
+      fs.writeFileSync(events, "");
+      process.env.MOCK_EVENTS = events;
+      const mockCurl = `#!/bin/sh
+set -eu
+url=""
+method=GET
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-X" ]; then method="$arg"; fi
+  case "$arg" in http://*) url="$arg";; esac
+  prev="$arg"
+done
+echo "$method $url" >> "$MOCK_EVENTS"
+case "$method $url" in
+  "GET http://127.0.0.1:8642/health") printf '{"ok":true}';;
+  "GET http://127.0.0.1:8642/api/sessions?limit=100&offset=0&archived=include&order=recent" ) printf '{"sessions":[{"id":"old","last_active":${now - 90 * 86400},"pinned":false,"is_active":false},{"id":"recent","last_active":${now - 2 * 86400},"pinned":false,"is_active":false},{"id":"pinned","last_active":${now - 90 * 86400},"pinned":true,"is_active":false},{"id":"active","last_active":${now - 90 * 86400},"pinned":false,"is_active":true},{"id":"bad-export","last_active":${now - 90 * 86400},"pinned":false,"is_active":false}],"total":5}';;
+  "GET http://127.0.0.1:8642/api/sessions/old") printf '{"id":"old","messages":[1,2]}';;
+  "GET http://127.0.0.1:8642/api/sessions/bad-export") exit 22;;
+  "DELETE http://127.0.0.1:8642/api/sessions/old") printf '{"ok":true}';;
+  *) printf '{"unexpected":true}' >&2; exit 23;;
+esac
+`;
+    fs.writeFileSync(path.join(bin, "curl"), mockCurl, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "sleep"), '#!/bin/sh\necho "SLEEP $1" >> "$MOCK_EVENTS"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "date"), `#!/bin/sh\ncase "$1" in +%s) printf "%s\\n" "${now}";; -u) printf "2026-11-01T00:00:00Z\\n";; *) /bin/date "$@";; esac\n`, { mode: 0o755 });
+    const script = `#!/bin/bash
+set -euo pipefail
+log() { :; }
+export API_SERVER_PORT=8642 API_SERVER_KEY=test-key HERMES_HOME=${home} MYRMIDON_BOTD_SESSION_RETENTION_DAYS=30 MYRMIDON_BOTD_SESSION_DELETE_PAUSE_SEC=0.01 MYRMIDON_BOTD_SESSION_HEALTH_WAIT_SEC=0 PATH=${bin}:$PATH MOCK_EVENTS=${events}
+${maintenanceFunction()}
+run_live_session_maintenance
+`;
+    const runner = path.join(root, "run.sh");
+    fs.writeFileSync(runner, script, { mode: 0o755 });
+    process.env.MOCK_EVENTS = events;
+    try {
+      execFileSync("bash", [runner], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MOCK_EVENTS: events }, timeout: 5000 });
+    } finally {
+      if (previousMockEvents === undefined) delete process.env.MOCK_EVENTS;
+      else process.env.MOCK_EVENTS = previousMockEvents;
+    }
+    const lines = fs.readFileSync(events, "utf8").trim().split("\n");
+    assert.ok(lines.includes("GET http://127.0.0.1:8642/api/sessions/old"));
+    assert.ok(lines.includes("DELETE http://127.0.0.1:8642/api/sessions/old"));
+    assert.ok(lines.indexOf("GET http://127.0.0.1:8642/api/sessions/old") < lines.indexOf("DELETE http://127.0.0.1:8642/api/sessions/old"));
+    assert.ok(lines.includes("GET http://127.0.0.1:8642/api/sessions/bad-export"));
+    assert.equal(lines.some((line) => line.startsWith("DELETE") && !line.endsWith("/old")), false);
+    assert.equal(lines.some((line) => line.includes("DELETE") && (line.endsWith("/recent") || line.endsWith("/pinned") || line.endsWith("/active") || line.endsWith("/bad-export"))), false);
+    assert.ok(lines.some((line) => line === "SLEEP 0.01"), "must pause between session deletions");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it("skips prune when database is held by another process", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-maint-held-"));
-    const hermesHome = path.join(tmpDir, "hermes");
-    const binDir = path.join(tmpDir, "bin");
-    fs.mkdirSync(hermesHome, { recursive: true });
-    fs.mkdirSync(binDir, { recursive: true });
+  it("does not optimize the live database and keeps a short health window", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const dockerfile = fs.readFileSync(DOCKERFILE, "utf8");
+    const live = source.slice(source.indexOf("run_live_session_maintenance() {"));
 
-    const stateDb = path.join(hermesHome, "state.db");
-    fs.writeFileSync(stateDb, "dummy sqlite db");
-
-    const logFile = path.join(tmpDir, "hermes.log");
-    const mockHermes = path.join(binDir, "hermes");
-    fs.writeFileSync(
-      mockHermes,
-      `#!/bin/bash
-echo "$@" >> "${logFile}"
-exit 0
-`,
-      { mode: 0o755 }
-    );
-
-    // Mock python3 to report that state.db is held
-    const mockPython = path.join(binDir, "python3");
-    fs.writeFileSync(
-      mockPython,
-      `#!/bin/bash
-# Exit with 1 to indicate foreign holders exist
-exit 1
-`,
-      { mode: 0o755 }
-    );
-
-    const script = `
-      set -euo pipefail
-      export HERMES_HOME="${hermesHome}"
-      export MYRMIDON_BOTD_SESSION_RETENTION_DAYS="30"
-      export PATH="${binDir}:$PATH"
-      now_monotonic_ms() { date +%s%3N; }
-      log() { echo "$*"; }
-
-      source <(sed -n '/run_session_maintenance() {/,/^}/p' "${ENTRYPOINT}")
-      run_session_maintenance
-    `;
-
-    const output = execFileSync("bash", ["-c", script], { encoding: "utf8" });
-    assert.ok(output.includes("state.db is held by a running process"), "must log that db is held");
-
-    // hermes must NOT have been called
-    assert.ok(!fs.existsSync(logFile), "hermes prune must not be called when db is held");
-
-    // Clean up
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    assert.equal(live.includes("sessions optimize"), false, "live retention must not optimize state.db");
+    assert.match(source, /while ! curl -fsS --max-time 3 .*\/health/);
+    assert.match(dockerfile, /HEALTHCHECK --interval=30s --timeout=5s --start-period=45s/);
   });
 });

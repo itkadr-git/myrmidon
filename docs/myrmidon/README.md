@@ -44,7 +44,8 @@ Myrmidon — система управления компаниями из ИИ-
 | [ROADMAP.md](ROADMAP.md) | Состав V1.0 с критериями готовности, порядок V1.x, «Потом» |
 | [CONVENTIONS.md](CONVENTIONS.md) | Как мы работаем: ветки, PR, тесты, слияние, открытость, карта файлов по трекам |
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
-| [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [SETTINGS.md](SETTINGS.md) | Our settings (`MYRMIDON_*` environment variables; Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [bot-session-retention.md](bot-session-retention.md) | Operator guide to background Hermes session retention in bot containers (Russian version: [bot-session-retention.ru.md](bot-session-retention.ru.md)) |
 | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
 | [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
