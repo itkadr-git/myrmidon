@@ -51,8 +51,12 @@ export interface AlertServiceDeps {
 
 export function createAlertService(deps: AlertServiceDeps) {
   const now = deps.now ?? (() => new Date());
+  // The registry read and issue creation must be one turn. Without a queue,
+  // two webhook deliveries for a new trigger can both observe no entry and
+  // create duplicate board tasks before either upsert commits.
+  let alertQueue: Promise<void> = Promise.resolve();
 
-  async function handleAlert(
+  async function processAlert(
     companyId: string,
     alert: NormalizedAlert,
     priority: AlertPriority,
@@ -125,6 +129,18 @@ export function createAlertService(deps: AlertServiceDeps) {
     await deps.issues.updateStatus(target.issueId, "done");
     await deps.store.markResolved(companyId, alert.source, dedupKey, alert.resolvedAt ?? now().toISOString());
     return { identity, triggerId: alert.triggerId, action: "resolve", issueId: target.issueId, issueIdentifier: target.issueIdentifier };
+  }
+
+  async function handleAlert(
+    companyId: string,
+    alert: NormalizedAlert,
+    priority: AlertPriority,
+    settings: AlertRouteSettings,
+    lifecycle?: { key?: string; status?: string },
+  ): Promise<AlertOutcome> {
+    const turn = alertQueue.then(() => processAlert(companyId, alert, priority, settings, lifecycle));
+    alertQueue = turn.then(() => undefined, () => undefined);
+    return turn;
   }
 
   return { handleAlert };

@@ -28,6 +28,7 @@ import {
 } from "@myrmidon/shared";
 import type { ScentGateway, AgentScentClassificationResult, ScentClassificationResult } from "./gateway.js";
 import { deriveScentAuto } from "./create-hook.js";
+import { scentMetrics } from "./metrics.js";
 
 /** The markup queue never looks back further than this many days. */
 const MARKUP_QUEUE_LOOKBACK_DAYS = 30;
@@ -108,6 +109,7 @@ async function logScentClassified(
     ok: boolean;
   },
 ): Promise<void> {
+  scentMetrics.recordAttempt(opts.ok);
   await deps.logActivity({
     actorType: "system",
     action: `${opts.entityType}.scent_classified`,

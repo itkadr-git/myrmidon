@@ -7,6 +7,7 @@ import {
   EVENT_PRIORITY_BY_TYPE,
   getSharedEventDigestService,
   dispatchAgentEvent,
+  boundEventDigest,
   type AgentEvent,
 } from "./index.js";
 
@@ -490,6 +491,56 @@ describe("WAKE-10.2: Event Digest and Priority Wake", () => {
         "heartbeat",
         "issue_unblock_requested",
       ]);
+    });
+  });
+
+  describe("bounded digest (OPE-9657 fix)", () => {
+    it("caps the buffer, the delivered events and large payloads", async () => {
+      const agentId = "agent-flood";
+      const big = { body: "x".repeat(50_000) };
+      for (let i = 0; i < 500; i += 1) {
+        service.recordEvent({ agentId, type: "log", payload: i % 2 === 0 ? big : { i } });
+      }
+      const digest = service.getPendingDigest(agentId);
+      expect(digest?.eventCount).toBe(200);
+      expect(digest?.events).toHaveLength(30);
+      expect(digest?.omittedEventCount).toBe(170);
+      for (const entry of digest?.events ?? []) {
+        expect(JSON.stringify(entry.payload).length).toBeLessThanOrEqual(2_100);
+      }
+    });
+
+    it("bounds a digest copied from an older run snapshot", () => {
+      const old = {
+        agentId: "a",
+        events: Array.from({ length: 900 }, (_, i) => ({ id: `e${i}`, agentId: "a", type: "issue_commented", priority: "P2", payload: { body: "y".repeat(10_000) }, timestamp: new Date() })),
+        eventCount: 900,
+      };
+      const bounded = boundEventDigest(old);
+      expect(bounded.events).toHaveLength(30);
+      expect(bounded.eventCount).toBe(900);
+      expect(JSON.stringify(bounded).length).toBeLessThan(80_000);
+      expect(boundEventDigest(null)).toBeNull();
+    });
+
+    it("keeps a skipped wake for later but collapses re-dispatches of the same comment", async () => {
+      const agentId = "agent-coalesced";
+      const notCreated: WakeupFn = async () => ({ woken: false });
+      for (let round = 0; round < 40; round += 1) {
+        for (const commentId of ["c1", "c2", "c3"]) {
+          await service.handleAgentEvent(
+            { agentId, issueId: "issue-1", type: "issue_commented", payload: { commentId, body: "z".repeat(5_000) } },
+            { wakeup: notCreated },
+          );
+        }
+      }
+      const pending = service.getPendingDigest(agentId);
+      expect(pending?.eventCount).toBe(3);
+      expect(pending?.events.map((entry) => (entry.payload as { commentId?: string }).commentId)).toEqual(["c1", "c2", "c3"]);
+      const first = pending?.events[0]?.payload as { commentId?: string; body?: string; truncated?: boolean };
+      expect(first.commentId).toBe("c1");
+      expect(first.truncated).toBe(true);
+      expect((first.body ?? "").length).toBeLessThanOrEqual(301);
     });
   });
 });

@@ -262,8 +262,8 @@ export function normalizeAgentMemorySettings(raw: unknown): AgentMemorySettings 
     out.accessMode = value.accessMode;
   }
   if (Array.isArray(value.enabledRoles)) {
-    const roles = value.enabledRoles.filter((r): r is string => typeof r === "string" && r.trim().length > 0);
-    out.enabledRoles = roles.map((r) => r.trim());
+    const roles = value.enabledRoles.filter((role): role is string => typeof role === "string" && role.trim().length > 0);
+    out.enabledRoles = roles.map((role) => role.trim());
   }
   if (Array.isArray(value.enabledAgentIds)) {
     const ids = value.enabledAgentIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0);

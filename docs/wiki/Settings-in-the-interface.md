@@ -5,8 +5,15 @@
 Where day-to-day setup happens in the board UI. The UI 2.0 company-settings sidebar
 currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
 Agent castes, alongside the sections implemented in the UI 2.0 route table.
-Guardrails is intentionally not shown: its screen and route are not implemented
-in this release. Sources: the
+
+## Injection guardrail settings
+
+Company Settings → Guardrails stores `guardrailModes.injectionConfig` (`enabled`,
+`scoreThreshold`) and shows effective values with provenance. Environment
+overrides take precedence over the UI setting, then defaults (threshold default
+`0.6`, range 0–1); explicit environment `false` is honored. See the
+[injection guardrail change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-8319-injection-config.md).
+
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).

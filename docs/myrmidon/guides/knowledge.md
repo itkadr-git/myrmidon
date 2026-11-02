@@ -103,6 +103,14 @@ Refusals come back as JSON-RPC errors carrying the same stable codes (403
 `knowledge_tool_access_denied`, 409 `knowledge_approval_required`, …), so a
 client can react to codes, not message text.
 
+## Unified inbox and review routing (KNOWLEDGE-2.0 L-1, 1.7)
+
+Pending knowledge proposals from `/api/myrmidon/companies/:companyId/knowledge/suggestions` (with status `pending`) are integrated directly into the unified inbox (`/inbox`, both Streamlined and standard views) alongside issues, run alerts, and join requests.
+
+- **Item type**: proposals are represented as `kind: "knowledge"` with stable unique keys (`knowledge:<suggestionId>`).
+- **Type filter**: the inbox filter popover includes a **Knowledge** category filter, allowing operators to filter the inbox exclusively to knowledge suggestions or combine it with other categories. The category selection is persisted in local storage preferences.
+- **Review routing**: activating a knowledge inbox item (via click or keyboard navigation) routes directly to `/knowledge/review` where the proposal's title, rationale, source references, and proposed content can be inspected, accepted, or declined.
+
 ## Where the code lives
 
 - `server/src/myrmidon/knowledge/routes.ts` — the REST router and its gates.
@@ -112,4 +120,7 @@ client can react to codes, not message text.
   sections, stable codes.
 - `packages/shared/src/myrmidon-autonomy.ts` — the action classes and safe
   defaults.
-- Tests: `server/src/myrmidon/knowledge/routes.myrmidon.test.ts` (П1–П4).
+- `ui/src/lib/inbox.ts` and `ui/src/pages/Inbox.tsx` / `ui/src/pages/LegacyInbox.tsx` — unified inbox integration and `knowledge` item kind.
+- `ui/src/components/IssueFiltersPopover.tsx` — `knowledge` category filter and persistent selection.
+- `ui/src/pages/KnowledgeReview.tsx` — review screen at route `/knowledge/review`.
+- Tests: `server/src/myrmidon/knowledge/routes.myrmidon.test.ts` (П1–П4), `ui/src/lib/inbox.test.ts`, `ui/src/pages/Inbox.test.tsx`.

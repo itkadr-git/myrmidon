@@ -9,6 +9,8 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
+import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
+import type { KeyBudgetLimitView } from "./key-budget-adapter.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -84,6 +86,10 @@ export interface GatewayKeyAdminPort {
 /** What a card's gateway key looks like to a caller: never the value itself. */
 export interface AgentGatewayKeyView {
   agentId: string;
+  /** Agent display name for the key budget projection view. */
+  agentName?: string | null;
+  /** Agent role (caste) for matching budget projection limits. */
+  role?: string | null;
   /** The secret-store name that carries the key. */
   secretName: string;
   /** True when the store holds a value for it. */
@@ -94,6 +100,8 @@ export interface AgentGatewayKeyView {
   canManageKeys: boolean;
   /** Allowed models list. Empty array means all models allowed. */
   models?: string[];
+  /** Key budget limit projected from the OPE-8675 budget projection. */
+  budget?: KeyBudgetLimitView | null;
 }
 
 export interface AgentGatewayKeyInput {
@@ -333,9 +341,16 @@ export async function listAgentGatewayKeys(
 ): Promise<AgentGatewayKeyView[]> {
   const settings = readGatewayKeySettings(deps.env ?? process.env);
   const rows = await deps.db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, role: agents.role })
     .from(agents)
     .where(eq(agents.companyId, companyId));
+
+  let projection: Awaited<ReturnType<typeof readBudgetProjectionSettings>> | null = null;
+  try {
+    projection = await readBudgetProjectionSettings(deps.db, companyId);
+  } catch {
+    // Budget projection is optional here: key listing must not fail when absent.
+  }
 
   let gw: GatewayKeyAdminPort | null = null;
   if (settings.canManageKeys && settings.baseUrl && settings.adminKeySecret) {
@@ -362,13 +377,31 @@ export async function listAgentGatewayKeys(
         // non-fatal
       }
     }
+    let budget: KeyBudgetLimitView | null = null;
+    if (projection && row.role) {
+      const match = projection.limits.find(
+        (limit) => limit.level === "caste" && limit.scopeId === row.role && limit.amountUsd > 0,
+      );
+      if (match) {
+        budget = {
+          amountUsd: match.amountUsd,
+          periodHours: match.periodHours,
+          mode: match.mode,
+          effectiveMode: projection.signalOnly || match.mode === "soft" ? "soft" : "block",
+          caste: row.role,
+        };
+      }
+    }
     views.push({
       agentId: row.id,
+      agentName: row.name,
+      role: row.role ?? null,
       secretName,
       present: Boolean(value),
       valueHash: value ? gatewayKeyValueHash(value) : null,
       canManageKeys: settings.canManageKeys,
       ...(models !== undefined ? { models } : {}),
+      budget,
     });
   }
   return views;

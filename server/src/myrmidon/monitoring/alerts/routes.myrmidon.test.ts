@@ -214,6 +214,18 @@ describe("myrmidon(1.6.6-ALERTS) webhook", () => {
     expect(dedup.entries).toHaveLength(1);
   });
 
+  it("serializes concurrent first deliveries for one trigger", async () => {
+    const { app, ports, dedup } = appFor();
+    const [first, second] = await Promise.all([
+      request(app).post(webhook).set("authorization", `Bearer ${TOKEN}`).send(zabbixDisk),
+      request(app).post(webhook).set("authorization", `Bearer ${TOKEN}`).send({ ...zabbixDisk, eventid: "102" }),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(ports.created).toHaveLength(1);
+    expect(ports.comments).toHaveLength(1);
+    expect(dedup.entries).toHaveLength(1);
+  });
   it("auto-closes the issue with a recovery comment when the alert resolves", async () => {
     const { app, ports, dedup } = appFor();
     await request(app).post(webhook).set("authorization", `Bearer ${TOKEN}`).send(zabbixDisk).expect(200);
