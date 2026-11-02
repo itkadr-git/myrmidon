@@ -439,8 +439,9 @@ dockergate_remove_images() {
   dockergate_config_install "$tmp" "$cfg_file"
 }
 
-# Enroll the fleet in bots[]: "id|mem|cpus|pids" per line; a bot already
-# enrolled keeps its existing limits (an operator's enrollment wins).
+# Enroll the fleet in bots[]: "id|mem|cpus|pids" per line. Existing
+# enrollments are updated from the card too: card resource changes must reach
+# dockergate before the apply call, while unrelated enrollment fields remain.
 dockergate_enroll_bots() {
   local cfg_file="$1" bots="$2"
   [[ -f "$cfg_file" ]] || die "dockergate config not found: $cfg_file"
@@ -450,8 +451,11 @@ dockergate_enroll_bots() {
     $cfg | fromjson as $c
     | [inputs | split("|") | select(length == 4)
         | {botKey: .[0], maxMemoryMb: (.[1] | tonumber), maxCpus: (.[2] | tonumber), maxPids: (.[3] | tonumber)}] as $want
-    | ($want | map(select(.botKey as $k | ($c.bots // [] | map(.botKey) | index($k)) == null))) as $add
-    | $c + {bots: (($c.bots // []) + $add)}
+    | ($c.bots // []) as $existing
+    | ($existing | map(. as $bot | ($want | map(select(.botKey == $bot.botKey)) | .[0]) as $next
+        | if $next == null then $bot else $bot + {maxMemoryMb: $next.maxMemoryMb, maxCpus: $next.maxCpus, maxPids: $next.maxPids} end)) as $updated
+    | ($want | map(select(.botKey as $k | ($existing | map(.botKey) | index($k)) == null))) as $add
+    | $c + {bots: ($updated + $add)}
   ' <<<"$bots" >"$tmp" 2>/dev/null \
     || { rm -f "$tmp"; die "cannot edit bots[] of $cfg_file with jq (is it valid JSON?)"; }
   dockergate_config_install "$tmp" "$cfg_file"
