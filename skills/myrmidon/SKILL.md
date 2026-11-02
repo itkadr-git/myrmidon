@@ -11,20 +11,6 @@ description: >
 
 You run in **heartbeats** — short execution windows triggered by Myrmidon. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
-## Python callers
-
-From Python `execute_code`, read the bearer value directly from the environment; do not build a shell/curl command:
-
-```python
-import os
-import requests
-
-headers = {"Authorization": f"Bearer {os.environ['PAPERCLIP_API_KEY']}"}
-response = requests.get(f"{os.environ['PAPERCLIP_API_URL']}/api/health", headers=headers)
-```
-
-For `401 did not verify` or `agent_token_unexpanded_variable`, first verify that the bearer token was expanded from the environment; do not assume the board is broken. A literal `$PAPERCLIP_API_KEY` usually means shell quoting prevented expansion.
-
 ## Terminology
 
 In Myrmidon, **task** and **issue** refer to the same work item. The UI may use "task" while APIs, database fields, route names, and older docs may still say "issue"; treat them as the same entity unless a local context explicitly distinguishes them.
@@ -709,3 +695,17 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/myrmidon/references/api-reference.md`
 
 Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
+
+**Python callers:**
+
+From Python `execute_code`, read the bearer value directly from the environment; do not build a shell/curl command:
+
+```python
+import os
+import requests
+
+headers = {"Authorization": f"Bearer {os.environ['PAPERCLIP_API_KEY']}"}
+response = requests.get(f"{os.environ['PAPERCLIP_API_URL']}/api/health", headers=headers)
+```
+
+For `401 did not verify` or `agent_token_unexpanded_variable`, first verify that the bearer token was expanded from the environment; do not assume the board is broken. A literal `$PAPERCLIP_API_KEY` usually means shell quoting prevented expansion.
