@@ -12,8 +12,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import { errorHandler } from "../../middleware/index.js";
 import { budgetLimitsRoutes } from "./routes.js";
-import type { BudgetLimitView, BudgetLimitChangeView, BudgetLimitUsageView } from "@myrmidon/shared";
-import type { BudgetLimitUsageDeps } from "./usage.js";
+import type { BudgetLimitView, BudgetLimitChangeView } from "@myrmidon/shared";
+import type { BudgetLimitUsage, BudgetLimitUsageDeps } from "./usage.js";
 
 const boardActor = {
   type: "board",
