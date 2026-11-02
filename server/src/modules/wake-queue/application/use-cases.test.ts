@@ -858,7 +858,11 @@ describe("releaseIssueExecution", () => {
   });
 
   it.each(["done", "cancelled"])("cancels stale assignee continuations before claiming promotion on %s tasks", async (status) => {
-    const queue = [wakeCandidate({ agentId: ISSUE.assigneeAgentId!, requestedByActorType: "agent" })];
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "agent",
+      requestedByActorId: "delegating-agent",
+    })];
     const transaction = createFakeTransaction({
       findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
     });
