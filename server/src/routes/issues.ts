@@ -15889,6 +15889,34 @@ export function issueRoutes(
                       monitor,
                     } as any;
                     issueUpdateData.executionPolicy = updateFields.executionPolicy;
+                    issueUpdateData.monitorNextCheckAt = new Date(monitor.nextCheckAt);
+                    issueUpdateData.monitorScheduledBy = monitor.scheduledBy;
+                    issueUpdateData.monitorAttemptCount = 0;
+                    issueUpdateData.monitorWakeRequestedAt = null;
+                    issueUpdateData.monitorLastTriggeredAt = null;
+                    // Apply the monitor transition now because the update ran before
+                    // reviewer admission decided that this stage must wait on CI.
+                    const monitorPatch = applyIssueMonitorPolicyTransition({
+                      issue: updated,
+                      policy: updateFields.executionPolicy,
+                      previousPolicy: normalizeIssueExecutionPolicy(
+                        (existing.executionPolicy ?? null) as any,
+                      ),
+                      requestedStatus: updated.status,
+                      requestedAssigneePatch: {},
+                      actor: { agentId: actor.agentId, userId: actor.userId },
+                      monitorExplicitlyUpdated: true,
+                    });
+                    Object.assign(issueUpdateData, monitorPatch.patch);
+                    if (typeof monitorPatch.patch.executionState !== "undefined") {
+                      updated.executionState = monitorPatch.patch.executionState;
+                    }
+                    if (typeof monitorPatch.patch.monitorNextCheckAt !== "undefined") {
+                      updated.monitorNextCheckAt = monitorPatch.patch.monitorNextCheckAt;
+                    }
+                    if (typeof monitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
+                      updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt;
+                    }
                   }
                 }
                 if (admitReviewer) {
