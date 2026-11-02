@@ -45,6 +45,12 @@ export {
 } from "./decision.js";
 
 export {
+  autoUpdateSettingsSchema,
+  putAutoUpdateSettingsSchema,
+  type AutoUpdateSettings,
+} from "./auto-update-settings.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
