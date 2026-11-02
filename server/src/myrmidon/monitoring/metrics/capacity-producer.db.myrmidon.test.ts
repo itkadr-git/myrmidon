@@ -109,8 +109,6 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
         projectId,
         title: "Ready task",
         status: "todo",
-        unresolvedBlockerCount: 0,
-        unresolvedInteractionCount: 0,
         createdAt: new Date("2026-10-31T11:58:00.000Z"), // 120s ago
         updatedAt: new Date("2026-10-31T11:58:00.000Z"),
       })
@@ -122,8 +120,6 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
       projectId,
       title: "Blocked task",
       status: "blocked",
-      unresolvedBlockerCount: 1,
-      unresolvedInteractionCount: 0,
     });
 
     // 3. Active claim on another issue (makes that issue not ready, but adds active slot)
@@ -134,8 +130,6 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
         projectId,
         title: "Claimed task",
         status: "in_progress",
-        unresolvedBlockerCount: 0,
-        unresolvedInteractionCount: 0,
       })
       .returning();
 
@@ -207,7 +201,7 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
       db,
       now: () => NOW,
       env: { [METRICS_TOKEN_ENV]: TEST_TOKEN },
-      capacityDashboard: null, // explicitly disabled / unavailable
+      capacityDashboard: async () => null,
       processMetrics: null,
     }));
 

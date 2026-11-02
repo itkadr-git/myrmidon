@@ -310,6 +310,8 @@ export async function produceCapacityMetrics(
     }
     // Company must have at least one active agent
     if (activeAgents.length === 0) return false;
+    // Authoritative eligibility requires the configured agent role to be eligible.
+    if (!eligibleAgentRoles.has("general")) return false;
 
     return true;
   });

@@ -12,10 +12,8 @@
 // 6. Unavailable sources: missing DB, missing company, or missing fields return null, NEVER fake zeroes.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  CLAIM_REJECTION_REASONS,
-  type ClaimRejectionReason,
-} from "./metrics.js";
+import { CLAIM_REJECTION_REASONS } from "./metrics.js";
+import type { ClaimRejectionReason } from "./capacity-producer.js";
 import {
   produceCapacityMetrics,
   recordCapacityClaimRejection,
