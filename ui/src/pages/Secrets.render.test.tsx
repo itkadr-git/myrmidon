@@ -460,6 +460,50 @@ describe("Secrets page layout", () => {
     expect(widget?.textContent).toContain("requests: 10 remaining (10%)");
   });
 
+  it("shows both Codex usage windows regardless of API order", async () => {
+    const secret = makeCompanySecret({ id: "s-codex", key: "codex-account", name: "codex-account" });
+    const usage = [
+      {
+        provider: "codex", credentialRef: "codex-account", window: "rolling_5h",
+        startedAt: "2026-11-02T00:00:00.000Z", resetsAt: "2099-11-02T05:00:00.000Z", observedAt: "2026-11-02T01:00:00.000Z",
+        used: { requests: 60 }, limit: { requests: 100 }, remaining: { requests: 40 }, remainingPercent: { requests: 40 },
+        thresholdPercent: 80, warning: null,
+      },
+      {
+        provider: "codex", credentialRef: "codex-account", window: "rolling_7d",
+        startedAt: "2026-10-27T00:00:00.000Z", resetsAt: "2099-11-03T00:00:00.000Z", observedAt: "2026-11-02T01:00:00.000Z",
+        used: { requests: 20 }, limit: { requests: 100 }, remaining: { requests: 80 }, remainingPercent: { requests: 80 },
+        thresholdPercent: 80, warning: null,
+      },
+    ];
+
+    for (let order = 0; order < 2; order += 1) {
+      container.innerHTML = "";
+      vi.clearAllMocks();
+      mockSecretsApi.list.mockResolvedValue([secret]);
+      mockCostsApi.providerUsage.mockResolvedValue({ thresholdPercent: 80, usage: order === 0 ? usage : [...usage].reverse() });
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>
+              <Secrets />
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await waitForReact(() => container.querySelectorAll('[data-testid="provider-usage-remaining"]').length > 0);
+      const lines = [...container.querySelectorAll('[data-testid="provider-usage-remaining"]')].map((node) => node.textContent ?? "");
+      expect(lines.some((line) => line.includes("rolling_5h") && line.includes("40 remaining (40%)"))).toBe(true);
+      expect(lines.some((line) => line.includes("rolling_7d") && line.includes("80 remaining (80%)"))).toBe(true);
+      await act(() => root.unmount());
+      queryClient.clear();
+      container.innerHTML = "";
+    }
+  });
+
   it("uses the shared search/filter/tab affordances and keeps vault sections quiet", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({

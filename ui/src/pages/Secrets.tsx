@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { InstanceSecretSettingsPanel } from "@/components/myrmidon/InstanceSecretSettingsPanel";
+import type { ProviderUsageAggregate } from "@myrmidon/shared";
 import type {
   CompanySecret,
   CompanySecretUsageBinding,
@@ -824,7 +825,15 @@ export function Secrets() {
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
   const usageByCredential = useMemo(
-    () => new Map((providerUsageQuery.data?.usage ?? []).map((usage) => [usage.credentialRef, usage])),
+    () => {
+      const usage = new Map<string, ProviderUsageAggregate[]>();
+      for (const aggregate of providerUsageQuery.data?.usage ?? []) {
+        const entries = usage.get(aggregate.credentialRef) ?? [];
+        entries.push(aggregate);
+        usage.set(aggregate.credentialRef, entries);
+      }
+      return usage;
+    },
     [providerUsageQuery.data],
   );
   const selectedSecret = useMemo(
@@ -1695,13 +1704,23 @@ export function Secrets() {
     const metadata = secret.providerMetadata as Record<string, unknown> | null | undefined;
     const explicitRef = metadata?.usageCredentialRef;
     const candidates = [typeof explicitRef === "string" ? explicitRef : "", secret.key, secret.id].filter(Boolean);
-    const usage = candidates.map((ref) => usageByCredential.get(ref)).find(Boolean);
-    if (!usage) return null;
-    const metric = usage.warning?.metric ?? (typeof usage.remainingPercent.requests === "number" ? "requests" : "tokens");
-    const remainingPercent = usage.remainingPercent[metric];
-    const remaining = usage.remaining[metric];
-    if (typeof remainingPercent !== "number" || typeof remaining !== "number") return null;
-    return <div className="mt-1 text-xs text-muted-foreground" data-testid="provider-usage-remaining">{metric}: {remaining} remaining ({Math.round(remainingPercent)}%) · resets {formatRelative(usage.resetsAt)}</div>;
+    const usageEntries = candidates.flatMap((ref) => usageByCredential.get(ref) ?? []);
+    if (usageEntries.length === 0) return null;
+    return (
+      <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+        {usageEntries.map((usage) => {
+          const metric = usage.warning?.metric ?? (typeof usage.remainingPercent.requests === "number" ? "requests" : "tokens");
+          const remainingPercent = usage.remainingPercent[metric];
+          const remaining = usage.remaining[metric];
+          if (typeof remainingPercent !== "number" || typeof remaining !== "number") return null;
+          return (
+            <div key={`${usage.provider}:${usage.credentialRef}:${usage.window}:${usage.startedAt}`} data-testid="provider-usage-remaining">
+              {usage.window}: {metric}: {remaining} remaining ({Math.round(remainingPercent)}%) · resets {formatRelative(usage.resetsAt)}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   function renderFolderTableRow(folder: SecretPathFolder) {
