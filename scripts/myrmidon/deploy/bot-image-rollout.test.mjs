@@ -284,7 +284,7 @@ function imageJson(digest) {
  */
 function sandbox({
   agents = [
-    { id: "77777777-7777-4777-8777-777777777777", image: `${BOT_DEV}@${OLD_DEV}`, memoryMb: 4096, cpus: 2, pidsLimit: 1024 },
+    { id: "77777777-7777-4777-8777-777777777777", image: `${BOT_DEV}@${OLD_DEV}`, memoryMb: 4096, cpus: 2, pidsLimit: 1024, updatedMemoryMb: 3072, updatedCpus: 1.5, updatedPidsLimit: 768 },
     { id: "88888888-8888-4888-8888-888888888888", image: `${BOT}@${OLD_DEV}`, memoryMb: 2048, cpus: 1, pidsLimit: 512 },
   ],
   dockergateConfig,
@@ -353,9 +353,9 @@ function sandbox({
           container: {
             enabled: true,
             image: a.image,
-            memoryMb: a.memoryMb ?? 2048,
-            cpus: a.cpus ?? 1,
-            pidsLimit: a.pidsLimit ?? 512,
+            memoryMb: a.updatedMemoryMb ?? a.memoryMb ?? 2048,
+            cpus: a.updatedCpus ?? a.cpus ?? 1,
+            pidsLimit: a.updatedPidsLimit ?? a.pidsLimit ?? 512,
           },
         },
       })),
@@ -535,7 +535,11 @@ describe("bot-image-rollout.sh", () => {
     assert.equal(enrolled.maxMemoryMb, 2048);
     assert.equal(enrolled.maxCpus, 1);
     assert.equal(enrolled.maxPids, 512);
-    // The already-enrolled bot keeps its limits (no duplicate).
+    // The already-enrolled bot also follows its updated card limits.
+    const existing = cfg.bots.find((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(existing.maxMemoryMb, 3072);
+    assert.equal(existing.maxCpus, 1.5);
+    assert.equal(existing.maxPids, 768);
     assert.equal(cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777").length, 1);
   });
 
