@@ -112,11 +112,20 @@ export function classifyLegacyBlocked(
     addCandidate(candidates, "terminal", `Task status is ${status}.`);
   }
 
+  const historicalDependencyEvidence: string[] = [];
+
   for (const link of facts.links ?? []) {
     const linkStatus = normalized(link.status);
-    if (resolvedBlockerStatuses.has(linkStatus)) continue;
     const relation = normalized(link.relation);
     const label = normalized(link.label);
+    if (resolvedBlockerStatuses.has(linkStatus)) {
+      if (link.type === "issue" && ["blocks", "blocked_by", "dependency"].includes(relation)) {
+        historicalDependencyEvidence.push(
+          `Historical blocker link: ${link.type} / ${relation} / ${link.status?.trim() ?? "unknown"} / ${link.label.trim()}.`,
+        );
+      }
+      continue;
+    }
     let candidate: Candidate | undefined;
     if (link.type === "issue" && ["blocks", "blocked_by", "dependency"].includes(relation)) {
       candidate = "dependency";
@@ -170,6 +179,12 @@ export function classifyLegacyBlocked(
         `Linked PR${label ? ` ${label}` : ""} is open with ${checks === "pending" ? "pending checks" : "pending review"}.`,
       );
     }
+  }
+
+  // Historical blocker links are fallback evidence only: present-tense
+  // comments, blockers, statuses, and other links take precedence.
+  if (candidates.size === 0 && historicalDependencyEvidence.length > 0) {
+    addCandidate(candidates, "dependency", historicalDependencyEvidence[0]);
   }
 
   if (candidates.size !== 1) {
