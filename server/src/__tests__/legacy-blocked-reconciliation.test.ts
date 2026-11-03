@@ -44,12 +44,13 @@ describePg("legacy blocked reconciliation postgres", () => {
     const companyId = randomUUID();
     const ownerId = randomUUID();
     const ids = Array.from({ length: 46 }, () => randomUUID());
-    await db.insert(companies).values({ id: companyId, name: "legacy-blocked-reconciliation-test", issuePrefix: "LBR" });
+    await db.insert(companies).values({ id: companyId, name: "legacy-blocked-reconciliation-test", issuePrefix: "LBR", issueCounter: 46 });
     await db.insert(agents).values({ id: ownerId, companyId, name: "Legacy Reconciliation Owner", role: "engineer", status: "active" });
 
     await db.insert(issues).values(ids.map((id, index) => ({
       id,
       companyId,
+      issueNumber: index + 1,
       identifier: `LBR-${index + 1}`,
       title: index === 45 ? "Unrecognized blocked record" : `Recovery source ${index + 1}`,
       status: "blocked" as const,
