@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -251,7 +252,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // build-time run; 09-run-scoped-github-broker has
     // github_broker_run_scope.py (contextvar binding + child-env bridge).
     const patchTestRuns = [...dockerfileInstructions.matchAll(/^RUN [^\n]*\/tmp\/patch-tests\/(\S+\.py)\s+\/opt\/hermes-src$/gm)].map((m) => m[1]);
-    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py"]) {
+    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills_materialize.py", "undefined_names.py"]) {
       assert.ok(
         patchTestRuns.includes(regression),
         `expected a build-time run of docker/bot-runtime/tests/${regression}`,
@@ -271,6 +272,16 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // Dockerfile here: the instruction list above has its comment lines stripped, so its
     // offsets do not address the file it came from.
     assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime")), /patch-tests/);
+  });
+
+  it("rejects undefined names in patched modules like missing SessionStore in run_startup.py (#1381, OPE-10755)", () => {
+    const script = path.join(IMAGE_DIR, "tests/undefined_names.py");
+    assert.ok(fs.existsSync(script), "docker/bot-runtime/tests/undefined_names.py must exist");
+
+    const res = spawnSync("python3", [script, "--regression-test-only"], {
+      encoding: "utf8",
+    });
+    assert.strictEqual(res.status, 0, `undefined_names.py --regression-test-only failed: ${res.stderr || res.stdout}`);
   });
 
   it("redirects hermes' lazy installs and write tools off the sealed, read-only venv", () => {
@@ -661,6 +672,15 @@ describe("myrmidon-bot-image.yml", () => {
   it("builds on push to main and myr-v* tags", () => {
     assert.match(workflow, /branches: \[main\]/);
     assert.match(workflow, /tags: \["myr-v\*"\]/);
+  });
+
+  it("runs gateway smoke-start on pull requests for every built image variant (OPE-10755)", () => {
+    const smokeScript = path.join(IMAGE_DIR, "smoke-start.sh");
+    assert.ok(fs.existsSync(smokeScript), "docker/bot-runtime/smoke-start.sh must exist");
+    assert.strictEqual((fs.statSync(smokeScript).mode & 0o111) !== 0, true, "smoke-start.sh must be executable");
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-node:pr-check/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh "\$img"/);
   });
 
   // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.
