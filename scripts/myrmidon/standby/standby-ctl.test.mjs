@@ -22,6 +22,7 @@ import {
   mapPgBinaryForDocker,
   remapHostPortForDocker,
   queryPrimaryLsn,
+  resolvePrimaryEndpoint,
 } from "./standby-ctl.mjs";
 
 test("parseLsn parses valid PostgreSQL LSN strings into BigInt", () => {
@@ -580,7 +581,7 @@ test("executeRehearsal conducts isolated drill, smoke tests both databases, and 
       if (dbIdx !== -1) {
         queriedDatabases.push(args[dbIdx + 1]);
       }
-      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "0\n", stderr: "" };
       if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -614,12 +615,16 @@ test("runCli commands output structured JSON and return correct exit codes", () 
       return { exitCode: 0, stdout: "", stderr: "" };
     }
     if (sql.includes("pg_is_in_recovery")) {
-      if (failoverPromoted) {
-        return { exitCode: 0, stdout: "f\n", stderr: "" };
-      }
       if (args.includes("primary.internal")) {
         // The primary is unreachable (simulates the failover condition).
         return { exitCode: 2, stdout: "", stderr: "connection refused" };
+      }
+      if (sql.includes("::int")) {
+        // Rehearsal drill verify now uses pg_is_in_recovery()::int — 0 means promoted.
+        return { exitCode: 0, stdout: "0\n", stderr: "" };
+      }
+      if (failoverPromoted) {
+        return { exitCode: 0, stdout: "f\n", stderr: "" };
       }
       return { exitCode: 0, stdout: `t|1/1000|1/1000|${new Date(Date.now() - 5000).toISOString()}\n`, stderr: "" };
     }
@@ -749,7 +754,7 @@ test("executeRehearsal fails closed if smoke test fails for database", () => {
     if (cmd === "psql") {
       const sql = args[args.indexOf("-c") + 1] || "";
       if (sql.includes("pg_is_in_recovery")) {
-        return { exitCode: 0, stdout: "f\n", stderr: "" };
+        return { exitCode: 0, stdout: "0\n", stderr: "" };
       }
       if (sql.includes("SELECT 1;")) {
         const dbIdx = args.indexOf("-d");
@@ -890,7 +895,7 @@ test("runCli rehearse respects --drill-dir and --drill-port and executes success
     if (cmd === "psql") {
       const sql = args[args.indexOf("-c") + 1] || "";
       if (sql.includes("pg_is_in_recovery")) {
-        return { exitCode: 0, stdout: "f\n", stderr: "" };
+        return { exitCode: 0, stdout: "0\n", stderr: "" };
       }
       if (sql.includes("SELECT 1;")) {
         return { exitCode: 0, stdout: "1\n", stderr: "" };
@@ -1153,7 +1158,7 @@ test("executeRehearsal passes --max-rate=100M to pg_basebackup by default", () =
     calls.push({ cmd, args });
     if (cmd === "psql") {
       const sql = args[args.indexOf("-c") + 1] || "";
-      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "0\n", stderr: "" };
       if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -1184,7 +1189,7 @@ test("executeRehearsal respects explicit --max-rate override", () => {
     calls.push({ cmd, args });
     if (cmd === "psql") {
       const sql = args[args.indexOf("-c") + 1] || "";
-      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "0\n", stderr: "" };
       if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -1203,4 +1208,48 @@ test("executeRehearsal respects explicit --max-rate override", () => {
     !basebackupCall.args.includes("--max-rate=100M"),
     "Default 100M not present when overridden"
   );
+});
+
+test("resolvePrimaryEndpoint falls back to env PRIMARY_PG_HOST/PRIMARY_PG_PORT", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  process.env.PRIMARY_PG_HOST = "10.10.100.1";
+  process.env.PRIMARY_PG_PORT = "15432";
+  try {
+    const ep = resolvePrimaryEndpoint({}, "board", {});
+    assert.equal(ep.host, "10.10.100.1");
+    assert.equal(ep.port, 15432);
+  } finally {
+    if (oldHost === undefined) delete process.env.PRIMARY_PG_HOST; else process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort === undefined) delete process.env.PRIMARY_PG_PORT; else process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("resolvePrimaryEndpoint auto-detects from standby primary_conninfo when env absent", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  delete process.env.PRIMARY_PG_HOST;
+  delete process.env.PRIMARY_PG_PORT;
+  try {
+    const mockRunner = (cmd, args) => {
+      if (cmd === "psql") {
+        const sql = args[args.indexOf("-c") + 1] || "";
+        if (sql.includes("SHOW primary_conninfo")) {
+          return { exitCode: 0, stdout: "host=10.10.100.1 port=15432 user=myr_replicator\n", stderr: "" };
+        }
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    };
+    const ep = resolvePrimaryEndpoint({}, "board", { runner: mockRunner });
+    assert.equal(ep.host, "10.10.100.1");
+    assert.equal(ep.port, 15432);
+  } finally {
+    if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("planRehearsal default drillDir is in-container path", () => {
+  const plan = planRehearsal("board", {});
+  assert.equal(plan.drillDir, "/var/lib/postgresql/drill-cluster");
 });

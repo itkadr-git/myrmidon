@@ -13,7 +13,7 @@ import path from "node:path";
 
 export const DEFAULT_CONFIG = {
   primaryHost: process.env.PRIMARY_PG_HOST || "primary.internal",
-  primaryPort: 5432,
+  primaryPort: Number(process.env.PRIMARY_PG_PORT) || 5432,
   standbyHost: "127.0.0.1",
   standbyPort: 5433,
   // Single-cluster aliases for backwards compatibility
@@ -52,14 +52,60 @@ export const DEFAULT_CONFIG = {
 };
 
 export function resolvePrimaryPort(options = {}, target = "board") {
+  // ADM 04.11: read env at call time so tests and late-set env are honoured;
+  // DEFAULT_CONFIG.primaryPort was captured once at module load.
+  const envPort = process.env.PRIMARY_PG_PORT ? Number(process.env.PRIMARY_PG_PORT) : null;
   return (
     options.primaryPort ||
-    DEFAULT_CONFIG.primaryPort ||
+    envPort ||
     (target === "board"
       ? options.primaryBoardPort || DEFAULT_CONFIG.primaryBoardPort
       : options.primaryHindsightPort || DEFAULT_CONFIG.primaryHindsightPort) ||
     5432
   );
+}
+
+/**
+ * ADM rehearsal feedback (04.11): on the real site the primary is not reachable
+ * via the compile-time default (primary.internal:5432). The standby container
+ * already knows the true primary endpoint from its own primary_conninfo setting.
+ * When neither CLI flags nor env vars override the endpoint, ask the standby.
+ *
+ * Returns { host, port, source: 'explicit'|'env'|'conninfo'|'default' }.
+ */
+export function resolvePrimaryEndpoint(options = {}, target = "board", deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const standbyPort = resolveStandbyPort(options, target);
+  const dbUser = target === "board"
+    ? options.boardDbUser || DEFAULT_CONFIG.boardDbUser
+    : options.hindsightDbUser || DEFAULT_CONFIG.hindsightDbUser;
+  const dbName = target === "board"
+    ? options.boardDbName || DEFAULT_CONFIG.boardDbName
+    : options.hindsightDbName || DEFAULT_CONFIG.hindsightDbName;
+
+  if (options.primaryHost) return { host: options.primaryHost, port: resolvePrimaryPort(options, target), source: "explicit" };
+  if (process.env.PRIMARY_PG_HOST) return { host: process.env.PRIMARY_PG_HOST, port: resolvePrimaryPort(options, target), source: "env" };
+
+  const res = queryPostgres(
+    "SHOW primary_conninfo;",
+    { host: options.standbyHost || DEFAULT_CONFIG.standbyHost, port: standbyPort, user: dbUser, db: dbName },
+    runner
+  );
+  const conninfo = (res.stdout || "").trim();
+  const hostMatch = conninfo.match(/host=([^\s']+)/);
+  const portMatch = conninfo.match(/port=(\d+)/);
+  if (hostMatch) {
+    return {
+      host: hostMatch[1],
+      port: portMatch ? Number(portMatch[1]) : 5432,
+      source: "conninfo",
+    };
+  }
+  return {
+    host: DEFAULT_CONFIG.primaryHost,
+    port: resolvePrimaryPort(options, target),
+    source: "default",
+  };
 }
 
 export function resolveStandbyPort(options = {}, target = "board") {
@@ -131,8 +177,8 @@ export function remapHostPortForDocker(host, port, config = DEFAULT_CONFIG) {
  * Rewrite a PG command + args for docker exec execution inside the standby container.
  * - Binary paths are mapped (pg_ctl → /usr/lib/postgresql/18/bin/pg_ctl).
  * - Host/port pairs targeting the local standby are remapped to the container-internal port.
- * - Host paths under /srv/standby/drill-cluster are bind-mounted into the container
- *   at the same path (docker-compose.standby.yml). Other /srv paths are NOT mounted.
+ * - The drill runs entirely inside the container at /var/lib/postgresql/drill-cluster
+ *   (uid 999). No host /srv path is mounted into the container (ADM 04.11).
  */
 export function wrapPgForDocker(cmd, args, config = DEFAULT_CONFIG) {
   const prefix = dockerPgPrefix(config);
@@ -470,7 +516,10 @@ export function planSwitchback(target = "board", overrides = {}) {
 export function planRehearsal(target = "board", overrides = {}) {
   const isBoard = target === "board";
   const drillPort = overrides.drillPort || 5533;
-  const drillDir = overrides.drillDir || (process.env && process.env.STANDBY_DRILL_DIR) || `/srv/standby/drill-cluster`;
+  // ADM rehearsal feedback (04.11): pg_basebackup runs INSIDE the standby container
+  // (docker exec), so the drill dir must be a path writable by uid 999 in the
+  // container — /var/lib/postgresql/drill-cluster — not a host path.
+  const drillDir = overrides.drillDir || (process.env && process.env.STANDBY_DRILL_DIR) || `/var/lib/postgresql/drill-cluster`;
   const standbyPort = resolveStandbyPort(overrides, target);
   const boardUser = overrides.boardDbUser || DEFAULT_CONFIG.boardDbUser;
   const boardDb = overrides.boardDbName || DEFAULT_CONFIG.boardDbName;
@@ -865,8 +914,9 @@ export function checkLag(target = "all", options = {}, deps = {}) {
 
   const isBoard = target === "board";
 
-  const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-  const primaryPort = resolvePrimaryPort(options, target);
+  const endpoint = resolvePrimaryEndpoint(options, target, { runner });
+  const primaryHost = endpoint.host;
+  const primaryPort = endpoint.port;
   const standbyHost = options.standbyHost || DEFAULT_CONFIG.standbyHost;
   const standbyPort = resolveStandbyPort(options, target);
   const dbUser = isBoard
@@ -1335,8 +1385,9 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
       if (!fsOps.existsSync(passDir)) {
         fsOps.mkdirSync(passDir, { recursive: true, mode: 0o700 });
       }
-      const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
-      const primaryPort = resolvePrimaryPort(options, target);
+      const endpoint = resolvePrimaryEndpoint(options, target, { runner });
+      const primaryHost = endpoint.host;
+      const primaryPort = endpoint.port;
       fsOps.writeFileSync(
         drillPassfilePath,
         `127.0.0.1:${standbyPort}:*:${replUser}:${replPassword}\n${primaryHost}:${primaryPort}:*:${replUser}:${replPassword}\n`,
@@ -1379,45 +1430,52 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     return { success: false, target, error: `Drill snapshot failed: ${snapRes.stderr || snapRes.stdout}` };
   }
 
-  // 2. Start ephemeral postgres instance on drillPort (D2: max_connections + max_worker_processes; D1: timeout)
-  const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000; // 2m for start/stop
-  const startRes = runner("pg_ctl", [
-    "start",
-    "-D", drillDir,
-    "-o",
-    `-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16`,
-  ], { timeoutMs: pgCtlTimeoutMs });
-  if (startRes.exitCode !== 0) {
-    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
-    return { success: false, target, error: `Drill pg_ctl start failed: ${startRes.stderr || startRes.stdout}` };
-  }
-
-  // 3. Promote drill instance (D3: use pg_ctl promote — paperclip role lacks pg_promote() privilege)
-  const promoteRes = runner("pg_ctl", ["promote", "-D", drillDir], { timeoutMs: pgCtlTimeoutMs });
-  if (promoteRes.exitCode !== 0) {
-    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
-    try { fsOps.rmSync(drillDir, { recursive: true, force: true }); } catch {}
-    return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr || promoteRes.stdout}` };
-  }
-
-  // 4. Verify drill recovery false
-  const verifyRes = queryPostgres("SELECT pg_is_in_recovery()::text;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
-
-  // 5. Smoke test BOTH databases in the single replica: paperclip and myrmidon_hindsight
-  const boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
-  const hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
-
-  // 6. Clean stop and removal (skip cleanup when --keep-drill is set, D6)
+  // 2-7. Run the drill. Cleanup MUST run even when a step throws —
+  // ADM rehearsal feedback (04.11): the 49GB drill dir was left on disk because
+  // cleanup only ran on the happy path; wrap steps 2+ in try/finally.
   const keepDrill = options.keepDrill === true;
-  if (!keepDrill) {
-    runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
-    try {
-      fsOps.rmSync(drillDir, { recursive: true, force: true });
-    } catch {}
-  } else if (options.composeFile) {
-    // D6: with --keep-drill also start the drill-only board service so the
-    // release-component image and fleet visibility can be verified manually.
-    runner("docker", ["compose", "-f", options.composeFile, "up", "-d", "myrmidon-board"]);
+  let startRes, promoteRes, verifyRes, boardSmokeRes, hindsightSmokeRes;
+  try {
+    // 2. Start ephemeral postgres instance on drillPort
+    const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000;
+    startRes = runner("pg_ctl", [
+      "start",
+      "-D", drillDir,
+      "-o",
+      `-p ${drillPort} -c listen_addresses=127.0.0.1 -c max_connections=200 -c max_worker_processes=16`,
+    ], { timeoutMs: pgCtlTimeoutMs });
+    if (startRes.exitCode !== 0) {
+      return { success: false, target, error: `Drill pg_ctl start failed: ${startRes.stderr || startRes.stdout}` };
+    }
+
+    // 3. Promote drill instance (D3: pg_ctl promote — paperclip role lacks pg_promote() privilege)
+    promoteRes = runner("pg_ctl", ["promote", "-D", drillDir], { timeoutMs: pgCtlTimeoutMs });
+    if (promoteRes.exitCode !== 0) {
+      return { success: false, target, error: `Drill promotion failed: ${promoteRes.stderr || promoteRes.stdout}` };
+    }
+
+    // 4. Verify drill recovery false.
+    // ADM rehearsal feedback (04.11): psql may render the boolean as 'f' or 'false'
+    // depending on server/psql version and flags. Query as int to get a stable '0'/'1'.
+    verifyRes = queryPostgres("SELECT pg_is_in_recovery()::int;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+
+    // 5. Smoke test BOTH databases in the single replica
+    boardSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: boardUser, db: boardDb }, runner);
+    hindsightSmokeRes = queryPostgres("SELECT 1;", { host: "127.0.0.1", port: drillPort, user: hindsightUser, db: hindsightDb }, runner);
+  } finally {
+    // 6/7. ALWAYS clean stop and remove the drill dir, even on failure —
+    // unless --keep-drill is explicitly set (D6).
+    const pgCtlTimeoutMs = options.pgCtlTimeoutMs || 120000;
+    if (!keepDrill) {
+      runner("pg_ctl", ["stop", "-D", drillDir, "-m", "immediate"], { timeoutMs: pgCtlTimeoutMs });
+      try {
+        fsOps.rmSync(drillDir, { recursive: true, force: true });
+      } catch {}
+    } else if (options.composeFile) {
+      // D6: with --keep-drill also start the drill-only board service so the
+      // release-component image and fleet visibility can be verified manually.
+      runner("docker", ["compose", "-f", options.composeFile, "up", "-d", "myrmidon-board"]);
+    }
   }
 
   const durationMs = Date.now() - startTime;
@@ -1426,14 +1484,14 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
   const boardSmokeOk = (boardSmokeRes.stdout || "").trim() === "1";
   const hindsightSmokeOk = (hindsightSmokeRes.stdout || "").trim() === "1";
   const smokeTestPassed = boardSmokeOk && hindsightSmokeOk;
-  const promoted = (verifyRes.stdout || "").trim() === "f";
+  const promoted = (verifyRes.stdout || "").trim() === "0";
 
   const success = promoted && smokeTestPassed && rtoOk;
 
   const errors = [];
   if (!promoted) {
     errors.push(
-      `Promotion verification failed: in_recovery is '${(verifyRes.stdout || "").trim()}', expected 'f'`
+      `Promotion verification failed: in_recovery is '${(verifyRes.stdout || "").trim()}', expected '0' (pg_is_in_recovery()::int)`
     );
   }
   if (!smokeTestPassed) {

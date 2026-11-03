@@ -98,15 +98,27 @@ Run isolated drill on ephemeral port 5533 without stopping active replication:
 ```bash
 scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
 # Custom drill directory/port override if needed:
-# scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --drill-dir=/tmp/standby-drill-cluster --drill-port=5533
+# scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --drill-dir=/var/lib/postgresql/drill-cluster --drill-port=5533
 ```
+
+**Primary endpoint resolution (ADM 04.11):** the real primary on myr-vm1 is `10.10.100.1:15432`,
+not the compile-time default `primary.internal:5432`. Priority order:
+1. Explicit `--primary-host` / `--primary-port` CLI flags
+2. Env vars `PRIMARY_PG_HOST` / `PRIMARY_PG_PORT`
+3. Auto-detect from the standby's own `pg_stat_wal_receiver` → `primary_conninfo` (works on myr-vm1)
+
+**Drill directory note (ADM 04.11):** the drill snapshot (`pg_basebackup`) runs INSIDE the
+standby container via `docker exec`, so `--drill-dir` must be a path writable by uid 999
+inside the container. Default: `/var/lib/postgresql/drill-cluster`. Host paths like
+`/srv/standby/drill-cluster` are NOT mounted and will fail with "Permission denied".
+
 **Execution flow**:
-1. Basebackup snapshot of `/srv/standby/myrmidon-pg/data` into ephemeral `/srv/standby/drill-cluster`.
+1. Basebackup snapshot of `/srv/standby/myrmidon-pg/data` into ephemeral `/var/lib/postgresql/drill-cluster`.
 2. Startup of ephemeral PostgreSQL instance on port `5533`.
 3. Execution of `pg_ctl promote -D <drillDir>` (D3: SQL `pg_promote()` requires superuser; the `paperclip` role lacks it. `pg_ctl promote` runs as the OS user that owns the data directory).
-4. Verification that `SELECT pg_is_in_recovery()` returns `f` (false).
+4. Verification that `SELECT pg_is_in_recovery()::int` returns `0` (false).
 5. Smoke verification: `SELECT 1` on `paperclip` and `myrmidon_hindsight`.
-6. Ephemeral instance shutdown and directory cleanup (skipped with `--keep-drill` for fleet-visibility checks, D6).
+6. Ephemeral instance shutdown and directory cleanup in `finally` — runs even if a step fails (ADM 04.11: prevents 49GB drill dirs being left on disk). Skipped with `--keep-drill` for fleet-visibility checks, D6.
 7. Verification that measured RTO <= 1800s.
 
 **Optional — keep drill alive for board/fleet verification (D6)**:
