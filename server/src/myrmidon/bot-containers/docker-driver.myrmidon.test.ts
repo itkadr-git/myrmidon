@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1634,11 +1635,11 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         },
       );
       await boundedDriver.create(spec({ botKey: "agent-a" }));
-      await boundedDriver.writeProfile("agent-a", testProfile());
+      await boundedDriver.writeProfile("agent-a", testProfile({ botKey: "agent-a" }));
       await boundedDriver.create(spec({ botKey: "agent-b" }));
-      await boundedDriver.writeProfile("agent-b", testProfile());
+      await boundedDriver.writeProfile("agent-b", testProfile({ botKey: "agent-b" }));
       await boundedDriver.create(spec({ botKey: "agent-c" }));
-      await boundedDriver.writeProfile("agent-c", testProfile());
+      await boundedDriver.writeProfile("agent-c", testProfile({ botKey: "agent-c" }));
 
       await Promise.all([
         boundedDriver.start("agent-a"),
