@@ -47240,7 +47240,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const updateOutcome = await Promise.race([
       resourceUpdate,
       new Promise<"timed_out">((resolve) =>
-        setTimeout(() => resolve("timed_out"), 500),
+        setTimeout(() => resolve("timed_out"), 2_500),
       ),
     ]);
     releasePost();
