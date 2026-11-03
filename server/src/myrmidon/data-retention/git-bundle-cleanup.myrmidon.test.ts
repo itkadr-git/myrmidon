@@ -36,7 +36,7 @@ describeDb("closed-task git-bundle retention cleanup", () => {
     const assetId = randomUUID();
     const attachmentId = randomUUID();
     const objectKey = `${companyId}/issues/${issueId}/workspace.bundle`;
-    await db.insert(companies).values({ id: companyId, name: "test", issuePrefix: `T${companyId.slice(0, 3)}` });
+    await db.insert(companies).values({ id: companyId, name: "test", issuePrefix: `GB${companyId.replace(/-/g, "").slice(0, 8).toUpperCase()}` });
     await db.insert(issues).values({ id: issueId, companyId, title: "fixture", status: input.status ?? "done", completedAt: new Date(NOW.getTime() - input.ageDays * DAY) });
     await db.insert(assets).values({ id: assetId, companyId, provider: "local_disk", objectKey, contentType: input.contentType ?? "application/octet-stream", byteSize: 16, sha256: "a".repeat(64), originalFilename: input.filename ?? "workspace.bundle" });
     await db.insert(issueAttachments).values({ id: attachmentId, companyId, issueId, assetId });
