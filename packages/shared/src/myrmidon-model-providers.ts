@@ -146,6 +146,36 @@ export type PoolAccountState =
   | "login_expired"
   | "not_logged_in";
 
+/** Default rolling quota window durations for Codex / ChatGPT subscription accounts. */
+export const CODEX_PRIMARY_WINDOW_MIN = 300; // 5 hours (300 minutes)
+export const CODEX_SECONDARY_WINDOW_MIN = 10080; // 1 week (7 days = 10080 minutes)
+
+/** Supported subscription plans in the Codex / ChatGPT pool. */
+export const POOL_ACCOUNT_PLANS = ["plus", "pro", "k12"] as const;
+export type PoolAccountPlan = (typeof POOL_ACCOUNT_PLANS)[number] | string;
+
+export function normalizePoolAccountPlan(plan?: string | null): PoolAccountPlan {
+  if (!plan) return "plus";
+  const trimmed = plan.trim().toLowerCase();
+  if (trimmed === "pro") return "pro";
+  if (trimmed === "k12" || trimmed === "k-12") return "k12";
+  if (trimmed === "plus") return "plus";
+  return trimmed;
+}
+
+export function formatPoolAccountPlanLabel(plan?: string | null): string {
+  const normalized = normalizePoolAccountPlan(plan);
+  switch (normalized) {
+    case "pro":
+      return "Pro";
+    case "k12":
+      return "K-12";
+    case "plus":
+    default:
+      return "Plus";
+  }
+}
+
 /** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
 export interface PoolAccountLimitWindow {
   usedPct: number | null;
@@ -284,3 +314,33 @@ export const setModelProviderModelsSchema = z.object({
     .max(500),
 });
 export type SetModelProviderModelsInput = z.infer<typeof setModelProviderModelsSchema>;
+
+/** POST /providers/{id}/channels body: add an account to the provider pool. */
+export const addPoolAccountSchema = z.object({
+  label: z.string().trim().min(1).max(128),
+  plan: z.string().trim().max(64).optional().default("plus"),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  accessToken: z.string().trim().max(4096).optional(),
+  refreshToken: z.string().trim().max(4096).optional(),
+  expiresAt: z.number().int().optional(),
+  models: z.array(z.string().trim()).optional(),
+});
+export type AddPoolAccountInput = z.infer<typeof addPoolAccountSchema>;
+
+/** POST /providers/{id}/oauth/start body: initiate Codex OAuth flow. */
+export const startCodexOAuthSchema = z.object({
+  plan: z.string().trim().max(64).optional().default("plus"),
+  label: z.string().trim().max(128).optional(),
+});
+export type StartCodexOAuthInput = z.infer<typeof startCodexOAuthSchema>;
+
+/** POST /providers/{id}/oauth/complete body: complete Codex OAuth flow. */
+export const completeCodexOAuthSchema = z.object({
+  state: z.string().trim().min(1).max(256).optional(),
+  code: z.string().trim().min(1).max(2048).optional(),
+  label: z.string().trim().max(128).optional(),
+  plan: z.string().trim().max(64).optional(),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  tokens: z.record(z.unknown()).optional(),
+});
+export type CompleteCodexOAuthInput = z.infer<typeof completeCodexOAuthSchema>;
