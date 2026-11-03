@@ -342,7 +342,6 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch403 = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
-      json: async () => ({ message: "Forbidden" }),
     });
 
     const result403 = await fetchCommitCheckRuns(

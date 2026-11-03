@@ -255,7 +255,9 @@ export async function fetchCommitCheckRuns(
 
     if (!res.ok) {
       failStatus = res.status;
-      const errorBody = await res.json().catch(() => null) as { message?: unknown } | null;
+      const errorBody = typeof (res as { json?: unknown }).json === "function"
+        ? (await (res as Response).json().catch(() => null)) as { message?: unknown } | null
+        : null;
       tokenPermissionDenied = Boolean(token)
         && res.status === 403
         && errorBody?.message === "Resource not accessible by personal access token";
