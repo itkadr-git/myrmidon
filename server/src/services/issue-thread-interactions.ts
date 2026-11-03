@@ -3634,6 +3634,7 @@ export function issueThreadInteractionService(
             normalizedData.kind === "suggest_tasks" ||
             normalizedData.kind === "ask_user_questions") &&
           policy.effectiveResolverPolicy !== "human_only" &&
+          Boolean(actor.agentId) &&
           !("toolAction" in normalizedData.payload) &&
           !("secretProposal" in normalizedData.payload)
         ) {
