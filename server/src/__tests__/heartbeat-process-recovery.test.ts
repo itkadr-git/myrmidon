@@ -5275,7 +5275,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(
       runs.filter((run) => run.contextSnapshot?.wakeReason === "interaction_pending"),
     ).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
+    const failedRun = runs.find((run) => run.id === runId);
+    expect(failedRun).toMatchObject({
       id: runId,
       status: "failed",
       errorCode: "process_lost",
