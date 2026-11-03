@@ -132,6 +132,11 @@ func (rs *reqState) handle() *deny.Error {
 		bot config.Bot
 		bs  *botState
 	)
+	if rt.ConfigBotKey != "" {
+		if _, ok := st.cfg.Bot(rt.ConfigBotKey); !ok {
+			return deny.New(deny.BotNotEnrolled)
+		}
+	}
 	if rt.BotKey != "" {
 		b, ok := st.cfg.Bot(rt.BotKey)
 		if !ok {
