@@ -988,7 +988,8 @@ export function githubConnectionEventService(
         const alarmKey = `github-events-silence:${companyId}`;
         const existingAlarms = await db.select().from(issues).where(and(
           eq(issues.companyId, companyId),
-          eq(issues.idempotencyKey, alarmKey),
+          eq(issues.originKind, "github_events_silence"),
+          eq(issues.originId, companyId),
         ));
         const existingAlarm = existingAlarms[0] ?? null;
 
@@ -1062,8 +1063,8 @@ export function githubConnectionEventService(
               description,
               status: "todo",
               priority: "high",
-              originKind: "system",
-              idempotencyKey: alarmKey,
+              originKind: "github_events_silence",
+              originId: companyId,
               createdAt: currentTime,
               updatedAt: currentTime,
             });

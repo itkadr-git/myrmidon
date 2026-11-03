@@ -796,12 +796,13 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
 
     const [alarmIssue] = await db.select().from(issues).where(and(
       eq(issues.companyId, companyId),
-      eq(issues.idempotencyKey, `github-events-silence:${companyId}`),
+      eq(issues.originKind, "github_events_silence"),
+      eq(issues.originId, companyId),
     ));
     expect(alarmIssue).toBeDefined();
-    expect(alarmIssue.status).toBe("todo");
-    expect(alarmIssue.priority).toBe("high");
-    expect(alarmIssue.title).toContain("ALARM: события GitHub не поступают");
+    expect(alarmIssue?.status).toBe("todo");
+    expect(alarmIssue?.priority).toBe("high");
+    expect(alarmIssue?.title).toContain("ALARM: события GitHub не поступают");
 
     // Second sweep with healthy event timestamp (now - 2 minutes) -> resolves alarm
     const healthyTime = new Date("2026-11-03T01:05:00.000Z");
@@ -820,8 +821,9 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
 
     const [resolvedAlarm] = await db.select().from(issues).where(and(
       eq(issues.companyId, companyId),
-      eq(issues.idempotencyKey, `github-events-silence:${companyId}`),
+      eq(issues.originKind, "github_events_silence"),
+      eq(issues.originId, companyId),
     ));
-    expect(resolvedAlarm.status).toBe("done");
+    expect(resolvedAlarm?.status).toBe("done");
   });
 });

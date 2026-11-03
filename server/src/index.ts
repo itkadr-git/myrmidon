@@ -2159,7 +2159,9 @@ async function startServerWithDatabaseTeardown(
   };
   const scheduleGitHubEventsWatchdog = () => {
     if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(githubConnectionEvents.sweepWatchdog()
+    const sweep = githubConnectionEvents.sweepWatchdog;
+    if (typeof sweep !== "function") return;
+    trackHeartbeatSchedulerWork(sweep()
       .then((result) => {
         if (result.alarmsCreated > 0 || result.alarmsResolved > 0) {
           logger.info(result, "GitHub events watchdog sweep completed");
