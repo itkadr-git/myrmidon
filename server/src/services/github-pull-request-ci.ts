@@ -239,9 +239,10 @@ export async function fetchCommitCheckRuns(
   headSha: string,
   token: string | null,
   fetchImpl: FetchLike = fetch,
-  options: { maxPages?: number; etag?: string } = {},
+  options: { maxPages?: number; etag?: string; cachedRuns?: CommitCheckRunsCacheEntry } = {},
 ): Promise<CheckRunsFetchResult> {
   const maxPages = options.maxPages ?? 10;
+  const cachedRuns = options.cachedRuns;
   const allRuns: PullRequestCiJob[] = [];
   let page = 1;
   let totalCount: number | null = null;
@@ -249,6 +250,7 @@ export async function fetchCommitCheckRuns(
   let failStatus: number | null = null;
   let rateLimitResetAt: number | undefined;
   let rateLimited = false;
+  let rateLimitCachedRuns: CommitCheckRunsCacheEntry | undefined;
 
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
@@ -285,12 +287,17 @@ export async function fetchCommitCheckRuns(
     if (!res.ok) {
       failStatus = res.status;
       const remaining = getResponseHeader(res, "x-ratelimit-remaining");
-      const retryText = (await res.clone().text().catch(() => "")).toLowerCase();
+      const retryText = typeof res.clone === "function"
+        ? (await res.clone().text().catch(() => "")).toLowerCase()
+        : typeof res.text === "function"
+          ? (await res.text().catch(() => "")).toLowerCase()
+          : "";
       rateLimited = res.status === 429 ||
         (res.status === 403 && (remaining === "0" || retryText.includes("rate limit")));
       if (rateLimited) {
         const reset = Number(getResponseHeader(res, "x-ratelimit-reset"));
         if (Number.isFinite(reset) && reset > 0) rateLimitResetAt = reset * 1000;
+        rateLimitCachedRuns = cachedRuns;
       }
       fetchFailed = true;
       break;
@@ -345,7 +352,19 @@ export async function fetchCommitCheckRuns(
 
   if (fetchFailed && allRuns.length === 0) {
     result.authoritative = false;
-    if (rateLimited) {
+    if (rateLimited && rateLimitCachedRuns) {
+      const staleRuns = rateLimitCachedRuns.runs;
+      result.push(...staleRuns);
+      result.authoritative = false;
+      result.status = staleRuns.status;
+      result.conclusion = "rate_limited";
+      result.rateLimitResetAt = rateLimitResetAt;
+      result.etag = rateLimitCachedRuns.etag;
+      const until = rateLimitResetAt
+        ? formatUtcTime(new Date(rateLimitResetAt))
+        : getGitHubRateLimitResetTime() ?? "unknown";
+      result.summary = `${staleRuns.summary ?? "checks unavailable"} (устарел; GitHub rate limit until ${until})`;
+    } else if (rateLimited) {
       result.status = "unavailable";
       result.conclusion = "rate_limited";
       result.rateLimitResetAt = rateLimitResetAt;
@@ -769,7 +788,7 @@ export function createPullRequestCiResolver(
           headSha,
           token,
           fetchImpl,
-          { etag: cachedRunsEntry?.etag ?? undefined },
+          { etag: cachedRunsEntry?.etag ?? undefined, cachedRuns: cachedRunsEntry },
         );
         if (runs.conclusion === "incomplete" && runs.summary === "checks unchanged (not modified)" && cachedRunsEntry) {
           runs = cachedRunsEntry.runs;
