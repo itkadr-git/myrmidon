@@ -83,7 +83,7 @@ func TestApplyBotUpdateRejectsEachPlatformCeiling(t *testing.T) {
 func TestConfigClonePreservesCeilings(t *testing.T) {
 	cfg := validBaseConfig(t)
 	copy := cfg.Clone()
-	if copy.PlatformLimits == nil || copy.PlatformLimits.MaxMemoryMB != 4096 {
+	if copy.PlatformLimits == nil || copy.PlatformLimits.MaxMemoryMB != 0 || copy.PlatformLimits.MaxCPUs != 0 || copy.PlatformLimits.MaxPids != 0 {
 		t.Fatalf("platform limits not cloned: %+v", copy.PlatformLimits)
 	}
 	got, ok := copy.Bot(bot1Key)

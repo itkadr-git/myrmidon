@@ -221,6 +221,9 @@ func Parse(data []byte) (*Config, string, error) {
 	if cfg.Caller != nil && cfg.Caller.Mode == "" {
 		cfg.Caller.Mode = ModeContainerMainProcess
 	}
+	if cfg.PlatformLimits == nil {
+		cfg.PlatformLimits = &PlatformLimits{}
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, "", err
 	}

@@ -147,5 +147,8 @@ func DecodeBotUpdate(data []byte) (BotUpdate, error) {
 	if u.BotKey == "" {
 		return BotUpdate{}, errors.New("invalid config update: botKey is required")
 	}
+	if !botKeyRe.MatchString(u.BotKey) {
+		return BotUpdate{}, errors.New("invalid config update: botKey must be a lowercase uuid")
+	}
 	return u, nil
 }

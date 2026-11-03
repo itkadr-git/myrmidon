@@ -59,7 +59,7 @@ func (rs *reqState) a20(st *runtime, rt *route.Route) *deny.Error {
 	g.imgMu.Lock()
 	g.imgs = nil
 	g.imgMu.Unlock()
-	g.log.Write(Line{Event: "config_updated", Bot: u.BotKey, ConfigHash: hash})
+	g.log.Write(Line{Event: "config_updated", BotKey: u.BotKey, ConfigHash: hash})
 	resp, err := json.Marshal(struct {
 		OK     bool    `json:"ok"`
 		BotKey string  `json:"botKey"`
