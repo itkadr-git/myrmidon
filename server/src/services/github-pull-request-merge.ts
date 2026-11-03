@@ -31,6 +31,8 @@ export type PullRequestMergeDetails = {
   deletions?: number | null;
   changedFiles?: number | null;
   mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
+  mergeCommitSha?: string | null;
+  mergeCommitReachable?: boolean;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -131,6 +133,10 @@ export function createPullRequestMergeDetailsResolver(
       : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
         ? "MERGEABLE"
         : typeof rawMergeable === "string" ? rawMergeable : null;
+    const mergeCommitSha = typeof data?.mergeCommitSha === "string" ? data.mergeCommitSha : null;
+    const mergeCommitReachable = typeof data?.mergeCommitReachable === "boolean"
+      ? data.mergeCommitReachable
+      : undefined;
     return {
       state: statusKey === "merged" || data?.merged === true
         ? "merged"
@@ -147,6 +153,8 @@ export function createPullRequestMergeDetailsResolver(
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
       mergeable,
+      ...(mergeCommitSha ? { mergeCommitSha } : {}),
+      ...(mergeCommitReachable !== undefined ? { mergeCommitReachable } : {}),
     };
   };
 }
