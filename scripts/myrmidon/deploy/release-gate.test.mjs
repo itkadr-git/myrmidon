@@ -335,6 +335,7 @@ exit 0
       // PREDEPLOY-DB-CHECK: the attention list of the company is walked against
       // the throwaway copy, so the check needs the company id too.
       `BOARD_COMPANY_ID=${COMPANY}`,
+      "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
       ...(smokeCompany ? [`MYRMIDON_DEPLOY_SMOKE_COMPANY=${smokeCompany}`] : []),
       "MYRMIDON_DEPLOY_SMOKE_TIMEOUT_SEC=2",
       "MYRMIDON_DEPLOY_SMOKE_INTERVAL_SEC=1",

@@ -3745,12 +3745,21 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
+// adapterType belongs to the agent row, not heartbeat_runs. Keep this as a
+// scalar subquery so the run-list projection remains one row per run.
+const heartbeatRunAdapterTypeColumn = sql<string>`(
+  SELECT ${agents.adapterType}
+  FROM ${agents}
+  WHERE ${agents.id} = ${heartbeatRuns.agentId}
+)`.as("adapterType");
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
+  adapterType: heartbeatRunAdapterTypeColumn,
   status: heartbeatRuns.status,
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
