@@ -60,6 +60,7 @@ const apiPrefixes: Record<string, string> = {
   "llms.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "servers.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -76,6 +77,7 @@ const apiPrefixes: Record<string, string> = {
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
+  "updates.ts": "/api",
   "user-profiles.ts": "/api",
   "users.ts": "/api",
 };
@@ -104,11 +106,6 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
-  // Admin-assistant health aliases are mounted by adminAssistantRoutes but
-  // intentionally do not have matching OpenAPI contract paths.
-  "GET /api/admin-assistant/health",
-  "GET /api/admin-assistant/cluster-health",
-  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
@@ -149,6 +146,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   // scanner's route-file scope; their OpenAPI entries are contract-first here.
   "GET /api/admin-assistant/cluster-health",
   "GET /api/admin-assistant/health",
+  "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 

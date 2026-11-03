@@ -102,13 +102,14 @@ export function resolveInteractionRecipient(
     input.routeType === "decision"
   ) {
     recipient = input.recipient ?? null;
-    if (
-      !recipient &&
-      input.creator &&
-      "agentId" in input.creator &&
-      input.projectId == null
-    ) {
-      recipient = { serviceQueue: "default" };
+    if (!recipient) {
+      recipient = roleRecipient(
+        input.projectRoles,
+        input.projectId,
+        input.casteScope,
+        input.kind,
+        input.creator,
+      );
     }
     if (!recipient) {
       throw new InteractionRecipientUnresolvedError(

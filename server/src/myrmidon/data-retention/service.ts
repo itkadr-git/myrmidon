@@ -4,7 +4,7 @@
 // for the routes.
 //
 // `read()` composes the DataRetentionView the frozen inter-part contract
-// fixes: the three retention values with their per-key source
+// fixes: the four retention values with their per-key source
 // ("settings" | "default") plus the persisted sweep state. `update()` merges
 // a validated patch into the stored object (the sweep's `lastRun` survives),
 // writes one activity line per company like every instance settings change,

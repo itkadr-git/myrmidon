@@ -1846,6 +1846,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      addresseeUserId: "local-board",
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
@@ -1886,6 +1887,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      addresseeUserId: "local-board",
       payload: {
         version: 1,
         prompt: "Decline only with a reason?",
@@ -1979,6 +1981,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
     const created = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: { version: 1, prompt: "Approve this review?" },
       resolverPolicy: "anyone",
     }, {
@@ -2032,6 +2035,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
       const created = await interactionsSvc.create({ id: issueId, companyId }, {
         kind: "request_confirmation",
+        addresseeAgentId: resolverAgentId,
         payload: { version: 1, prompt: "Approve this review?" },
       }, {
         userId: "local-board",
@@ -2134,6 +2138,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: { version: 1, prompt: "Approve your own request?" },
       resolverPolicy: "anyone",
     }, {
@@ -2146,6 +2151,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_checkbox_confirmation",
+      addresseeAgentId: resolverAgentId,
       payload: {
         version: 1,
         prompt: "Approve the same run?",

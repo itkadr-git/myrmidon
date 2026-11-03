@@ -141,6 +141,7 @@ const DEFAULT_START_HEALTH_TIMEOUT_MS = 420_000;
 // Grace for transient `unhealthy` applies to all bots and matches the image's
 // startup health window (300 s); total startup remains bounded by the same timeout.
 const DEFAULT_HEALTH_START_GRACE_MS = 300_000;
+export const DEFAULT_MAX_CONCURRENT_STARTS = 2;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -246,12 +247,55 @@ export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverCon
   };
 }
 
+export function createSemaphore(max: number) {
+  let count = 0;
+  const queue: Array<() => void> = [];
+  return {
+    async acquire(): Promise<() => void> {
+      if (count < max) {
+        count++;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          count--;
+          const next = queue.shift();
+          if (next) {
+            count++;
+            next();
+          }
+        };
+      }
+      return new Promise<() => void>((resolve) => {
+        queue.push(() => {
+          let released = false;
+          resolve(() => {
+            if (released) return;
+            released = true;
+            count--;
+            const next = queue.shift();
+            if (next) {
+              count++;
+              next();
+            }
+          });
+        });
+      });
+    },
+  };
+}
+
 /** Test hooks; production code passes none. */
 export interface DockerDriverOptions {
   recordOom?: (botKey: string, observation: ContainerOomObservation) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   startHealthTimeoutMs?: number;
   healthPollIntervalMs?: number;
+  /**
+   * Maximum concurrent starting/restarting containers on the host (OPE-10757).
+   * Limits disk I/O when multiple bots restart simultaneously. Default 2.
+   */
+  maxConcurrentStarts?: number;
   /**
    * myrmidon(OPE-4789): how long one freshly read template context (shared
    * package cache path, git-mirror flag, scope layout) stays valid for a bot.
@@ -1179,6 +1223,9 @@ export function dockerBotContainerDriver(
   const sleep = options.sleep ?? realSleep;
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
+  const maxConcurrentStarts = options.maxConcurrentStarts
+    ?? (process.env.MYRMIDON_MAX_CONCURRENT_STARTS ? Number(process.env.MYRMIDON_MAX_CONCURRENT_STARTS) : DEFAULT_MAX_CONCURRENT_STARTS);
+  const startSemaphore = createSemaphore(maxConcurrentStarts > 0 ? maxConcurrentStarts : DEFAULT_MAX_CONCURRENT_STARTS);
   const templateContextTtlMs = options.templateContextTtlMs ?? DEFAULT_TEMPLATE_CONTEXT_TTL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
@@ -1803,10 +1850,35 @@ export function dockerBotContainerDriver(
     await runHelper(botKey, { image: info.Image, role: "apply-profile", script: buildApplyScript(nonce), archives, layout: layoutOfInspect(info) });
   }
 
+  async function readProgressLease(botKey: string): Promise<{ phase: string; renewedAt: number; expectedS: number } | null> {
+    const candidates = [
+      path.join(config.volumeRoot, botKey, "hermes", "state", "startup-progress-lease.json"),
+      path.join(config.volumeRoot, botKey, "hermes", "state", "startup-lease.json"),
+      path.join(config.volumeRoot, botKey, "state", "startup-progress-lease.json"),
+      path.join(config.volumeRoot, botKey, "state", "startup-lease.json"),
+    ];
+    for (const file of candidates) {
+      try {
+        const text = await readFile(file, "utf8");
+        const data = JSON.parse(text);
+        if (data && typeof data.phase === "string") {
+          const renewedAt = typeof data.renewed_at === "number"
+            ? data.renewed_at
+            : (typeof data.renewedAt === "number" ? data.renewedAt : clock() / 1000);
+          const expectedS = typeof data.expected_s === "number"
+            ? data.expected_s
+            : (typeof data.expectedS === "number" ? data.expectedS : 900);
+          return { phase: data.phase, renewedAt, expectedS };
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const startedAt = monotonicClock();
-    const deadline = startedAt + startHealthTimeoutMs;
+    let deadline = startedAt + startHealthTimeoutMs;
     let unhealthySince: number | undefined;
     for (;;) {
       const info = await inspectByName(name);
@@ -1814,11 +1886,24 @@ export function dockerBotContainerDriver(
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
       if (state === "running" && health === "healthy") return;
+
+      const lease = await readProgressLease(botKey);
+      if (lease) {
+        // While the gateway holds an active progress lease (renewed recently),
+        // push the startup deadline forward and forgive unhealthy startup grace (OPE-10757).
+        const nowSec = clock() / 1000;
+        const maxStaleSec = Math.max(120, Math.min(lease.expectedS, 900));
+        if (nowSec - lease.renewedAt < maxStaleSec) {
+          deadline = monotonicClock() + startHealthTimeoutMs;
+          unhealthySince = undefined;
+        }
+      }
+
       if (state === "running" && health === "unhealthy") {
         unhealthySince ??= monotonicClock();
         const healthGrace = Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS);
         if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
-      } else {
+      } else if (!lease) {
         unhealthySince = undefined;
       }
       if (state === "exited" || state === "dead") {
@@ -1835,20 +1920,30 @@ export function dockerBotContainerDriver(
 
   async function start(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    await startByName(name); // 304 (already running) is not an error
-    await writeIdleStopped(botKey, false);
-    await waitForHealthy(botKey);
+    const release = await startSemaphore.acquire();
+    try {
+      await startByName(name); // 304 (already running) is not an error
+      await writeIdleStopped(botKey, false);
+      await waitForHealthy(botKey);
+    } finally {
+      release();
+    }
   }
 
   async function restart(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const res = await requestWithRateLimitRetry({
-      method: "POST",
-      path: `/containers/${nameSegment(name)}/restart?t=${BOT_STOP_TIMEOUT_SEC}`,
-      timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
-    });
-    if (res.status >= 400) throw describeFailure(`docker restart ${name}`, res);
-    await waitForHealthy(botKey);
+    const release = await startSemaphore.acquire();
+    try {
+      const res = await requestWithRateLimitRetry({
+        method: "POST",
+        path: `/containers/${nameSegment(name)}/restart?t=${BOT_STOP_TIMEOUT_SEC}`,
+        timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
+      });
+      if (res.status >= 400) throw describeFailure(`docker restart ${name}`, res);
+      await waitForHealthy(botKey);
+    } finally {
+      release();
+    }
   }
 
   async function stop(botKey: string): Promise<void> {

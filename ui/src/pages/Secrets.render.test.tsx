@@ -73,6 +73,7 @@ const mockInstanceSecretSettingsApi = vi.hoisted(() => ({
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
+const mockCostsApi = vi.hoisted(() => ({ providerUsage: vi.fn() }));
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
@@ -82,6 +83,7 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("../api/costs", () => ({ costsApi: mockCostsApi }));
 vi.mock("@/api/instanceSecretSettings", () => ({
   instanceSecretSettingsApi: mockInstanceSecretSettingsApi,
   instanceSecretSettingsQueryKey: ["instance", "secret-settings"],
@@ -91,6 +93,10 @@ vi.mock("../api/instanceSecretSettings", () => ({
   instanceSecretSettingsApi: mockInstanceSecretSettingsApi,
   instanceSecretSettingsQueryKey: ["instance", "secret-settings"],
 }));
+
+beforeEach(() => {
+  mockCostsApi.providerUsage.mockResolvedValue({ usage: [], thresholdPercent: 80 });
+});
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -391,6 +397,8 @@ describe("Secrets page layout", () => {
     document.body.appendChild(container);
 
     mockSecretsApi.list.mockResolvedValue([]);
+    mockCostsApi.providerUsage.mockResolvedValue({ usage: [], thresholdPercent: 80 });
+
     mockSecretsApi.providers.mockResolvedValue(providers);
     mockSecretsApi.providerHealth.mockResolvedValue({
       providers: [
@@ -421,6 +429,79 @@ describe("Secrets page layout", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("shows the remaining provider usage on a secret matched by its key", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret({ id: "s-usage", key: "nghi_llm_key", name: "nghi_llm_key" })]);
+    mockCostsApi.providerUsage.mockResolvedValue({
+      thresholdPercent: 80,
+      usage: [{
+        provider: "nghi", credentialRef: "nghi_llm_key", window: "package",
+        startedAt: "2026-10-01T00:00:00.000Z", resetsAt: "2099-10-16T00:00:00.000Z", observedAt: "2026-10-14T00:00:00.000Z",
+        used: { requests: 90 }, limit: { requests: 100 }, remaining: { requests: 10 }, remainingPercent: { requests: 10 },
+        thresholdPercent: 80, warning: null,
+      }],
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await waitForReact(() => container.querySelector('[data-testid="provider-usage-remaining"]') !== null);
+
+    const widget = container.querySelector('[data-testid="provider-usage-remaining"]');
+    expect(widget).not.toBeNull();
+    expect(widget?.textContent).toContain("requests: 10 remaining (10%)");
+  });
+
+  it("shows both Codex usage windows regardless of API order", async () => {
+    const secret = makeCompanySecret({ id: "s-codex", key: "codex-account", name: "codex-account" });
+    const usage = [
+      {
+        provider: "codex", credentialRef: "codex-account", window: "rolling_5h",
+        startedAt: "2026-11-02T00:00:00.000Z", resetsAt: "2099-11-02T05:00:00.000Z", observedAt: "2026-11-02T01:00:00.000Z",
+        used: { requests: 60 }, limit: { requests: 100 }, remaining: { requests: 40 }, remainingPercent: { requests: 40 },
+        thresholdPercent: 80, warning: null,
+      },
+      {
+        provider: "codex", credentialRef: "codex-account", window: "rolling_7d",
+        startedAt: "2026-10-27T00:00:00.000Z", resetsAt: "2099-11-03T00:00:00.000Z", observedAt: "2026-11-02T01:00:00.000Z",
+        used: { requests: 20 }, limit: { requests: 100 }, remaining: { requests: 80 }, remainingPercent: { requests: 80 },
+        thresholdPercent: 80, warning: null,
+      },
+    ];
+
+    for (let order = 0; order < 2; order += 1) {
+      container.innerHTML = "";
+      vi.clearAllMocks();
+      mockSecretsApi.list.mockResolvedValue([secret]);
+      mockCostsApi.providerUsage.mockResolvedValue({ thresholdPercent: 80, usage: order === 0 ? usage : [...usage].reverse() });
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>
+              <Secrets />
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await waitForReact(() => container.querySelectorAll('[data-testid="provider-usage-remaining"]').length > 0);
+      const lines = [...container.querySelectorAll('[data-testid="provider-usage-remaining"]')].map((node) => node.textContent ?? "");
+      expect(lines.some((line) => line.includes("rolling_5h") && line.includes("40 remaining (40%)"))).toBe(true);
+      expect(lines.some((line) => line.includes("rolling_7d") && line.includes("80 remaining (80%)"))).toBe(true);
+      await act(() => root.unmount());
+      queryClient.clear();
+      container.innerHTML = "";
+    }
   });
 
   it("uses the shared search/filter/tab affordances and keeps vault sections quiet", async () => {

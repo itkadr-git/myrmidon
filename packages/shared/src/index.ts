@@ -1,6 +1,19 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
 export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
 export {
+  adminAssistantDryRunDiagnosticsSchema,
+  adminAssistantDryRunProbeResultSchema,
+  adminAssistantDryRunProbeStatusSchema,
+  adminAssistantDryRunSummarySchema,
+  sanitizeDryRunDiagnostics,
+  sanitizeDryRunDiagnosticsDetail,
+  toSafeDryRunDiagnosticsJson,
+  type AdminAssistantDryRunDiagnostics,
+  type AdminAssistantDryRunProbeResult,
+  type AdminAssistantDryRunProbeStatus,
+  type AdminAssistantDryRunSummary,
+} from "./admin-assistant-diagnostics.js";
+export {
   LEGACY_BLOCKED_IMPORT_RULE_VERSION,
   createLegacyBlockedImportKey,
   legacyBlockedClassSchema,
@@ -922,6 +935,8 @@ export type {
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -1779,6 +1794,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1817,6 +1835,10 @@ export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -2548,6 +2570,9 @@ export {
   type BlockUserInput,
   auditQuerySchema,
   type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -3059,9 +3084,17 @@ export * from "./recovery-factory.js";
 // to full operational metrics without secrets.
 export * from "./myrmidon-architect-data.js";
 
+// myrmidon(1.7 LOCALE-UPLOAD): installed locales list and coverage percentage
+export * from "./installed-locales.js";
+
 // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure linter and validator
 export * from "./locale-validator.js";
 export * from "./locale-upload.js";
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
+export * from "./myrmidon-auto-update-window-cron.js";
+export * from "./validators/updates.js";
+export * from "./validators/auto-update-settings.js";
 
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.

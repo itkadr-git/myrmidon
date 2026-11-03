@@ -80,6 +80,7 @@ describe("api load journal", () => {
     expect(routeA?.errorCount).toBe(1);
     expect(routeA?.p95Ms).toBe(25);
     expect(routeA?.maxMs).toBe(25);
+    expect(routeA?.alert).toBe(false);
 
     expect(log.read({ windowMs: 500, now: 3_000 }).map((row) => row.route)).toEqual(["/api/b"]);
     expect(log.read({ windowMs: 10_000, now: 3_000, limit: 1 })).toHaveLength(1);
@@ -100,6 +101,18 @@ describe("api load journal", () => {
     // the 19th (118 ms) — values the board actually served.
     expect(rows[0]?.p50Ms).toBe(109);
     expect(rows[0]?.p95Ms).toBe(118);
+    expect(rows[0]?.alert).toBe(false);
+  });
+
+  it("flags alert when p95 exceeds 2 seconds (2000ms)", () => {
+    const log = createRequestLog({ capacity: 10 });
+    log.record({ method: "GET", route: "/api/slow", status: 200, durationMs: 2500, at: 1_000 });
+    log.record({ method: "GET", route: "/api/fast", status: 200, durationMs: 150, at: 1_000 });
+    const rows = log.read({ windowMs: 10_000, now: 1_000 });
+    const slow = rows.find((r) => r.route === "/api/slow");
+    const fast = rows.find((r) => r.route === "/api/fast");
+    expect(slow?.alert).toBe(true);
+    expect(fast?.alert).toBe(false);
   });
 
   it("journals a finished request and tags it with the http_route lane", () => {

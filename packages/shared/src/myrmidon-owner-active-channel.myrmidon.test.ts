@@ -7,6 +7,8 @@ import {
   MAX_OWNER_ACTIVE_THRESHOLD_MIN,
   MIN_OWNER_ACTIVE_THRESHOLD_MIN,
   OWNER_ACTIVE_THRESHOLD_ENV,
+  buildOwnerChannelsList,
+  isOwnerChannelActive,
   mergeOwnerActiveChannelSettings,
   normalizeOwnerActiveChannelSettings,
   parseOwnerActiveThresholdMin,
@@ -111,5 +113,55 @@ describe("active-channel decision", () => {
     expect(resolveActiveOwnerChannel({ web: "not-a-date", telegram: iso(5) }, { thresholdMin: 30, now })).toBe(
       "telegram",
     );
+  });
+});
+
+describe("buildOwnerChannelsList and threshold boundaries", () => {
+  it("preserves exact OWNER_CHANNELS order: web then telegram", () => {
+    const list = buildOwnerChannelsList({}, { thresholdMin: 120, now });
+    expect(list.map((c) => c.channel)).toEqual(["web", "telegram"]);
+  });
+
+  it("empty activity yields null lastSeenAt and active: false without error", () => {
+    const list = buildOwnerChannelsList({ web: null, telegram: null }, { thresholdMin: 120, now });
+    expect(list).toEqual([
+      { channel: "web", lastSeenAt: null, active: false },
+      { channel: "telegram", lastSeenAt: null, active: false },
+    ]);
+  });
+
+  it("filled list correctly marks active channels based on threshold", () => {
+    const list = buildOwnerChannelsList(
+      { web: iso(10), telegram: iso(130) },
+      { thresholdMin: 120, now },
+    );
+    expect(list).toEqual([
+      { channel: "web", lastSeenAt: iso(10), active: true },
+      { channel: "telegram", lastSeenAt: iso(130), active: false },
+    ]);
+  });
+
+  it("tests exact threshold boundary: exactly threshold is active, +1 ms is not", () => {
+    const thresholdMin = 120;
+    const exactThresholdMs = thresholdMin * 60_000;
+
+    const exactStamp = new Date(now - exactThresholdMs).toISOString();
+    expect(isOwnerChannelActive(exactStamp, { thresholdMin, now })).toBe(true);
+
+    const overByOneMsStamp = new Date(now - (exactThresholdMs + 1)).toISOString();
+    expect(isOwnerChannelActive(overByOneMsStamp, { thresholdMin, now })).toBe(false);
+
+    const underByOneMsStamp = new Date(now - (exactThresholdMs - 1)).toISOString();
+    expect(isOwnerChannelActive(underByOneMsStamp, { thresholdMin, now })).toBe(true);
+
+    // When applied to buildOwnerChannelsList
+    const list = buildOwnerChannelsList(
+      { web: exactStamp, telegram: overByOneMsStamp },
+      { thresholdMin, now },
+    );
+    expect(list).toEqual([
+      { channel: "web", lastSeenAt: exactStamp, active: true },
+      { channel: "telegram", lastSeenAt: overByOneMsStamp, active: false },
+    ]);
   });
 });

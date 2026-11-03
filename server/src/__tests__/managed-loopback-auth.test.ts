@@ -53,6 +53,9 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "managed-loopback-auth-test-secret");
     vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", publicOrigin);
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    // myrmidon(1.7 USERS-ADMIN-UI A): self-registration is off by default;
+    // enable via env override for the credential sign-up step.
+    vi.stubEnv("MYRMIDON_AUTH_SELF_SIGN_UP", "1");
 
     const db = createDb(tempDb!.connectionString);
     const config = {
