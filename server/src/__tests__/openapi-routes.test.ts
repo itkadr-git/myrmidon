@@ -99,8 +99,6 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "audit.ts",
   // Mounted directly by app.ts; its routes are documented in openapi.ts.
   "admin-assistant.ts",
-  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268): auto-update routes are not yet in OpenAPI
-  "updates.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // These webhook handlers are mounted outside the scanner's route-file map.
