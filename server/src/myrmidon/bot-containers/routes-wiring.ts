@@ -21,6 +21,7 @@ import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/ind
 import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeDeps } from "./index.js";
 import { drizzleBotApplyJobStore } from "./apply-jobs.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
+import { listCompanyBotContainerAgents } from "./agents-query.js";
 import { botContainerRoutes } from "./routes.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -88,6 +89,7 @@ export function myrmidonBotContainerRoutes(db: Db) {
         .then((rows) => rows[0] ?? null);
       return row;
     },
+    listCompanyAgents: listCompanyBotContainerAgents(db),
     /**
      * myrmidon(CONCURRENCY-SYNC): the newest run of this agent the hermes gateway
      * refused with 429, inside the lookback window. Only asked for an agent whose
