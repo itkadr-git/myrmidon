@@ -64,6 +64,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/channel-connectors
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/channel-connectors/bridge/notify-settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(BOARD-JANITOR OPE-10750): keep board-janitor lastRunAt across vendor writes of `general`
+import { preserveBoardJanitorGeneralKey } from "../myrmidon/board-janitor/settings.js";
 // myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
 import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/settings.js";
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
@@ -103,6 +105,7 @@ import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-u
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
 import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
+import { preserveUpdateSettingsGeneralKey } from "../routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -880,6 +883,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
+              ...preserveBoardJanitorGeneralKey(current.general), // myrmidon(BOARD-JANITOR OPE-10750)
               ...preserveGuardrailModesGeneralKey(current.general), // myrmidon(1.7-GRD-MODES)
               ...preserveOwnerDeliveryGeneralKey(current.general), // myrmidon(1.6.5-OWNER-DM-FILTER)
               // The preserve line above restores the stored value: a patch that carries the key wins.
@@ -932,6 +936,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.ownerActiveChannel !== undefined
                 ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
                 : {}),
+              ...preserveUpdateSettingsGeneralKey(current.general), // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
             },
             updatedAt: now,
           })

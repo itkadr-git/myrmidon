@@ -259,6 +259,7 @@ import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
@@ -1197,6 +1198,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
+  api.use(updatesRoutes(db)); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
   api.use(instanceSecretSettingsRoutes(db)); // myrmidon(SETTINGS-UI E2.1)
   installInstanceSecretResolver(createInstanceSecretSettingService(db)); // myrmidon(SETTINGS-UI E2.2)
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)

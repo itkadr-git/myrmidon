@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1573,6 +1574,79 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await expect(boundedDriver.start("agent-a")).rejects.toThrow(/did not become healthy within 12000ms/);
       expect(elapsed).toBe(12_000);
       expect(bot()?.state).toBe("running");
+    });
+
+    it("does not restart on health timeout while holding an active startup progress lease", async () => {
+      let elapsed = 0;
+      let wallClock = 1_000_000;
+      daemon.options.healthOnStart = "starting";
+      const botsRoot = path.join(tmp, "bots");
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: botsRoot },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 5_000,
+          clock: () => wallClock,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            wallClock += ms;
+            if (elapsed < 25_000) {
+              const leaseDir = path.join(botsRoot, "agent-a", "hermes", "state");
+              await mkdir(leaseDir, { recursive: true });
+              await writeFile(
+                path.join(leaseDir, "startup-progress-lease.json"),
+                JSON.stringify({
+                  phase: "state_db_unclean_integrity_check",
+                  renewed_at: wallClock / 1000,
+                  expected_s: 900,
+                }),
+              );
+            } else {
+              const leaseFile = path.join(botsRoot, "agent-a", "hermes", "state", "startup-progress-lease.json");
+              await unlink(leaseFile).catch(() => {});
+              daemon.options.healthOnStart = "healthy";
+              const c = bot();
+              if (c) c.health = "healthy";
+            }
+          },
+        },
+      );
+      await boundedDriver.create(spec());
+      await boundedDriver.writeProfile("agent-a", testProfile());
+      await boundedDriver.start("agent-a");
+      expect(elapsed).toBeGreaterThanOrEqual(25_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("limits concurrent container starts with host semaphore", async () => {
+      let concurrentStarts = 0;
+      let maxConcurrent = 0;
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          maxConcurrentStarts: 2,
+          sleep: async () => {
+            concurrentStarts++;
+            maxConcurrent = Math.max(maxConcurrent, concurrentStarts);
+            await new Promise((r) => setTimeout(r, 10));
+            concurrentStarts--;
+          },
+        },
+      );
+      await boundedDriver.create(spec({ botKey: "agent-a" }));
+      await boundedDriver.writeProfile("agent-a", testProfile({ botKey: "agent-a" }));
+      await boundedDriver.create(spec({ botKey: "agent-b" }));
+      await boundedDriver.writeProfile("agent-b", testProfile({ botKey: "agent-b" }));
+      await boundedDriver.create(spec({ botKey: "agent-c" }));
+      await boundedDriver.writeProfile("agent-c", testProfile({ botKey: "agent-c" }));
+
+      await Promise.all([
+        boundedDriver.start("agent-a"),
+        boundedDriver.start("agent-b"),
+        boundedDriver.start("agent-c"),
+      ]);
+      expect(maxConcurrent).toBeLessThanOrEqual(2);
     });
 
     it("reports Docker's health verdict", async () => {
