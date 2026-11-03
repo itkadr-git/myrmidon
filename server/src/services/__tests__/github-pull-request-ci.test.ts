@@ -705,4 +705,243 @@ describe("createPullRequestCiResolver", () => {
     const result = await withCiResolveDeadline(slowPromise, ["fallback"], 10);
     expect(result).toEqual(["fallback"]);
   });
+
+  it("acceptance: rate limit 403 gives rate_limited, not denied", async () => {
+    const mockDb = { select: vi.fn() };
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-rate-limit", ref: "bot/rate-limit" },
+            base: { ref: "main" },
+            draft: false,
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-rate-limit/check-runs")) {
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1800000000",
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const res = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(res.status).toBe("unavailable");
+    expect(res.conclusion).toBe("rate_limited");
+    expect(res.authoritative).toBe(false);
+    expect(res.summary).toContain("checks unavailable (GitHub rate limit until");
+  });
+
+  it("acceptance: repeated call before reset does not call GitHub", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-repeat-test", ref: "bot/repeat" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-repeat-test/check-runs")) {
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const first = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+    expect(first.conclusion).toBe("rate_limited");
+    const countAfterFirst = callsCount;
+
+    const second = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+    expect(callsCount).toBe(countAfterFirst);
+    expect(second.conclusion).toBe("rate_limited");
+    expect(second.summary).toContain("устарел");
+  });
+
+  it("acceptance: completed CI for same head is taken from cache", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/11")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-completed-cached", ref: "bot/cached" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-completed-cached/check-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"etag-c1"' }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 101,
+                name: "unit-test",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-11-03T10:00:00Z",
+                completed_at: "2026-11-03T10:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const res1 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 11,
+    });
+    expect(res1.status).toBe("completed");
+    expect(res1.conclusion).toBe("success");
+    const countAfterFirst = callsCount;
+
+    const res2 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 11,
+    });
+    expect(callsCount).toBe(countAfterFirst);
+    expect(res2).toEqual(res1);
+  });
+
+  it("acceptance: 304 with ETag returns cached result", async () => {
+    const mockDb = { select: vi.fn() };
+    let fetchRunsCalls = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url.includes("/pulls/12")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"pr-etag-1"' }),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-etag-304", ref: "bot/etag" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-etag-304/check-runs")) {
+        fetchRunsCalls++;
+        if (init?.headers?.["if-none-match"] === '"etag-checkruns-1"') {
+          return {
+            ok: false,
+            status: 304,
+            headers: new Headers({ etag: '"etag-checkruns-1"' }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"etag-checkruns-1"' }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 201,
+                name: "lint",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-11-03T10:00:00Z",
+                completed_at: "2026-11-03T10:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const res1 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 12,
+    });
+    expect(res1.status).toBe("completed");
+    expect(res1.conclusion).toBe("success");
+    expect(fetchRunsCalls).toBe(1);
+
+    const runs304 = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon",
+      "head-sha-etag-304",
+      "token-123",
+      mockFetch as never,
+      { etag: '"etag-checkruns-1"' },
+    );
+    expect(runs304.summary).toBe("checks unchanged (not modified)");
+    expect(fetchRunsCalls).toBe(2);
+  });
 });
