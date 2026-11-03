@@ -38,6 +38,11 @@ import {
 import { liveBehaviorSetting } from "../myrmidon/behavior-settings/live.js";
 import { createCorpusShadowRunner, maybeRecordShadowSearchCall } from "../myrmidon/corpus-shadow.js";
 import type { CorpusShadowRunner, CorpusShadowSearch } from "../myrmidon/corpus-shadow.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool result limit
+import { applyToolOutputLimit } from "../myrmidon/tool-output-limit.js";
+import { instanceSettingsService } from "./instance-settings.js";
+
+
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -9956,6 +9961,56 @@ export function createToolGatewayService(
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
 
+      // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): helper to apply model-facing
+      // output limit and store full output in trace/workspace file.
+      const applyOutputLimit = async (rawResult: unknown, invId?: string) => {
+        let cardConfig: Record<string, unknown> | null = null;
+        if (session.agentId) {
+          try {
+            const [agentRow] = await db
+              .select({
+                adapterConfig: agents.adapterConfig,
+                runtimeConfig: agents.runtimeConfig,
+              })
+              .from(agents)
+              .where(eq(agents.id, session.agentId))
+              .limit(1);
+            if (agentRow) {
+              cardConfig = {
+                ...(typeof agentRow.adapterConfig === "object" ? (agentRow.adapterConfig as Record<string, unknown>) : {}),
+                ...(typeof agentRow.runtimeConfig === "object" ? (agentRow.runtimeConfig as Record<string, unknown>) : {}),
+              };
+            }
+          } catch {
+            // Ignore DB lookup error
+          }
+        }
+
+        let instanceGeneral: any = null;
+        try {
+          const settings = await instanceSettingsService(db).get();
+          instanceGeneral = settings?.general;
+        } catch {
+          // Ignore settings lookup error
+        }
+
+
+        return applyToolOutputLimit({
+          result: rawResult,
+          invocationId: invId,
+          runId: session.runId,
+          agentId: session.agentId,
+          companyId: session.companyId,
+          instanceSettings: instanceGeneral
+            ? {
+                toolOutputLimit: instanceGeneral.toolOutputLimit,
+                toolOutputChars: instanceGeneral.toolOutputChars,
+              }
+            : undefined,
+          agentCardConfig: cardConfig,
+        });
+      };
+
       // A retry carries the signed originating operation, even if steering has
       // since accepted instructions from someone else in this same run.
       if (input.approvedActionRequestId) {
@@ -10115,12 +10170,17 @@ export function createToolGatewayService(
             resultSummary: boundResultValidation.summary,
           },
         });
+        const limited = await applyOutputLimit(
+          { content: boundResult.content, data: boundResult.data },
+          boundInvocation.id,
+        );
         return {
           invocationId: boundInvocation.id,
           status: "completed" as const,
           tool: input.tool,
-          result: { content: boundResult.content, data: boundResult.data },
+          result: limited.result,
         };
+
       }
 
       let tool = await findToolForSession(session, input.tool);
@@ -11006,13 +11066,18 @@ export function createToolGatewayService(
           botId: session.agentId ?? null,
           latencyMs: Date.now() - shadowRagflowStartedAt,
         });
+        const limited = await applyOutputLimit(
+          resultValidation.value,
+          invocationId,
+        );
         return {
           invocationId,
           status: "completed" as const,
           tool: virtualToolName ?? tool.name,
           targetTool: virtualToolName ? tool.name : undefined,
-          result: resultValidation.value,
+          result: limited.result,
         };
+
       } catch (err) {
         const normalizedError =
           err instanceof ToolRuntimeSupervisorError

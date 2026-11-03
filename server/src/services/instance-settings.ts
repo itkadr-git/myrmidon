@@ -426,6 +426,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
       // survives every general write (it is edited on its own settings route).
       ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
+      // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): preserve instance-level
+      // model-facing tool output limit through general settings writes.
+      ...(parsed.data.toolOutputLimit ? { toolOutputLimit: parsed.data.toolOutputLimit } : {}),
+      ...(parsed.data.toolOutputChars !== undefined ? { toolOutputChars: parsed.data.toolOutputChars } : {}),
       // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
@@ -934,6 +938,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.myrmidonAuthBlockedUsers !== undefined
                 ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
                 : {}),
+              // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): a patch carrying
+              // the limit wins over the preserved instance value.
+              ...(patch.toolOutputLimit !== undefined ? { toolOutputLimit: nextGeneral.toolOutputLimit } : {}),
+              ...(patch.toolOutputChars !== undefined ? { toolOutputChars: nextGeneral.toolOutputChars } : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
