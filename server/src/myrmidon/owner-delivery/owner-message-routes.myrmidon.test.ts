@@ -8,6 +8,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
+import { ZodError } from "zod";
 import { HttpError, forbidden } from "../../errors.js";
 
 const mocks = vi.hoisted(() => ({
@@ -70,6 +71,9 @@ function buildApp(issueRouter?: express.Router) {
   app.use("/api", api);
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: "Validation error", details: err.issues });
+      }
       const status = err instanceof HttpError ? err.status : 500;
       res.status(status).json({ error: err instanceof Error ? err.message : "error" });
     },
