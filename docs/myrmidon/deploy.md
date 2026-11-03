@@ -49,7 +49,44 @@ The version and commit that `/api/health` must report come from the image labels
 (`org.opencontainers.image.version`, `org.opencontainers.image.revision`). They can be set
 explicitly: `--expect-version`, `--expect-commit`.
 
-## CI-built images only
+## Production migration registry
+
+The checked-in `packages/db/src/migrations/.deployed.json` records migrations confirmed applied
+in production. It is the CI source of truth: do not infer applied state from SQL files present in
+a release branch or tag, since those can include migrations that were never run. CI fails closed
+if the registry is missing or invalid.
+
+After a production rollout, the release operator owns reconciliation of this registry against
+the migration ledger on the production database. Update the manifest in a PR on the product
+repository; do not edit it directly on the host. Review the actual applied migration names and
+numbers, release branch/tag, and rollout timestamp before accepting the change. For example, the
+current confirmed release is represented as:
+
+```json
+{
+  "releaseBranch": "rel/1.6.6-rc.19",
+  "releaseTag": "myr-v1.6.6-rc.19",
+  "deployedAt": "2026-10-30T12:37:21Z",
+  "lastMigration": "0424_clear_stale_replay_holds.sql",
+  "migrations": [
+    { "number": "0423", "file": "0423_colorful_jazinda.sql", "pr": 1997 },
+    { "number": "0424", "file": "0424_clear_stale_replay_holds.sql", "pr": 2012 }
+  ]
+}
+```
+
+The updater can propose a candidate list from the release tree; it is not proof that every
+migration ran. Run `node scripts/myrmidon/ci/update-deployed-migrations.mjs --dry-run`, compare
+the proposal with the production migration ledger, then edit and review the manifest in the PR.
+Never apply a dry-run proposal without that comparison. Once confirmed, commit the manifest
+update with the deployment record. Missing an applied migration can let CI permit a conflicting
+number; recording an unapplied migration creates a false collision and blocks valid work. Either
+mismatch must be corrected from the production ledger by the release operator.
+
+The `deployed-migrations` CI job checks added migrations against this registry and is included in
+`CI result`. On collision it reports the occupied production number and filename; renumber the
+new migration only after coordinating the order of the PR that owns the deployed number.
+
 
 The owner's decision: only an image built by CI (the **Myrmidon image** workflow) from `main`
 or from a `myr-v*` tag reaches production. A hotfix also goes through a PR, even an expedited

@@ -27,6 +27,8 @@ import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 // myrmidon(UI-RU): fork language switcher in the account menu.
 import { LanguageToggle } from "./myrmidon/LanguageToggle";
+// myrmidon(OPE-9382): interface version switcher in the account menu.
+import { UiInterfaceToggle } from "./myrmidon/UiInterfaceToggle";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const ABOUT_SETTINGS_PATH = "/company/settings";
@@ -227,6 +229,8 @@ export function SidebarAccountMenu({
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
               {/* myrmidon(UI-RU): language selection lives beside the theme toggle. */}
               <LanguageToggle onAfterChange={() => setOpen(false)} />
+              {/* myrmidon(OPE-9382): interface version toggle */}
+              <UiInterfaceToggle onAfterChange={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

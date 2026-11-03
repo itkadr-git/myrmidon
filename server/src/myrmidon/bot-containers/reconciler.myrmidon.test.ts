@@ -360,6 +360,36 @@ describe("reconcileBot", () => {
       );
     });
 
+    it("OPE-10086: editing a skill while a run is in progress does not interrupt it (applies files hot without restart or maintenance)", async () => {
+      const driver = fakeDriver({
+        botKey: "agent-a",
+        state: "running",
+        restartHash: "restart-1",
+        filesHash: "files-v1",
+      });
+      // Active running run during reconcile:
+      const maintenance = fakeMaintenance([1, 1, 1]);
+      const nextProfile = profile({
+        restartHash: "restart-1",
+        filesHash: "files-v2",
+        files: [
+          {
+            path: "hermes/skills/paperclip-managed/alpha/SKILL.md",
+            content: "new skill body v2",
+            mode: 0o644,
+            secret: false,
+          },
+        ],
+      });
+      const outcome = await run(driver, maintenance, { compile: async () => nextProfile });
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "writeProfile"]);
+      expect(driver.calls).not.toContain("restart");
+      expect(driver.calls).not.toContain("recreate");
+      expect(maintenance.enterCalls).toBe(0);
+      expect(maintenance.exitCalls).toEqual([]);
+    });
+
     it("restart: different restartHash — pauses only this agent, drains, writes, restarts, resumes", async () => {
       const driver = fakeDriver({ botKey: "agent-a", state: "running", restartHash: "restart-old", filesHash: "files-1" });
       const maintenance = fakeMaintenance([0]);

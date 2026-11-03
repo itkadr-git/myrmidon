@@ -193,6 +193,8 @@ export function roleQueueRows(
       assigneeAgentId: issues.assigneeAgentId,
       role: agents.role,
       queuedAt: issues.createdAt,
+      projectId: issues.projectId,
+      casteId: issues.casteKey,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
@@ -279,12 +281,16 @@ export async function listRoleQueue(
     failedRunsMap ?? (await getCachedFailedRunsMap(db, companyId, order?.now));
   const rows = await roleQueueRows(db, companyId, role, agentId, order, map);
   return rows.map((row) => ({
+    id: row.issueId,
     issueId: row.issueId,
     identifier: row.identifier,
     priority: row.priority,
     pheromoneStrength: row.pheromoneStrength,
     failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
+    projectId: row.projectId ?? null,
+    casteId: row.casteId ?? null,
+    createdAt: row.queuedAt,
   }));
 }
 

@@ -18,6 +18,7 @@ export async function tryClaimContinuationKey(
       issueId: input.issueId,
       expiresAt: new Date(now.getTime() + input.ttl),
     })
+    // A duplicate must not abort a caller's enclosing PostgreSQL transaction.
     .onConflictDoNothing({ target: [issueContinuationKeys.companyId, issueContinuationKeys.key] })
     .returning({ key: issueContinuationKeys.key });
   const outcome: ContinuationDedupeOutcome = inserted.length ? "created" : "deduped";

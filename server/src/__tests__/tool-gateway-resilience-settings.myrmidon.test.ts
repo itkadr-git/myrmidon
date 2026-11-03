@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings } from "../myrmidon/behavior-settings/live.js";
 import {
   TOOL_BREAKER_COOLDOWN_MS_ENV,
   TOOL_BREAKER_FAILURES_ENV,
@@ -28,6 +29,7 @@ afterEach(() => {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];
   }
+  applyLiveBehaviorSettings({ settings: {}, sources: {} });
 });
 
 const session = { id: "session-a", agentId: "agent-a" };
@@ -40,6 +42,22 @@ const tool = (catalogEntryId: string) => ({
 });
 
 describe("tool gateway resilience settings (myrmidon P9)", () => {
+  it("prefers a value saved from the UI to the environment, and uses the environment otherwise", () => {
+    process.env[TOOL_BREAKER_FAILURES_ENV] = "9";
+    applyLiveBehaviorSettings({
+      settings: { tool_breaker_failures: 4 },
+      sources: { tool_breaker_failures: "ui" },
+    });
+    expect(toolGatewayResilienceSettings().breakerFailures).toBe(4);
+
+    applyLiveBehaviorSettings({
+      settings: { tool_breaker_failures: 4 },
+      sources: { tool_breaker_failures: "env" },
+    });
+    expect(toolGatewayResilienceSettings().breakerFailures).toBe(9);
+    expect(toolGatewayResilienceSettings({ [TOOL_BREAKER_FAILURES_ENV]: "7" }).breakerFailures).toBe(7);
+  });
+
   it("uses the documented defaults", () => {
     expect(toolGatewayResilienceSettings({})).toEqual({
       breakerFailures: 3,

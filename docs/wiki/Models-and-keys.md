@@ -62,6 +62,15 @@ models visible) and access to `/spend/logs/v2` and `/v1/model/info`. See
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md),
 `MYRMIDON_LITELLM_KEY_SECRET`.
 
+## Costs by task
+
+For task-level spend queries, the company costs API provides
+`GET /api/companies/:companyId/costs/by-issue?from&to&limit`. It groups cost
+events by task, orders by spend descending, and returns task identifiers,
+titles, token totals, and distinct run counts. The default limit is 20 and the
+maximum is 100; higher values return HTTP 400. See the
+[cost endpoint change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+
 ## In detail
 
 - [Company model providers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)

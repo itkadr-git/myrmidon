@@ -18,7 +18,7 @@ it imports nothing RAGFlow-related and builds without any external service.
   - `BlobStore` — raw document bytes;
   - `DocumentParser` — HTTP client port of the external parse service;
   - `Embedder` — OpenAI-compatible embeddings endpoint (the company gateway;
-    default model `hindsight-embed-bge-m3`, 1024 dimensions).
+    default model `corpus-embed-pplx-0.6b`, 1024 dimensions).
 - `src/postgres/` — PostgreSQL implementations of `CorpusStore`, `WorkQueue`
   and the module settings store. This is the only layer with SQL dialect
   operators (`vector`, `tsvector`, `FOR UPDATE SKIP LOCKED`, ...).
@@ -51,7 +51,7 @@ milliseconds are JSON lines on stdout.
 Run it with `pnpm --filter @myrmidon/server corpus:import:ragflow` after
 setting `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `DATABASE_URL`,
 `CORPUS_COMPANY_ID`, `LITELLM_BASE_URL`, and `LITELLM_API_KEY`. Select the pilot
-with `CORPUS_EMBEDDING_MODEL` (default `hindsight-embed-bge-m3`); corpus
+with `CORPUS_EMBEDDING_MODEL` (default `corpus-embed-pplx-0.6b`); corpus
 storage currently requires 1024 dimensions. Before writing or embedding, the
 importer compares listed datasets/documents/chunks against RAGFlow's source
 counts (using a streaming chunk-count preflight when source totals are absent).

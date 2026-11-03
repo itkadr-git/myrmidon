@@ -96,11 +96,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     parentId?: string | null;
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
+    blockedTransitionAt?: Date | null;
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    createdAt?: Date;
+    updatedAt?: Date;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -113,11 +116,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       assigneeUserId: input.assigneeUserId ?? null,
+      blockedTransitionAt: input.blockedTransitionAt ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
     return id;
   }
@@ -794,6 +800,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       title: "Invalid review",
       status: "in_review",
       assigneeAgentId: agentId,
+      reviewPolicy: { mode: "agent", participantAgentId: pausedAgentId },
       executionState: {
         status: "pending",
         currentStageId: null,
@@ -821,6 +828,55 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       reason: "invalid_review_participant",
       severity: "critical",
       action: { label: "Repair review participant" },
+    });
+  });
+
+  it("includes unassigned blocked issues in attention after thirty minutes", async () => {
+    const { companyId } = await createCompany("PBO");
+    const oldBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBO-1",
+      title: "Unassigned blocked issue",
+      status: "blocked",
+      createdAt: new Date(Date.now() - 90 * 60 * 1000),
+      blockedTransitionAt: new Date(Date.now() - 31 * 60 * 1000),
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBO-2",
+      title: "Open blocker",
+      status: "todo",
+    });
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    expect(rows.find((row) => row.id === oldBlockerId)?.blockedInboxAttention).toMatchObject({
+      reason: "unassigned_blocked_issue_overdue",
+      state: "needs_attention",
+      action: { label: "Assign overdue blocked issue" },
+    });
+  });
+
+  it("includes unassigned blocked issues in attention after thirty minutes when blockedTransitionAt is null using updatedAt fallback", async () => {
+    const { companyId } = await createCompany("PBO2");
+    const oldBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBO2-1",
+      title: "Unassigned blocked issue without transition timestamp",
+      status: "blocked",
+      createdAt: new Date(Date.now() - 90 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 31 * 60 * 1000),
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBO2-2",
+      title: "Open blocker",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: oldBlockerId });
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    expect(rows.find((row) => row.id === oldBlockerId)?.blockedInboxAttention).toMatchObject({
+      reason: "unassigned_blocked_issue_overdue",
+      state: "needs_attention",
+      action: { label: "Assign overdue blocked issue" },
     });
   });
 

@@ -343,7 +343,27 @@ export function checkMigrations(root) {
   const journalText = readIfExists(root, JOURNAL);
   if (journalText) {
     const journal = JSON.parse(journalText);
-    const tags = (journal.entries ?? []).map((e) => e.tag);
+    const entries = journal.entries ?? [];
+    const seenIndices = new Map();
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      // Historical entries before 180 have a grandfathered duplicate idx (entry 175).
+      if (typeof entry.idx === "number" && entry.idx >= 180) {
+        const existing = seenIndices.get(entry.idx);
+        if (existing) {
+          findings.push(`${JOURNAL}: duplicate journal idx ${entry.idx} (${existing}, ${entry.tag}) (INV-13)`);
+        } else {
+          seenIndices.set(entry.idx, entry.tag ?? `entry ${i}`);
+        }
+      }
+      if (entry.tag && typeof entry.idx === "number" && entry.idx >= 180) {
+        const tagNum = migrationNumber(entry.tag);
+        if (tagNum !== null && tagNum !== entry.idx) {
+          findings.push(`${JOURNAL}: entry ${i} idx ${entry.idx} does not match tag ${entry.tag} (INV-13)`);
+        }
+      }
+    }
+    const tags = entries.map((e) => e.tag);
     const journalFiles = tags.map((t) => `${t}.sql`);
     if (journalFiles.length !== files.length) {
       findings.push(`${JOURNAL}: journal/file count mismatch (${journalFiles.length} vs ${files.length}) (INV-13)`);

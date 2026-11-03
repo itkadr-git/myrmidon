@@ -2314,6 +2314,56 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("offers the skip link and finishes without hiring, landing on a working board", async () => {
+      // OPE-10206: a model credential is the one thing the product cannot run
+      // without, but it must not gate reaching the board. The connect step is
+      // a choice, and "not yet" is one of the answers: the first task lands
+      // unassigned and the agent is hired later, in settings.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockProjectsApi.create.mockResolvedValue({ id: "project-onboarding" });
+      mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "INI-1" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      // The way out is present and phrased as a way on, not an apology.
+      const skip = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Skip for now"),
+      );
+      expect(skip).toBeTruthy();
+
+      // It is disabled exactly when the wizard could not finish from it —
+      // no company to put the first task in. Here there is one, so it is live.
+      expect(skip!.disabled).toBe(false);
+
+      await act(async () => {
+        skip!.click();
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      // No hire, no login — nothing that needs a vendor account happened.
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      // But the server work ran: the board the customer lands on has its
+      // onboarding project and its first task, unassigned — the key is not
+      // merely null, it is absent, so the server defaults it to unassigned.
+      expect(mockProjectsApi.create).toHaveBeenCalledWith(
+        "company-new",
+        expect.objectContaining({}),
+      );
+      const issueCall = mockIssuesApi.create.mock.calls.at(-1);
+      expect(issueCall?.[0]).toBe("company-new");
+      expect(issueCall?.[1]).not.toHaveProperty("assigneeAgentId");
+
+      // And onboarding is over: company selected, wizard closed, dashboard.
+      expect(mockCompany.setSelectedCompanyId).toHaveBeenCalledWith(
+        "company-new",
+        expect.objectContaining({ source: "route_sync" }),
+      );
+      expect(mockDialog.closeOnboarding).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
     it("submits the browser code on the paste, not on the first keystroke", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });

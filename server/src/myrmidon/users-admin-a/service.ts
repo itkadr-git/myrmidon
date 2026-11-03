@@ -8,10 +8,12 @@
 // like any other email.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, like } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import type { Db } from "@myrmidon/db";
+import { setBlockedUser } from "./store.js";
 import {
+  activityLog,
   authAccounts,
   authSessions,
   authUsers,
@@ -39,6 +41,12 @@ export interface ManagedUser {
   blocked: boolean;
   syntheticEmail: boolean;
   createdAt: string;
+}
+
+export interface CreateUserResult extends ManagedUser {
+  user: ManagedUser;
+  token: string | null;
+  passwordSetLink: string | null;
 }
 
 export class UsersAdminError extends Error {
@@ -90,7 +98,7 @@ export async function listUsers(db: Db): Promise<ManagedUser[]> {
     .sort((a, b) => a.email.localeCompare(b.email));
 }
 
-async function getUser(db: Db, userId: string) {
+export async function getUser(db: Db, userId: string) {
   const row = await db
     .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
     .from(authUsers)
@@ -128,8 +136,8 @@ async function issueToken(
  */
 export async function createUser(
   db: Db,
-  input: { username: string; name: string; password?: string | null; role: ManagedRole; actorUserId: string },
-): Promise<{ user: ManagedUser; token: string | null }> {
+  input: { username: string; name?: string; displayName?: string; password?: string | null; role: ManagedRole; actorUserId: string },
+): Promise<CreateUserResult> {
   const username = input.username.trim().toLowerCase();
   if (!USERNAME_PATTERN.test(username)) {
     throw new UsersAdminError(422, "INVALID_USERNAME", "Username must be 3-32 chars: lowercase letters, digits, dots, dashes or underscores");
@@ -146,7 +154,8 @@ export async function createUser(
   let token: string | null = null;
   await db.transaction(async (tx) => {
     await tx.insert(authUsers).values({
-      id: userId, name: input.name.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
+      id: userId,
+      name: input.name?.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
     });
     await tx.insert(authAccounts).values({
       id: randomUUID(), issuer: CREDENTIAL_ISSUER, accountId: userId, providerId: "credential",
@@ -159,13 +168,18 @@ export async function createUser(
   });
   const row = await getUser(db, userId);
   const admins = new Set(input.role === "instance_admin" ? [userId] : []);
-  return { user: toManagedUser(row, admins, new Set()), token };
+  const user = toManagedUser(row, admins, new Set());
+  const link = token ? `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}` : null;
+  return Object.assign(
+    { ...user, user, token, passwordSetLink: link },
+    { user, token, passwordSetLink: link },
+  );
 }
 
 /** Blocks or unblocks a user; blocking closes every live session. */
 export async function setUserBlocked(
   db: Db,
-  input: { userId: string; blocked: boolean; actorUserId: string },
+  input: { userId: string; blocked: boolean; actorUserId: string; reason?: string | null },
 ): Promise<{ sessionsClosed: number }> {
   await getUser(db, input.userId);
   if (input.blocked && input.userId === input.actorUserId) {
@@ -173,12 +187,24 @@ export async function setUserBlocked(
   }
   if (!input.blocked) {
     await db.delete(userBlocks).where(eq(userBlocks.userId, input.userId));
+    await setBlockedUser(db, {
+      userId: input.userId,
+      blocked: false,
+      blockedBy: input.actorUserId,
+      reason: null,
+    });
     return { sessionsClosed: 0 };
   }
   await db
     .insert(userBlocks)
     .values({ userId: input.userId, blockedByUserId: input.actorUserId })
     .onConflictDoNothing();
+  await setBlockedUser(db, {
+    userId: input.userId,
+    blocked: true,
+    blockedBy: input.actorUserId,
+    reason: input.reason ?? null,
+  });
   // Board API keys are a second way in besides sessions: revoke them too. They stay
   // revoked after unblocking; the user issues a new key.
   await db
@@ -194,8 +220,157 @@ export async function isUserBlocked(db: Pick<Db, "select">, userId: string): Pro
   return row !== null;
 }
 
+/** Updates user role (instance_admin or member). Prevents self-demotion or demoting the last admin. */
+export async function setUserRole(
+  db: Db,
+  input: { userId: string; role: ManagedRole; actorUserId: string },
+): Promise<{ previousRole: ManagedRole; newRole: ManagedRole }> {
+  if (input.userId === input.actorUserId && input.role !== "instance_admin") {
+    throw new UsersAdminError(409, "CONFLICT", "You cannot demote yourself");
+  }
+  await getUser(db, input.userId);
+  const currentAdmins = await db
+    .select({ userId: instanceUserRoles.userId })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")))
+    .then((rows) => rows.length > 0);
+  const previousRole: ManagedRole = currentAdmins ? "instance_admin" : "member";
+
+  if (previousRole === input.role) {
+    return { previousRole, newRole: input.role };
+  }
+
+  if (input.role === "instance_admin") {
+    await db
+      .insert(instanceUserRoles)
+      .values({ userId: input.userId, role: "instance_admin" })
+      .onConflictDoNothing();
+  } else {
+    const totalAdmins = await db
+      .select({ userId: instanceUserRoles.userId })
+      .from(instanceUserRoles)
+      .where(eq(instanceUserRoles.role, "instance_admin"))
+      .then((rows) => rows.length);
+    if (totalAdmins <= 1) {
+      throw new UsersAdminError(409, "CONFLICT", "Cannot demote the last instance administrator");
+    }
+    await db
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, input.userId), eq(instanceUserRoles.role, "instance_admin")));
+  }
+
+  return { previousRole, newRole: input.role };
+}
+
+export interface UserAuditItem {
+  id: string;
+  action: string;
+  actorId: string;
+  actorName: string;
+  actorUsername: string;
+  targetUserId: string;
+  targetName: string;
+  targetUsername: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ListAuditOptions {
+  userId?: string;
+  actorId?: string;
+  action?: string;
+  limit?: number;
+}
+
+export async function listAuditLogs(
+  db: Db,
+  options: ListAuditOptions = {},
+): Promise<UserAuditItem[]> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+  const conditions = [
+    eq(activityLog.entityType, "user"),
+    like(activityLog.action, "instance.user.%"),
+  ];
+  if (options.userId) {
+    conditions.push(eq(activityLog.entityId, options.userId));
+  }
+  if (options.actorId) {
+    conditions.push(eq(activityLog.actorId, options.actorId));
+  }
+  if (options.action) {
+    conditions.push(eq(activityLog.action, options.action));
+  }
+
+  const fetchLimit = limit * 10;
+  const rawRows = await db
+    .select({
+      id: activityLog.id,
+      actorId: activityLog.actorId,
+      action: activityLog.action,
+      entityId: activityLog.entityId,
+      details: activityLog.details,
+      createdAt: activityLog.createdAt,
+    })
+    .from(activityLog)
+    .where(and(...conditions))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(fetchLimit);
+
+  const seen = new Set<string>();
+  const deduplicated: typeof rawRows = [];
+  for (const row of rawRows) {
+    const key = `${row.createdAt.getTime()}:${row.action}:${row.actorId}:${row.entityId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduplicated.push(row);
+    if (deduplicated.length >= limit) break;
+  }
+
+  const userIds = Array.from(
+    new Set([
+      ...deduplicated.map((r) => r.actorId),
+      ...deduplicated.map((r) => r.entityId),
+    ]),
+  );
+
+  const userMap = new Map<string, { username: string; name: string }>();
+  if (userIds.length > 0) {
+    const userRows = await db
+      .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+      .from(authUsers)
+      .where(inArray(authUsers.id, userIds));
+    for (const u of userRows) {
+      userMap.set(u.id, {
+        username: emailToUsername(u.email),
+        name: u.name,
+      });
+    }
+  }
+
+  return deduplicated.map((row) => {
+    const actor = userMap.get(row.actorId);
+    const target = userMap.get(row.entityId);
+    return {
+      id: row.id,
+      action: row.action,
+      actorId: row.actorId,
+      actorName: actor?.name ?? row.actorId,
+      actorUsername: actor?.username ?? row.actorId,
+      targetUserId: row.entityId,
+      targetName: target?.name ?? row.entityId,
+      targetUsername: target?.username ?? row.entityId,
+      details: (row.details as Record<string, unknown>) ?? {},
+      createdAt: row.createdAt.toISOString(),
+    };
+  });
+}
+
 /** Revokes older live links of the user and returns a fresh raw token. */
-export async function resetUserPassword(db: Db, input: { userId: string; actorUserId: string }): Promise<{ token: string }> {
+export async function resetUserPassword(
+  db: Db,
+  input: { userId: string; actorUserId: string },
+): Promise<{ token: string; passwordSetLink: string }> {
   await getUser(db, input.userId);
   const now = new Date();
   return db.transaction(async (tx) => {
@@ -203,7 +378,9 @@ export async function resetUserPassword(db: Db, input: { userId: string; actorUs
       .update(userPasswordSetTokens)
       .set({ revokedAt: now, revokedReason: "superseded" })
       .where(and(eq(userPasswordSetTokens.userId, input.userId), isNull(userPasswordSetTokens.revokedAt)));
-    return { token: await issueToken(tx, { userId: input.userId, via: "reset", actorUserId: input.actorUserId, now }) };
+    const token = await issueToken(tx, { userId: input.userId, via: "reset", actorUserId: input.actorUserId, now });
+    const link = `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}`;
+    return { token, passwordSetLink: link };
   });
 }
 

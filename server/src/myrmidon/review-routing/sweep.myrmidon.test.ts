@@ -51,24 +51,32 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
-  managerChain?: Map<string, Array<{ id: string; role: string }>>;
-  reviewers: Array<{ id: string; role: string; invokable?: boolean }>;
+  managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
+  reviewers: Array<{ id: string; role: string; invokable?: boolean; model?: string | null }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
   wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
   escalations: Array<Record<string, unknown>>;
+  agentModels?: Map<string, string | null>;
 }
 
 function makeStore(fx: Fixture) {
   return {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
+    listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+    findPrWorkProduct: async () => null,
     listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
     listReviewerAgents: async (_company: string, roles: readonly string[]) => fx.reviewers.filter((agent) => roles.includes(agent.role)),
+    getAgentModel: async (_company: string, agentId: string) => fx.agentModels?.get(agentId) ?? null,
+    getAgent: async (_company: string, agentId: string) => {
+      const found = fx.reviewers.find((agent) => agent.id === agentId);
+      return found ?? null;
+    },
     loadByAgent: async () => new Map(fx.load),
     countActiveRunsForAgent: async (_companyId: string, agentId: string) => {
       return fx.reviewerActiveRuns?.get(agentId) ?? 0;
@@ -278,7 +286,9 @@ describe("review wake liveness", () => {
     t.fixture.rows.set("3", pending("3", REV_A));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
-    expect(t.wakes.map(({ issueId }) => issueId)).toEqual(["1"]);
+    // Liveness wakes REV_A for "1"; REV_A is then overloaded (12 > queueThreshold 8),
+    // so "1" is rebalanced to REV_B and the reassignment wakes REV_B too.
+    expect(t.wakes.map(({ agentId, issueId }) => `${agentId}:${issueId}`)).toEqual([`${REV_A}:1`, `${REV_B}:1`]);
   });
 
   it("does not wake another issue while the reviewer has an active run elsewhere", async () => {
@@ -435,19 +445,19 @@ describe("assignment", () => {
     expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "aged" })]);
   });
 
-  it("prefers the nearest eligible manager in the engineer chain", async () => {
+  it("picks the least loaded reviewer or lead from the pool", async () => {
     const t = setup({}, {
-      managerChain: new Map([[ASSIGNEE, [
+      reviewers: [
         { id: REV_A, role: "reviewer" },
-        { id: REV_B, role: "reviewer" },
-      ]]]),
-      reviewers: [{ id: REV_B, role: "reviewer" }],
+        { id: REV_B, role: "lead" },
+      ],
+      load: new Map([[REV_A, 5], [REV_B, 1]]),
     });
-    t.fixture.rows.set("manager-chain", row("manager-chain"));
+    t.fixture.rows.set("least-loaded", row("least-loaded"));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
-    expect(t.fixture.rows.get("manager-chain")!.assigneeAgentId).toBe(REV_A);
-    expect(t.activities[0]?.details.reviewerAgentId).toBe(REV_A);
+    expect(t.fixture.rows.get("least-loaded")!.assigneeAgentId).toBe(REV_B);
+    expect(t.activities[0]?.details.reviewerAgentId).toBe(REV_B);
   });
 
   it("uses the global pool only when the manager chain has no eligible candidate", async () => {
@@ -493,6 +503,25 @@ describe("assignment", () => {
     const reviewers = ["1", "2", "3", "4"].map((id) => t.fixture.rows.get(id)!.assigneeAgentId);
     expect(reviewers.filter((id) => id === REV_A)).toHaveLength(2);
     expect(reviewers.filter((id) => id === REV_B)).toHaveLength(2);
+  });
+
+  it("filters out reviewers whose model matches the author's model", async () => {
+    const t = setup(
+      {},
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer", invokable: true, model: "model-author" },
+          { id: REV_B, role: "reviewer", invokable: true, model: "model-other" },
+        ],
+        load: new Map([[REV_A, 0], [REV_B, 1]]),
+        agentModels: new Map([[AUTHOR, "model-author"]]),
+      },
+    );
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ assigned: 1, signaled: 0, failed: 0 });
+    // REV_A has lower load (0) but matches author model; REV_B is assigned.
+    expect(t.fixture.rows.get("1")!.assigneeAgentId).toBe(REV_B);
   });
 
   it("excludes the task author and current assignee from reviewer candidates", async () => {
@@ -758,11 +787,141 @@ describe("overdue review", () => {
     const result = await t.sweep.sweep(new Date(NOW.getTime() + 500 * 3_600_000), { force: true });
     expect(result).toMatchObject({ reassigned: 0, signaled: 0 });
   });
+
+  describe("overload rebalancing and escalation", () => {
+    it("reassigns from an overloaded participant to a free participant", async () => {
+      const t = setup({}, {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "lead" },
+        ],
+        load: new Map([
+          [REV_A, 12], // > default queueThreshold (8)
+          [REV_B, 1],
+        ]),
+      });
+      const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("overloaded-task", row("overloaded-task", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+      }));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("overloaded-task")!;
+      expect(updated.assigneeAgentId).toBe(REV_B);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_B);
+      // Confirms decisions/state were not lost
+      expect((updated.executionState as any).status).toBe("pending");
+      expect((updated.executionState as any).returnAssignee.agentId).toBe(ASSIGNEE);
+      expect(t.comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            issueId: "overloaded-task",
+            body: expect.stringContaining("threshold 8"),
+          }),
+        ]),
+      );
+      expect(t.activities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: REVIEW_ROUTING_REASSIGNED_ACTION,
+            issueId: "overloaded-task",
+            details: expect.objectContaining({
+              reason: "reviewer-queue-overload",
+              previousReviewerAgentId: REV_A,
+              reviewerAgentId: REV_B,
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("does not select the PR author when rebalancing or assigning", async () => {
+      const t = setup({}, {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: ASSIGNEE, role: "lead" }, // ASSIGNEE is PR author / returnAssignee
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 10],
+          [ASSIGNEE, 0], // author has lowest load
+          [REV_B, 2],
+        ]),
+      });
+      const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-with-author", row("task-with-author", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+      }));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("task-with-author")!;
+      // Should pick REV_B, NOT the author ASSIGNEE despite ASSIGNEE having 0 load
+      expect(updated.assigneeAgentId).toBe(REV_B);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_B);
+    });
+
+    it("leaves an escalated review stage (changesRequestedCount >= 3) untouched", async () => {
+      const t = setup({}, {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "lead" },
+        ],
+        load: new Map([
+          [REV_A, 15], // heavily overloaded
+          [REV_B, 0],
+        ]),
+      });
+      const policy = {
+        stages: [{
+          id: "s",
+          type: "review",
+          participants: [{ type: "agent", agentId: REV_A }],
+          changesRequestedCount: 3,
+        }],
+      };
+      const state = {
+        status: "pending",
+        currentStageId: "s",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+        changesRequestedCount: 3,
+      };
+      t.fixture.rows.set("escalated-task", row("escalated-task", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+      }));
+      const result = await t.sweep.sweep(NOW, { force: true });
+      expect(result).toMatchObject({ reassigned: 0 });
+      expect(t.fixture.rows.get("escalated-task")!.assigneeAgentId).toBe(REV_A);
+    });
+  });
 });
 
 describe("PR lane (fake store + fake resolver)", () => {
   interface PrFixture {
     candidates: PrCandidateRow[];
+    existingWork?: InReviewIssueRow[];
+    rows: Map<string, InReviewIssueRow>;
     knownRepos: string[];
     routed: PrRoutedTask[];
     openReviewLoad: Map<string, number>;
@@ -773,7 +932,7 @@ describe("PR lane (fake store + fake resolver)", () => {
 
   function prStore(fx: PrFixture): ReviewRoutingStore {
     const base = makeStore({
-      rows: new Map(),
+      rows: fx.rows,
       reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
@@ -785,6 +944,8 @@ describe("PR lane (fake store + fake resolver)", () => {
       listPrCandidates: async () => fx.candidates,
       listKnownPrRepositories: async () => fx.knownRepos,
       listOpenPrRoutingTasks: async () => fx.routed,
+      listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
+      findPrWorkProduct: async (_company: string, issueId: string) => fx.existingWork?.some((issue) => issue.id === issueId) ? { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false } : null,
       openPrTaskLoadByAgent: async (_company: string, kind: PrRoutingKind) => (kind === "review" ? fx.openReviewLoad : fx.openMergeLoad),
       findAgentIdsByGitHubLogin: async () => [],
       createPrRoutingTask: async (input: CreatePrRoutingTaskInput) => {
@@ -810,6 +971,7 @@ describe("PR lane (fake store + fake resolver)", () => {
       ci: "green",
       reviewDecision: null,
       fetchFailed: false,
+      mergeable: true,
       title: "Add routing",
       url: "https://github.com/acme/widgets/pull/7",
       authorLogin: "author-a",
@@ -824,6 +986,7 @@ describe("PR lane (fake store + fake resolver)", () => {
   ) {
     const fixture: PrFixture = {
       candidates: [{ repository: "acme/widgets", number: 7, headSha: "aaaaaaaa", title: "Add routing", url: null, authorLogin: "author-a", baseRef: "main", draft: false }],
+      rows: new Map(),
       knownRepos: [],
       routed: [],
       openReviewLoad: new Map(),
@@ -877,6 +1040,38 @@ describe("PR lane (fake store + fake resolver)", () => {
     const second = await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true });
     expect(second.prTasksCreated).toBe(0);
     expect(t.fixture.created).toHaveLength(1);
+  });
+
+  it("does not hand off an existing task when the PR already has a review decision", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({}, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ reviewDecision: "CHANGES_REQUESTED" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(0);
+    expect(t.fixture.rows.get("existing")?.status).toBe("in_progress");
+    expect(t.wakes).toHaveLength(0);
+    expect(t.fixture.created).toHaveLength(0);
+  });
+
+  it("routes eligible existing PR work to a reviewer and moves it into review", async () => {
+    const task = row("existing", { status: "in_progress", assigneeAgentId: AUTHOR, createdByAgentId: AUTHOR });
+    const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+      rows: new Map([["existing", task]]),
+      existingWork: [task],
+      headState: headState({ ci: "pending" }),
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result.assigned).toBe(1);
+    expect(t.fixture.rows.get("existing")).toMatchObject({ status: "in_review", assigneeAgentId: REV_A });
+    expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "existing" })]);
+    expect(t.fixture.created).toHaveLength(0);
   });
 
   it("creates a steward task only on APPROVED", async () => {

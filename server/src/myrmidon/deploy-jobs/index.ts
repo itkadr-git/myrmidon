@@ -15,10 +15,16 @@ import { readDeployJobsSettings } from "./settings.js";
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { createUpdateNotifier } from "../bot-containers/update-notify.js";
 
 export { digestProblem, parseDigest, verifyCiImage } from "./domain.js";
 export { deployJobsService } from "./service.js";
 export type { DeployJobsService } from "./service.js";
+// myrmidon(1.7-AUTO-UPDATE-B): the update policy screen. Mounted next to the
+// deploy jobs and deliberately *not* behind MYRMIDON_DEPLOY_ENABLED: an
+// instance that has deploys switched off must still be able to set the window
+// and the mode, so the settings are ready before the first deploy.
+export { myrmidonAutoUpdateRoutes } from "./auto-update-routes.js";
 
 const SYSTEM_ACTOR = { actorType: "system", actorId: "myrmidon-deploy-jobs" } as const;
 
@@ -61,6 +67,7 @@ function defaultDeps(db: Db): DeployJobServiceDeps {
       }
     },
     settings,
+    notifyUpdate: createUpdateNotifier(db),
   };
 }
 
