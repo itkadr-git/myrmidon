@@ -3097,10 +3097,7 @@ export * from "./locale-upload.js";
 
 // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
 export * from "./myrmidon-auto-update-window-cron.js";
-<<<<<<< HEAD
 export * from "./validators/updates.js";
-=======
->>>>>>> 1b7b4a457 (feat(shared): export autoUpdateSettings schemas from @myrmidon/shared)
 export * from "./validators/auto-update-settings.js";
 
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the

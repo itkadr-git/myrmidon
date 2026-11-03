@@ -1,11 +1,32 @@
-// myrmidon(OPE-10218): route coverage for project-scoped auto-update settings.
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { systemRoutes } from "./system.js";
 
+function extractProjectId(condition: any): string | null {
+  if (!condition) return null;
+  const projectIds = ["p1", "p2", "p3"];
+  if (typeof condition === "string") return projectIds.find((id) => condition.includes(id)) ?? null;
+  const visited = new Set();
+  function search(obj: any): string | null {
+    if (!obj || typeof obj !== "object" || visited.has(obj)) return null;
+    visited.add(obj);
+    if (typeof obj.value === "string" && projectIds.includes(obj.value)) return obj.value;
+    if (typeof obj.right === "string" && projectIds.includes(obj.right)) return obj.right;
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (typeof val === "string" && projectIds.includes(val)) return val;
+      if (typeof val === "object" && val !== null) {
+        const found = search(val);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return search(condition);
+}
+
 function fixture() {
-  let lastFilter = "";
   const projectRows = new Map<string, { companyId: string; env: Record<string, unknown> | null }>([
     ["p1", { companyId: "c1", env: {} }],
     ["p2", { companyId: "c1", env: {} }],
@@ -13,14 +34,14 @@ function fixture() {
   ]);
   const db = {
     select: () => {
-      let selected: { companyId?: string; env?: Record<string, unknown> | null } | undefined;
       const chain: any = {
         from: () => chain,
-        where: (condition: any) => { chain.condition = condition; lastFilter = String(condition); return chain; },
+        where: (condition: any) => { chain.condition = condition; return chain; },
+        limit: () => chain,
         then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
-          const match = [...projectRows.entries()].find(([id]) => lastFilter.includes(id));
-          selected = match ? { companyId: match[1].companyId, env: match[1].env } : undefined;
-          return Promise.resolve(selected ? [selected] : []).then(resolve, reject);
+          const id = extractProjectId(chain.condition);
+          const row = id ? projectRows.get(id) : undefined;
+          return Promise.resolve(row ? [{ id, companyId: row.companyId, env: row.env }] : []).then(resolve, reject);
         },
       };
       return chain;
@@ -28,12 +49,14 @@ function fixture() {
     update: () => {
       const chain: any = {
         set: (value: any) => { chain.value = value; return chain; },
-        where: () => chain,
-        then: (resolve: (value: unknown) => unknown) => {
-          const match = [...projectRows.entries()].find(([id]) => lastFilter.includes(id));
-          if (match) match[1].env = chain.value.env;
-          return Promise.resolve([]).then(resolve);
+        where: (condition: any) => {
+          const id = extractProjectId(condition);
+          if (id && projectRows.has(id)) {
+            projectRows.get(id)!.env = chain.value.env;
+          }
+          return chain;
         },
+        then: (resolve: (value: unknown) => unknown) => Promise.resolve([]).then(resolve),
       };
       return chain;
     },
@@ -67,12 +90,18 @@ describe("project auto-update settings API", () => {
     expect((await request(app).put("/api/projects/p1/system/auto-update-settings").send({ enabled: true, cron: "not cron", durationMinutes: 3, timezone: "UTC" })).status).toBe(400);
   });
 
-  it("isolates the settings response by project", async () => {
+  it("isolates settings between projects", async () => {
     const { app, projectRows } = fixture();
-    projectRows.get("p1")!.env = { autoUpdateSettings: { enabled: true, cron: "0 3 * * 1", durationMinutes: 60, timezone: "UTC" } };
+    const settings = { enabled: true, cron: "0 3 * * 1", durationMinutes: 60, timezone: "UTC" };
+    const put = await request(app).put("/api/projects/p1/system/auto-update-settings").send(settings);
+    expect(put.status).toBe(200);
     const first = await request(app).get("/api/projects/p1/system/auto-update-settings");
     const second = await request(app).get("/api/projects/p2/system/auto-update-settings");
-    expect(first.body.settings.enabled).toBe(true);
+    const otherCompany = await request(app).get("/api/projects/p3/system/auto-update-settings");
+    expect(first.body.settings).toEqual(settings);
     expect(second.body.settings).toEqual({ enabled: false, cron: "0 2 * * 0", durationMinutes: 120, timezone: "UTC" });
+    expect(otherCompany.body.settings).toEqual({ enabled: false, cron: "0 2 * * 0", durationMinutes: 120, timezone: "UTC" });
+    expect(projectRows.get("p2")!.env).toEqual({});
+    expect(projectRows.get("p3")!.env).toEqual({});
   });
 });
