@@ -62,6 +62,8 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -501,6 +503,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
     expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("uses exponential capped backoff for container connection failures", () => {
+    const delays = Array.from({ length: CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS + 2 }, (_, index) =>
+      Math.min(60_000 * 2 ** index, CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS),
+    );
+
+    expect(delays.slice(0, 3)).toEqual([60_000, 120_000, 240_000]);
+    expect(delays.at(-1)).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS);
   });
 
   it.each([

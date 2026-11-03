@@ -1106,6 +1106,9 @@ const GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS = 8;
 // retry goes out after at most this long so a stuck hint cannot park the
 // task forever.
 const GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
+const CONNECT_FAILED_TRANSIENT_RETRY_REASON = "container_not_started";
+export const CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS = 8;
+export const CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
 function isTransientWorkspaceGitScanCode(code: string | null | undefined): boolean {
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated;
 }
@@ -16080,6 +16083,10 @@ export function heartbeatService(
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const isContainerNotStarted =
+      run.errorCode === "hermes_gateway_connect_failed" &&
+      typeof run.error === "string" &&
+      run.error.includes("container failed to start");
     // myrmidon(HERMES-RUN-REATTACH): the gateway answered 429 "busy" with a
     // Retry-After. That is a resource wait like ai_connection_busy, not a
     // provider failure: the wait follows the gateway's own hint (retryNotBefore,
@@ -16095,9 +16102,11 @@ export function heartbeatService(
       0,
       Math.floor(
         opts?.maxAttempts ??
-          (transientRetryNotBeforeHint
-            ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+          (isContainerNotStarted
+            ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
+            : transientRetryNotBeforeHint
+              ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+              : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16123,8 +16132,28 @@ export function heartbeatService(
       runFinishedAt: run.finishedAt,
       runStartedAt: run.startedAt,
     });
+    const isContainerNotStarted =
+      run.errorCode === "hermes_gateway_connect_failed" &&
+      typeof run.error === "string" &&
+      run.error.includes("container failed to start");
+    const retryDelayMs = isContainerNotStarted
+      ? Math.min(
+          60_000 * 2 ** Math.max(0, nextAttempt - 1),
+          CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS,
+        )
+      : null;
     const computedBaseSchedule =
-      opts?.delayMs != null || hintDelayMs != null
+      retryDelayMs != null
+        ? nextAttempt <= maxAttempts
+          ? {
+              attempt: nextAttempt,
+              baseDelayMs: retryDelayMs,
+              delayMs: retryDelayMs,
+              dueAt: new Date(now.getTime() + retryDelayMs),
+              maxAttempts,
+            }
+          : null
+        : opts?.delayMs != null || hintDelayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -16166,6 +16195,12 @@ export function heartbeatService(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
+    if (isContainerNotStarted && !baseSchedule) {
+      await db
+        .update(agents)
+        .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
+        .where(eq(agents.id, agent.id));
+    }
     if (!baseSchedule) {
       const exhaustion = {
         retryReason,
@@ -18894,7 +18929,10 @@ export function heartbeatService(
       }
     }
 
-    // IDLE-STOP: wake the container before proceeding with run execution
+    // IDLE-STOP wake is also the claim-time recovery path: a stopped or
+    // created/exited container must be started before the gateway is contacted.
+    // Keep this before any adapter execution so a failed start is not reported
+    // as a gateway connection failure.
     const idleStopService = getIdleStopService();
     if (idleStopService) {
       try {
@@ -19136,9 +19174,17 @@ export function heartbeatService(
         errorMessage: failureReason,
       };
       const isPermanent = isPermanentAgentFailure(failureInput);
+      const isContainerNotStarted =
+        options?.errorCode === "hermes_gateway_connect_failed" &&
+        typeof failureReason === "string" &&
+        failureReason.includes("container failed to start");
       const isTransient =
-        Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
-      const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
+        Boolean(options?.keepIdleOnFailure) ||
+        isTransientFailure(failureInput) ||
+        isContainerNotStarted;
+      const maxFailures = isContainerNotStarted
+        ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
+        : DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
 
       if (isTransient) {
         // An explicit idle override means a bounded retry owns recovery. This
@@ -19146,7 +19192,9 @@ export function heartbeatService(
         // persistent, but the agent itself remains available for the retry.
         if (nextFailures >= maxFailures) {
           nextStatus = "error";
-          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
+          failureReason = isContainerNotStarted
+            ? "контейнер не поднят"
+            : `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
         } else {
           nextStatus = "idle";
         }

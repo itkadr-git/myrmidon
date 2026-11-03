@@ -198,6 +198,12 @@ export function decideAutoResume(params: {
   if (!invokable) return { action: "skip", reason: "not_invokable", nextState: state };
   if (underMaintenance) return { action: "skip", reason: "maintenance", nextState: state };
 
+  // If container retry ceiling was reached and agent marked "контейнер не поднят",
+  // do not auto-resume without operator action or container start.
+  if (agent.errorReason === "контейнер не поднят") {
+    return { action: "skip", reason: "container_not_started", nextState: state };
+  }
+
   // Re-arm after an operator acted: the record changed after we gave up, so
   // this is a new episode and the attempt counter starts over.
   if (state?.exhaustedAt) {
