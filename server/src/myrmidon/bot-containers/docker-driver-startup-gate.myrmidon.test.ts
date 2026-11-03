@@ -293,7 +293,6 @@ describe("dockerBotContainerDriver — integrity-check semaphore & lease (OPE-10
       cpus: 1,
       memoryMb: 512,
       pidsLimit: 100,
-      allowlist: ["myrmidon-hermes:*"],
       mountSources: [],
       devbuild: { host: null, user: "", base: "" },
     });
