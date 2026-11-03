@@ -172,6 +172,7 @@ export interface AutoResumeDecision {
 
 export interface AutoResumePolicyAgent {
   status: string;
+  errorReason?: string | null;
   /** `agents.updated_at`: the agent error entry (or the last operator/system touch). */
   updatedAt: Date;
 }
@@ -431,7 +432,11 @@ export function createAutoResumeSweeper(deps: AutoResumeSweeperDeps): AutoResume
         const invokable = await deps.isAgentInvokable(agent);
         const underMaintenance = await deps.isAgentUnderMaintenance(agent.id);
         const decision = decideAutoResume({
-          agent: { status: agent.status, updatedAt: agent.updatedAt },
+          agent: {
+            status: agent.status,
+            errorReason: agent.errorReason,
+            updatedAt: agent.updatedAt,
+          },
           state: readAutoResumeState(agent.metadata),
           settings,
           now,
