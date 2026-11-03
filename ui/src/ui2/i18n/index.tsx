@@ -98,7 +98,11 @@ export function applyUi2Language(language: Ui2Language): void {
   const root = ui2LangRoot();
   if (root) root.setAttribute("lang", language);
   const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
-  if (i18nInstance && typeof i18nInstance.changeLanguage === "function") {
+  if (
+    i18nInstance &&
+    typeof i18nInstance.changeLanguage === "function" &&
+    i18nInstance.language !== language
+  ) {
     void i18nInstance.changeLanguage(language);
   }
 }
