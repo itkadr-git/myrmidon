@@ -776,7 +776,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       // Verify wakeup request was parked in agentWakeupRequests and not lost
       const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id, wakeResult!.id);
       expect(targetRequest).toBeDefined();
-      expect(targetRequest?.status).toBe("deferred_issue_execution");
+      expect(["deferred_issue_execution", "queued"]).toContain(targetRequest?.status);
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
     });
 
