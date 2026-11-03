@@ -685,6 +685,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         priority: "medium",
         responsibleAgentId: admAgentId,
         assigneeAgentId: engAgentId,
+        executionRunId: headActiveRunId,
       });
 
       // Subordinate run
@@ -705,6 +706,17 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         invocationSource: "manual",
         status: "running",
         startedAt: new Date(),
+      });
+      const activeHeadIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: activeHeadIssueId,
+        companyId,
+        title: "Active head run task",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: admAgentId,
+        assigneeAgentId: admAgentId,
+        executionRunId: headActiveRunId,
       });
 
       const svc = issueThreadInteractionService(db);
