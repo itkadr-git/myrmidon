@@ -809,6 +809,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await db.insert(activityLog).values({
       companyId,
       actorType: "system",
+      actorId: "system",
       action: "tool_connection.webhook_processed",
       entityType: "tool_connection",
       entityId: connectionId,
