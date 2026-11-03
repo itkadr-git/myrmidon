@@ -202,7 +202,7 @@ export function Ui2TopBar() {
               padding: "1px 6px",
             }}
           >
-            Ctrl K
+            {t("area.ui2-shell.ui2-top-bar.commanderShortcut")}
           </kbd>
         </button>
         {/* "Waiting for me": approvals(pending) + decisions(open) +

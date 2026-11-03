@@ -26,7 +26,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { i18n } from "@/i18n";
+import * as vendorI18n from "@/i18n";
 import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
 import { ui2LanguageApi } from "./api";
 import { en } from "./catalogs/en";
@@ -73,9 +73,11 @@ export const ui2Catalogs = { en, ru } as const;
  * the English base through i18next's fallback chain.
  */
 export function registerUi2Catalogs(): void {
+  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  if (!i18nInstance || typeof i18nInstance.hasResourceBundle !== "function") return;
   for (const [locale, catalog] of Object.entries(ui2Catalogs)) {
-    if (!i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      i18n.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+    if (!i18nInstance.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      i18nInstance.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
     }
   }
 }
@@ -95,7 +97,10 @@ export function applyUi2Language(language: Ui2Language): void {
   storeLanguage(language);
   const root = ui2LangRoot();
   if (root) root.setAttribute("lang", language);
-  void i18n.changeLanguage(language);
+  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  if (i18nInstance && typeof i18nInstance.changeLanguage === "function") {
+    void i18nInstance.changeLanguage(language);
+  }
 }
 
 export interface Ui2LanguageContextValue {

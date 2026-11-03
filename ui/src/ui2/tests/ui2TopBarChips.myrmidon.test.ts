@@ -46,7 +46,16 @@ function dashboardFixture(overrides: Partial<DashboardSummary["agents"]> = {}): 
 }
 
 function costSummaryFixture(overrides: Partial<CostSummary> = {}): CostSummary {
-  return { companyId: "company-1", spendCents: 31_454, budgetCents: 0, utilizationPercent: 0, ...overrides };
+  return {
+    companyId: "company-1",
+    spendCents: 31_454,
+    budgetCents: 0,
+    utilizationPercent: 0,
+    unpricedEvents: 0,
+    unpricedTokens: 0,
+    forecastCents: null,
+    ...overrides,
+  };
 }
 
 function decisionFixture(status: Decision["status"]): Pick<Decision, "status"> {
