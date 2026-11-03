@@ -13,6 +13,7 @@ services:
     volumes:
       - /srv/standby/myrmidon-pg/data:/var/lib/postgresql/data
       - /srv/backups/wal/myrmidon-pg:/srv/backups/wal:ro
+      - /srv/standby/drill-cluster:/srv/standby/drill-cluster
     environment:
       PGDATA: /var/lib/postgresql/data
     command: >
@@ -33,7 +34,9 @@ services:
   # Runs only during rehearse --keep-drill; points at the ephemeral drill
   # postgres on host port 5533. No scheduler, no outgoing channels.
   myrmidon-board:
-    image: ghcr.io/itkadr-git/myrmidon:latest
+    # D6: drill-only board service. Image is pinned via COMPOSE_BOARD_IMAGE
+    # to the exact release-component digest during rehearsal.
+    image: ${COMPOSE_BOARD_IMAGE:-ghcr.io/itkadr-git/myrmidon:latest}
     container_name: myrmidon-board-drill
     restart: "no"
     ports:
@@ -52,6 +55,3 @@ services:
     depends_on:
       myrmidon-pg-standby:
         condition: service_healthy
-    # D6: drill-only board service. Override image via COMPOSE_BOARD_IMAGE
-    # to pin the exact release-component digest during rehearsal.
-    image: ${COMPOSE_BOARD_IMAGE:-ghcr.io/itkadr-git/myrmidon:latest}

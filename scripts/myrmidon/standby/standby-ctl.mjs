@@ -95,7 +95,8 @@ export const defaultFsOps = {
  */
 export function dockerPgPrefix(config = DEFAULT_CONFIG) {
   const container = config.pgContainer || DEFAULT_CONFIG.pgContainer;
-  return ["exec", "-u", "postgres", container];
+  const passfile = config.containerPassfilePath || DEFAULT_CONFIG.containerPassfilePath;
+  return ["exec", "-u", "postgres", "-e", `PGPASSFILE=${passfile}`, container];
 }
 
 /**
@@ -130,7 +131,8 @@ export function remapHostPortForDocker(host, port, config = DEFAULT_CONFIG) {
  * Rewrite a PG command + args for docker exec execution inside the standby container.
  * - Binary paths are mapped (pg_ctl → /usr/lib/postgresql/18/bin/pg_ctl).
  * - Host/port pairs targeting the local standby are remapped to the container-internal port.
- * - Host paths under /srv are already bind-mounted into the container at the same path.
+ * - Host paths under /srv/standby/drill-cluster are bind-mounted into the container
+ *   at the same path (docker-compose.standby.yml). Other /srv paths are NOT mounted.
  */
 export function wrapPgForDocker(cmd, args, config = DEFAULT_CONFIG) {
   const prefix = dockerPgPrefix(config);
@@ -524,7 +526,7 @@ export function queryPrimaryLsn({ host, port, user = "myr_replicator", timeoutMs
     "-h", String(host),
     "-p", String(port),
     "-U", String(user),
-    "-d", "replication=database",
+    "-d", "replication=database dbname=paperclip",
     "-t", "-A",
     "-c", "IDENTIFY_SYSTEM;",
   ];

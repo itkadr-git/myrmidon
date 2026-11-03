@@ -911,12 +911,12 @@ test("runCli rehearse respects --drill-dir and --drill-port and executes success
 
 test("dockerPgPrefix uses docker exec into the standby container", () => {
   const prefix = dockerPgPrefix();
-  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "myrmidon-pg-standby"]);
+  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "myrmidon-pg-standby"]);
 });
 
 test("dockerPgPrefix respects custom pgContainer", () => {
   const prefix = dockerPgPrefix({ pgContainer: "custom-pg" });
-  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "custom-pg"]);
+  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "custom-pg"]);
 });
 
 test("mapPgBinaryForDocker maps pg_ctl to full container path", () => {
@@ -949,7 +949,7 @@ test("wrapPgForDocker builds docker exec command for psql to standby", () => {
   ]);
   assert.equal(wrapped.cmd, "docker");
   assert.deepStrictEqual(wrapped.args, [
-    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "myrmidon-pg-standby",
     "psql",
     "-h", "127.0.0.1", "-p", "5432",
     "-U", "paperclip", "-d", "paperclip",
@@ -960,15 +960,15 @@ test("wrapPgForDocker builds docker exec command for psql to standby", () => {
 test("wrapPgForDocker builds docker exec command for psql to primary (no remap)", () => {
   const wrapped = wrapPgForDocker("psql", [
     "-h", "192.0.2.1", "-p", "15432",
-    "-U", "myr_replicator", "-d", "replication=database",
+    "-U", "myr_replicator", "-d", "replication=database dbname=paperclip",
     "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
   ]);
   assert.equal(wrapped.cmd, "docker");
   assert.deepStrictEqual(wrapped.args, [
-    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "myrmidon-pg-standby",
     "psql",
     "-h", "192.0.2.1", "-p", "15432",
-    "-U", "myr_replicator", "-d", "replication=database",
+    "-U", "myr_replicator", "-d", "replication=database dbname=paperclip",
     "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
   ]);
 });
@@ -977,7 +977,7 @@ test("wrapPgForDocker maps pg_ctl to container path", () => {
   const wrapped = wrapPgForDocker("pg_ctl", ["promote", "-D", "/srv/standby/myrmidon-pg/data"]);
   assert.equal(wrapped.cmd, "docker");
   assert.deepStrictEqual(wrapped.args, [
-    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "myrmidon-pg-standby",
     "/usr/lib/postgresql/18/bin/pg_ctl",
     "promote", "-D", "/srv/standby/myrmidon-pg/data",
   ]);
@@ -991,7 +991,7 @@ test("wrapPgForDocker maps pg_basebackup to docker exec", () => {
   ]);
   assert.equal(wrapped.cmd, "docker");
   assert.deepStrictEqual(wrapped.args, [
-    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "exec", "-u", "postgres", "-e", "PGPASSFILE=/var/lib/postgresql/data/.pgpass", "myrmidon-pg-standby",
     "pg_basebackup",
     "-h", "127.0.0.1", "-p", "5432",
     "-U", "myr_replicator", "-D", "/srv/standby/drill",
@@ -1031,7 +1031,7 @@ test("queryPrimaryLsn uses replication=database connection string", () => {
   queryPrimaryLsn({ host: "192.0.2.1", port: 15432, user: "myr_replicator" }, mockRunner);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, "psql");
-  assert.ok(calls[0].args.includes("replication=database"));
+  assert.ok(calls[0].args.includes("replication=database dbname=paperclip"));
   assert.ok(calls[0].args.includes("IDENTIFY_SYSTEM;"));
   assert.ok(calls[0].args.includes("myr_replicator"));
 });
@@ -1104,7 +1104,7 @@ test("checkLag primary LSN uses replication protocol (IDENTIFY_SYSTEM)", () => {
   );
   assert.ok(identifyCalls.length >= 1, "IDENTIFY_SYSTEM was called");
   for (const call of identifyCalls) {
-    assert.ok(call.args.includes("replication=database"), "Uses replication=database");
+    assert.ok(call.args.includes("replication=database dbname=paperclip"), "Uses replication=database dbname=paperclip");
     assert.ok(call.args.includes("myr_replicator"), "Uses myr_replicator user");
   }
 });
