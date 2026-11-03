@@ -2351,7 +2351,9 @@ export function mapFinalResultForTest(input: {
       hermesRunId: input.terminal.runId,
       ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
-      ...(input.wakeBlockDigests ? { wakeBlockDigests: input.wakeBlockDigests } : {}),
+      ...(input.wakeBlockDigests && Object.keys(input.wakeBlockDigests).length > 0
+        ? { wakeBlockDigests: input.wakeBlockDigests }
+        : {}),
     },
     sessionDisplayId,
     resultJson: {
@@ -3532,7 +3534,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
-        ...(body.wakeBlockDigests ? { wakeBlockDigests: body.wakeBlockDigests } : {}),
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3576,7 +3580,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
-        ...(body.wakeBlockDigests ? { wakeBlockDigests: body.wakeBlockDigests } : {}),
+        ...(body.wakeBlockDigests && Object.keys(body.wakeBlockDigests).length > 0
+          ? { wakeBlockDigests: body.wakeBlockDigests }
+          : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };

@@ -1070,7 +1070,6 @@ describe("execute", () => {
         issueId: "issue-delta",
         wakeReason: "issue_monitor_due",
         paperclipTaskMarkdown: taskMarkdown,
-        paperclipTaskMarkdownCompact: "Paperclip task context:",
         paperclipSessionHandoffMarkdown: handoff,
         paperclipWake: wake,
       };
