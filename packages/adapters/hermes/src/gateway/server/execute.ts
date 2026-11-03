@@ -1875,11 +1875,12 @@ function parseRetryAfterToIso(value: string | null | undefined): string | null {
  * the server to persist into llm_call_traces. Content-free — only section
  * sizes (chars/tokens), provider usage, cost, and the tools revision hash.
  *
- * A single gateway run may make multiple model calls (multi-turn loop). The
- * gateway reports aggregate usage in the terminal payload; we emit one trace
- * entry per run (callIndex=0) because the per-call breakdown is only
- * available inside the gateway runtime. When the payload carries explicit
- * call ids (litellmRequestIds / gatewayCallIds) we attach the first id so the server
+ * A single gateway run may make multiple model calls (multi-turn loop).
+ * When the gateway payload carries a `model_calls` array with per-call usage,
+ * we emit one trace per call. Otherwise we fall back to aggregate usage per
+ * run (callIndex=0) because the per-call breakdown is only available inside
+ * the gateway runtime. When the payload carries explicit call ids
+ * (litellmRequestIds / gatewayCallIds) we attach the first id so the server
  * can reconcile against litellm_cost_events.
  */
 function buildLlmCallTraces(input: {
@@ -1921,13 +1922,24 @@ function buildLlmCallTraces(input: {
     ? (input.payload.litellm_request_ids as string[])
     : [];
 
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call usage from gateway
+  // payload. When the gateway emits a `model_calls` array with per-call
+  // usage objects, we build one trace per call. Each element should have:
+  //   - usage: { input_tokens, output_tokens, cached_input_tokens? }
+  //   - litellm_request_id?: string
+  //   - section_chars?: Record<string, number>  (per-call section sizes)
+  //   - model?: string
+  const modelCalls = Array.isArray(input.payload.model_calls)
+    ? (input.payload.model_calls as Array<Record<string, unknown>>)
+    : null;
+
   const hasAnyData =
     (input.usage?.inputTokens ?? 0) > 0 ||
     (input.usage?.outputTokens ?? 0) > 0 ||
     breakdownTotal > 0 ||
     breakdownChars > 0;
 
-  if (!hasAnyData) return [];
+  if (!hasAnyData && !modelCalls) return [];
 
   // Section mapping: the adapter's prompt assembly produces these sections:
   //   instructionsBundle + cardInstructions  → system instructions
@@ -1947,6 +1959,70 @@ function buildLlmCallTraces(input: {
     + (typeof sections.taskMarkdown === "number" ? sections.taskMarkdown : 0);
   const historyChars = (chars.sessionHandoff ?? 0) + (chars.taskMarkdown ?? 0);
 
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call trace emission.
+  // When the gateway provides model_calls with per-call usage, emit one
+  // trace per call. This is the "трейс каждого LLM-вызова" requirement.
+  if (modelCalls && modelCalls.length > 0) {
+    return modelCalls.map((callData, idx) => {
+      const callUsage = asRecord(callData.usage) ?? {};
+      const callSections = asRecord(callData.section_chars) ?? {};
+      const callLitellmId = typeof callData.litellm_request_id === "string"
+        ? callData.litellm_request_id
+        : litellmIds[idx] ?? litellmIds[0] ?? null;
+      const callModel = typeof callData.model === "string"
+        ? callData.model
+        : typeof input.payload.model === "string" ? input.payload.model : null;
+
+      // Per-call section sizes: use gateway-provided if available, else adapter-computed
+      const callSystemChars = (typeof callSections.instructionsBundle === "number" ? callSections.instructionsBundle : 0)
+        + (typeof callSections.cardInstructions === "number" ? callSections.cardInstructions : 0)
+        || systemChars;
+      const callWakeChars = (typeof callSections.identityContract === "number" ? callSections.identityContract : 0)
+        + (typeof callSections.wakePrompt === "number" ? callSections.wakePrompt : 0)
+        + (typeof callSections.wakePayloadJson === "number" ? callSections.wakePayloadJson : 0)
+        || wakeChars;
+      const callHistoryChars = (typeof callSections.sessionHandoff === "number" ? callSections.sessionHandoff : 0)
+        + (typeof callSections.taskMarkdown === "number" ? callSections.taskMarkdown : 0)
+        || historyChars;
+
+      return {
+        version: 1,
+        callIndex: idx,
+        langfuseTraceId: null,
+        langfuseObservationId: null,
+        litellmRequestId: callLitellmId,
+        provider: typeof input.payload.provider === "string" ? input.payload.provider : null,
+        model: callModel,
+        toolsRev: input.toolsRev,
+        toolCount: input.toolCount,
+        sections: {
+          systemTokens: systemTokens > 0 ? systemTokens : undefined,
+          systemChars: callSystemChars > 0 ? callSystemChars : undefined,
+          toolsTokens: input.toolSchemaTokens ?? undefined,
+          toolsChars: input.toolSchemaChars ?? undefined,
+          wakeTokens: wakeTokens > 0 ? wakeTokens : undefined,
+          wakeChars: callWakeChars > 0 ? callWakeChars : undefined,
+          historyTokens: historyTokens > 0 ? historyTokens : undefined,
+          historyChars: callHistoryChars > 0 ? callHistoryChars : undefined,
+          toolResultsTokens: input.toolResultTokens ?? undefined,
+          toolResultsChars: input.toolResultChars ?? undefined,
+          totalTokens: breakdownTotal > 0 ? breakdownTotal : undefined,
+          totalChars: breakdownChars > 0 ? breakdownChars : undefined,
+        },
+        usage: {
+          promptTokens: asNumber(callUsage.input_tokens ?? callUsage.inputTokens, 0),
+          cachedPromptTokens: asNumber(callUsage.cached_input_tokens ?? callUsage.cachedInputTokens, 0),
+          completionTokens: asNumber(callUsage.output_tokens ?? callUsage.outputTokens, 0),
+          costMicroUsd: input.costUsd !== null ? Math.round(input.costUsd * 1_000_000) : undefined,
+        },
+        compacted: input.compacted ?? false,
+        preCompactChars: input.preCompactChars ?? undefined,
+        postCompactChars: input.postCompactChars ?? undefined,
+      };
+    });
+  }
+
+  // Fallback: single trace per run when gateway does not provide model_calls
   const call: Record<string, unknown> = {
     version: 1,
     callIndex: 0,
@@ -1994,14 +2070,12 @@ function buildLlmCallTraces(input: {
     postCompactChars: input.postCompactChars ?? undefined,
   };
 
-  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): emitting N copies of the same
-  // aggregate usage/section breakdown is wrong — it inflates SUM(promptTokens)
-  // by N× and breaks acceptance criterion 2 (reconciliation with
-  // LiteLLM_SpendLogs ≤5%). The gateway reports aggregate usage per run, not
-  // per call. We therefore emit exactly one trace entry per run (callIndex=0)
-  // and attach the first litellmRequestId so the server can still join to
-  // litellm_cost_events. The reconcile endpoint uses a per-request join on
-  // its side, so no information is lost.
+  // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway does not provide
+  // model_calls, we emit exactly one trace entry per run (callIndex=0) with
+  // the aggregate usage. This is the fallback for gateways that have not yet
+  // been updated to emit per-call data. The reconcile endpoint joins to
+  // litellm_cost_events on the server side, so per-call usage is recoverable
+  // from spend logs even when the gateway only reports aggregates.
   return [call];
 }
 
