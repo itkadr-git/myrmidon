@@ -3685,6 +3685,15 @@ export function issueThreadInteractionService(
               recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
             }
           } else if (
+            actor.agentId &&
+            (normalizedData.kind === "request_confirmation" ||
+              normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions") &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload)
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (
             issueContextRow?.responsibleUserId &&
             (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
           ) {
@@ -3704,13 +3713,6 @@ export function issueThreadInteractionService(
             (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
           ) {
             recipientCandidate = { userId: issueContextRow.conversationUserId };
-          } else if (
-            actor.agentId &&
-            actor.agentId === issueContextRow?.assigneeAgentId &&
-            !("toolAction" in normalizedData.payload) &&
-            !("secretProposal" in normalizedData.payload)
-          ) {
-            recipientCandidate = { serviceQueue: "default" };
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
           }
@@ -3727,7 +3729,6 @@ export function issueThreadInteractionService(
         routeType = "operator_action";
       } else if (
         (recipientCandidate && "userId" in recipientCandidate) ||
-        normalizedData.kind === "ask_user_questions" ||
         policy.effectiveResolverPolicy === "human_only"
       ) {
         routeType = "human_input";
