@@ -144,10 +144,7 @@ func DecodeBotUpdate(data []byte) (BotUpdate, error) {
 	if err := dec.Decode(&extra); err != io.EOF {
 		return BotUpdate{}, errors.New("invalid config update: trailing data")
 	}
-	if u.BotKey == "" {
-		return BotUpdate{}, errors.New("invalid config update: botKey is required")
-	}
-	if !botKeyRe.MatchString(u.BotKey) {
+	if u.BotKey != "" && !botKeyRe.MatchString(u.BotKey) {
 		return BotUpdate{}, errors.New("invalid config update: botKey must be a lowercase uuid")
 	}
 	return u, nil

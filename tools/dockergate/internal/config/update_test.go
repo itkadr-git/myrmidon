@@ -92,14 +92,31 @@ func TestConfigClonePreservesCeilings(t *testing.T) {
 	}
 }
 
-func TestDecodeBotUpdateRejectsMissingAndMalformedBotKey(t *testing.T) {
+func TestDecodeBotUpdateAllowsOmittedBotKey(t *testing.T) {
+	u, err := config.DecodeBotUpdate([]byte(`{"memoryMb":1024,"cpus":1.5,"pidsLimit":500}`))
+	if err != nil {
+		t.Fatalf("DecodeBotUpdate failed without botKey: %v", err)
+	}
+	if u.BotKey != "" || u.MemoryMB != 1024 || u.CPUs != 1.5 || u.PidsLimit != 500 {
+		t.Fatalf("unexpected decoded update: %+v", u)
+	}
+}
+
+func TestDecodeBotUpdateRejectsMalformedBotKey(t *testing.T) {
 	for _, body := range []string{
-		`{"memoryMb":1,"cpus":1,"pidsLimit":1}`,
 		`{"botKey":"bad","memoryMb":1,"cpus":1,"pidsLimit":1}`,
+		`{"botKey":"123","memoryMb":1,"cpus":1,"pidsLimit":1}`,
 	} {
 		if _, err := config.DecodeBotUpdate([]byte(body)); err == nil {
 			t.Errorf("DecodeBotUpdate(%s) succeeded; want error", body)
 		}
+	}
+}
+
+func TestApplyBotUpdateRejectsMissingBotKey(t *testing.T) {
+	cfg := validBaseConfig(t)
+	if err := config.ApplyBotUpdate(cfg, config.BotUpdate{MemoryMB: 256, CPUs: 1, PidsLimit: 50}); err == nil {
+		t.Fatal("ApplyBotUpdate with empty BotKey succeeded; want error")
 	}
 }
 
