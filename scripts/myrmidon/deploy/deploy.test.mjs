@@ -76,6 +76,10 @@ case "$1" in
             *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;;
           esac
         done
+        if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+          echo '{"Layers":[{"size":1}]}'
+          exit 0
+        fi
         cat "$SANDBOX/component-image.json"; exit 0 ;;
     esac
     if [[ "$*" == *"imagetools inspect"* ]]; then
@@ -83,6 +87,10 @@ case "$1" in
       if [ -e "$SANDBOX/registry-invalid-revision" ]; then jq '.config.Labels["org.opencontainers.image.revision"]="efe4758"' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+        echo '{"Layers":[{"size":1}]}'
+        exit 0
+      fi
       if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
         jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
       fi
@@ -103,20 +111,16 @@ case "$1" in
     exit 0 ;;
   compose)
     case "$*" in
-      *--services)
-        # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them). DEPLOY-PRECHECK (the
-        # 05.10 incident): composeConfigFails makes the project unreadable —
-        # the real compose error on stderr, nothing on stdout, exit 1, exactly
-        # like docker compose on an invalid project.
-        if [ -e "$SANDBOX/compose-config-fails" ]; then
-          echo 'service "server" has neither an image nor a build context specified' >&2
-          echo "ERROR: Invalid compose project" >&2
-          exit 1
+      *"config"*|*--services*)
+        if [[ "$*" == *--services* ]]; then
+          if [ -e "$SANDBOX/compose-config-fails" ]; then
+            echo 'service "server" has neither an image nor a build context specified' >&2
+            echo "ERROR: Invalid compose project" >&2
+            exit 1
+          fi
+          printf 'server\\ndockergate\\nfleetd\\n'
+          exit 0
         fi
-        printf 'server\\ndockergate\\nfleetd\\n' ;;
-      *"--format json"*)
-        # LICENSE-DIR: the rendered compose project, when a test supplies one
         if [ -f "$SANDBOX/compose-json" ]; then cat "$SANDBOX/compose-json"; fi
         exit 0 ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
@@ -213,6 +217,10 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash\ncase "$1" in\n  --version) echo systemd 255 ; exit 0 ;;\n  is-enabled|daemon-reload|enable|start) exit 0 ;;\n  *) exit 0 ;;\nesac\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
+`, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =

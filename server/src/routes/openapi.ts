@@ -116,6 +116,8 @@ import {
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Announcements
@@ -5207,6 +5209,39 @@ registry.registerPath({
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
 
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/provider-usage-reports",
+  tags: ["costs"],
+  summary: "Record a provider usage report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProviderUsageReportedEventSchema),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/provider-usage",
+  tags: ["costs"],
+  summary: "List aggregated provider usage",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/provider-usage-warning-threshold",
+  tags: ["costs"],
+  summary: "Update provider usage warning threshold",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateProviderUsageWarningThresholdSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 const costSummaryPaths = [
   "summary",
   "by-agent",
@@ -7761,6 +7796,16 @@ registry.registerPath({
   summary: "Apply the Myrmidon Cloud onboarding seed collected at signup",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/ssh-dry-run",
+  tags: ["companies"],
+  summary: "Dry-run SSH credential validation for server onboarding (no persistence)",
+  description: "Validates SSH parameters (host, port, username, private key) by opening a real SSH connection. Does not create a server record and does not persist credentials. Password auth is not supported.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({

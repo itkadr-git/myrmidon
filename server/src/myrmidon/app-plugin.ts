@@ -10,7 +10,7 @@ export { createInstanceSecretSettingService } from "./secret-settings/wiring.js"
 export { myrmidonMaintenanceRoutes } from "./maintenance/index.js"; // myrmidon(R3)
 export { boardJanitorRoutes } from "./board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 export { datastoreCareRetentionRoutes } from "./datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
-export { myrmidonDeployJobsRoutes } from "./deploy-jobs/index.js"; // myrmidon(R5-A)
+export { myrmidonDeployJobsRoutes, myrmidonAutoUpdateRoutes } from "./deploy-jobs/index.js"; // myrmidon(R5-A, 1.7-AUTO-UPDATE-B)
 export { myrmidonRuntimeLimitsRoutes } from "./runtime-limits/index.js"; // myrmidon(C0)
 export { myrmidonRunStallRoutes } from "./run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 export { myrmidonCorpusRoutes, resolveCorpusPorts } from "./corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)

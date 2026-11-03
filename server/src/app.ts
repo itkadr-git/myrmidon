@@ -77,6 +77,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
+import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -102,6 +103,7 @@ import {
   boardJanitorRoutes,
   datastoreCareRetentionRoutes,
   myrmidonDeployJobsRoutes,
+  myrmidonAutoUpdateRoutes,
   myrmidonRuntimeLimitsRoutes,
   myrmidonRunStallRoutes,
   myrmidonCorpusRoutes,
@@ -1159,6 +1161,7 @@ export async function createApp(
   api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
+  api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
@@ -1200,6 +1203,7 @@ export async function createApp(
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
+  api.use(myrmidonAutoUpdateRoutes(db)); // myrmidon(1.7-AUTO-UPDATE-B)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonPauseGuardRoutes(db)); // myrmidon(PAUSE-GUARD)
   api.use(myrmidonRunPriorityRoutes(db)); // myrmidon(1.6.5 RUN-PRIORITY A)
