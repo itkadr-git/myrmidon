@@ -3631,9 +3631,9 @@ export function issueThreadInteractionService(
           recipientCandidate = { agentId: issueContextRow.createdByAgentId };
         } else if (
           (normalizedData.kind === "request_confirmation" ||
-            ((normalizedData.kind === "suggest_tasks" ||
-              normalizedData.kind === "ask_user_questions") &&
-              policy.effectiveResolverPolicy !== "human_only")) &&
+            normalizedData.kind === "suggest_tasks" ||
+            normalizedData.kind === "ask_user_questions") &&
+          policy.effectiveResolverPolicy !== "human_only" &&
           !("toolAction" in normalizedData.payload) &&
           !("secretProposal" in normalizedData.payload)
         ) {
