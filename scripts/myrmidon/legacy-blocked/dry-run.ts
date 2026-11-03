@@ -21,6 +21,7 @@ import {
 export type DryRunOptions = {
   outputFile?: string;
   format?: "json" | "markdown";
+  includeImported?: boolean;
 };
 
 export type DryRunResult = {
@@ -125,7 +126,7 @@ export async function runLegacyBlockedDryRun(
   db: any,
   options?: DryRunOptions,
 ): Promise<DryRunResult> {
-  const rawInventory = await listLegacyBlocked(db);
+  const rawInventory = await listLegacyBlocked(db, { includeImported: options?.includeImported });
   const inventory = (Array.isArray(rawInventory) ? rawInventory : []) as InventoriedIssue[];
 
   const results: ReconciliationResult[] = [];

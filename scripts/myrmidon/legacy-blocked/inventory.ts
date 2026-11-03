@@ -1,14 +1,18 @@
-import { and, eq, isNull, notExists, sql } from "drizzle-orm";
+import { and, eq, isNull, notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { issueRelations, issueThreadInteractions, issues, type Db } from "../../../packages/db/src/index.js";
+import { issueRelations, issueThreadInteractions, issues, legacyBlockedImports, type Db } from "../../../packages/db/src/index.js";
 import { blockerOpenCondition } from "../../../server/src/myrmidon/blocker-resolved.js";
+
+export type InventoryOptions = {
+  includeImported?: boolean;
+};
 
 /*
  * A completed blocker relation is useful historical migration evidence: it
  * can explain why a task remains blocked without excluding it from inventory.
  * Active blockers still exclude the row and are never silently removed.
  */
-export async function listLegacyBlocked(db: Db) {
+export async function listLegacyBlocked(db: Db, options: InventoryOptions = {}) {
   const blockingIssues = alias(issues, "legacy_blocking_issue");
   const childIssues = alias(issues, "legacy_child_issue");
 
@@ -45,13 +49,27 @@ export async function listLegacyBlocked(db: Db) {
         and(eq(childIssues.parentId, issues.id), eq(childIssues.companyId, issues.companyId)),
       );
 
+    const importedIssue = tx
+      .select({ id: legacyBlockedImports.id })
+      .from(legacyBlockedImports)
+      .where(
+        and(
+          eq(legacyBlockedImports.companyId, issues.companyId),
+          eq(legacyBlockedImports.issueId, issues.id),
+        ),
+      );
+
+    const metadataCondition = options.includeImported
+      ? or(isNull(issues.blockerMetadata), sql`EXISTS (${importedIssue})`)
+      : isNull(issues.blockerMetadata);
+
     return tx
       .select()
       .from(issues)
       .where(
         and(
           eq(issues.status, "blocked"),
-          isNull(issues.blockerMetadata),
+          metadataCondition,
           notExists(openBlocker),
           notExists(pendingInteraction),
           notExists(childIssue),

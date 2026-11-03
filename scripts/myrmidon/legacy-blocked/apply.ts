@@ -52,7 +52,7 @@ function blockerMetadata(row: LegacyBlockedReportRow, source: { assigneeAgentId:
  * unknown and untyped records are retained as blocked and annotated in journal.
  */
 export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyOptions = {}): Promise<LegacyBlockedApplyResult> {
-  const dryRun = await runLegacyBlockedDryRun(db);
+  const dryRun = await runLegacyBlockedDryRun(db, { includeImported: true });
   const rows: LegacyBlockedApplyRow[] = [];
   let changed = 0;
   for (const row of dryRun.report.rows) {
