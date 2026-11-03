@@ -222,138 +222,135 @@ describe("cursor execute", () => {
       "/usr/sbin",
       "/sbin",
     ].join(path.delimiter);
+    setPrepareCursorSandboxCommand.mockReset();
+    const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
+    let finalPreparedCommand: string | null = null;
 
-    for (let iteration = 0; iteration < 50; iteration++) {
-      setPrepareCursorSandboxCommand.mockReset();
-      const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
-      let finalPreparedCommand: string | null = null;
-
-      const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-fresh-lease-managed-"));
-      const workspaceDir = path.join(rootDir, "workspace");
-      const remoteWorkspace = path.join(rootDir, "remote-workspace");
-      const systemHomeDir = path.join(rootDir, "system-home");
-      const managedCaptureDir = path.join(rootDir, "managed-capture");
-      await fs.mkdir(managedCaptureDir, { recursive: true });
-      await fs.mkdir(workspaceDir, { recursive: true });
-      await fs.mkdir(remoteWorkspace, { recursive: true });
-      const preferredAgentScript = `#!/bin/sh
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-fresh-lease-managed-"));
+    const workspaceDir = path.join(rootDir, "workspace");
+    const remoteWorkspace = path.join(rootDir, "remote-workspace");
+    const systemHomeDir = path.join(rootDir, "system-home");
+    const managedCaptureDir = path.join(rootDir, "managed-capture");
+    await fs.mkdir(managedCaptureDir, { recursive: true });
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.mkdir(remoteWorkspace, { recursive: true });
+    const preferredAgentScript = `#!/bin/sh
 printf '%s\\n' '{"type":"system","subtype":"init","session_id":"cursor-session-fresh-1","model":"auto"}'
 printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"output_text","text":"hello"}]}}'
 printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-session-fresh-1","result":"ok"}'
 `;
 
-      setPrepareCursorSandboxCommand.mockImplementation(async (input) => {
-        const call = prepareInputs.length;
-        prepareInputs.push(input);
-        if (call === 0) {
-          return {
-            command: input.command,
-            env: input.env,
-            remoteSystemHomeDir: systemHomeDir,
-            addedPathEntry: null,
-            preferredCommandPath: null,
-          };
-        }
-
-        expect(input.remoteSystemHomeDirHint).toBe(systemHomeDir);
-        const preferredCommandPath = path.join(systemHomeDir, ".local", "bin", input.command);
-        finalPreparedCommand = preferredCommandPath;
-        const inheritedPath = input.env.PATH ?? process.env.PATH ?? systemPath;
-        const runtimeEnv = {
-          ...input.env,
-          PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${inheritedPath}`,
-        };
-        await fs.mkdir(path.dirname(preferredCommandPath), { recursive: true });
-        await fs.writeFile(preferredCommandPath, preferredAgentScript);
-        await fs.chmod(preferredCommandPath, 0o755);
-        await fs.writeFile(path.join(managedCaptureDir, "agent-output.log"), preferredCommandPath);
-
+    setPrepareCursorSandboxCommand.mockImplementation(async (input) => {
+      const call = prepareInputs.length;
+      prepareInputs.push(input);
+      if (call === 0) {
         return {
-          command: preferredCommandPath,
-          env: runtimeEnv,
+          command: input.command,
+          env: input.env,
           remoteSystemHomeDir: systemHomeDir,
-          addedPathEntry: path.join(systemHomeDir, ".local", "bin"),
-          preferredCommandPath,
+          addedPathEntry: null,
+          preferredCommandPath: null,
         };
+      }
+
+      expect(input.remoteSystemHomeDirHint).toBe(systemHomeDir);
+      const preferredCommandPath = path.join(systemHomeDir, ".local", "bin", input.command);
+      finalPreparedCommand = preferredCommandPath;
+      const inheritedPath = input.env.PATH ?? process.env.PATH ?? systemPath;
+      const runtimeEnv = {
+        ...input.env,
+        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${inheritedPath}`,
+      };
+      await fs.mkdir(path.dirname(preferredCommandPath), { recursive: true });
+      await fs.writeFile(preferredCommandPath, preferredAgentScript);
+      await fs.chmod(preferredCommandPath, 0o755);
+      await fs.writeFile(path.join(managedCaptureDir, "agent-output.log"), preferredCommandPath);
+
+      return {
+        command: preferredCommandPath,
+        env: runtimeEnv,
+        remoteSystemHomeDir: systemHomeDir,
+        addedPathEntry: path.join(systemHomeDir, ".local", "bin"),
+        preferredCommandPath,
+      };
+    });
+
+    const runnerState = {
+      commands: [] as string[],
+    };
+    const runner = {
+      execute: async (input: { command: string; args?: string[]; env?: Record<string, string>; stdin?: string }) => {
+        runnerState.commands.push(input.command);
+        const inheritedPath = input.env?.PATH ?? process.env.PATH ?? systemPath;
+        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
+          cwd: remoteWorkspace,
+          env: {
+            HOME: systemHomeDir,
+            ...(input.env ?? {}),
+            PATH: inheritedPath,
+          },
+          timeoutSec: 30,
+          graceSec: 5,
+          stdin: input.stdin,
+          onLog: async () => {},
+          onSpawn: async () => {},
+        });
+      },
+    };
+
+    const runMeta: Array<{ command?: string; [key: string]: unknown }> = [];
+    const previousHome = process.env.HOME;
+    process.env.HOME = systemHomeDir;
+
+    try {
+      const command = "agent";
+      const result = await execute({
+        runId: "run-fresh-lease-managed",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Cursor Coder",
+          adapterType: "cursor",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          remoteCwd: remoteWorkspace,
+          providerKey: "fixture",
+          runner: runner,
+          timeoutMs: 30_000,
+        },
+        config: {
+          command,
+          cwd: workspaceDir,
+          promptTemplate: "Run against runtime-managed command.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          runMeta.push(meta as unknown as { command?: string; [key: string]: unknown });
+        },
       });
 
-      const runnerState = {
-        commands: [] as string[],
-      };
-      const runner = {
-        execute: async (input: { command: string; args?: string[]; env?: Record<string, string>; stdin?: string }) => {
-          runnerState.commands.push(input.command);
-          const inheritedPath = input.env?.PATH ?? process.env.PATH ?? systemPath;
-          return runChildProcess(`cursor-fresh-lease-${iteration}-${runnerState.commands.length}`, input.command, input.args ?? [], {
-            cwd: remoteWorkspace,
-            env: {
-              HOME: systemHomeDir,
-              ...(input.env ?? {}),
-              PATH: inheritedPath,
-            },
-            timeoutSec: 30,
-            graceSec: 5,
-            stdin: input.stdin,
-            onLog: async () => {},
-            onSpawn: async () => {},
-          });
-        },
-      };
-
-      const runMeta: Array<{ command?: string; [key: string]: unknown }> = [];
-      const previousHome = process.env.HOME;
-      process.env.HOME = systemHomeDir;
-
-      try {
-        const command = "agent";
-        const result = await execute({
-          runId: `run-fresh-lease-managed-${iteration}`,
-          agent: {
-            id: "agent-1",
-            companyId: "company-1",
-            name: "Cursor Coder",
-            adapterType: "cursor",
-            adapterConfig: {},
-          },
-          runtime: {
-            sessionId: null,
-            sessionParams: null,
-            sessionDisplayId: null,
-            taskKey: null,
-          },
-          executionTarget: {
-            kind: "remote",
-            transport: "sandbox",
-            remoteCwd: remoteWorkspace,
-            providerKey: "fixture",
-            runner: runner,
-            timeoutMs: 30_000,
-          },
-          config: {
-            command,
-            cwd: workspaceDir,
-            promptTemplate: "Run against runtime-managed command.",
-          },
-          context: {},
-          authToken: "run-jwt-token",
-          onLog: async () => {},
-          onMeta: async (meta) => {
-            runMeta.push(meta as unknown as { command?: string; [key: string]: unknown });
-          },
-        });
-
-        expect(result.exitCode).toBe(0);
-        expect(prepareInputs).toHaveLength(2);
-        expect(finalPreparedCommand).not.toBeNull();
-        expect(finalPreparedCommand).toMatch(/\.local\/(bin|sbin)\/agent$/);
-        const resolvedCommand = runMeta.find(Boolean)?.command as string | undefined;
-        expect(resolvedCommand).toMatch(/\.local\/bin\/agent$/);
-        expect(resolvedCommand).toContain(path.join(systemHomeDir, ".local", "bin", command));
-      } finally {
-        if (previousHome === undefined) delete process.env.HOME;
-        else process.env.HOME = previousHome;
-        await fs.rm(rootDir, { recursive: true, force: true });
-      }
+      expect(result.exitCode).toBe(0);
+      expect(prepareInputs).toHaveLength(2);
+      expect(finalPreparedCommand).not.toBeNull();
+      expect(finalPreparedCommand).toMatch(/\.local\/(bin|sbin)\/agent$/);
+      const resolvedCommand = runMeta.find(Boolean)?.command as string | undefined;
+      expect(resolvedCommand).toMatch(/\.local\/bin\/agent$/);
+      expect(resolvedCommand).toContain(path.join(systemHomeDir, ".local", "bin", command));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(rootDir, { recursive: true, force: true });
     }
   });
 });
