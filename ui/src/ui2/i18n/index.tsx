@@ -26,10 +26,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { i18n } from "@/i18n";
+import * as vendorI18n from "@/i18n";
 import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
 import { ui2LanguageApi } from "./api";
-import { mergeCatalog, type CatalogObject } from "./catalog-upload";
 import { en } from "./catalogs/en";
 import { ru } from "./catalogs/ru";
 
@@ -73,21 +72,12 @@ export const ui2Catalogs = { en, ru } as const;
  * languages carry their own catalog; every other vendor locale falls back to
  * the English base through i18next's fallback chain.
  */
-export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<string, unknown>>> = {}): void {
-  for (const [locale, baseCatalog] of Object.entries(ui2Catalogs)) {
-    const customBundle = custom[locale as Ui2Language];
-    if (!customBundle && i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      continue;
-    }
-    const catalog = customBundle
-      ? mergeCatalog(baseCatalog as unknown as CatalogObject, customBundle as CatalogObject)
-      : baseCatalog;
-    const client = i18n as any;
-    if (typeof client?.removeResourceBundle === "function" && client.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      client.removeResourceBundle(locale, UI2_NAMESPACE);
-    }
-    if (typeof client?.addResourceBundle === "function") {
-      client.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+export function registerUi2Catalogs(): void {
+  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  if (!i18nInstance || typeof i18nInstance.hasResourceBundle !== "function") return;
+  for (const [locale, catalog] of Object.entries(ui2Catalogs)) {
+    if (!i18nInstance.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      i18nInstance.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
     }
   }
 }
@@ -107,13 +97,15 @@ export function applyUi2Language(language: Ui2Language): void {
   storeLanguage(language);
   const root = ui2LangRoot();
   if (root) root.setAttribute("lang", language);
-  void i18n.changeLanguage(language);
+  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  if (i18nInstance && typeof i18nInstance.changeLanguage === "function") {
+    void i18nInstance.changeLanguage(language);
+  }
 }
 
 export interface Ui2LanguageContextValue {
   language: Ui2Language;
-  customCatalogs: Partial<Record<Ui2Language, Record<string, unknown>>>;
-  setCatalogs: (catalogs: Partial<Record<Ui2Language, Record<string, unknown>>>) => void;
+  /** Switch language: server write (when possible) + immediate apply. */
   setLanguage: (language: Ui2Language) => void;
   /** True while the preference PUT is in flight. */
   saving: boolean;
@@ -127,7 +119,6 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
   // Start from the mirrored local choice so the first paint keeps the
   // language even before the server preference resolves.
   const [language, setLanguageState] = useState<Ui2Language>(() => readStoredLanguage() ?? "en");
-  const [customCatalogs, setCustomCatalogsState] = useState<Partial<Record<Ui2Language, Record<string, unknown>>>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const mounted = useRef(true);
@@ -152,9 +143,6 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       .get()
       .then((preference) => {
         if (cancelled || userSwitched.current || !isUi2Language(preference?.language)) return;
-        const catalogs = preference.catalogs ?? {};
-        setCustomCatalogsState(catalogs);
-        registerUi2Catalogs(catalogs);
         setLanguageState(preference.language);
         applyUi2Language(preference.language);
       })
@@ -200,18 +188,8 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<Ui2LanguageContextValue>(
-    () => ({
-      language,
-      setLanguage,
-      customCatalogs,
-      setCatalogs: (catalogs: Partial<Record<Ui2Language, Record<string, unknown>>>) => {
-        setCustomCatalogsState(catalogs);
-        registerUi2Catalogs(catalogs);
-      },
-      saving,
-      saveError,
-    }),
-    [language, setLanguage, customCatalogs, saving, saveError],
+    () => ({ language, setLanguage, saving, saveError }),
+    [language, setLanguage, saving, saveError],
   );
 
   return <Ui2LanguageContext.Provider value={value}>{children}</Ui2LanguageContext.Provider>;

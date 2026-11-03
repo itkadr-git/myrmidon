@@ -33,6 +33,7 @@ const CATALOG: Record<string, string> = {
   "ui2.commander.aria": "Tell the Commander (Ctrl K)",
   "ui2.commander.placeholder": "Tell the Commander…",
   "ui2.decisions.badge": "{{count}} decisions waiting",
+  "area.ui2-shell.ui2-top-bar.commanderShortcut": "Ctrl K",
 };
 
 vi.mock("@/i18n", () => ({

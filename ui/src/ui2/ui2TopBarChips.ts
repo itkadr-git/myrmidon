@@ -96,7 +96,9 @@ export function ui2FormatMoneyCents(cents: number): string {
   return `$${Math.round(cents / 100).toLocaleString("en-US")}`;
 }
 
-export function ui2SpendChip(summary: CostSummary | undefined): Ui2SpendChip | null {
+export function ui2SpendChip(
+  summary: Pick<CostSummary, "spendCents" | "budgetCents"> | CostSummary | undefined,
+): Ui2SpendChip | null {
   if (!summary) return null;
   const budget = summary.budgetCents > 0 ? ui2FormatMoneyCents(summary.budgetCents) : null;
   return {

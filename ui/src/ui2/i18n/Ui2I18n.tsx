@@ -33,7 +33,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { i18n } from "@/i18n";
+import * as vendorI18n from "@/i18n";
 import { ui2LanguageApi } from "./api";
 import { registerUi2Catalogs } from "./index";
 import {
@@ -91,7 +91,10 @@ function applyLocaleToShell(locale: Ui2Locale): void {
       (document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement)) ||
     null;
   if (root) root.setAttribute("lang", locale);
-  if (i18n.language !== locale) void i18n.changeLanguage(locale);
+  const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
+  if (i18nInstance && typeof i18nInstance.changeLanguage === "function" && i18nInstance.language !== locale) {
+    void i18nInstance.changeLanguage(locale);
+  }
 }
 
 /** Single-flight server preference load (module level: one GET per page). */

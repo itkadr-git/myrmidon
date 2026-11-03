@@ -52,7 +52,15 @@ describe("myrmidon(UI2) top bar chip copy (UI2 catalogs)", () => {
   });
 
   it("never renders 'of $0' when budgetCents = 0 (owner rule)", () => {
-    const noBudget = ui2SpendChip({ companyId: "c", spendCents: 31_454, budgetCents: 0, utilizationPercent: 0 });
+    const noBudget = ui2SpendChip({
+      companyId: "c",
+      spendCents: 31_454,
+      budgetCents: 0,
+      utilizationPercent: 0,
+      unpricedEvents: 0,
+      unpricedTokens: 0,
+      forecastCents: null,
+    });
     // The top bar renders the raw money value when the budget part is null.
     const labelEn = noBudget!.budget
       ? formatUi2Message(chipEn.spend, { spend: noBudget!.spend, budget: noBudget!.budget })
@@ -67,7 +75,15 @@ describe("myrmidon(UI2) top bar chip copy (UI2 catalogs)", () => {
   });
 
   it("renders the budget part when a budget is set", () => {
-    const withBudget = ui2SpendChip({ companyId: "c", spendCents: 157_400, budgetCents: 220_000, utilizationPercent: 71.5 });
+    const withBudget = ui2SpendChip({
+      companyId: "c",
+      spendCents: 157_400,
+      budgetCents: 220_000,
+      utilizationPercent: 71.5,
+      unpricedEvents: 0,
+      unpricedTokens: 0,
+      forecastCents: null,
+    });
     expect(
       formatUi2Message(chipEn.spend, { spend: withBudget!.spend, budget: withBudget!.budget! }),
     ).toBe("$1,574 of $2,200");
