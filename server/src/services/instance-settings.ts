@@ -101,6 +101,7 @@ import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache
 import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-usage/settings.js"; // myrmidon(OPE-7202)
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
 import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
+import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -459,6 +460,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
       // survives every general write (edited on its own settings block).
       ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
+      // myrmidon(1.7 USERS-ADMIN-UI A): the stored self-registration switch and blocked users map
+      ...(parsed.data.authSelfSignUp ? { authSelfSignUp: parsed.data.authSelfSignUp } : {}),
+      ...(parsed.data.myrmidonAuthBlockedUsers ? { myrmidonAuthBlockedUsers: parsed.data.myrmidonAuthBlockedUsers } : {}),
     };
   }
   return {
@@ -911,6 +915,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
               ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
+              ...preserveUsersAdminAGeneralKey(current.general), // myrmidon(1.7 USERS-ADMIN-UI A)
+              ...(patch.myrmidonAuthBlockedUsers !== undefined
+                ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
+                : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
