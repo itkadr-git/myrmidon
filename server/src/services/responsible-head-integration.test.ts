@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentWakeupRequests,
@@ -58,7 +58,6 @@ async function waitForDeferredWakeRequest(
   db: Db,
   agentId: string,
   interactionId: string,
-  wakeupReceiptId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -69,21 +68,10 @@ async function waitForDeferredWakeRequest(
       .where(
         and(
           eq(agentWakeupRequests.agentId, agentId),
-          inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued"]),
+          eq(agentWakeupRequests.idempotencyKey, `interaction-pending:${interactionId}`),
         ),
       );
-    const matchingRequest = requests.find((request) => {
-      if (request.id === wakeupReceiptId || request.runId === wakeupReceiptId) return true;
-      const contextSnapshot = (request.payload as Record<string, unknown> | null)?.[
-        "_paperclipWakeContext"
-      ];
-      return (
-        request.id === interactionId ||
-        request.idempotencyKey === `interaction-pending:${interactionId}` ||
-        (request.payload as Record<string, unknown> | null)?.interactionId === interactionId ||
-        (contextSnapshot as Record<string, unknown> | null)?.interactionId === interactionId
-      );
-    });
+    const matchingRequest = requests[0];
     if (matchingRequest) return matchingRequest;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -774,7 +762,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(wakeResult?.status).toBe("queued");
 
       // Verify wakeup request was parked in agentWakeupRequests and not lost
-      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id, wakeResult!.id);
+      const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id);
       expect(targetRequest).toBeDefined();
       expect(["deferred_issue_execution", "queued"]).toContain(targetRequest?.status);
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
