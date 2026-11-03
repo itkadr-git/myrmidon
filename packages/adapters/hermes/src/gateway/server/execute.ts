@@ -1918,9 +1918,9 @@ function buildLlmCallTraces(input: {
   const breakdownChars = Object.values(chars).reduce((sum, n) => sum + n, 0);
 
   // Extract per-call ids from the payload when available.
-  const litellmIds = Array.isArray(input.payload.litellm_request_ids)
-    ? (input.payload.litellm_request_ids as string[])
-    : [];
+  // parseGatewayCallIds reads both payload-level and usage-level id arrays, so
+  // we reuse it here instead of only looking at payload.litellm_request_ids.
+  const litellmIds = parseGatewayCallIds(input.payload).litellmRequestIds;
 
   // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call usage from gateway
   // payload. When the gateway emits a `model_calls` array with per-call

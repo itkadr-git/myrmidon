@@ -101,7 +101,7 @@ describeEmbeddedPostgres("tokens-trace persist compaction path (OPE-10727)", () 
   });
 
   afterAll(async () => {
-    await tempDb?.stop();
+    await tempDb?.cleanup();
   });
 
   it("persists a non-compacted trace with postCompactChars set and preCompactChars null", async () => {
