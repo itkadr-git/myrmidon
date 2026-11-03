@@ -59,23 +59,25 @@ export function readBoardJanitorSettings(
  * Irkutsk is UTC+8. Hour in Irkutsk = (UTC hour + 8) % 24.
  */
 export function isDueForDailyRun(now: Date, lastRunAt: Date | null, targetHourIrkutsk: number): boolean {
-  if (!lastRunAt) return true;
-
   // Calculate current date in Irkutsk timezone
   const utcMs = now.getTime();
   const irkutskOffsetMs = 8 * 60 * 60 * 1000;
   const irkutskNow = new Date(utcMs + irkutskOffsetMs);
-  const irkutskLastRun = new Date(lastRunAt.getTime() + irkutskOffsetMs);
 
+  // If the target hour in Irkutsk has not arrived yet today, never run
+  if (irkutskNow.getUTCHours() < targetHourIrkutsk) {
+    return false;
+  }
+
+  if (!lastRunAt) return true;
+
+  const irkutskLastRun = new Date(lastRunAt.getTime() + irkutskOffsetMs);
   const isSameDay =
     irkutskNow.getUTCFullYear() === irkutskLastRun.getUTCFullYear() &&
     irkutskNow.getUTCMonth() === irkutskLastRun.getUTCMonth() &&
     irkutskNow.getUTCDate() === irkutskLastRun.getUTCDate();
 
-  if (isSameDay) return false;
-
-  // Has the target hour in Irkutsk arrived today?
-  return irkutskNow.getUTCHours() >= targetHourIrkutsk;
+  return !isSameDay;
 }
 
 export function preserveBoardJanitorGeneralKey(storedGeneral: unknown): Record<string, unknown> {

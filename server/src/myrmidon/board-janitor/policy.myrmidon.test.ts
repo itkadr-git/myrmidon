@@ -210,7 +210,9 @@ describe("Rule 2: Stale block resolution vs question holding", () => {
     };
     const judgment = judgeStaleBlock(task, 0, 0, null, BASE_NOW);
     expect(judgment?.action).toBe("unblock_to_todo");
-    expect(judgment?.comment).toContain("блок снят: блокер закрыт/отсутствует");
+    if (judgment?.action === "unblock_to_todo") {
+      expect(judgment.comment).toContain("блок снят: блокер закрыт/отсутствует");
+    }
   });
 
   it("does NOT unblock if unblock_descriptor.reasonRef.dueAt is in the future", () => {
@@ -256,7 +258,9 @@ describe("Rule 2: Stale block resolution vs question holding", () => {
     };
     const judgment = judgeStaleBlock(task, 0, 0, null, BASE_NOW);
     expect(judgment?.action).toBe("unblock_to_todo");
-    expect(judgment?.comment).toContain("блок снят: блокер закрыт/отсутствует");
+    if (judgment?.action === "unblock_to_todo") {
+      expect(judgment.comment).toContain("блок снят: блокер закрыт/отсутствует");
+    }
   });
 });
 
