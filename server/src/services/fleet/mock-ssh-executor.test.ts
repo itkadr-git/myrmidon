@@ -258,8 +258,8 @@ describe("MockSshExecutor — In-Memory Command Logging and Assertions", () => {
     expect(executor.hasExecuted("systemctl")).toBe(false);
 
     // RegExp pattern matching
-    expect(executor.hasExecuted(/chmod\\s+755/)).toBe(true);
-    expect(executor.hasExecuted(/chmod\\s+777/)).toBe(false);
+    expect(executor.hasExecuted(/chmod\s+755/)).toBe(true);
+    expect(executor.hasExecuted(/chmod\s+777/)).toBe(false);
 
     // Finding individual records
     const chownCmd = executor.findCommand(/chown/);
@@ -299,11 +299,11 @@ describe("MockSshExecutor — Custom Command Mapping and Failure Injection", () 
     await executor.connect();
 
     executor.mockResponse("my-custom-cli --status", {
-      stdout: '{"status": "healthy", "version": "1.0.0"}\\n',
+      stdout: '{"status": "healthy", "version": "1.0.0"}\n',
       exitCode: 0,
     });
 
-    executor.mockResponse(/iptables -L/, "Chain INPUT (policy ACCEPT)\\n");
+    executor.mockResponse(/iptables -L/, "Chain INPUT (policy ACCEPT)\n");
 
     const customRes = await executor.execute("my-custom-cli --status");
     expect(customRes.stdout).toContain("healthy");

@@ -370,10 +370,13 @@ export class MockSshExecutor implements SshExecutor {
     }
 
     const inv = { ...DEFAULT_MOCK_INVENTORY, ...this.config.inventory };
+    const uname =
+      this.config.inventory?.uname ??
+      `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
     return {
       outcome: "ok",
       passwordlessSudo: inv.passwordlessSudo ?? true,
-      remoteUname: inv.uname ?? DEFAULT_MOCK_INVENTORY.uname,
+      remoteUname: uname,
       durationMs,
     };
   }
@@ -498,17 +501,20 @@ export class MockSshExecutor implements SshExecutor {
       ...DEFAULT_MOCK_INVENTORY,
       ...this.config.inventory,
     };
+    if (!this.config.inventory?.uname) {
+      inv.uname = `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
+    }
 
     // Sudo check
     if (command === "sudo -n true" || command.includes("sudo -n true")) {
       if (inv.passwordlessSudo) {
         // If command includes the SUDO_OK marker chain (like in ssh-dry-run)
-        const stdout = command.includes("echo SUDO_OK") ? "SUDO_OK\\n" : "";
+        const stdout = command.includes("echo SUDO_OK") ? "SUDO_OK\n" : "";
         return { stdout, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
         stdout: "",
-        stderr: "sudo: a password is required\\n",
+        stderr: "sudo: a password is required\n",
         exitCode: 1,
         signal: null,
         durationMs: 5,
@@ -521,35 +527,35 @@ export class MockSshExecutor implements SshExecutor {
       command.includes("/etc/system-release") ||
       command.includes("/etc/*release")
     ) {
-      return { stdout: `${inv.osRelease}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.osRelease}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Uname inspection
     if (command === "uname -a" || command.startsWith("uname -a")) {
       let stdout = inv.uname;
       if (command.includes("echo SUDO_OK") && inv.passwordlessSudo) {
-        stdout += "\\nSUDO_OK";
+        stdout += "\nSUDO_OK";
       }
-      return { stdout: `${stdout}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${stdout}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
     if (command === "uname -m") {
-      return { stdout: `${inv.arch}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.arch}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
     if (command === "uname -r") {
-      return { stdout: `${inv.kernel}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.kernel}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
     if (command === "uname -s") {
-      return { stdout: "Linux\\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: "Linux\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Hostname
     if (command === "hostname" || command === "hostname -f") {
-      return { stdout: `${inv.hostname}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.hostname}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // CPU details
     if (command === "nproc") {
-      return { stdout: `${inv.cpuCores}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.cpuCores}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
     if (command === "lscpu" || command.includes("lscpu")) {
       const lscpuOutput = `Architecture:                    ${inv.arch}
@@ -565,7 +571,7 @@ Model:                           1
 Thread(s) per core:              1
 Core(s) per socket:              ${inv.cpuCores}
 Socket(s):                       1`;
-      return { stdout: `${lscpuOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${lscpuOutput}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Memory details
@@ -577,7 +583,7 @@ Socket(s):                       1`;
       const freeOutput = `               total        used        free      shared  buff/cache   available
 Mem:            ${total}        ${used}        ${free}           0           0        ${available}
 Swap:           2048           0        2048`;
-      return { stdout: `${freeOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${freeOutput}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Disk details
@@ -589,23 +595,23 @@ Swap:           2048           0        2048`;
       const dfOutput = `Filesystem      Size  Used Avail Use% Mounted on
 /dev/root        ${total}   ${used}   ${avail}  ${usePercent} /
 tmpfs           4.0G     0  4.0G   0% /dev/shm`;
-      return { stdout: `${dfOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${dfOutput}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // User identification
     if (command === "whoami") {
       const user = this.currentConnection?.username ?? "root";
-      return { stdout: `${user}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${user}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Docker verification
     if (command === "docker --version" || command === "docker -v") {
       if (inv.dockerInstalled) {
-        return { stdout: `${inv.dockerVersion}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+        return { stdout: `${inv.dockerVersion}\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
         stdout: "",
-        stderr: "docker: command not found\\n",
+        stderr: "docker: command not found\n",
         exitCode: 127,
         signal: null,
         durationMs: 5,
@@ -614,11 +620,11 @@ tmpfs           4.0G     0  4.0G   0% /dev/shm`;
 
     if (command === "which docker") {
       if (inv.dockerInstalled) {
-        return { stdout: "/usr/bin/docker\\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
+        return { stdout: "/usr/bin/docker\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
         stdout: "",
-        stderr: "which: no docker in (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)\\n",
+        stderr: "which: no docker in (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)\n",
         exitCode: 1,
         signal: null,
         durationMs: 5,
