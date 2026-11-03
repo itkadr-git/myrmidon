@@ -1715,7 +1715,7 @@ docker_free_gb() {
 # Refuses before the first image pull, database dump, or maintenance window.
 # Image references are immutable digests; Buildx reads registry layer sizes
 # without downloading image layers. The configured DB reserve covers the dump.
-registry_image_size_bytes() {
+registry_image_size_bytes_raw() {
   local image_ref="$1" manifest selected_digest
   # --raw prints the registry manifest itself. buildx 0.37 renders --format '{{json .Manifest}}'
   # as a descriptor (digest, size) without layers, which failed every deploy of a
@@ -1726,6 +1726,24 @@ registry_image_size_bytes() {
     manifest="$(with_timeout docker buildx imagetools inspect "${image_ref%%@*}@${selected_digest}" --raw 2>/dev/null)" || return 1
   fi
   jq -er 'if type == "object" and (.layers | type) == "array" and all(.layers[]; (.size | type) == "number") and ((.config.size // 0) | type) == "number" then ((.config.size // 0) + ([ .layers[].size ] | add // 0)) else error("invalid registry layer sizes") end' <<<"$manifest"
+}
+
+registry_image_size_bytes_format() {
+  local image_ref="$1" manifest selected_digest
+  manifest="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' 2>/dev/null)" || return 1
+  if jq -e 'type == "object" and (.Layers | type == "array")' >/dev/null 2>&1 <<<"$manifest"; then
+    jq -er 'if all(.Layers[]; (.size | type) == "number") then [.Layers[].size] | add // 0 else error("invalid layer sizes") end' <<<"$manifest"
+    return
+  fi
+  selected_digest="$(jq -er '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64" and (.digest | type == "string"))] | first | .digest' <<<"$manifest" 2>/dev/null)" || return 1
+  manifest="$(with_timeout docker buildx imagetools inspect "${image_ref%%@*}@${selected_digest}" --format '{{json .}}' 2>/dev/null)" || return 1
+  jq -er '(.Manifest // .) as $m | if ($m.Layers | type) == "array" and ($m.Config.size | type) == "number" and all($m.Layers[]; (.size | type) == "number") then ($m.Config.size + ([ $m.Layers[].size ] | add // 0)) else error("invalid platform manifest sizes") end' <<<"$manifest"
+}
+
+registry_image_size_bytes() {
+  # buildx 0.37 renders --format '{{json .Manifest}}' without layers; the raw registry manifest is
+  # read first and the older --format path stays as the fallback (older buildx, test doubles).
+  registry_image_size_bytes_raw "$1" 2>/dev/null || registry_image_size_bytes_format "$1"
 }
 
 deploy_disk_precheck() {
