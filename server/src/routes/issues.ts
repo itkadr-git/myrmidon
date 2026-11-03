@@ -15963,7 +15963,7 @@ export function issueRoutes(
                     tx as unknown as Db,
                     updated.companyId,
                   );
-                  if (admission && admission.created === false && !admission.skippedMissingAgent) {
+                  if (admission && admission.created === false && !admission.skippedMissingAgent && !admission.deduplicated) {
                     throw new Error(
                       `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
                     );
@@ -15992,7 +15992,7 @@ export function issueRoutes(
                   tx as unknown as Db,
                   updated.companyId,
                 );
-                if (admission && admission.created === false && !admission.skippedMissingAgent) {
+                if (admission && admission.created === false && !admission.skippedMissingAgent && !admission.deduplicated) {
                   throw new Error(
                     `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
                   );
@@ -16915,21 +16915,16 @@ export function issueRoutes(
           existing.status !== "in_review" && issue.status === "in_review",
       });
       let deferExecutionReviewWakeForCi = false;
-      if (
+      const isReviewCiWakeCandidate =
         issue.status === "in_review" &&
-        executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery"
-      ) {
-        deferExecutionReviewWakeForCi = true;
-      }
-      if (
-        issue.status === "in_review" &&
-        executionStageWakeup?.wakeup.reason === "execution_review_requested"
-      ) {
+        (executionStageWakeup?.wakeup.reason === "execution_review_requested" ||
+          executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery");
+      if (isReviewCiWakeCandidate) {
         const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
-        deferExecutionReviewWakeForCi = reviewCi.state !== "complete";
+        deferExecutionReviewWakeForCi = reviewCi.state === "pending" || reviewCi.state === "unknown";
       }
 
       if (closesRecoveryIssue) {

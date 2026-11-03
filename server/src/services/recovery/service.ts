@@ -5990,7 +5990,7 @@ export function recoveryService(
           companyId: issue.companyId,
           issueId: issue.id,
         });
-        if (reviewCi.state === "pending" || reviewCi.state === "unknown" || reviewCi.state === "no_pull_request") {
+        if (reviewCi.state === "pending" || reviewCi.state === "unknown") {
           result.skipped += 1;
           continue;
         }

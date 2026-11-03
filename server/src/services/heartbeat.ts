@@ -22746,6 +22746,28 @@ export function heartbeatService(
         // Query failed on mock tx
       }
     }
+    if (typeof tx.select === "function" && key) {
+      try {
+        const existing = await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, resolvedCompanyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, key),
+              ne(agentWakeupRequests.status, "skipped"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          return { created: false, deduplicated: true };
+        }
+      } catch {
+        // Query failed on mock tx
+      }
+    }
     if (resolvedIssueId && !payload?.eventRevision) {
       const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
         .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))

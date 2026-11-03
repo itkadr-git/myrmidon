@@ -339,6 +339,157 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(wakes[0]?.payload).toMatchObject({ issueId });
   });
 
+  it("transitions to in_review and writes reviewer wake when exact PR-head CI completed with failure (terminal)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission terminal failure");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values([
+      {
+        id: authorAgentId,
+        companyId,
+        name: "Issue Author",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer Agent",
+        role: "reviewer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review admission terminal failure",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: authorAgentId,
+      executionPolicy: policy,
+    });
+
+    const routesWithFailureCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-fail" }),
+    });
+    const res = await request(routeApp(ctx.db, actor, routesWithFailureCi as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerAgentId,
+    });
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.reason).toBe("execution_review_requested");
+  });
+
+  it("deduplicates reviewer wake on repeated transition or webhook replay", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission deduplication");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer Agent",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review admission deduplication",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: policy,
+    });
+
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+    });
+    const app = routeApp(ctx.db, actor, routesWithSuccessCi as any);
+
+    const firstRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+    expect(firstRes.status).toBe(200);
+
+    // Repeated transition / replay with same status and policy
+    const secondRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionPolicy: policy,
+      });
+    expect(secondRes.status).toBe(200);
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+  });
+
   it("routes a review PATCH to a reviewer whose model differs from the author", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission routing");
     const authorAgentId = randomUUID();
