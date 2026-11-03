@@ -20,7 +20,7 @@ export function normalizeIdleStopSettings(raw: unknown, env: Record<string, stri
   return {
     enabled: stored?.enabled ?? (enabledEnv === undefined || !["false", "0", "no", "off"].includes(enabledEnv)),
     afterSec: stored?.afterSec ?? Number.parseInt(env.MYRMIDON_IDLE_STOP_AFTER_SEC || "1800", 10),
-    healthTimeoutMs: stored?.healthTimeoutMs ?? Number.parseInt(env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || "30000", 10),
+    healthTimeoutMs: stored?.healthTimeoutMs ?? Number.parseInt(env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || "420000", 10),
   };
 }
 
