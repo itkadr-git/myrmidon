@@ -13,7 +13,7 @@
 // over (the preserve line marked myrmidon(1.7 USERS-ADMIN-UI A) there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@myrmidon/db";
+import { instanceSettings, userBlocks, type Db } from "@myrmidon/db";
 
 export const BLOCKED_USERS_GENERAL_KEY = "myrmidonAuthBlockedUsers";
 const SINGLETON_KEY = "default";
@@ -95,6 +95,10 @@ export async function setBlockedUser(
     const current = readBlockedUsersMap(row.general);
     let next: StoredBlockedUsers;
     if (input.blocked) {
+      await tx
+        .insert(userBlocks)
+        .values({ userId: input.userId, blockedByUserId: input.blockedBy })
+        .onConflictDoNothing();
       next = {
         ...current,
         [input.userId]: {
@@ -104,6 +108,7 @@ export async function setBlockedUser(
         },
       };
     } else {
+      await tx.delete(userBlocks).where(eq(userBlocks.userId, input.userId));
       const { [input.userId]: _removed, ...rest } = current;
       next = rest;
     }

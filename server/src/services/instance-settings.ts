@@ -459,6 +459,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
       // survives every general write (edited on its own settings block).
       ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
+      // myrmidon(1.7 USERS-ADMIN-UI A): the stored self-registration switch and blocked users map
+      ...(parsed.data.authSelfSignUp ? { authSelfSignUp: parsed.data.authSelfSignUp } : {}),
+      ...(parsed.data.myrmidonAuthBlockedUsers ? { myrmidonAuthBlockedUsers: parsed.data.myrmidonAuthBlockedUsers } : {}),
     };
   }
   return {
@@ -913,7 +916,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
               ...preserveUsersAdminAGeneralKey(current.general), // myrmidon(1.7 USERS-ADMIN-UI A)
               ...(patch.myrmidonAuthBlockedUsers !== undefined
-                ? { myrmidonAuthBlockedUsers: nextGeneral.myrmidonAuthBlockedUsers }
+                ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
                 : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
