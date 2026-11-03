@@ -2702,6 +2702,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
       const factory = vi.fn(() => { throw new Error("provider must not start"); });
       let reachedDispatch = false;
+      let dispatchReachedResolve: (() => void) | undefined;
+      const dispatchReached = new Promise<void>((resolve) => {
+        dispatchReachedResolve = resolve;
+      });
       const heartbeat = heartbeatService(db, {
         nativeSessionBackendFactory: factory,
         beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
@@ -2709,9 +2713,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           reachedDispatch = true;
           expect((await heartbeat.getRun(id))?.runtimeMode).toBe("native");
           await heartbeat.cancelRun(id);
+          dispatchReachedResolve?.();
         },
       });
       await heartbeat.resumeQueuedRuns();
+      await dispatchReached;
       await heartbeat.drainActiveRunExecutions();
       expect(reachedDispatch).toBe(true);
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "native",
