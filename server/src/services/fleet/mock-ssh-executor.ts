@@ -192,6 +192,11 @@ export class MockSshExecutor implements SshExecutor {
       },
     };
 
+    if (!config.inventory?.uname) {
+      const inv = this.config.inventory!;
+      inv.uname = `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
+    }
+
     if (config.connection) {
       this.currentConnection = { ...config.connection };
       if (this.config.scenario === "success") {
@@ -219,6 +224,28 @@ export class MockSshExecutor implements SshExecutor {
       ...this.config.inventory,
       ...inventory,
     };
+    if (!inventory.uname) {
+      const inv = this.config.inventory!;
+      inv.uname = `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
+    }
+  }
+
+  /** Returns active inventory with dynamic uname matching hostname/kernel/arch if not explicitly provided. */
+  public getEffectiveInventory(): Required<MockServerInventory> {
+    const inv: Required<MockServerInventory> = {
+      ...DEFAULT_MOCK_INVENTORY,
+      ...this.config.inventory,
+    };
+    if (
+      !this.config.inventory?.uname ||
+      (this.config.inventory.uname === DEFAULT_MOCK_INVENTORY.uname &&
+        (inv.hostname !== DEFAULT_MOCK_INVENTORY.hostname ||
+          inv.kernel !== DEFAULT_MOCK_INVENTORY.kernel ||
+          inv.arch !== DEFAULT_MOCK_INVENTORY.arch))
+    ) {
+      inv.uname = `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
+    }
+    return inv;
   }
 
   /** Register a custom mock response for an exact command or regex pattern. */
@@ -369,14 +396,11 @@ export class MockSshExecutor implements SshExecutor {
       };
     }
 
-    const inv = { ...DEFAULT_MOCK_INVENTORY, ...this.config.inventory };
-    const uname =
-      this.config.inventory?.uname ??
-      `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
+    const inv = this.getEffectiveInventory();
     return {
       outcome: "ok",
       passwordlessSudo: inv.passwordlessSudo ?? true,
-      remoteUname: uname,
+      remoteUname: inv.uname,
       durationMs,
     };
   }
@@ -497,13 +521,7 @@ export class MockSshExecutor implements SshExecutor {
    * - whoami
    */
   private resolveInventoryCommand(command: string): SshExecutionResult | null {
-    const inv: Required<MockServerInventory> = {
-      ...DEFAULT_MOCK_INVENTORY,
-      ...this.config.inventory,
-    };
-    if (!this.config.inventory?.uname) {
-      inv.uname = `Linux ${inv.hostname} ${inv.kernel} #40-Ubuntu SMP PREEMPT_DYNAMIC ${inv.arch} ${inv.arch} ${inv.arch} GNU/Linux`;
-    }
+    const inv = this.getEffectiveInventory();
 
     // Sudo check
     if (command === "sudo -n true" || command.includes("sudo -n true")) {
