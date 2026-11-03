@@ -48,6 +48,7 @@
       "importKey": "legacy-blocked:v1:123e4567-e89b-42d3-a456-426614174002",
       "blockerMetadata": {
         "issueRewakeFreeze": {
+          "agentId": "90192a57-8b26-4d3f-b65f-bd3fc7feda8b",
           "frozenAt": "2026-11-03T12:00:00.000Z",
           "noProgressStreak": 1
         }
