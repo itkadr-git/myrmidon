@@ -987,6 +987,52 @@ describe("agent live run routes", () => {
     expect(db.select).toHaveBeenCalledTimes(2);
   });
 
+  it("returns the durable skip reason and logs it when wakeup is rejected", async () => {
+    mockHeartbeatService.wakeup.mockResolvedValue(null);
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn(async () => [{
+          reason: "heartbeat_daily_cap",
+          payload: { issueId: "issue-1", heartbeatSkip: { reason: "Per-agent heartbeat daily cap reached before adapter invocation.", observed: 150, limit: 150 } },
+        }]),
+      })),
+    };
+    const res = await requestApp(await createApp(db), (url) =>
+      request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({ payload: { issueId: "issue-1" } }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat_daily_cap",
+      details: { observed: 150, limit: 150 },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "heartbeat.wakeup_skipped",
+      details: expect.objectContaining({ reason: "heartbeat_daily_cap", issueId: "issue-1" }),
+    }));
+  });
+
+  it("returns dependency blocker ids in the skipped response", async () => {
+    mockHeartbeatService.wakeup.mockResolvedValue(null);
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn(async () => [{
+          reason: "issue_dependencies_blocked",
+          payload: { issueId: "issue-1", unresolvedBlockerIssueIds: ["blocker-1"] },
+        }]),
+      })),
+    };
+    const res = await requestApp(await createApp(db), (url) =>
+      request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({ payload: { issueId: "issue-1" } }),
+    );
+    expect(res.body).toMatchObject({ status: "skipped", reason: "issue_dependencies_blocked" });
+  });
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl)
