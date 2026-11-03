@@ -3637,34 +3637,107 @@ export function issueThreadInteractionService(
         };
       } else if (isChatChannelIssue) {
         recipientCandidate = { serviceQueue: "default" };
-      } else if (
-        actor.agentId &&
-        !("toolAction" in normalizedData.payload) &&
-        !("secretProposal" in normalizedData.payload) &&
-        (normalizedData.kind === "suggest_tasks" ||
-          normalizedData.kind === "ask_user_questions" ||
-          normalizedData.kind === "request_confirmation")
-      ) {
-        // Legacy agent-created interactions historically route to the operator queue
-        // when no other addressee can be resolved. Keep action-bearing proposals
-        // subject to the stricter human-recipient path above.
-        recipientCandidate = { serviceQueue: "default" };
-      } else if (
-        actor.agentId &&
-        actor.agentId === issueContextRow?.assigneeAgentId &&
-        !("toolAction" in normalizedData.payload) &&
-        !("secretProposal" in normalizedData.payload)
-      ) {
-        recipientCandidate = { serviceQueue: "default" };
-      } else if (
-        issueContextRow?.assigneeAgentId &&
-        (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
-      ) {
-        recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
-      } else if (!actor.agentId && !actor.userId) {
-        recipientCandidate = { serviceQueue: "default" };
-      } else if ((actor as any).systemId) {
-        recipientCandidate = { serviceQueue: "default" };
+      } else {
+        if (policy.effectiveResolverPolicy === "human_only") {
+          if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if (
+            issueContextRow?.conversationUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.conversationUserId };
+          } else {
+            // 1.6.5-OWNER-FALLBACK: check company owners
+            const [ownerMembership] = await db
+              .select({ userId: companyMemberships.principalId })
+              .from(companyMemberships)
+              .where(
+                and(
+                  eq(companyMemberships.companyId, issue.companyId),
+                  eq(companyMemberships.principalType, "user"),
+                  eq(companyMemberships.status, "active"),
+                  eq(companyMemberships.membershipRole, "owner"),
+                ),
+              )
+              .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+              .limit(1);
+            if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
+              recipientCandidate = { userId: ownerMembership.userId };
+            } else if ((actor as any).systemId || (!actor.agentId && !actor.userId)) {
+              recipientCandidate = { serviceQueue: "default" };
+            }
+          }
+        } else {
+          if (
+            issueContextRow?.assigneeAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
+          } else if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
+            issueContextRow?.responsibleAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
+          ) {
+            const [respAgent] = await db
+              .select({ status: agents.status })
+              .from(agents)
+              .where(and(eq(agents.id, issueContextRow.responsibleAgentId), eq(agents.companyId, issue.companyId)))
+              .limit(1);
+            if (respAgent && isAgentStatusInvokable(respAgent.status)) {
+              recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
+            }
+          } else if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.createdByAgentId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if (
+            issueContextRow?.conversationUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.conversationUserId };
+          } else if (
+            actor.agentId &&
+            actor.agentId === issueContextRow?.assigneeAgentId &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload)
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (actor.userId) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (!actor.agentId && !actor.userId) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if ((actor as any).systemId) {
+            recipientCandidate = { serviceQueue: "default" };
+          }
+        }
       }
 
       let routeType: InteractionRouteType;
@@ -3675,7 +3748,11 @@ export function issueThreadInteractionService(
         (normalizedData as any).addresseeQueue
       ) {
         routeType = "operator_action";
-      } else if (recipientCandidate && "userId" in recipientCandidate) {
+      } else if (
+        (recipientCandidate && "userId" in recipientCandidate) ||
+        normalizedData.kind === "ask_user_questions" ||
+        policy.effectiveResolverPolicy === "human_only"
+      ) {
         routeType = "human_input";
       } else if (
         normalizedData.kind === "request_checkbox_confirmation" ||
