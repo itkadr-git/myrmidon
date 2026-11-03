@@ -3790,8 +3790,7 @@ export function issueThreadInteractionService(
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload) &&
             (normalizedData.kind === "suggest_tasks" ||
-              normalizedData.kind === "ask_user_questions" ||
-              normalizedData.kind === "request_confirmation"),
+              normalizedData.kind === "ask_user_questions"),
         });
       } catch (err) {
         if (err instanceof InteractionRecipientUnresolvedError) {
