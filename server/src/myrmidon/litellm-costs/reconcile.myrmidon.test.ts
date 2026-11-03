@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -290,27 +290,40 @@ describeEmbeddedPostgres("myrmidon(HERMES-USAGE-COST) reconcileUnpricedCostEvent
 
   it("refreshes agent and company monthly spend counters after filling rows", async () => {
     const { company, agent } = await seedCompany();
-    const run = await seedRun({
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const runStartedAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000);
+    const runFinishedAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000 + 40 * 60 * 1000);
+    const spendOccurredAt = new Date(monthStart.getTime() + 9 * 60 * 60 * 1000 + 10 * 60 * 1000);
+    const { id: runId } = await seedRun({
       companyId: company.id,
       agentId: agent.id,
-      startedAt: new Date("2026-10-01T09:00:00Z"),
-      finishedAt: new Date("2026-10-01T09:40:00Z"),
+      startedAt: runStartedAt,
+      finishedAt: runFinishedAt,
     });
     await seedUnpricedCostEvent({
       companyId: company.id,
       agentId: agent.id,
-      runId: run.id,
-      occurredAt: new Date("2026-10-01T09:40:00Z"),
+      runId,
+      occurredAt: runFinishedAt,
     });
     await seedLitellmSpend({
       companyId: company.id,
       agentId: agent.id,
-      runId: run.id,
+      runId,
       costCents: 515,
-      occurredAt: new Date("2026-10-01T09:10:00Z"),
+      occurredAt: spendOccurredAt,
     });
 
-    await reconcileUnpricedCostEventsDetailed(db, company.id);
+    // The monthly counters cover the current UTC month; the seeded rows are in October 2026,
+    // so pin "now" inside that month (the test broke at 2026-11-01T00:00Z otherwise).
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-15T12:00:00Z") });
+    try {
+      await reconcileUnpricedCostEventsDetailed(db, company.id);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const [agentRow] = await db.select().from(agents).where(eq(agents.id, agent.id));
     expect(agentRow.spentMonthlyCents).toBe(515);

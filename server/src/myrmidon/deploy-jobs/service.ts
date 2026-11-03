@@ -61,6 +61,7 @@ import {
   type DeployJobStatus,
 } from "./domain.js";
 import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";
+import type { UpdateEventPayload } from "../bot-containers/update-notify.js";
 // myrmidon(1.7-AUTO-UPDATE-B): the update policy the scheduler executes — the
 // maintenance window, the mode (manual / auto by an approved release) and the
 // fleet canary. readAutoUpdateDocument reads the interface's value; the env
@@ -206,6 +207,7 @@ export interface DeployJobServiceDeps {
   settings?: DeployJobsSettings;
   probes?: ProbeDeps;
   logActivity?: typeof logActivity;
+  notifyUpdate?: (event: UpdateEventPayload) => Promise<unknown>;
   /**
    * 1.7-AUTO-UPDATE-B: read the update policy from the interface. Called on
    * every use, never cached: a setting changed in the interface must take
@@ -370,6 +372,15 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     });
     if (!result) return;
     if (!startable) {
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: result.companyId ?? "",
+          eventType: "rollout_succeeded",
+          version: result.healthVersion ?? result.version,
+          commit: result.healthCommit ?? result.commit,
+          digest: result.digest,
+        }).catch((err) => logger.error({ err, jobId }, "failed to send rollout_succeeded notification"));
+      }
       await deps.maintenance.exit("deploy finished").catch((err) => {
         logger.error({ err, jobId }, "failed to leave maintenance after deploy");
       });
@@ -407,6 +418,15 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
       return { next: retireJob({ ...doc, jobs: doc.jobs.map((j) => (j.id === jobId ? next : j)) }, jobId, at), result: next as DeployJob | null };
     });
     if (!result) return;
+    if (status === "succeeded" && deps.notifyUpdate) {
+      void deps.notifyUpdate({
+        companyId: result.companyId ?? "",
+        eventType: "rollout_succeeded",
+        version: result.healthVersion ?? result.version,
+        commit: result.healthCommit ?? result.commit,
+        digest: result.digest,
+      }).catch((err) => logger.error({ err, jobId }, "failed to send rollout_succeeded notification"));
+    }
     await deps.maintenance.exit(status === "succeeded" ? "deploy finished" : "deploy canary failed").catch((err) => {
       logger.error({ err, jobId }, "failed to leave maintenance after the fleet canary");
     });
@@ -909,6 +929,16 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
       return { next: updateJob(doc, job.id, next), result: next };
     });
     if (!result) return;
+    if (deps.notifyUpdate) {
+      void deps.notifyUpdate({
+        companyId: result.companyId ?? "",
+        eventType: "rollback_started",
+        version: result.version,
+        commit: result.commit,
+        digest: result.digest,
+        reason,
+      }).catch((err) => logger.error({ err, jobId: job.id }, "failed to send rollback_started notification"));
+    }
     await auditFor(result, "rolling_back", { actorType: "system", actorId: "myrmidon-deploy-jobs" }, { reason });
   }
 
@@ -941,6 +971,16 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     });
     if (!result) return;
     if (status === "auto_rolled_back") {
+      if (deps.notifyUpdate) {
+        void deps.notifyUpdate({
+          companyId: result.companyId ?? "",
+          eventType: "rollback_completed",
+          version: result.version,
+          commit: result.commit,
+          digest: result.digest,
+          reason: result.failureReason ?? detail,
+        }).catch((err) => logger.error({ err, jobId }, "failed to send rollback_completed notification"));
+      }
       await deps.maintenance.exit("deploy rolled back automatically").catch((err) => {
         logger.error({ err, jobId }, "failed to leave maintenance after the automatic rollback");
       });

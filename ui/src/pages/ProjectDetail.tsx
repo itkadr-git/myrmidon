@@ -189,7 +189,15 @@ function ProjectTilePicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  isIdeasProject = false,
+}: {
+  projectId: string;
+  companyId: string;
+  isIdeasProject?: boolean;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -246,7 +254,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey="myrmidon:project-issues-view"
+      viewStateKey={isIdeasProject ? `myrmidon:project-ideas-view:${projectId}` : "myrmidon:project-issues-view"}
+      defaultGroupBy={isIdeasProject ? "topic" : undefined}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -855,7 +864,11 @@ export function ProjectDetail() {
 
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          isIdeasProject={project.name.trim().toLowerCase() === "идеи" || project.name.trim().toLowerCase() === "ideas"}
+        />
       )}
 
       {activeTab === "plugin-operations" && project?.id && resolvedCompanyId && project.managedByPlugin && (

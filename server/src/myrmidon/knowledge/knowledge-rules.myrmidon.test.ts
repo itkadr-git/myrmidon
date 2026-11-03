@@ -51,6 +51,8 @@ function revision(over: Partial<KnowledgeRevisionDto> & { id: string; itemId: st
     status: "approved",
     lang: "ru",
     translationOf: null,
+    title: null,
+    summary: null,
     content: "text",
     changeSummary: null,
     rolledBackFromRevisionId: null,

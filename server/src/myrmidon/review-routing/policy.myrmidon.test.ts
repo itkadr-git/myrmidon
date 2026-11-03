@@ -10,12 +10,16 @@ import {
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
   excludedReviewerIds,
+  evaluateReviewerAvailability,
   hoursSince,
+  isEscalatedReviewStage,
   isReviewOverdue,
   issueNeedsReviewer,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
+  resolveAgentGroupKey,
+  type ReviewerCandidate,
   type RoutingIssue,
 } from "./policy.js";
 import {
@@ -24,6 +28,7 @@ import {
   prRoutingTaskDescription,
   prStewardTaskTitle,
   prTaskIsSuperseded,
+  shouldRouteOpenPrToReview,
   reviewTaskDueForHead,
   readPrRoutingWorkProduct,
   stewardMergeCommand,
@@ -47,6 +52,7 @@ function head(overrides: Partial<PullRequestHeadState> = {}): PullRequestHeadSta
     ci: "green",
     reviewDecision: null,
     fetchFailed: false,
+    mergeable: true,
     baseRef: "main",
     ...overrides,
   };
@@ -92,6 +98,22 @@ describe("issueNeedsReviewer", () => {
     expect(issueNeedsReviewer(issue({ executionState: { status: "idle", monitor: { status: "cleared" } } }))).toBe(false);
   });
 
+  it("requires explicit recovery clock and updatedAt, and enforces the grace period", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    const updatedAt = new Date("2026-10-26T11:45:00Z");
+    expect(issueNeedsReviewer(issue({ reviewPathRecoveryEligible: true }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: new Date("2026-10-26T11:50:01Z"),
+    }))).toBe(false);
+    expect(issueNeedsReviewer(issue({
+      reviewPathRecoveryEligible: true,
+      reviewRecoveryNow: now,
+      reviewRecoveryUpdatedAt: updatedAt,
+    }))).toBe(true);
+  });
+
   it("myrmidon(HUMAN-REVIEW-WAIT): never routes a human-only wait to an agent reviewer", () => {
     expect(issueNeedsReviewer(issue({ reviewPolicy: "human_only", responsibleUserId: "owner" }))).toBe(false);
     // other policies do not declare a human wait — routing stays available
@@ -101,12 +123,12 @@ describe("issueNeedsReviewer", () => {
 });
 
 describe("pickReviewer", () => {
-  const candidates = [
+  const candidates: ReviewerCandidate[] = [
     { id: REV_B, role: "reviewer", load: 1 },
-    { id: REV_A, role: "reviewer", load: 1 },
-    { id: AUTHOR, role: "reviewer", load: 0 },
-    { id: ASSIGNEE, role: "reviewer", load: 0 },
-    { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 4 },
+    { id: REV_A, role: "reviewer", load: 1, invokable: true },
+    { id: AUTHOR, role: "reviewer", load: 0, invokable: true },
+    { id: ASSIGNEE, role: "reviewer", load: 0, invokable: true },
+    { id: "cccccccc-0000-4000-8000-000000000001", role: "reviewer", load: 4, invokable: true },
   ];
 
   it("picks the least loaded, never the author or the assignee", () => {
@@ -131,6 +153,76 @@ describe("pickReviewer", () => {
     expect(
       pickReviewer({ candidates: [{ id: AUTHOR, role: "reviewer", load: 0 }], excluded: excludedReviewerIds(issue()), maxLoad: 5 }),
     ).toBeNull();
+  });
+
+  it("filters out reviewers whose model matches authorModel", () => {
+    const list: ReviewerCandidate[] = [
+      { id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true },
+      { id: REV_B, role: "reviewer", load: 1, model: "model-y", invokable: true },
+    ];
+    // Author has model-x: REV_A is excluded despite lower load; REV_B is picked.
+    const picked = pickReviewer({ candidates: list, excluded: new Set(), maxLoad: 5, authorModel: "model-x" });
+    expect(picked?.id).toBe(REV_B);
+
+    // If both have model-x, nobody is eligible.
+    const none = pickReviewer({
+      candidates: [{ id: REV_A, role: "reviewer", load: 0, model: "model-x", invokable: true }],
+      excluded: new Set(),
+      maxLoad: 5,
+      authorModel: "model-x",
+    });
+    expect(none).toBeNull();
+  });
+});
+
+describe("evaluateReviewerAvailability", () => {
+  it("uses shared reviewer eligibility and load policy, including author exclusions and load ceiling", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: AUTHOR, role: "reviewer", invokable: true },
+        { id: ASSIGNEE, role: "reviewer", invokable: true },
+        { id: REV_B, role: "reviewer", invokable: false },
+        { id: REV_A, role: "reviewer", invokable: true },
+      ],
+      loadByAgent: new Map([[REV_B, 2], [REV_A, 1]]),
+      issue: issue(),
+      maxLoad: 3,
+    });
+    expect(result.selected?.id).toBe(REV_A);
+    expect(
+      evaluateReviewerAvailability({
+        reviewers: [{ id: REV_A, role: "reviewer", invokable: true }],
+        loadByAgent: new Map([[REV_A, 3]]),
+        issue: issue(),
+        maxLoad: 3,
+      }).selected,
+    ).toBeNull();
+  });
+  it("filters reviewers whose statuses are not invokable", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: REV_A, role: "reviewer", invokable: false },
+        { id: REV_B, role: "reviewer", invokable: true },
+      ],
+      loadByAgent: new Map(),
+      issue: issue(),
+      maxLoad: 2,
+    });
+    expect(result.selected?.id).toBe(REV_B);
+  });
+
+  it("passes authorModel to filter candidates by model", () => {
+    const result = evaluateReviewerAvailability({
+      reviewers: [
+        { id: REV_A, role: "reviewer", invokable: true, model: "model-x" },
+        { id: REV_B, role: "reviewer", invokable: true, model: "model-y" },
+      ],
+      loadByAgent: new Map([[REV_A, 0], [REV_B, 1]]),
+      issue: issue(),
+      maxLoad: 5,
+      authorModel: "model-x",
+    });
+    expect(result.selected?.id).toBe(REV_B);
   });
 });
 
@@ -225,6 +317,42 @@ describe("pending review and reassignment", () => {
       allowedActions: ["approve", "request_changes"],
     });
   });
+
+  describe("isEscalatedReviewStage", () => {
+    it("returns false for a non-escalated review stage", () => {
+      expect(isEscalatedReviewStage(issue())).toBe(false);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 2 } }))).toBe(false);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionState", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 3 } }))).toBe(true);
+      expect(isEscalatedReviewStage(issue({ executionState: { changesRequestedCount: 4 } }))).toBe(true);
+    });
+
+    it("returns true when changesRequestedCount >= 3 on executionPolicy stage", () => {
+      const policy = {
+        stages: [{ id: "s", type: "review", changesRequestedCount: 3, participants: [] }],
+      };
+      expect(isEscalatedReviewStage(issue({ executionPolicy: policy }))).toBe(true);
+    });
+
+    it("returns true when escalationReason is review_round_limit", () => {
+      expect(isEscalatedReviewStage(issue({ executionState: { escalationReason: "review_round_limit" } }))).toBe(true);
+    });
+  });
+
+  describe("resolveAgentGroupKey", () => {
+    it("uses metadata telegramGroup when provided", () => {
+      expect(resolveAgentGroupKey({ name: "eng-1", metadata: { telegramGroup: "-100123" } })).toBe("-100123");
+    });
+
+    it("derives group from agent name prefix", () => {
+      expect(resolveAgentGroupKey({ name: "adm-dev-eng-24" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "adm-dev-review-8" })).toBe("adm");
+      expect(resolveAgentGroupKey({ name: "bbq-dev-review-1" })).toBe("bbq");
+      expect(resolveAgentGroupKey({ name: "work-dev-lead-1" })).toBe("work");
+    });
+  });
 });
 
 describe("pickPrReviewer", () => {
@@ -294,6 +422,22 @@ describe("pickPrReviewer", () => {
 });
 
 describe("PR lane triggers (pr-policy)", () => {
+  it("routes existing PR work to review while CI is pending or green, but not failed or unsafe PRs", () => {
+    expect(shouldRouteOpenPrToReview(head({ ci: "pending" }))).toBe(true);
+    expect(shouldRouteOpenPrToReview(head({ ci: "green" }))).toBe(true);
+    expect(shouldRouteOpenPrToReview(head({ ci: "not_green" }))).toBe(false);
+    expect(shouldRouteOpenPrToReview(head({ ci: "unknown" }))).toBe(false);
+    expect(shouldRouteOpenPrToReview(head({ draft: true }))).toBe(false);
+    expect(shouldRouteOpenPrToReview(head({ mergeable: false }))).toBe(false);
+    expect(shouldRouteOpenPrToReview(head({ mergeable: null }))).toBe(false);
+  });
+
+  it("requires resolved mergeability before routing a PR", () => {
+    expect(reviewTaskDueForHead(head({ mergeable: null }))).toBe(false);
+    expect(reviewTaskDueForHead(head({ mergeable: false }))).toBe(false);
+    expect(stewardTaskDueForHead(head({ mergeable: null, reviewDecision: "APPROVED" }))).toBe(false);
+  });
+
   it("fires on a green head with no verdict", () => {
     expect(reviewTaskDueForHead(head())).toBe(true);
   });

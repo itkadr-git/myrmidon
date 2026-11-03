@@ -200,7 +200,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
 
   async function seedAutoRun(
     issueId: string,
-    overrides: { status?: string; livenessState?: string | null; finishedAt?: Date } = {},
+    overrides: { status?: string; livenessState?: string | null; finishedAt?: Date; cancellationCode?: string } = {},
   ) {
     const finishedAt = overrides.finishedAt ?? new Date();
     await db.insert(heartbeatRuns).values({
@@ -208,7 +208,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       agentId,
       invocationSource: "automation",
       status: overrides.status ?? "failed",
-      livenessState: overrides.livenessState ?? null,
+      ...(overrides.cancellationCode ? { resultJson: { executionCancellation: { source: { code: overrides.cancellationCode } } } } : {}),
+      ...(overrides.status === "succeeded"
+        ? { livenessState: overrides.livenessState ?? "empty_response" }
+        : { livenessState: overrides.livenessState ?? null }),
       contextSnapshot: { issueId, wakeReason: "idle_pickup", source: "automation" },
       contextIssueId: issueId,
       contextWakeReason: "idle_pickup",
@@ -291,6 +294,30 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     });
     expect((await isIssueCoolingDown(db, companyId, stuck, settings, now)).cooling).toBe(true);
 
+    const boardCancelled = await seedIssue("todo");
+    await seedAutoRun(boardCancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(boardCancelled, {
+      status: "cancelled",
+      cancellationCode: "reassignment",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    const reassignmentCooling = await isIssueCoolingDown(db, companyId, boardCancelled, settings, now);
+    expect(reassignmentCooling.cooling).toBe(true);
+    expect(reassignmentCooling.staleCount).toBe(1);
+    expect(reassignmentCooling.cooldownMin).toBe(30);
+
+    const unknownCancellation = await seedIssue("todo");
+    await seedAutoRun(unknownCancellation, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(unknownCancellation, {
+      status: "cancelled",
+      cancellationCode: "adapter_error",
+      finishedAt: new Date(now.getTime() - 5 * 60_000),
+    });
+    const unknownCancellationCooling = await isIssueCoolingDown(db, companyId, unknownCancellation, settings, now);
+    expect(unknownCancellationCooling.cooling).toBe(true);
+    expect(unknownCancellationCooling.staleCount).toBe(1);
+    expect(unknownCancellationCooling.cooldownMin).toBe(30);
+
     const moving = await seedIssue("in_progress");
     await seedAutoRun(moving, {
       status: "succeeded",
@@ -300,7 +327,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect((await isIssueCoolingDown(db, companyId, moving, settings, now)).cooling).toBe(false);
   });
 
-  it("cooling: movement between runs resets the exponent; cancelled runs do not cool; real activity lifts", async () => {
+  it("cooling: movement between runs resets the exponent; cancelled runs do not count as stale; real activity lifts", async () => {
     const now = new Date();
     const settings = resolveSwarmSettings(undefined);
 
@@ -320,10 +347,22 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect(resetStatus.staleCount).toBe(1);
     expect(resetStatus.cooldownMin).toBe(30);
 
-    // System cancellations are not stale runs.
+    // A board/reassignment cancellation is not stale and cannot increase the
+    // exponent, even when it follows a stale failure.
     const cancelled = await seedIssue("todo");
-    await seedAutoRun(cancelled, { status: "cancelled", finishedAt: new Date(now.getTime() - 5 * 60_000) });
-    expect((await isIssueCoolingDown(db, companyId, cancelled, settings, now)).cooling).toBe(false);
+    await seedAutoRun(cancelled, { status: "failed", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(cancelled, { status: "cancelled", cancellationCode: "reassignment", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    const reassigned = await isIssueCoolingDown(db, companyId, cancelled, settings, now);
+    expect(reassigned.cooling).toBe(true);
+    expect(reassigned.staleCount).toBe(1);
+    expect(reassigned.cooldownMin).toBe(30);
+
+    const staleSuccesses = await seedIssue("todo");
+    await seedAutoRun(staleSuccesses, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(now.getTime() - 15 * 60_000) });
+    await seedAutoRun(staleSuccesses, { status: "succeeded", livenessState: "empty_response", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    const staleStatus = await isIssueCoolingDown(db, companyId, staleSuccesses, settings, now);
+    expect(staleStatus.cooling).toBe(true);
+    expect(staleStatus.staleCount).toBe(2);
 
     // A status/assignee change logged as activity lifts the window, even
     // though the release-style updatedAt bump alone never does.

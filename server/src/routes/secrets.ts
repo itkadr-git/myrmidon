@@ -326,7 +326,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         resolutionNote = `Rotated existing secret \`${rotatedSecret.name}\` to version ${rotatedSecret.latestVersion}`;
       }
     }
-    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, resolutionNote, issues, heartbeat });
+    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, resolutionNote, issues, heartbeat, db });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 
@@ -356,6 +356,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       reason,
       issues,
       heartbeat,
+      db,
     });
     res.json(await boardProposalView(req, await proposals.view(proposal)));
   });

@@ -65,6 +65,15 @@ export interface VpsReading {
   diskPercent: number | null;
 }
 
+export interface OomFleetSummary {
+  windowStartedAt: string;
+  total24h: number;
+  previous24h: number;
+  increaseAlert: boolean;
+  byAgent: Array<{ agentId: string; agentName: string; role: string | null; count: number }>;
+  byRole: Array<{ role: string; count: number }>;
+}
+
 export interface DashboardView {
   ok: boolean;
   generatedAt: string;
@@ -73,10 +82,19 @@ export interface DashboardView {
   containers: ContainerReading[];
   litellm: LiteLlmReading | null;
   vps: VpsReading | null;
+  blockerPanels: BlockerDashboardData | null;
+}
+
+export interface BlockerDashboardData {
+  blockedAgeSeconds: number | null;
+  rootFanout: Array<{ root: string; fanout: number }>;
+  missingFields: number | null;
+  terminal: number | null;
+  fanoutLimit: number;
 }
 
 export function emptyDashboardView(generatedAt: string): DashboardView {
-  return { ok: false, generatedAt, sources: [], hosts: [], containers: [], litellm: null, vps: null };
+  return { ok: false, generatedAt, sources: [], hosts: [], containers: [], litellm: null, vps: null, blockerPanels: null };
 }
 
 /**

@@ -628,12 +628,13 @@ describe("install.sh", () => {
 
   it("install.sh cleans up temporary manifest file on completion", () => {
     const sb = sandbox();
-    const tmpRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
-    const tmpBefore = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
-    const r = run(sb);
+    // install.sh creates its manifest with a bare `mktemp`, which lands in
+    // $TMPDIR. Give this run its own empty TMPDIR and inspect only that: the
+    // shared TMPDIR also receives `tmp.*` files from other tests running in
+    // parallel, so a before/after comparison there reports their files as a leak.
+    const ownTmp = fs.mkdtempSync(path.join(sb.dir, "tmp-"));
+    const r = run(sb, [], { TMPDIR: ownTmp });
     assert.equal(r.status, 0, r.stderr);
-    const tmpAfter = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
-    const leaked = tmpAfter.filter((f) => !tmpBefore.includes(f));
-    assert.deepEqual(leaked, [], "install.sh must not leave temporary manifest files behind");
+    assert.deepEqual(fs.readdirSync(ownTmp), [], "install.sh must not leave temporary manifest files behind");
   });
 });

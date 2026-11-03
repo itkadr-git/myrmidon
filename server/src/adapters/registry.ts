@@ -1,5 +1,6 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { getPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 // myrmidon(B1c): product name in user-facing runner texts; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
@@ -100,7 +101,9 @@ import {
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  setFleetSiteSecurityResolver,
 } from "@myrmidon/hermes-paperclip-adapter";
+import { getActiveFleetSite } from "../myrmidon/bot-containers/site-registry.js";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -123,6 +126,7 @@ import {
 } from "@myrmidon/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listGatewayModels, refreshGatewayModels } from "./hermes-gateway-models.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -796,7 +800,21 @@ const kimiLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
+  listModels: listGatewayModels,
+  refreshModels: refreshGatewayModels,
 };
+
+setFleetSiteSecurityResolver((siteName: string, companyId?: string) => {
+  const site = getActiveFleetSite(siteName, companyId);
+  if (!site) return null;
+  return {
+    name: site.name,
+    url: site.url,
+    status: site.status,
+    profile: site.profile,
+    companyId: site.companyId,
+  };
+});
 
 const hermesLocalAdapter: ServerAdapterModule = {
   ...createHermesLocalServerAdapter(),
@@ -1065,7 +1083,11 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, companyId?: string): Promise<{ id: string; label: string }[]> {
+  const pluginModels = (companyId ? getPluginProviderModels(companyId) : [])
+    .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
+    .map(({ modelId, label }) => ({ id: modelId, label }));
+  if (pluginModels.length > 0) return pluginModels;
   const declaredModels = getDeclaredAdapterModels();
   if (declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));

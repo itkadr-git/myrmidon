@@ -25,7 +25,7 @@
   `BotContainerDriver.stop(botKey)` — сам драйвер не меняется.
 - Перед стартом прогона доска поднимает остановленный контейнер
   (`driver.start(botKey)`) и ждёт healthy до `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS`
-  (по умолчанию 30 с). При таймауте прогон отменяется с понятной ошибкой в
+  (по умолчанию 420 с). При таймауте прогон отменяется с понятной ошибкой в
   журнале — вслепую не стартует.
 - Длительность холодного старта (start → healthy) пишется в журнал.
 - Вся функция выключена по умолчанию за `MYRMIDON_IDLE_STOP_ENABLED`.
@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | `MYRMIDON_IDLE_STOP_ENABLED` | `false` | Enable the idle-stop sweeper and the wake-with-health-wait path. Off by default; when off, nothing changes. |
 | `MYRMIDON_IDLE_STOP_AFTER_SEC` | `1800` | A running bot container with no active heartbeat runs for longer than this is stopped by the sweeper. Minimum 60. |
-| `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `30000` | How long the board waits for a woken container to become healthy before the claimed run is cancelled with a journal error. Minimum 1000. |
+| `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `420000` | How long the board waits for a woken container to become healthy before the claimed run is cancelled with a journal error. Minimum 1000. |
 
 ## settings-ru-new
 
@@ -50,4 +50,4 @@
 | --- | --- | --- |
 | `MYRMIDON_IDLE_STOP_ENABLED` | `false` | Включает sweeper остановки простаивающих контейнеров и побудку с ожиданием здоровья. По умолчанию выключено; при выключении ничего не меняется. |
 | `MYRMIDON_IDLE_STOP_AFTER_SEC` | `1800` | Запущенный контейнер бота без активных прогонов дольше этого срока останавливается sweeper'ом. Минимум 60. |
-| `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `30000` | Сколько доска ждёт healthy у разбуженного контейнера, прежде чем отменить прогон с ошибкой в журнале. Минимум 1000. |
+| `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `420000` | Сколько доска ждёт healthy у разбуженного контейнера, прежде чем отменить прогон с ошибкой в журнале. Минимум 1000. |

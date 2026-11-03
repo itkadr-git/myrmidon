@@ -295,7 +295,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     }
     await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));
-    const cliTarball = tarballs.find((entry) => entry === `paperclipai-${metadata.version}.tgz`);
+    const cliTarball = tarballs.find((entry) => entry === `myrmidon-${metadata.version}.tgz` || entry === `paperclipai-${metadata.version}.tgz`);
     const workspaceTarballs = tarballs.filter((entry) => entry !== cliTarball);
     if (!cliTarball || workspaceTarballs.length !== workspacePackages.length) {
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
@@ -328,7 +328,7 @@ async function ensureShimOnPath(options: InstallOptions): Promise<void> {
   const manualInstruction = `export PATH="$HOME/.local/bin:$PATH"`;
   const rcPath = shellRcPath();
   if (!process.stdin.isTTY || !process.stdout.isTTY || !rcPath) {
-    console.log(pc.yellow(`Add Paperclip to PATH for this shell:\n  ${manualInstruction}`));
+    console.log(pc.yellow(`Add Myrmidon to PATH for this shell:\n  ${manualInstruction}`));
     return;
   }
   const confirmed = options.yes === true ? true : await p.confirm({ message: `Add ~/.local/bin to PATH in ${rcPath}?`, initialValue: true });

@@ -52,6 +52,16 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /log "phase gateway_launch starting"/);
   });
 
+  it("does not run session pruning or optimization before launching the gateway", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const launch = source.indexOf("phase gateway_launch starting");
+    assert.ok(launch >= 0, "gateway launch must be present");
+    assert.doesNotMatch(source.slice(0, launch), /hermes sessions (?:prune|optimize)/);
+    assert.match(source, /run_live_session_maintenance\(\) \{/);
+    assert.match(source, /run_live_session_maintenance >\/dev\/null 2>&1 &/);
+  });
+
+
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);
@@ -1272,7 +1282,17 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
   });
 });
 
-// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
+describe("hermes session storage maintenance", () => {
+  it("does not run optimize-storage against the live gateway database", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const liveStart = source.indexOf("run_live_session_maintenance() {");
+    assert.ok(liveStart >= 0, "post-health maintenance must be present");
+    assert.doesNotMatch(source.slice(liveStart), /hermes sessions optimize-storage/);
+    assert.doesNotMatch(source.slice(liveStart), /optimize-storage\.v23\.done/);
+    assert.match(source, /while ! curl -fsS --max-time 3 .*\/health/);
+  });
+});
+
 // uid 10001, so the mode bits are the only barrier between one run's scratch/cache
 // and another bot's processes. The entrypoint sets umask 077 before any file write
 // and every child (gateway -> session -> terminal/tool) inherits it.

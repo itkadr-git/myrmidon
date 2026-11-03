@@ -110,6 +110,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "queued_run_stale_timeout"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"

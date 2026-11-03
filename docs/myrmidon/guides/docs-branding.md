@@ -3,7 +3,7 @@
 > Russian version: [docs-branding.ru.md](docs-branding.ru.md)
 
 The product is called **Myrmidon** in the user and operator documentation under
-`docs/`. The vendor name **Paperclip** stays only where the license and the
+`docs/`. The vendor name stays only where the license and the
 provenance of the codebase require it: `LICENSE`, the third-party notices
 (`NOTICE`, `ui/public/fonts/NOTICE.md`, …), and the attribution line
 "Based on Paperclip (MIT)" on the About screen and in the exported README.

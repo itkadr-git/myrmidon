@@ -12,9 +12,8 @@
 //     ports are not even built, so a fleet that never enables the corpus neither
 //     opens a connection nor logs anything;
 //   * a no-op while the ports are not wired (parts A/B not merged yet);
-//   * one job at a time inside a pass — `parseConcurrency` bounds how many jobs
-//     one pass takes, not how many requests the parse service sees at once, so a
-//     slow parser cannot multiply itself. The next tick picks up the rest;
+//   * bounded parallel jobs inside a pass — `parseConcurrency` caps simultaneous
+//     parser and indexing work; the next tick picks up the rest;
 //   * forgiving — any parser, indexer or blob failure settles the job through
 //     `queue.fail`, which retries it until `maxParseAttempts` and then keeps the
 //     reason on the document. Nothing in this pass throws into the board.
@@ -177,12 +176,18 @@ export function createCorpusParseWorker(deps: CorpusParseWorkerDeps): CorpusPars
       const jobs = await ports.queue.claim({ limit: resolved.settings.parseConcurrency });
       result.claimed = jobs.length;
 
-      for (const job of jobs) {
-        const outcome = await runJob(ports, resolved.settings, job);
-        if (outcome === "parsed") result.parsed += 1;
-        else if (outcome === "requeued") result.requeued += 1;
-        else result.failed += 1;
-      }
+      await Promise.all(jobs.map(async (job) => {
+        try {
+          const outcome = await runJob(ports, resolved.settings, job);
+          if (outcome === "parsed") result.parsed += 1;
+          else if (outcome === "requeued") result.requeued += 1;
+          else result.failed += 1;
+        } catch (err) {
+          // A failed persistence operation must not abandon the other claimed jobs.
+          result.failed += 1;
+          logger.error({ err, companyId: job.companyId, jobId: job.id }, "corpus: could not settle a claimed job");
+        }
+      }));
 
       return result;
     },

@@ -103,7 +103,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function agent(input: { id: string; name: string; bankId?: string | null }): Agent {
+function agent(input: { id: string; name: string; bankId?: string | null; role?: string | null }): Agent {
   const adapterConfig: Record<string, unknown> = {};
   if (input.bankId != null) adapterConfig["hindsight"] = { bankId: input.bankId };
   return {
@@ -111,7 +111,7 @@ function agent(input: { id: string; name: string; bankId?: string | null }): Age
     companyId: COMPANY,
     name: input.name,
     urlKey: input.name,
-    role: "engineer",
+    role: input.role ?? "engineer",
     title: null,
     icon: null,
     status: "idle",
@@ -157,6 +157,7 @@ function issue(input: { id: string; title: string; assigneeAgentId?: string | nu
     createdByAgentId: null,
     createdByUserId: null,
     responsibleUserId: null,
+    responsibleAgentId: null,
     issueNumber: 1,
     identifier: "T-1",
     originKind: undefined,
@@ -213,7 +214,7 @@ describe("bank resolution", () => {
       getAgent: (id) => Promise.resolve(agents.get(id) ?? null),
       config,
     });
-    assert.deepEqual(resolution, { bankId: "adm", source: "agent-card", agentName: "ops-agent" });
+    assert.deepEqual(resolution, { bankId: "adm", source: "agent-card", agentName: "ops-agent", agentRole: "engineer" });
   });
 
   it("falls back to the config map when the card has no bank", async () => {
@@ -223,7 +224,7 @@ describe("bank resolution", () => {
       getAgent: (id) => Promise.resolve(agents.get(id) ?? null),
       config,
     });
-    assert.deepEqual(resolution, { bankId: "fleet-work", source: "config-map", agentName: "work-agent" });
+    assert.deepEqual(resolution, { bankId: "fleet-work", source: "config-map", agentName: "work-agent", agentRole: "engineer" });
   });
 
   it("returns null (closed) when the agent is in neither source", async () => {
@@ -498,6 +499,44 @@ describe("hindsight plugin memory routing", () => {
     await harness.executeTool("hindsight_retain", { content: "gated" }, { agentId: AGENT_BBQ, runId: "run-g", companyId: COMPANY, projectId: PROJECT });
 
     assert.equal(hindsight.calls.length, 0);
+  });
+
+  it("accessMode 'roles' allows agents with matching role automatically", async () => {
+    const hindsight = mockHindsight();
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: {
+        hindsightApiUrl: API_URL,
+        accessMode: "roles",
+        enabledRoles: ["engineer"],
+      },
+    });
+    harness.seed({
+      agents: [
+        agent({ id: AGENT_BBQ, name: "bbq-grill", role: "engineer", bankId: "fleet-bbq" }),
+        agent({ id: AGENT_ADM, name: "other-agent", role: "sales", bankId: "fleet-adm" }),
+      ],
+      issues: [
+        issue({ id: "issue-eng", title: "Engineer task", assigneeAgentId: AGENT_BBQ }),
+        issue({ id: "issue-sales", title: "Sales task", assigneeAgentId: AGENT_ADM }),
+      ],
+      issueComments: [
+        comment({ id: "comment-eng", issueId: "issue-eng", body: "eng comment", authorAgentId: AGENT_BBQ }),
+        comment({ id: "comment-sales", issueId: "issue-sales", body: "sales comment", authorAgentId: AGENT_ADM }),
+      ],
+    });
+    const plugin = createHindsightPlugin({ fetchImpl: hindsight.fetch });
+    await plugin.definition.setup(harness.ctx);
+
+    // Engineer should be allowed to retain via tool
+    await harness.executeTool("hindsight_retain", { content: "engineer memory" }, { agentId: AGENT_BBQ, runId: "run-e", companyId: COMPANY, projectId: PROJECT });
+    const retains = hindsight.calls.filter((call) => call.path.endsWith("/memories") && call.method === "POST");
+    assert.equal(retains.length, 1);
+    assert.equal(currentBankId(retains[0]!.path), "fleet-bbq");
+
+    // Sales role should be blocked
+    await harness.executeTool("hindsight_retain", { content: "sales memory" }, { agentId: AGENT_ADM, runId: "run-s", companyId: COMPANY, projectId: PROJECT });
+    assert.equal(retains.length, 1);
   });
 });
 

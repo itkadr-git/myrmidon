@@ -36,7 +36,7 @@ describe("fillFirstTaskPlaceholders", () => {
 describe("renderOnboardingFirstTaskGreeting", () => {
   it("renders the board-approved greeting with the agent name", async () => {
     const greeting = await renderOnboardingFirstTaskGreeting({ agentName: "Ada" });
-    expect(greeting).toContain("Welcome to Paperclip! I'm Ada, your first agent teammate.");
+    expect(greeting).toContain("Welcome to Myrmidon! I'm Ada, your first agent teammate.");
     // The "what would you like to do" question moved onto the opening card.
     expect(greeting).not.toContain("What would you like to do?");
   });
@@ -70,7 +70,7 @@ describe("buildOnboardingFirstTaskOpeningQuestion", () => {
 describe("buildOnboardingFirstTaskBrief", () => {
   it("assembles the brief with the confirmation proposal when the toggle is off", async () => {
     const brief = await buildOnboardingFirstTaskBrief({ usePlanProposal: false });
-    expect(brief).toContain("This is the user's first task in Paperclip.");
+    expect(brief).toContain("This is the user's first task in Myrmidon.");
     // Step 1 branches on the opening card's two option ids.
     expect(brief).toContain("Take the path the user picked.");
     expect(brief).toContain(`\`${ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID}\` →`);

@@ -105,4 +105,13 @@ describe("root fan-out alert limit from instance settings", () => {
       blockerRootFanoutAlertLimitFromSettings({ blockerRootFanoutAlertLimit: 1.5 }),
     ).toBe(DEFAULT_ROOT_FANOUT_LIMIT);
   });
+
+  it("tolerates unrelated keys stored in instance_settings.general", () => {
+    expect(
+      blockerRootFanoutAlertLimitFromSettings({
+        blockerRootFanoutAlertLimit: 25,
+        myrmidonAlertDedup: { some: "entry" },
+      }),
+    ).toBe(25);
+  });
 });

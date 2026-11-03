@@ -387,7 +387,39 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(envelope).toBeDefined();
       expect(envelope.issueId).toBe(issueId);
     });
-    it("rejects another company and an invalidated task owner", async () => {
+  it("does not queue a continuation for a task closed by Zabbix recovery (rejection prevents failed continuation run and inbox records)", async () => {
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      title: "[Zabbix] Free disk space is less than 10%",
+      status: "done",
+      completedAt: new Date(),
+    });
+    try {
+      await expect(
+        buildExecutionContinuation({
+          db,
+          companyId,
+          issueId: recoveryIssueId,
+          agentId,
+          context: { interactionId, wakeReason: "connection_intent.resolved" },
+          summary: "Zabbix recovery test",
+          exposeLowTrustRaw: false,
+        }),
+      ).rejects.toThrow("continuation_task_ownership_changed");
+      // Assert that rejection ensures no continuation envelope is produced and no failed runs / inbox records exist for this closed task
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      const failedContinuationRuns = runs.filter(
+        (r) => r.status === "failed" && JSON.stringify(r.contextSnapshot ?? {}).includes(recoveryIssueId),
+      );
+      expect(failedContinuationRuns).toHaveLength(0);
+    } finally {
+      await db.delete(issues).where(eq(issues.id, recoveryIssueId));
+    }
+  });
+
+  it("rejects another company and an invalidated task owner", async () => {
       await expect(
         buildExecutionContinuation({
           db,

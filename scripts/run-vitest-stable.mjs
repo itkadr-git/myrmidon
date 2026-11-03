@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
+import { createIsolatedTestEnv } from "./vitest-isolated-env.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +83,39 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+// Arguments for the serialized route/authz lane: ONE Vitest process runs the
+// whole shard, one test file at a time (--no-file-parallelism, maxWorkers=1),
+// and --pool=forks --isolate starts a fresh child process per test file, so the
+// module registry, mocks, timers, listening sockets and process-wide state of a
+// suite still die with its process. Each child also gets its own PAPERCLIP_HOME,
+// PAPERCLIP_CONFIG, PAPERCLIP_INSTANCE_ID and TMPDIR (vitest-isolated-worker-env.mjs,
+// preloaded through --execArgv), exactly like the former one-Vitest-process-per-
+// file layout. What is shared is only Vite's in-memory transform cache in the
+// parent process: the large route modules (src/routes/*.ts and their imports)
+// are transformed once per shard instead of once per file, which was 40-50% of
+// the lane's wall time. --bail=1 keeps the former fail-fast behaviour (the first
+// failing suite stopped the shard); --no-bail runs the whole shard regardless.
+//
+// The server config is loaded directly (--root server --config ...) instead of
+// through the workspace `--project @myrmidon/server`: Vitest does not hand the
+// CLI --execArgv down to workspace projects, and the per-file environment
+// needs it. The working directory stays the repository root, as before.
+const serializedWorkerEnvPreload = pathToFileURL(
+  path.join(scriptsDir, "vitest-isolated-worker-env.mjs"),
+).href;
+function serializedLaneVitestArgs({ bail }) {
+  return [
+    "--root",
+    serverRoot,
+    "--config",
+    path.join(serverRoot, "vitest.config.ts"),
+    ...serializedServerVitestArgs,
+    "--pool=forks",
+    "--isolate",
+    `--execArgv=--import=${serializedWorkerEnvPreload}`,
+    ...(bail ? ["--bail=1"] : []),
+  ];
+}
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
@@ -157,6 +191,7 @@ function parseCliOptions(argv) {
   let group = null;
   let dryRun = false;
   let check = false;
+  let bail = true;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -204,6 +239,13 @@ function parseCliOptions(argv) {
 
     if (arg === "--check") {
       check = true;
+      continue;
+    }
+
+    // Serialized lane: keep running the remaining suites after a failure
+    // (default is fail-fast, the first failing suite stops the shard).
+    if (arg === "--no-bail") {
+      bail = false;
       continue;
     }
 
@@ -261,6 +303,7 @@ function parseCliOptions(argv) {
       group: null,
       dryRun,
       check,
+      bail,
     };
   }
 
@@ -271,6 +314,7 @@ function parseCliOptions(argv) {
     group,
     dryRun,
     check,
+    bail,
   };
 }
 
@@ -293,22 +337,15 @@ function runVitest(args, label, testShard = null) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  // Production workspace/security checks reject symlink aliases. In particular
-  // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
-  const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
-  // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
+  const { testRoot, env: isolatedEnv } = createIsolatedTestEnv({
+    tempRootParent,
+    instanceId: `vt-${process.pid}-${invocationIndex}`,
+  });
   const env = {
     ...process.env,
     NODE_ENV: "test",
-    PAPERCLIP_HOME: path.join(testRoot, "h"),
-    // Config discovery otherwise prefers the checkout's .paperclip/config.json
-    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
-    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
-    PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
-    TMPDIR: path.join(testRoot, "t"),
+    ...isolatedEnv,
   };
-  mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
-  mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
     const collect = (filters, name) => {
       const output = path.join(testRoot, `${name}.json`);
@@ -427,24 +464,24 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
   fail(`Unknown group "${groupName}".`);
 }
 
-function runSerializedSuites(routeTests, shardIndex, shardCount) {
+function runSerializedSuites(routeTests, shardIndex, shardCount, bail = true) {
   const shardTests = selectSerializedSuites(routeTests, shardIndex, shardCount);
   console.log(
     `\n[test:run] serialized shard ${shardIndex + 1}/${shardCount} running ${shardTests.length} of ${routeTests.length} suites`,
   );
-
-  for (const routeTest of shardTests) {
-    runVitest(
-      [
-        "--project",
-        "@myrmidon/server",
-        routeTest.repoPath,
-        "--pool=forks",
-        "--isolate",
-      ],
-      routeTest.repoPath,
-    );
+  if (shardTests.length === 0) {
+    // Without file filters Vitest would run the whole server project.
+    return;
   }
+
+  // One Vitest process for the whole shard instead of one per suite: every
+  // suite used to re-transform the same large route/authz module graph from
+  // scratch (transform was 40-50% of the lane's wall time, plus a pnpm/Vitest
+  // start-up per suite). Isolation is unchanged, see serializedLaneVitestArgs.
+  runVitest(
+    [...serializedLaneVitestArgs({ bail }), ...shardTests.map((routeTest) => routeTest.repoPath)],
+    `serialized shard ${shardIndex + 1}/${shardCount}: ${shardTests.length} suites in one Vitest process`,
+  );
 }
 
 // Every server test file vitest can collect: `src/**/*.test.ts` and
@@ -533,6 +570,8 @@ if (options.dryRun) {
         availableGeneralGroups: allowedGeneralGroupNames,
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
+        serializedVitestProcesses: options.mode === serializedModeName && serializedSuites.length > 0 ? 1 : 0,
+        serializedVitestArgs: serializedLaneVitestArgs({ bail: options.bail }),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
           options.mode === generalModeName &&
@@ -574,5 +613,5 @@ if (options.mode === generalModeName || options.mode === allModeName) {
 }
 
 if (options.mode === serializedModeName || options.mode === allModeName) {
-  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1);
+  runSerializedSuites(routeTests, options.shardIndex ?? 0, options.shardCount ?? 1, options.bail);
 }

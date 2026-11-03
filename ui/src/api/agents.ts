@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -34,6 +35,8 @@ import type {
 import { isUuidLike, normalizeAgentUrlKey } from "@myrmidon/shared";
 import { ApiError, api } from "./client";
 
+export type { AgentListFilters };
+
 export interface AgentKey {
   id: string;
   name: string;
@@ -47,6 +50,8 @@ export interface AdapterModel {
   label: string;
   /** MODEL-PROVIDERS D (1.6.1): pricing tier badge from the board DB. */
   pricing?: "free" | "paid";
+  /** 1.6.6 OPE-9932: accounts in the pool providing this model. */
+  accounts?: string[];
 }
 
 export interface DetectedAdapterModel {
@@ -120,7 +125,18 @@ export const agentsApi = {
   // myrmidon(PERF-DIET-G): the company list is a slim projection — no
   // adapterConfig; the model comes precomputed as `adapterModel`. Full configs
   // come from getConfiguration / listConfigurations.
-  list: (companyId: string) => api.get<AgentListItem[]>(`/companies/${companyId}/agents`),
+  list: (companyId: string, filters?: AgentListFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.status) {
+      const statusValue = Array.isArray(filters.status) ? filters.status.join(",") : filters.status;
+      params.set("status", statusValue);
+    }
+    if (filters?.role) params.set("role", filters.role);
+    if (filters?.reportsTo) params.set("reportsTo", filters.reportsTo);
+    const qs = params.toString();
+    return api.get<AgentListItem[]>(`/companies/${companyId}/agents${qs ? `?${qs}` : ""}`);
+  },
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<AgentConfigurationSummary[]>(`/companies/${companyId}/agent-configurations`),

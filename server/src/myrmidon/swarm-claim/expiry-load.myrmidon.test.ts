@@ -2,13 +2,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidon/db";
+import { activityLog, agents, companies, createDb, issueClaims, issueRelations, issues, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { issueService } from "../../services/issues.js";
+import { openLoadByAgent } from "./matcher.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
@@ -18,6 +19,9 @@ const taskCount = 200;
 const companyId = randomUUID();
 const ownerId = randomUUID();
 const explicitlyAssignedId = randomUUID();
+const blockerId = randomUUID();
+const blockedTaskIds = Array.from({ length: 3 }, () => randomUUID());
+const readyTaskId = randomUUID();
 let db: Db;
 let tempDb: EmbeddedPostgresTestDatabase | undefined;
 let taskIds: string[] = [];
@@ -53,8 +57,8 @@ async function seedFixtures(now: Date) {
       permissions: {},
     },
   ]);
-  await db.insert(issues).values(
-    taskIds.map((id, index) => ({
+  await db.insert(issues).values([
+    ...taskIds.map((id, index) => ({
       id,
       companyId,
       title: `lease expiry race ${index + 1}`,
@@ -62,7 +66,62 @@ async function seedFixtures(now: Date) {
       priority: "medium",
       assigneeAgentId: ownerId,
       updatedAt: new Date(now.getTime() - 10_000),
-    }))
+    })),
+    ...blockedTaskIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `blocked task ${index + 1}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: explicitlyAssignedId,
+    })),
+    {
+      id: blockerId,
+      companyId,
+      title: "open blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: null,
+    },
+    {
+      id: readyTaskId,
+      companyId,
+      title: "ready work for agent with blocked todos",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    },
+  ]);
+  await db.insert(issueRelations).values(
+    blockedTaskIds.map((blockedIssueId) => ({
+      id: randomUUID(),
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks" as const,
+    })),
+  );
+  await db.insert(activityLog).values({
+    companyId,
+    actorType: "system",
+    actorId: "test",
+    action: "test",
+    entityType: "issue",
+    entityId: randomUUID(),
+  });
+  await db.insert(issueClaims).values(
+    blockedTaskIds.map((issueId) => ({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      agentId: explicitlyAssignedId,
+      runId: null,
+      origin: "auto_match",
+      role: "engineer",
+      claimedAt: new Date(now.getTime() - 60_000),
+      heartbeatAt: new Date(now.getTime() - 60_000),
+      expiresAt: new Date(now.getTime() + 900_000),
+    })),
   );
   await db.insert(issueClaims).values(
     taskIds.map((issueId) => ({
@@ -135,8 +194,10 @@ describeDatabase("swarm expiry race under load", () => {
 
   afterAll(async () => {
     if (db) {
-      await db.delete(issueClaims).where(inArray(issueClaims.issueId, taskIds));
-      await db.delete(issues).where(inArray(issues.id, taskIds));
+      await db.delete(issueClaims).where(inArray(issueClaims.issueId, [...taskIds, ...blockedTaskIds, readyTaskId]));
+      await db.delete(issueRelations).where(eq(issueRelations.companyId, companyId));
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      await db.delete(issues).where(eq(issues.companyId, companyId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companies).where(eq(companies.id, companyId));
     }

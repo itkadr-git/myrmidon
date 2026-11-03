@@ -75,6 +75,20 @@ function installMockFsWatcher() {
 }
 
 describe("resolvePluginWatchTargets", () => {
+  it("does not watch local packages in production", () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const watcher = createPluginDevWatcher(createLifecycle() as never);
+      watcher.watch("plugin-1", "/plugins-local/example");
+      expect(watcher.watchedPluginIds()).toEqual([]);
+      expect(chokidarMock.watch).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
+  });
+
   it("watches package metadata plus concrete declared runtime files", () => {
     const pluginDir = makeTempPluginDir();
     writePluginPackage(pluginDir);
