@@ -96,6 +96,7 @@ type Options struct {
 type DiskQuota interface {
 	Put(ctx context.Context, botKey string, hard int64) (disk.Result, error)
 	Ensure(ctx context.Context, botKey string) (int, error)
+	Remove(ctx context.Context, botKey string) error
 }
 
 // Gate is the dockergate server.
