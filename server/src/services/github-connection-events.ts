@@ -1095,7 +1095,7 @@ export function githubConnectionEventService(
               companyId,
               issueId: existingAlarm.id,
               authorType: "system",
-              body: `События GitHub снова поступают. Последнее событие: ${new Date(lastEventAtMs).toISOString()}. Тревога снята.`,
+              body: `События GitHub снова поступают. Последнее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "неизвестно"}. Тревога снята.`,
               createdAt: currentTime,
               updatedAt: currentTime,
             });

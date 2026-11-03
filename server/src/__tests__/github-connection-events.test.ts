@@ -14,7 +14,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@myrmidon/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
