@@ -2183,6 +2183,20 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "GitHub connection continuity sweep failed");
       }));
   };
+  const scheduleGitHubEventsWatchdog = () => {
+    if (heartbeatSchedulerStopped) return;
+    const sweep = githubConnectionEvents.sweepWatchdog;
+    if (typeof sweep !== "function") return;
+    trackHeartbeatSchedulerWork(sweep()
+      .then((result) => {
+        if (result.alarmsCreated > 0 || result.alarmsResolved > 0) {
+          logger.info(result, "GitHub events watchdog sweep completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "GitHub events watchdog sweep failed");
+      }));
+  };
 
   if (processRoleProfile.runsBackground) {
     await connectionDeliveries.sweepPending();
@@ -2198,6 +2212,7 @@ async function startServerWithDatabaseTeardown(
   }
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
+  scheduleGitHubEventsWatchdog();
 
 
   // myrmidon(PROCS-1.2): the whole heartbeat/sweep block below is the worker
@@ -2721,6 +2736,7 @@ async function startServerWithDatabaseTeardown(
         scheduleMergedPullRequestConfirmationSweep();
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
+        scheduleGitHubEventsWatchdog();
         scheduleTerminalWorkspaceSweep();
         scheduleWorkspaceHygieneSweep(); // myrmidon(WORKSPACE-HYGIENE)
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
@@ -2960,6 +2976,7 @@ async function startServerWithDatabaseTeardown(
       scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
+      scheduleGitHubEventsWatchdog();
     });
   }
   } // end myrmidon(PROCS-1.2) runsBackground gate around the heartbeat/sweep block
