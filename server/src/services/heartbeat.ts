@@ -16117,7 +16117,8 @@ export function heartbeatService(
         ? 1
         : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
             retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+            retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
             ? (run.scheduledRetryAttempt ?? 0)
             : executionFailureRetryCount(run)) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
@@ -16242,6 +16243,8 @@ export function heartbeatService(
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
+      retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
+      !isGatewayConnectFailed &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {

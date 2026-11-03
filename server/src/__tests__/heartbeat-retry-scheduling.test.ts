@@ -523,7 +523,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled1.outcome).toBe("scheduled");
     if (scheduled1.outcome !== "scheduled") throw new Error("Expected scheduled retry");
     expect(scheduled1.run.scheduledRetryAttempt).toBe(1);
-    expect(new Date(scheduled1.run.scheduledAt!).getTime() - now.getTime()).toBe(60_000);
+    expect(new Date(scheduled1.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(60_000);
 
     // Attempt 2: 120s (2 min)
     const runId2 = scheduled1.run.id;
@@ -538,7 +538,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled2.outcome).toBe("scheduled");
     if (scheduled2.outcome !== "scheduled") throw new Error("Expected scheduled retry");
     expect(scheduled2.run.scheduledRetryAttempt).toBe(2);
-    expect(new Date(scheduled2.run.scheduledAt!).getTime() - now.getTime()).toBe(120_000);
+    expect(new Date(scheduled2.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(120_000);
   });
 
   it("caps exponential delay at 1 hour and sets agent errorReason when retries exhaust", async () => {
@@ -557,7 +557,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled8.outcome).toBe("scheduled");
     if (scheduled8.outcome !== "scheduled") throw new Error("Expected scheduled retry");
     expect(scheduled8.run.scheduledRetryAttempt).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS);
-    expect(new Date(scheduled8.run.scheduledAt!).getTime() - now.getTime()).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS);
+    expect(new Date(scheduled8.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS);
 
     // After attempt 8: exhausted
     const runId8 = scheduled8.run.id;
