@@ -24,6 +24,66 @@ import type {
 } from "@myrmidon/shared";
 
 export const CODEX_POOL_ALERT_DEDUP_PREFIX = "codex_pool:";
+export const MODEL_PROVIDER_PACKAGE_ALERT_DEDUP_PREFIX = "provider_package:";
+
+export interface ModelProviderPackageSignal {
+  providerId: string;
+  providerName: string;
+  packageName: string | null;
+  kind: "package_expiry" | "package_limit";
+  status: "warning" | "expired";
+  severity: "medium" | "high";
+  title: string;
+  whyNow: string;
+  expiresAt: string | null;
+  observedAt: string;
+  dedupKey: string;
+}
+
+const packageSignalsByCompany = new Map<string, Map<string, ModelProviderPackageSignal>>();
+
+/** Records package expiry signals for a company. */
+export function recordPackageExpirySignals(
+  companyId: string,
+  signals: ModelProviderPackageSignal[],
+): void {
+  let companyMap = packageSignalsByCompany.get(companyId);
+  if (!companyMap) {
+    companyMap = new Map();
+    packageSignalsByCompany.set(companyId, companyMap);
+  }
+  companyMap.clear();
+  for (const s of signals) {
+    companyMap.set(s.dedupKey, s);
+  }
+}
+
+/** Reads all active package expiry signals for a company. */
+export function readPackageExpirySignals(companyId: string): ModelProviderPackageSignal[] {
+  const companyMap = packageSignalsByCompany.get(companyId);
+  return companyMap ? Array.from(companyMap.values()) : [];
+}
+
+/** Clears stored package expiry signals for a company or provider. */
+export function clearPackageExpirySignals(companyId?: string, providerId?: string): void {
+  if (companyId && providerId) {
+    const companyMap = packageSignalsByCompany.get(companyId);
+    if (companyMap) {
+      for (const [key, sig] of companyMap.entries()) {
+        if (sig.providerId === providerId) {
+          companyMap.delete(key);
+        }
+      }
+      if (companyMap.size === 0) {
+        packageSignalsByCompany.delete(companyId);
+      }
+    }
+  } else if (companyId) {
+    packageSignalsByCompany.delete(companyId);
+  } else {
+    packageSignalsByCompany.clear();
+  }
+}
 
 export function codexPoolBannedDedupKey(
   companyId: string,
