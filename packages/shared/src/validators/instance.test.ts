@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceGeneralSettingsSchema,
+  patchInstanceGeneralSettingsSchema,
+  isValidIanaTimeZone,
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
@@ -194,5 +197,74 @@ describe("instance experimental settings validators", () => {
     ).toEqual({
       enableApps: true,
     });
+  });
+});
+
+describe("instance general settings validators (timeZone, numberFormat, dateFormat)", () => {
+  it("defaults timeZone to Asia/Irkutsk, numberFormat to en-US, and dateFormat to ymd", () => {
+    const general = instanceGeneralSettingsSchema.parse({});
+    expect(general.timeZone).toBe("Asia/Irkutsk");
+    expect(general.numberFormat).toBe("en-US");
+    expect(general.dateFormat).toBe("ymd");
+  });
+
+  it("validates timeZone with Intl.DateTimeFormat (valid IANA zones pass, unknown fail)", () => {
+    expect(isValidIanaTimeZone("Europe/Moscow")).toBe(true);
+    expect(isValidIanaTimeZone("Asia/Irkutsk")).toBe(true);
+    expect(isValidIanaTimeZone("America/New_York")).toBe(true);
+    expect(isValidIanaTimeZone("UTC")).toBe(true);
+
+    expect(isValidIanaTimeZone("Mars/Base")).toBe(false);
+    expect(isValidIanaTimeZone("")).toBe(false);
+    expect(isValidIanaTimeZone("   ")).toBe(false);
+    expect(isValidIanaTimeZone("Invalid/Timezone")).toBe(false);
+
+    const validParsed = instanceGeneralSettingsSchema.safeParse({
+      timeZone: "Europe/Moscow",
+    });
+    expect(validParsed.success).toBe(true);
+    if (validParsed.success) {
+      expect(validParsed.data.timeZone).toBe("Europe/Moscow");
+    }
+
+    const invalidParsed = instanceGeneralSettingsSchema.safeParse({
+      timeZone: "Mars/Base",
+    });
+    expect(invalidParsed.success).toBe(false);
+  });
+
+  it("validates numberFormat (en-US, ru-RU pass; others fail)", () => {
+    expect(instanceGeneralSettingsSchema.safeParse({ numberFormat: "en-US" }).success).toBe(true);
+    expect(instanceGeneralSettingsSchema.safeParse({ numberFormat: "ru-RU" }).success).toBe(true);
+    expect(instanceGeneralSettingsSchema.safeParse({ numberFormat: "de-DE" }).success).toBe(false);
+    expect(instanceGeneralSettingsSchema.safeParse({ numberFormat: "fr-FR" }).success).toBe(false);
+  });
+
+  it("validates dateFormat (ymd, dmy, mdy pass; others fail)", () => {
+    expect(instanceGeneralSettingsSchema.safeParse({ dateFormat: "ymd" }).success).toBe(true);
+    expect(instanceGeneralSettingsSchema.safeParse({ dateFormat: "dmy" }).success).toBe(true);
+    expect(instanceGeneralSettingsSchema.safeParse({ dateFormat: "mdy" }).success).toBe(true);
+    expect(instanceGeneralSettingsSchema.safeParse({ dateFormat: "ydm" }).success).toBe(false);
+    expect(instanceGeneralSettingsSchema.safeParse({ dateFormat: "d-m-y" }).success).toBe(false);
+  });
+
+  it("validates PATCH schema: accepts partial updates and rejects invalid values", () => {
+    // Valid partials
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ timeZone: "Europe/Moscow" }).success).toBe(true);
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ numberFormat: "ru-RU" }).success).toBe(true);
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ dateFormat: "dmy" }).success).toBe(true);
+    expect(patchInstanceGeneralSettingsSchema.safeParse({
+      timeZone: "Europe/Moscow",
+      numberFormat: "ru-RU",
+      dateFormat: "dmy",
+    }).success).toBe(true);
+
+    // Invalid partials
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ timeZone: "Mars/Base" }).success).toBe(false);
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ numberFormat: "de-DE" }).success).toBe(false);
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ dateFormat: "unknown" }).success).toBe(false);
+
+    // Unrelated patch doesn't require these fields
+    expect(patchInstanceGeneralSettingsSchema.safeParse({ censorUsernameInLogs: true }).success).toBe(true);
   });
 });
