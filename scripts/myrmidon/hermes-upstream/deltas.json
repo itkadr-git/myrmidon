@@ -399,6 +399,23 @@
         "path": "hermes_state_common.py",
         "upstreamMarker": "FTS.*(trigram|content)"
       }
+    },
+    {
+      "id": "23-integrity-check-lease-file",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/23-integrity-check-lease-file.patch",
+      "files": [
+        "gateway/lifecycle_ledger.py"
+      ],
+      "reason": "Writes and periodically renews <home>/state/startup-progress-lease.json during the unclean-exit PRAGMA quick_check(1) integrity check, and unlinks it upon completion. Allows the container driver to observe that the bot gateway is actively making progress on an integrity check, preventing health-check timeout restarts.",
+      "dropCondition": "Upstream adopts progress-lease file reporting for external health watchdog synchronization.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/lifecycle_ledger.py",
+        "upstreamMarker": "startup-progress-lease|check_state_db_integrity"
+      }
     }
   ]
 }
