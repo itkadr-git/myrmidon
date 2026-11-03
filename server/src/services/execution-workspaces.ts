@@ -2635,6 +2635,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
+          skippedInspectFailed: 0,
+          skippedDirty: 0,
+          skippedUnmerged: 0,
+          skippedInspectFailedSamples: [],
+          skippedDirtySamples: [],
+          skippedUnmergedSamples: [],
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
@@ -2699,7 +2705,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
-        skippedRace: 0,
+        skippedInspectFailed: 0,
+        skippedDirty: 0,
+        skippedUnmerged: 0,
+        skippedInspectFailedSamples: [] as Array<{ id: string; path: string | null }>,
+        skippedDirtySamples: [] as Array<{ id: string; path: string | null }>,
+        skippedUnmergedSamples: [] as Array<{ id: string; path: string | null }>,
         skippedReopened: 0,
         skippedCooldown: 0,
         clearedStaleReopenPending: 0,
@@ -2710,6 +2721,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
+          result.skippedInspectFailed += 1;
+          if (result.skippedInspectFailedSamples.length < 5) {
+            result.skippedInspectFailedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         const assessment = await assessDelivery(workspace, git);
@@ -2737,6 +2752,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "dirty");
           result.skippedUndelivered += 1;
+          result.skippedDirty += 1;
+          if (result.skippedDirtySamples.length < 5) {
+            result.skippedDirtySamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         if (
@@ -2747,6 +2766,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // archived. If it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "undelivered");
           result.skippedUndelivered += 1;
+          result.skippedUnmerged += 1;
+          if (result.skippedUnmergedSamples.length < 5) {
+            result.skippedUnmergedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+          }
           continue;
         }
         // Hold the archive during the cooldown window. The anchor is the most
