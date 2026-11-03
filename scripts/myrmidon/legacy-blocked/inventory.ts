@@ -1,4 +1,4 @@
-import { and, eq, exists, isNull, notExists, or, sql } from "drizzle-orm";
+import { and, eq, isNull, notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { issueRelations, issueThreadInteractions, issues, legacyBlockedImports, type Db } from "../../../packages/db/src/index.js";
 import { blockerOpenCondition } from "../../../server/src/myrmidon/blocker-resolved.js";
@@ -49,18 +49,15 @@ export async function listLegacyBlocked(db: Db, options: InventoryOptions = {}) 
         and(eq(childIssues.parentId, issues.id), eq(childIssues.companyId, issues.companyId)),
       );
 
-    const importedIssue = tx
-      .select({ id: legacyBlockedImports.id })
-      .from(legacyBlockedImports)
-      .where(
-        and(
-          eq(legacyBlockedImports.companyId, issues.companyId),
-          eq(legacyBlockedImports.issueId, issues.id),
-        ),
-      );
-
     const metadataCondition = options.includeImported
-      ? or(isNull(issues.blockerMetadata), exists(importedIssue))
+      ? or(
+          isNull(issues.blockerMetadata),
+          sql`exists (
+            select 1 from ${legacyBlockedImports}
+            where ${legacyBlockedImports.companyId} = ${issues.companyId}
+              and ${legacyBlockedImports.issueId} = ${issues.id}
+          )`,
+        )
       : isNull(issues.blockerMetadata);
 
     return tx
