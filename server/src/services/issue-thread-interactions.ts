@@ -3724,20 +3724,15 @@ export function issueThreadInteractionService(
           ) {
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           } else if (
-            actor.agentId &&
             (normalizedData.kind === "ask_user_questions" ||
               normalizedData.kind === "suggest_tasks") &&
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload)
           ) {
-            // Legacy agent-created interactions without an explicit typed
+            // Legacy questions and task suggestions without an explicit typed
             // recipient remain operational queue work. Do not infer a human
             // addressee from issue metadata for non-human policies: that
             // creates an audience the creator cannot resolve as.
-            recipientCandidate = { serviceQueue: "default" };
-          } else if (actor.userId) {
-            recipientCandidate = { serviceQueue: "default" };
-          } else if (!actor.agentId && !actor.userId) {
             recipientCandidate = { serviceQueue: "default" };
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
