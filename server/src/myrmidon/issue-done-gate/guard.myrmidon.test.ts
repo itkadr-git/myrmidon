@@ -96,7 +96,9 @@ describe("issue done pull-request gate", () => {
     const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
     const staleProduct = product({ id: "wp-merged-now", number: 95, status: "open" });
     const snapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "open" }));
-    const liveSnapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "merged" }));
+    const liveSnapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({
+      95: { state: "merged", baseRef: "main", defaultBranch: "main", mergeCommitSha: "abc123", mergeCommitReachable: true },
+    }));
     const tx = {
       execute: vi.fn(async () => undefined),
       select: vi.fn()
