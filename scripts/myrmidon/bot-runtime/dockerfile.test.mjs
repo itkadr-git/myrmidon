@@ -680,7 +680,7 @@ describe("myrmidon-bot-image.yml", () => {
     assert.strictEqual((fs.statSync(smokeScript).mode & 0o111) !== 0, true, "smoke-start.sh must be executable");
     assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes:pr-check/);
     assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-node:pr-check/);
-    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh "\$img"/);
+    assert.match(workflow, /run: \.\/docker\/bot-runtime\/smoke-start\.sh myrmidon-hermes-dev:pr-check/);
   });
 
   // myrmidon(1.6.5 BOT-DISK-H1c): the real git leaves PATH, the wrapper answers /usr/bin/git.

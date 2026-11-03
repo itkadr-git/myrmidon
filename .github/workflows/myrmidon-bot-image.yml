@@ -463,7 +463,7 @@ jobs:
       # and ensure the gateway initializes and responds before finishing the build check.
       - name: Smoke-start the gateway on the built image
         if: ${{ github.event_name == 'pull_request' }}
-        run: ./docker/bot-runtime/smoke-start.sh "$img"
+        run: ./docker/bot-runtime/smoke-start.sh myrmidon-hermes-dev:pr-check
   
       # push to main / myr-v* tag: build, push by digest, tag after.
       - name: Build and push by digest
