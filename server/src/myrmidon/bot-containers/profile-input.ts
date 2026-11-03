@@ -743,12 +743,15 @@ function readAdapterConfig(card: Record<string, unknown>): HermesProfileAdapterC
     model: asTrimmedString(card.model),
     provider: asTrimmedString(card.provider),
     effort: asTrimmedString(card.effort),
+    maxOutputTokens: asTrimmedPositiveInt(card.maxOutputTokens ?? models.maxOutputTokens),
     models: {
       vision: asTrimmedString(models.vision),
       video: asTrimmedString(models.video),
       stt: asTrimmedString(models.stt),
       tts: asTrimmedString(models.tts),
       fallbacks: asStringList(models.fallbacks),
+      // myrmidon(BOT-MAXTOKENS): explicit output budget from card or card.models
+      maxOutputTokens: asTrimmedPositiveInt(models.maxOutputTokens),
       // myrmidon(BOT-RUNTIME-TUNING-B): context window and auxiliary models from
       // the card's "Additional models" block; validated by the compiler.
       contextLength: asTrimmedPositiveInt(models.contextLength),
