@@ -12155,6 +12155,49 @@ export function heartbeatService(
             throw conflict(scheduled.reason);
         }
       } else {
+        // Review admission is gated by the exact PR-head CI, not by the stale
+        // activeCi projection used by ordinary monitors. Keep the reviewer
+        // asleep until the final check is terminal; the next monitor tick is
+        // the single transition wake.
+        if (isReviewCiWaitMonitor) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const ci = await createReviewPullRequestCiResolver({ db })({
+            companyId: claimed.companyId,
+            issueId: claimed.id,
+          });
+          if (ci.state === "pending" || ci.state === "unknown") {
+            const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
+            const nextCheckAt = new Date(input.now.getTime() + backoffMs);
+            await db.update(issues).set({
+              monitorNextCheckAt: nextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: "review_ci_pending",
+                ciState: ci.state,
+                ciReason: ci.reason ?? null,
+                headSha: ci.headSha,
+                nextCheckAt: nextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+              },
+            });
+            return { outcome: "skipped" as const, reason: "review_ci_pending" };
+          }
+        }
         const prProducts = await db.select().from(issueWorkProducts)
           .where(and(
             eq(issueWorkProducts.companyId, claimed.companyId),
@@ -22755,6 +22798,28 @@ export function heartbeatService(
         // Query failed on mock tx
       }
     }
+    if (typeof tx.select === "function" && key) {
+      try {
+        const existing = await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, resolvedCompanyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, key),
+              ne(agentWakeupRequests.status, "skipped"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          return { created: false, deduplicated: true };
+        }
+      } catch {
+        // Query failed on mock tx
+      }
+    }
     if (resolvedIssueId && !payload?.eventRevision) {
       const eventRevision = await tx.select({ updatedAt: issues.updatedAt }).from(issues)
         .where(and(eq(issues.companyId, resolvedCompanyId), eq(issues.id, resolvedIssueId)))
@@ -32165,24 +32230,43 @@ export function heartbeatService(
             }
           }
 
-          const wakeupRequest = await tx
-            .insert(agentWakeupRequests)
-            .values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason,
-              payload,
-              status: "queued",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-            })
-            .onConflictDoNothing()
-            .returning()
-            .then((rows) => rows[0]);
+          const existingWakeupRequest = opts.idempotencyKey
+            ? await tx
+                .select()
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.agentId, agentId),
+                    eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                    eq(agentWakeupRequests.status, "queued"),
+                    isNull(agentWakeupRequests.runId),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
+
+          const wakeupRequest =
+            existingWakeupRequest ??
+            (await tx
+              .insert(agentWakeupRequests)
+              .values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "queued",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+              .onConflictDoNothing()
+              .returning()
+              .then((rows) => rows[0]));
 
           if (!wakeupRequest) {
             return { kind: "skipped" as const };
