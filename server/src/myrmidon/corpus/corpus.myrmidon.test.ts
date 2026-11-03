@@ -42,6 +42,7 @@ import type {
 } from "./ports.js";
 import { myrmidonCorpusRoutes } from "./routes.js";
 import {
+  CorpusRequestError,
   corpusService,
   CORPUS_DOCUMENT_DELETED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
