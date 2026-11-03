@@ -27,6 +27,7 @@ export function useUi2StatusStrip(companyId: string | null | undefined): Ui2Stat
   if (companyId == null || !statusStrip.data) return null;
 
   const strip = statusStrip.data;
+  if (!strip?.waiting) return null;
   const colonyActive = strip.colony.running;
   const colonyTotal = strip.colony.running + strip.colony.idle + strip.colony.paused + strip.colony.error;
 
@@ -48,5 +49,5 @@ export function useUi2AttentionCount(): number | null {
     queryFn: () => statusStripApi.get(selectedCompanyId!),
     enabled: selectedCompanyId != null,
   });
-  return statusStrip.data ? statusStrip.data.waiting.approvals : null;
+  return statusStrip.data?.waiting ? statusStrip.data.waiting.approvals : null;
 }
