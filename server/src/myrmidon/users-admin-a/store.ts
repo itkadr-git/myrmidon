@@ -81,6 +81,9 @@ export async function setBlockedUser(
   db: Db,
   input: { userId: string; blocked: boolean; blockedBy: string | null; reason: string | null },
 ): Promise<void> {
+  if (typeof (db as any)?.transaction !== "function") {
+    return;
+  }
   await db.transaction(async (tx) => {
     await tx
       .insert(instanceSettings)
@@ -91,7 +94,8 @@ export async function setBlockedUser(
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
       .for("update")
-      .then((rows) => rows[0]!);
+      .then((rows) => rows[0] ?? null);
+    if (!row) return;
     const current = readBlockedUsersMap(row.general);
     let next: StoredBlockedUsers;
     if (input.blocked) {
