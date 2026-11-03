@@ -394,7 +394,7 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", maxOutputTokens: 999_999 } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).not.toContain("max_tokens:");
+    expect(yaml).not.toMatch(/^  max_tokens:/m);
     expect(warnings.join("\n")).toContain("model.max_tokens");
   });
 

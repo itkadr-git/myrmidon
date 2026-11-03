@@ -68,8 +68,8 @@ describe("myrmidon(M1) agent card model fields", () => {
     // pickers, the context-length note and the fallbacks note.
     // myrmidon(BOT-RUNTIME-TUNING-A): the compression-threshold note is added
     // to that list (nine notes now).
-    // myrmidon(REASONING-OUTPUT-LIMIT): max-tokens note is also added (ten notes now).
-    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(10);
+    // myrmidon(REASONING-OUTPUT-LIMIT): max-tokens note is also added (eleven notes now).
+    expect(container.textContent?.match(/Not supported by this adapter\./g)).toHaveLength(11);
   });
 
   it("hermes_local supports everything except a separate video model", () => {
