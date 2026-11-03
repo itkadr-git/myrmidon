@@ -311,6 +311,11 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "scp"), FAKE_SCP, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+echo "Filesystem 1K-blocks Used Available Use% Mounted on"
+echo "/dev/sda1 100000000 10000000 90000000 10% /"
+exit 0
+`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "dg-sim"), FAKE_DG_SIM, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "dg.log"), "");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
