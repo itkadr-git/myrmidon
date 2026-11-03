@@ -59,6 +59,8 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 0 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 101 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterHours: -1 }).success).toBe(false);
+    expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterMinutes: -1 }).success).toBe(false);
+    expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterMinutes: 30 }).success).toBe(true);
     expect(reviewRoutingSettingsSchema.safeParse({ reviewerRoles: [""] }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ extra: true }).success).toBe(false);
   });
