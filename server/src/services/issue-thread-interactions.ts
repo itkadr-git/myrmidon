@@ -3776,6 +3776,13 @@ export function issueThreadInteractionService(
             (recipientCandidate && "serviceQueue" in recipientCandidate
               ? recipientCandidate.serviceQueue
               : (normalizedData as any).addresseeQueue) ?? null,
+          allowLegacyAgentQueueFallback:
+            Boolean(actor.agentId) &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "request_confirmation"),
         });
       } catch (err) {
         if (err instanceof InteractionRecipientUnresolvedError) {
