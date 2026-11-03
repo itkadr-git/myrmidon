@@ -3726,11 +3726,13 @@ export function issueThreadInteractionService(
           } else if (
             actor.agentId &&
             !("toolAction" in normalizedData.payload) &&
-            !("secretProposal" in normalizedData.payload)
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "suggest_tasks")
           ) {
-            // Legacy agent-created interactions without a typed recipient are
-            // operational work. Keep them on the default queue unless the
-            // payload is a governed action that requires a concrete human.
+            // Legacy agent-created operational interactions without a typed
+            // recipient stay on the default queue. Confirmations and governed
+            // actions must still resolve to a concrete recipient.
             recipientCandidate = { serviceQueue: "default" };
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
