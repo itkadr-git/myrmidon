@@ -541,7 +541,7 @@ export function createGitHubExternalObjectProvider(
           "x-github-api-version": "2022-11-28",
         };
         if (token) headers.authorization = `Bearer ${token}`;
-        if (object?.snapshot?.etag) headers["if-none-match"] = object.snapshot.etag;
+        if (object?.etag) headers["if-none-match"] = object.etag;
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
         const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
@@ -560,8 +560,25 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        if (response.status === 304 && object?.snapshot) {
-          return { ok: true, snapshot: object.snapshot };
+        if (response.status === 304) {
+          return {
+            ok: true,
+            snapshot: {
+              displayKey: object.displayKey,
+              iconKey: object.iconKey,
+              displayTitle: object.displayTitle,
+              statusKey: object.statusKey,
+              statusLabel: object.statusLabel,
+              statusIconKey: object.statusIconKey,
+              statusCategory: object.statusCategory,
+              statusTone: object.statusTone,
+              isTerminal: object.isTerminal,
+              data: object.data,
+              remoteVersion: object.remoteVersion,
+              etag: object.etag,
+              ttlSeconds: GITHUB_OBJECT_TTL_SECONDS,
+            },
+          };
         }
 
         const etag = response.headers?.get ? response.headers.get("etag") : null;
