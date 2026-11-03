@@ -892,16 +892,22 @@ function buildCompression(
  * (both the bare name and any "provider/model" form's model part). Range
  * 8_000..10_000_000; out of range — dropped with a warning, never thrown.
  */
-function buildMaxTokens(input: HermesProfileInput, warnings: string[]): number {
+function buildMaxTokens(input: HermesProfileInput, warnings: string[]): number | undefined {
   const explicit = input.adapterConfig.models?.maxTokens;
-  if (explicit === undefined) return MODEL_MAX_TOKENS_DEFAULT;
-  if (Number.isInteger(explicit) && explicit >= MODEL_MAX_TOKENS_MIN && explicit <= MODEL_MAX_TOKENS_MAX) {
-    return explicit;
+  if (explicit !== undefined) {
+    if (Number.isInteger(explicit) && explicit >= MODEL_MAX_TOKENS_MIN && explicit <= MODEL_MAX_TOKENS_MAX) {
+      return explicit;
+    }
+    warnings.push(
+      `model.max_tokens: ${explicit} from the card is outside the supported range ${MODEL_MAX_TOKENS_MIN}..${MODEL_MAX_TOKENS_MAX}; using default ${MODEL_MAX_TOKENS_DEFAULT}`,
+    );
+    return MODEL_MAX_TOKENS_DEFAULT;
   }
-  warnings.push(
-    `model.max_tokens: ${explicit} from the card is outside the supported range ${MODEL_MAX_TOKENS_MIN}..${MODEL_MAX_TOKENS_MAX}; using default ${MODEL_MAX_TOKENS_DEFAULT}`,
-  );
-  return MODEL_MAX_TOKENS_DEFAULT;
+  // When a model is configured on the card, default max_tokens so reasoning models have room
+  if (nonEmpty(input.adapterConfig.model)) {
+    return MODEL_MAX_TOKENS_DEFAULT;
+  }
+  return undefined;
 }
 
 function buildModelContextLength(

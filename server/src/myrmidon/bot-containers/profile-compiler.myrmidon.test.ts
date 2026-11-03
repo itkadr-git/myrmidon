@@ -1373,11 +1373,14 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       ).content;
       expect(configured).toContain("max_tokens: 64000");
 
-      const defaulted = fileByPath(compileHermesProfile(baseInput()).files, "hermes/config.yaml").content;
+      const defaulted = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { model: "model-a" } })).files,
+        "hermes/config.yaml",
+      ).content;
       expect(defaulted).toContain("max_tokens: 32000");
 
       const invalid = compileHermesProfileDetailed(
-        baseInput({ adapterConfig: { models: { maxTokens: 1 } } }),
+        baseInput({ adapterConfig: { model: "model-a", models: { maxTokens: 1 } } }),
       );
       expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
       expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
