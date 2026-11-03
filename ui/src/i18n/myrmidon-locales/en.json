@@ -350,7 +350,8 @@
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
     "agentExchange": "Agent exchanges",
-    "budgets": "Budgets"
+    "budgets": "Budgets",
+    "knowledge": "Knowledge"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -1753,7 +1754,6 @@
     "colRule": "Rule",
     "colMode": "Mode",
     "colLevel": "Level",
-    "colAgent": "Agent",
     "colDecision": "Decision",
     "colSurface": "Surface",
     "colRun": "Run",
@@ -1780,5 +1780,64 @@
       "off": "off"
     }
   },
-  "ui2.nav.group.plugins": "Plugins"
+  "ui2.nav.group.plugins": "Plugins",
+  "knowledgeSettings": {
+    "title": "Knowledge settings",
+    "subtitle": "Limits, auto-accept and the maintenance schedule for company knowledge items.",
+    "effectiveNotice": "Effective configuration. UI overrides win; unset values fall back to environment variables and system defaults.",
+    "badges": {
+      "ui": "UI override",
+      "env": "Environment",
+      "default": "Default"
+    },
+    "limits": {
+      "title": "Limits",
+      "subtitle": "Caps on knowledge items and revision body size.",
+      "maxItems": "Maximum items",
+      "maxItemsHint": "Upper bound on published and draft items in the company nest.",
+      "maxRevisionBytes": "Maximum revision size (bytes)",
+      "maxRevisionBytesHint": "Maximum byte size of a single revision body."
+    },
+    "autoAccept": {
+      "title": "Auto-accept",
+      "subtitle": "Accept incoming revisions automatically when confidence meets the threshold.",
+      "enabled": "Enable auto-accept",
+      "minConfidence": "Minimum confidence",
+      "minConfidenceHint": "Only accept revisions with confidence equal to or higher than this tier.",
+      "tiers": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "very_high": "Very high"
+      }
+    },
+    "schedule": {
+      "title": "Maintenance schedule",
+      "subtitle": "Cron expression for periodic knowledge base maintenance (reindexing, backlink sweeps).",
+      "expression": "Cron expression",
+      "expressionHint": "Standard 5-part cron syntax (e.g. 0 3 * * * for 03:00 daily). Leave empty to disable."
+    },
+    "reviewers": {
+      "title": "Section reviewers",
+      "subtitle": "Default reviewers routed by section path.",
+      "empty": "No section reviewers configured.",
+      "add": "Add reviewer",
+      "section": "Section",
+      "sectionPlaceholder": "e.g. engineering/architecture",
+      "reviewer": "Reviewer",
+      "reviewerKind": "Kind",
+      "reviewerId": "ID",
+      "kindUser": "User",
+      "kindAgent": "Agent",
+      "remove": "Remove"
+    },
+    "actions": {
+      "save": "Save changes",
+      "saving": "Saving...",
+      "reset": "Reset to defaults",
+      "saved": "Settings saved",
+      "saveFailed": "Failed to save settings",
+      "loadFailed": "Failed to load knowledge settings"
+    }
+  }
 }
