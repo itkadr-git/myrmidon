@@ -33,7 +33,7 @@ export function Ui2LanguageFormatsBlock() {
   const values = { ...FALLBACKS, ...settings, ...draft };
   const filteredZones = useMemo(() => timeZones.filter((zone) => zone.toLowerCase().includes(search.toLowerCase())), [search]);
   const preview = new Intl.NumberFormat(values.numberFormat).format(1234.56) + " · " + dateParts(values.dateFormat) + " 09:00";
-  const setValue = <K extends keyof SettingsPatch>(key: K, value: NonNullable<SettingsPatch[K]>) => setDraft((current) => ({ ...current, [key]: value }));
+  const setValue = (key: keyof SettingsPatch, value: string) => setDraft((current) => ({ ...current, [key]: value } as SettingsPatch));
   const source = (key: keyof SettingsPatch) => draft[key] !== undefined ? t("ui2.settings.language.formats.source.pending") : settings?.[key] !== undefined ? t("ui2.settings.language.formats.source.settings") : t("ui2.settings.language.formats.source.default");
 
   if (query.isLoading) return <Ui2Section title={t("ui2.settings.language.formats.title")}><p>{t("common.loading")}</p></Ui2Section>;

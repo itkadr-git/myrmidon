@@ -9,6 +9,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
@@ -26,8 +27,10 @@ async function flushReact() {
 describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       censorUsernameInLogs: false,
       keyboardShortcuts: true,
@@ -41,10 +44,9 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    flushSync(() => {
-      root?.unmount();
-    });
+    flushSync(() => root?.unmount());
     root = null;
+    queryClient.clear();
     container.remove();
     window.localStorage.clear();
   });
@@ -55,9 +57,11 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     root = createRoot(container);
     flushSync(() => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();
@@ -75,9 +79,11 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     root = createRoot(container);
     flushSync(() => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();
@@ -105,7 +111,7 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    flushSync(() => root!.render(<Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider>));
+    flushSync(() => root!.render(<QueryClientProvider client={queryClient}><Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider></QueryClientProvider>));
     await flushReact();
     expect(container.textContent).toContain("Time zone and formats");
     expect(container.textContent).toContain("1,234.56 · 2026-10-31 09:00");
@@ -121,7 +127,7 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    flushSync(() => root!.render(<Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider>));
+    flushSync(() => root!.render(<QueryClientProvider client={queryClient}><Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider></QueryClientProvider>));
     await flushReact();
     const selects = container.querySelectorAll("select");
     (selects[1] as HTMLSelectElement).value = "ru-RU";
