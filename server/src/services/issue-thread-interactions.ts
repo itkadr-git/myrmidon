@@ -3725,10 +3725,13 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           } else if (
             actor.agentId &&
-            actor.agentId === issueContextRow?.assigneeAgentId &&
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload)
           ) {
+            // Legacy agent-created interactions without an explicit typed
+            // recipient remain operational queue work. Do not infer a human
+            // addressee from issue metadata for non-human policies: that
+            // creates an audience the creator cannot resolve as.
             recipientCandidate = { serviceQueue: "default" };
           } else if (actor.userId) {
             recipientCandidate = { serviceQueue: "default" };
