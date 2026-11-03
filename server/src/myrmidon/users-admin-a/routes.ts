@@ -186,7 +186,12 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
     const userId = String(req.params.userId);
     const { reason } = req.body as { reason: string };
     try {
-      const { sessionsClosed } = await setUserBlocked(db, { userId, blocked: true, actorUserId: actor.actorId });
+      const { sessionsClosed } = await setUserBlocked(db, {
+        userId,
+        blocked: true,
+        actorUserId: actor.actorId,
+        reason,
+      });
       await audit(db, {
         actorType: "user",
         actorId: actor.actorId,

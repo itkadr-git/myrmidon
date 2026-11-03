@@ -3,6 +3,11 @@
 // Governs the daily board janitor routine (08:00 Irkutsk, or on-demand).
 // In Irkutsk (UTC+8), 08:00 is 00:00 UTC.
 
+import { instanceSettings, type Db } from "@myrmidon/db";
+import { eq, sql } from "drizzle-orm";
+
+export const BOARD_JANITOR_LAST_RUN_AT_KEY = "boardJanitorLastRunAt";
+
 export const BOARD_JANITOR_ENABLED_ENV = "MYRMIDON_BOARD_JANITOR_ENABLED";
 export const BOARD_JANITOR_RUN_HOUR_IRKUTSK_ENV = "MYRMIDON_BOARD_JANITOR_RUN_HOUR_IRKUTSK";
 export const BOARD_JANITOR_SERVICE_TICKET_ID_ENV = "MYRMIDON_BOARD_JANITOR_SERVICE_TICKET_ID";
@@ -54,21 +59,58 @@ export function readBoardJanitorSettings(
  * Irkutsk is UTC+8. Hour in Irkutsk = (UTC hour + 8) % 24.
  */
 export function isDueForDailyRun(now: Date, lastRunAt: Date | null, targetHourIrkutsk: number): boolean {
-  if (!lastRunAt) return true;
-
   // Calculate current date in Irkutsk timezone
   const utcMs = now.getTime();
   const irkutskOffsetMs = 8 * 60 * 60 * 1000;
   const irkutskNow = new Date(utcMs + irkutskOffsetMs);
-  const irkutskLastRun = new Date(lastRunAt.getTime() + irkutskOffsetMs);
 
+  // If the target hour in Irkutsk has not arrived yet today, never run
+  if (irkutskNow.getUTCHours() < targetHourIrkutsk) {
+    return false;
+  }
+
+  if (!lastRunAt) return true;
+
+  const irkutskLastRun = new Date(lastRunAt.getTime() + irkutskOffsetMs);
   const isSameDay =
     irkutskNow.getUTCFullYear() === irkutskLastRun.getUTCFullYear() &&
     irkutskNow.getUTCMonth() === irkutskLastRun.getUTCMonth() &&
     irkutskNow.getUTCDate() === irkutskLastRun.getUTCDate();
 
-  if (isSameDay) return false;
+  return !isSameDay;
+}
 
-  // Has the target hour in Irkutsk arrived today?
-  return irkutskNow.getUTCHours() >= targetHourIrkutsk;
+export function preserveBoardJanitorGeneralKey(storedGeneral: unknown): Record<string, unknown> {
+  if (typeof storedGeneral !== "object" || storedGeneral === null) return {};
+  const value = (storedGeneral as Record<string, unknown>)[BOARD_JANITOR_LAST_RUN_AT_KEY];
+  return value === undefined ? {} : { [BOARD_JANITOR_LAST_RUN_AT_KEY]: value };
+}
+
+export async function readBoardJanitorLastRunAt(db: Db): Promise<Date | null> {
+  const row = await db
+    .select({ general: instanceSettings.general })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.singletonKey, "default"))
+    .then((rows) => rows[0] ?? null);
+  const raw = row?.general?.[BOARD_JANITOR_LAST_RUN_AT_KEY];
+  if (!raw) return null;
+  const d = new Date(raw as string | number);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export async function writeBoardJanitorLastRunAt(db: Db, date: Date): Promise<void> {
+  await db
+    .insert(instanceSettings)
+    .values({
+      singletonKey: "default",
+      general: { [BOARD_JANITOR_LAST_RUN_AT_KEY]: date.toISOString() },
+      experimental: {},
+    })
+    .onConflictDoUpdate({
+      target: [instanceSettings.singletonKey],
+      set: {
+        general: sql`jsonb_set(coalesce(${instanceSettings.general}, '{}'::jsonb), ${`{${BOARD_JANITOR_LAST_RUN_AT_KEY}}`}::text[], ${JSON.stringify(date.toISOString())}::jsonb, true)`,
+        updatedAt: new Date(),
+      },
+    });
 }

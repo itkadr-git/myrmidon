@@ -425,6 +425,15 @@ async function promoteDeferredWake(
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
+    if (workingCandidate.deferredContextSeed.chatFailedRunRetry) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: workingCandidate.id,
+        reason: "Failed-chat retry is not authorized for terminal task reopening",
+        now: input.now,
+      });
+      return null;
+    }
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
@@ -600,6 +609,12 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
+  const currentIssue = await transaction.findIssue({ companyId: issue.companyId, issueId: issue.id });
+  if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  issue = currentIssue;
+  if (issue.status === "blocked") return { outcome: { kind: "released" }, postCommitEffects };
   const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
     issue.conversationAgentId && issue.conversationUserId &&
     issue.conversationState === "waiting" && issue.status === "in_review"

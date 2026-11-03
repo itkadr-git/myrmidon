@@ -959,6 +959,7 @@ verify_fleet() {
   local id card fact="" cstate="" cimage="" cidle="false" target orig state verdict dreason
   VERIFY_ROWS=("id|card image|container image|state|verdict")
   DEFERRED_ROWS=()
+  SWITCHED_BOTS=()
   v_switched=0 v_deferred=0 v_mismatch=0 v_failed=0
   for id in "$@"; do
     [[ -n "$id" ]] || continue
@@ -1000,7 +1001,7 @@ verify_fleet() {
     [[ -n "$cstate" ]] || cstate="-"
     VERIFY_ROWS+=("$id|$card|$cimage|$cstate|$verdict")
     case "$verdict" in
-      switched) v_switched=$((v_switched + 1)) ;;
+      switched) v_switched=$((v_switched + 1)); SWITCHED_BOTS+=("$id") ;;
       deferred)
         v_deferred=$((v_deferred + 1))
         dreason="${deferred_reasons[$id]:-the container is still on the previous image (a busy agent or a not-yet-finished apply)}"
@@ -1028,9 +1029,11 @@ verify_fleet() {
 
 # The verification block written to the summary, and the deferred-bot records
 # a later --retry-deferred reads back.
+SWITCHED_JSON='[]'
 DEFERRED_JSON='[]'
 VERIF_JSON='{}'
 collect_verdict() {
+  SWITCHED_JSON="$(printf '%s\n' "${SWITCHED_BOTS[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
   DEFERRED_JSON="$(printf '%s\n' "${DEFERRED_ROWS[@]}" | jq -Rn \
     '[inputs | select(length > 0) | split("|") | {id: .[0], image: .[1], target: .[2], reason: (.[3:] | join("|"))}]')"
   VERIF_JSON="$(jq -cn --argjson s "$v_switched" --argjson d "$v_deferred" --argjson m "$v_mismatch" --argjson f "$v_failed" \
@@ -1185,9 +1188,11 @@ finalize_rollout() {
     --argjson failed "$v_failed" --argjson verification "$VERIF_JSON" --argjson deferredBots "$DEFERRED_JSON" \
     --argjson pinned "$pinned" --argjson batches "$batches" \
     --argjson notApplicable "$not_applicable" --argjson pinnedBots "$pinned_json" --argjson notApplicableBots "$na_json" \
+    --argjson switchedBots "$SWITCHED_JSON" \
     '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, mismatch: $mismatch,
       failed: $failed, verification: $verification, deferredBots: $deferredBots, pinned: $pinned,
-      notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches}' \
+      notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches,
+      switchedBots: $switchedBots}' \
     >"$MYR_BOT_SUMMARY" 2>/dev/null || true
 
   if ((v_mismatch > 0 || v_failed > 0)); then

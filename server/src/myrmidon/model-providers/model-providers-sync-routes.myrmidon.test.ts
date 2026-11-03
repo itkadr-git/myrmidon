@@ -93,6 +93,9 @@ function fakeService() {
     async checkToolCallCompatibility() {
       return providerView("provider-1");
     },
+    async checkPackageExpirations() {
+      return [];
+    },
     async listChannels(companyId, providerId) {
       return {
         providerId,

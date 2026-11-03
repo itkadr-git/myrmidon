@@ -536,7 +536,10 @@ import { toolAccessService } from "./tool-access.js";
 // myrmidon(BOARD-TOOLS-A): agent-assigned runtime MCP selection lives in its own module
 import { resolveAgentAssignedToolSet } from "./agent-assigned-tools.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  IDEMPOTENT_DEPENDENCY_WAKE_STATUSES,
+} from "./issue-dependency-wakeups.js";
 import {
   applyIssueMonitorPolicyTransition,
   buildIssueMonitorClearedPatch,
@@ -617,6 +620,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideRunLivenessContinuation,
   decideSuccessfulRunHandoff,
+  isIssueWaitingForPullRequestCi,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
   isSuccessfulRunHandoffValidPathSkip,
@@ -3741,12 +3745,21 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
+// adapterType belongs to the agent row, not heartbeat_runs. Keep this as a
+// scalar subquery so the run-list projection remains one row per run.
+const heartbeatRunAdapterTypeColumn = sql<string>`(
+  SELECT ${agents.adapterType}
+  FROM ${agents}
+  WHERE ${agents.id} = ${heartbeatRuns.agentId}
+)`.as("adapterType");
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
+  adapterType: heartbeatRunAdapterTypeColumn,
   status: heartbeatRuns.status,
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
@@ -13737,6 +13750,10 @@ export function heartbeatService(
       livenessState,
       livenessReason: run.livenessReason,
       nextAction: run.nextAction,
+      hasOpenPullRequestWaitingForCi: await isIssueWaitingForPullRequestCi(db, {
+        companyId: run.companyId,
+        issueId,
+      }),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -14035,6 +14052,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      hasOpenPullRequestWaitingForCi,
     ] = await Promise.all([
       issue
         ? db
@@ -14180,6 +14198,12 @@ export function heartbeatService(
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? isIssueWaitingForPullRequestCi(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+          })
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -14201,6 +14225,7 @@ export function heartbeatService(
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
+      hasOpenPullRequestWaitingForCi: Boolean(hasOpenPullRequestWaitingForCi),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -16375,6 +16400,33 @@ export function heartbeatService(
     const isContinuationRetry =
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+
+    // A continuation summary that explicitly parks the executor is an event-shaped
+    // wait, not a bounded continuation retry.  Keep the issue in its monitor/waiting
+    // state so every heartbeat does not enqueue another `issue_continuation_needed`
+    // run while the external event (review/approval) is still absent.
+    if (isContinuationRetry && issueId) {
+      const continuationSummary = await getIssueContinuationSummaryDocument(db, issueId);
+      if (continuationSummaryParksExecutor(continuationSummary?.body)) {
+        await appendRunEvent(run, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Continuation parked while waiting for an external issue event",
+          payload: {
+            issueId,
+            retryReason,
+            waitKind: "issue_continuation_event",
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: "Issue continuation is parked until its external event arrives",
+          errorCode: "issue_execution_lock_changed" as const,
+          issueId,
+        };
+      }
+    }
     let continuationRetryIdempotencyKey: string | null = null;
 
     type ScheduledRetryTransactionResult =
@@ -32092,6 +32144,27 @@ export function heartbeatService(
             });
           }
 
+          if (
+            opts.idempotencyKey &&
+            opts.idempotencyKey.startsWith("issue_blockers_resolved:")
+          ) {
+            const [existingWake] = await tx
+              .select({ id: agentWakeupRequests.id })
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                  inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+                ),
+              )
+              .limit(1);
+            if (existingWake) {
+              return { kind: "skipped" as const };
+            }
+          }
+
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -32107,8 +32180,13 @@ export function heartbeatService(
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
             })
+            .onConflictDoNothing()
             .returning()
             .then((rows) => rows[0]);
+
+          if (!wakeupRequest) {
+            return { kind: "skipped" as const };
+          }
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;

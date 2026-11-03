@@ -80,6 +80,12 @@ export interface LitellmSyncPort {
   deleteDeployment(modelId: string): Promise<void>;
 
   /**
+   * Drops gateway-side cached responses and resolved routing/credential state.
+   * Optional because older LiteLLM deployments may not expose cache deletion.
+   */
+  invalidateCache?(): Promise<void>;
+
+  /**
    * Fetches the list of currently registered models from LiteLLM.
    */
   listRegisteredModels(): Promise<Array<{

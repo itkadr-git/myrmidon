@@ -1,6 +1,5 @@
 // myrmidon(1.6-FORAGE / 1.7-KNOWLEDGE-L14): the reader's host discipline and edge fetcher.
-// Network access is delegated to vm-exec edge fetch; direct outbound HTTP to
-// the source is prohibited.
+// Direct HTTP(S) is used when the optional vm-exec gateway is not configured.
 import { describe, expect, it, vi } from "vitest";
 import { createForagingReader, resetForagingHostState } from "./reader.js";
 import type { ForagingSourceRef } from "./domain.js";
@@ -87,7 +86,49 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     expect(edgeFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("uses only the vm-exec gateway", async () => {
+  it("reads directly with the product user agent and preserves the source URL", async () => {
+    resetForagingHostState();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("user-agent")).toContain("myrmidon-foraging/1.0");
+      return new Response("<html><body><h1>Hello</h1><script>bad()</script></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
+    const result = await reader.read(source("https://example.com/direct"), new AbortController().signal);
+    expect(result.text).toContain("Hello");
+    expect(result.page?.final_url).toBe("https://example.com/direct");
+    expect(result.page?.content_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("rejects direct redirects", async () => {
+    resetForagingHostState();
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://other.test" } }));
+    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
+    await expect(reader.read(source("https://example.com/redirect"), new AbortController().signal)).rejects.toThrow(/redirect/);
+  });
+
+  it("rejects a response larger than 2 MB even without content-length", async () => {
+    resetForagingHostState();
+    const body = new Uint8Array(2 * 1024 * 1024 + 1);
+    const fetchImpl = vi.fn(async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } }));
+    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
+    await expect(reader.read(source("https://example.com/large"), new AbortController().signal)).rejects.toThrow(/2 MB/);
+  });
+
+  it("aborts a direct read on timeout", async () => {
+    resetForagingHostState();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise<void>((resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+      throw new Error("aborted");
+    });
+    const reader = createForagingReader({ minHostIntervalMs: 0, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => 1_000_000 });
+    await expect(reader.read(source("https://example.com/slow"), new AbortController().signal)).rejects.toThrow(/aborted|timeout/i);
+  }, 20_000);
+  it("uses the optional vm-exec gateway when configured", async () => {
     resetForagingHostState();
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const payload = JSON.parse(String(init?.body ?? "{}"));
@@ -128,12 +169,10 @@ describe("myrmidon(1.7-KNOWLEDGE-L14) foraging edge reader", () => {
     expect(outboundHttpProxyCalls).toHaveLength(0);
   });
 
-  it("fails closed if the gateway is not configured", async () => {
+  it("uses direct HTTP when the gateway is not configured", async () => {
     resetForagingHostState();
     const reader = createForagingReader({ minHostIntervalMs: 0 });
-    await expect(reader.read(source("https://example.com/a"), new AbortController().signal)).rejects.toThrow(
-      /not configured/,
-    );
+    await expect(reader.read(source("ftp://example.com/a"), new AbortController().signal)).rejects.toThrow(/http or https/);
   });
 
   it("rejects injection-flagged content", async () => {

@@ -393,6 +393,11 @@ function buildHeaders(input: {
   apiKey: string;
   sessionKey: string | null;
   runId: string;
+  // myrmidon(OPE-10602): the board's own run id (always ctx.runId, never
+  // modelAttemptId). The hermes gateway binds this header's value as
+  // $PAPERCLIP_RUN_ID for the run's children, so agents mutate the board
+  // under the heartbeat_runs row this run actually owns.
+  paperclipRunId?: string;
   extraHeaders: Record<string, string>;
   accept: string;
   contentType?: string;
@@ -403,6 +408,7 @@ function buildHeaders(input: {
     Accept: input.accept,
     ...(input.contentType ? { "Content-Type": input.contentType } : {}),
     "Idempotency-Key": input.runId,
+    ...(input.paperclipRunId ? { "X-Paperclip-Run-Id": input.paperclipRunId } : {}),
     ...(input.sessionKey ? { "X-Hermes-Session-Key": input.sessionKey } : {}),
   };
 }
@@ -1715,10 +1721,50 @@ function parseRetryAfterSeconds(value: unknown): number | null {
   return null;
 }
 
+function extractUsageLimitReset(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const absolute =
+    record.resets_at ?? record.resetsAt ?? record.reset_at ?? record.resetAt;
+  const absoluteIso =
+    typeof absolute === "string" ? parseRetryAfterToIso(absolute) : null;
+  if (absoluteIso) return absoluteIso;
+  const seconds =
+    record.resets_in_seconds ?? record.resetsInSeconds ?? record.reset_in_seconds ?? record.resetInSeconds;
+  const resetSeconds = parseRetryAfterSeconds(seconds);
+  return resetSeconds === null
+    ? null
+    : new Date(Date.now() + resetSeconds * 1000).toISOString();
+}
+
+function extractUsageLimitResetFromWindows(value: unknown): string | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const direct = extractUsageLimitReset(record);
+  if (direct) return direct;
+  for (const key of ["windows", "usage_windows", "usageWindows", "wham_usage", "whamUsage"]) {
+    const windows = record[key];
+    if (!Array.isArray(windows)) continue;
+    const resets = windows
+      .map((window) => extractUsageLimitReset(window))
+      .filter((reset): reset is string => reset !== null)
+      .sort();
+    if (resets[0]) return resets[0];
+  }
+  return null;
+}
+
 function extractCooldownRetryNotBefore(
   payload: Record<string, unknown>,
 ): string | null {
   const errorRecord = asRecord(payload.error);
+  const usageLimitReset =
+    extractUsageLimitReset(errorRecord) ??
+    extractUsageLimitReset(payload) ??
+    extractUsageLimitResetFromWindows(payload.usage) ??
+    extractUsageLimitResetFromWindows(payload.wham_usage) ??
+    extractUsageLimitResetFromWindows(payload.whamUsage);
+  if (usageLimitReset) return usageLimitReset;
   const explicitIso = parseRetryAfterToIso(
     nonEmpty(payload.retry_not_before) ??
       nonEmpty(payload.retryNotBefore) ??
@@ -1759,6 +1805,7 @@ function isCooldownOrRateLimit(
     errorCode === 429 ||
     errorCode === "429" ||
     errorCode === "rate_limit_error" ||
+    errorType === "usage_limit_reached" ||
     errorType === "rate_limit_error" ||
     errorType === "cooldown_error" ||
     payload.cooldown === true ||
@@ -2254,6 +2301,10 @@ export function errorResult(
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
   const errorBody = asRecord(hermesError.body);
   const nestedError = asRecord(errorBody?.error);
+  const usageLimitError =
+    nestedError?.type === "usage_limit_reached" ||
+    errorBody?.error_type === "usage_limit_reached" ||
+    errorBody?.type === "usage_limit_reached";
   const bodyErrorMessage =
     nonEmpty(nestedError?.message) ??
     nonEmpty(errorBody?.message) ??
@@ -2278,6 +2329,7 @@ export function errorResult(
     errorMessage !== null && LITELLM_DEPLOYMENT_COOLDOWN_RE.test(errorMessage);
 
   const rawRetryNotBefore =
+    (usageLimitError ? extractCooldownRetryNotBefore(errorBody ?? {}) : null) ??
     hermesError.retryNotBefore ??
     nonEmpty(errorBody?.retry_not_before) ??
     nonEmpty(errorBody?.retryNotBefore) ??
@@ -2293,7 +2345,7 @@ export function errorResult(
   // classification, or every structured cooldown arriving on HTTP 429 would
   // be misfiled as transient_upstream.
   const errorFamily =
-    (isDeploymentCooldown || (isCooldown && !hermesError.status)
+    (isDeploymentCooldown || usageLimitError || (isCooldown && !hermesError.status)
       ? "provider_quota"
       : classified?.family) ??
     (isCooldown ? "provider_quota" : code === "hermes_gateway_connect_failed" ? "transient_upstream" : null);
@@ -2507,6 +2559,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    // myrmidon(OPE-10602): the board's run id for the gateway to bind as
+    // $PAPERCLIP_RUN_ID — always ctx.runId (see buildHeaders note).
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "application/json",
     contentType: "application/json",
@@ -2515,6 +2570,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     apiKey,
     sessionKey,
     runId: idempotencyKey,
+    paperclipRunId: ctx.runId,
     extraHeaders,
     accept: "text/event-stream",
   });
@@ -2902,7 +2958,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
       };
     }
-    return errorResult(err, redactText);
+    const createFailure = errorResult(err, redactText);
+    if (createFailure.errorFamily === "provider_quota" && fallbackModels.length > 0) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] provider_quota on run creation; retrying with configured fallback ${fallbackModels[0]}\n`,
+      );
+      const fallbackAttemptId = `${ctx.runId}:fallback:${fallbackModels[0]}`;
+      return execute({
+        ...ctx,
+        runId: fallbackAttemptId,
+        config: {
+          ...ctx.config,
+          model: fallbackModels[0],
+          models: { fallbacks: fallbackModels.slice(1) },
+          modelAttemptId: fallbackAttemptId,
+        },
+        onDispatch: undefined,
+        onExternalRunId: undefined,
+        onMeta: undefined,
+      });
+    }
+    return createFailure;
   }
   }
 
@@ -3145,7 +3222,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const shouldTryFallback =
       finalResult.errorCode === "hermes_gateway_run_failed" &&
-      finalResult.errorFamily === "transient_upstream" &&
+      (finalResult.errorFamily === "transient_upstream" ||
+        finalResult.errorFamily === "provider_quota") &&
       fallbackModels.length > 0;
 
     if (shouldTryFallback) {
