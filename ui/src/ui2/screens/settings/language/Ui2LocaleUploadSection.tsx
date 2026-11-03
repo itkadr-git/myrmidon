@@ -337,7 +337,7 @@ export function Ui2LocaleUploadSection() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {filteredDiffItems.slice(0, 50).map((item) => (
+                    {filteredDiffItems.map((item) => (
                       <tr key={item.path} className="hover:bg-muted/40">
                         <td className="p-2 font-mono text-xs" data-testid="diff-key-path">
                           <span
