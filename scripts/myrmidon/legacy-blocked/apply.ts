@@ -63,7 +63,7 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
     }
     const validRow = parsedReportRow.data;
     if (validRow.class === "unknown") {
-      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "unknown", detail: `Retained blocked; classification=unknown; evidence=${validRow.evidence}` });
+      rows.push({ issueId: validRow.issueId, class: validRow.class, outcome: "skipped", detail: `Retained blocked; classification=unknown; evidence=${validRow.evidence}` });
       continue;
     }
     if (validRow.class === "terminal") {
