@@ -98,7 +98,6 @@ function RailItemSlot({ item, attentionCount }: { item: Ui2NavItem; attentionCou
       className="myr-ui2__rail-link"
       aria-current={active ? "page" : undefined}
       style={{ display: "block", textDecoration: "none" }}
-      aria-current={active ? "page" : undefined}
     >
       <RailItem item={item} active={active} badge={badge} />
     </Link>

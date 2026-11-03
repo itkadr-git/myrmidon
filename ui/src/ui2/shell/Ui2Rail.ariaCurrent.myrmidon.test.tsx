@@ -11,6 +11,7 @@ vi.mock("@/i18n", () => ({
 }));
 vi.mock("../i18n/Ui2I18n", () => ({
   useUi2I18n: () => ({ t: (k: string) => k }),
+  useUi2I18nOptional: () => ({ t: (k: string) => k, locale: "en", setLocale: () => {} }),
 }));
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { id: "c1", issuePrefix: "TES" } }),
