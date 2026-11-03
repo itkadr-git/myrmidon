@@ -282,6 +282,8 @@ import { secretService } from "./services/secrets.js";
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
 
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace export
+import { buildTokensTraceRoutes } from "./myrmidon/tokens-trace/index.js";
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
 // myrmidon(1.6-CTO-CHAT-B): the board chat planner (owner text -> proposed epic).
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
@@ -1314,6 +1316,7 @@ export async function createApp(
   api.use(myrmidonEvalsRoutes(db)); // myrmidon(1.6-EVALS): reference-task evals (judge runs, scores, verdict)
   api.use(myrmidonDebateRoutes(db)); // myrmidon(1.7-DEBATE-ASYM-A): asymmetric debates (roles, rounds, token ceiling, cost, result document)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
+  api.use(buildTokensTraceRoutes({ db })); // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call trace export
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
   api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance
   api.use(myrmidonScentRoutes(db)); // myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent refresh + swarm scent status

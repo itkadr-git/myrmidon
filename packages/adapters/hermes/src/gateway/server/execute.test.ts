@@ -1892,6 +1892,100 @@ describe("mapFinalResultForTest", () => {
     expect(fallback.model).toBe("card-model");
     expect(alone.model).toBeNull();
   });
+
+  it("emits exactly one trace entry per run even with multiple litellm request ids", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): the gateway reports aggregate
+    // usage per run. Emitting N copies (one per litellm_request_id) inflates
+    // SUM(promptTokens) by N× and breaks acceptance criterion 2. We must emit
+    // exactly one trace entry (callIndex=0) with the first litellmRequestId.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-multi-id",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 500,
+            cached_input_tokens: 100,
+            output_tokens: 200,
+            litellm_request_ids: ["req-a", "req-b", "req-c"],
+            gateway_call_ids: ["gw-a", "gw-b", "gw-c"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-a");
+    expect(traces[0].usage.promptTokens).toBe(500);
+    expect(traces[0].usage.cachedPromptTokens).toBe(100);
+    expect(traces[0].usage.completionTokens).toBe(200);
+  });
+
+  it("passes through section chars and tool schema/result sizes to the trace", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): verify that real measurements
+    // from buildRunBody (sectionChars), paperclipSkillsField (toolSchemaChars),
+    // and tool event accumulation (toolResultChars) reach the trace entry.
+    const sectionChars = {
+      instructionsBundle: 1500,
+      cardInstructions: 300,
+      identityContract: 200,
+      wakePrompt: 400,
+      wakePayloadJson: 600,
+      sessionHandoff: 100,
+      taskMarkdown: 250,
+    };
+    const toolSchemaChars = 5000;
+    const toolSchemaTokens = 1250;
+    const toolResultChars = 800;
+    const toolResultTokens = 200;
+
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-sections",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 1000,
+            cached_input_tokens: 200,
+            output_tokens: 300,
+            litellm_request_ids: ["req-1"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      sectionChars,
+      toolSchemaChars,
+      toolSchemaTokens,
+      toolResultChars,
+      toolResultTokens,
+    });
+
+    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    const sections = traces[0].sections;
+    // system = instructionsBundle + cardInstructions
+    expect(sections.systemChars).toBe(1800);
+    // wake = identityContract + wakePrompt + wakePayloadJson
+    expect(sections.wakeChars).toBe(1200);
+    // history = sessionHandoff + taskMarkdown
+    expect(sections.historyChars).toBe(350);
+    // tool schemas and results pass through
+    expect(sections.toolsChars).toBe(5000);
+    expect(sections.toolsTokens).toBe(1250);
+    expect(sections.toolResultsChars).toBe(800);
+    expect(sections.toolResultsTokens).toBe(200);
+  });
 });
 
 // myrmidon(G4): defaults, cancellation, approvals, per-run model, instructions
