@@ -312,6 +312,33 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("keeps the legacy OAuth route alias while exposing Myrmidon wording", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const legacyCallback =
+      res.body.paths["/api/tools/oauth/paperclip-id/callback"].get;
+    expect(legacyCallback.summary).toBe(
+      "Handle a legacy brokered Myrmidon ID OAuth callback",
+    );
+    expect(res.body.paths["/api/tools/oauth/cloud-connector/callback"].get.summary).toBe(
+      "Handle a brokered Myrmidon Cloud OAuth callback",
+    );
+  });
+
+  it("keeps validation errors documented for the aliased enrollment route", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const enrollment =
+      res.body.paths["/api/tools/oauth/cloud-connector/enrollment"].post;
+    expect(enrollment.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"],
+      additionalProperties: false,
+    });
+    expect(enrollment.responses["422"]).toBeDefined();
+  });
+
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
 
