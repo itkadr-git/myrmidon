@@ -56,7 +56,7 @@ export class IdleStopService {
     this.config = {
       enabled: config.enabled ?? true,
       afterSec: config.afterSec ?? 1800, // 30 minutes default
-      healthTimeoutMs: config.healthTimeoutMs ?? 30000,
+      healthTimeoutMs: config.healthTimeoutMs ?? 420000,
       sweepIntervalMs: config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
     };
   }
