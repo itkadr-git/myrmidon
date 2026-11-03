@@ -1707,6 +1707,9 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       "hermes/config.yaml",
     ).content;
     expect(yaml).toContain("sessions:\n  retention_days: 30");
+    expect(yaml).toContain("auto_prune: true");
+    expect(yaml).toContain("vacuum_after_prune: true");
+    expect(yaml).toContain("min_vacuum_interval_days: 7");
   });
 
   it("leaves compression and sessions out of the document when unset", () => {

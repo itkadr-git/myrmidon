@@ -1,0 +1,66 @@
+diff --git a/gateway/lifecycle_ledger.py b/gateway/lifecycle_ledger.py
+index c7d3d63..4f7765c 100644
+--- a/gateway/lifecycle_ledger.py
++++ b/gateway/lifecycle_ledger.py
+@@ -196,7 +196,7 @@ _INTEGRITY_CHECK_PROGRESS_OPS = 100_000
+ _INTEGRITY_CHECK_LEASE_RENEW_S = 60.0
+ 
+ 
+-def _install_integrity_check_lease(conn: sqlite3.Connection) -> None:
++def _install_integrity_check_lease(conn: sqlite3.Connection, home: Optional[Path] = None) -> None:
+     """Claim the integrity-check lease and renew it from a SQLite progress handler.
+ 
+     ``report_startup_progress`` is a no-op when no watchdog is armed and never raises.
+@@ -204,8 +204,27 @@ def _install_integrity_check_lease(conn: sqlite3.Connection) -> None:
+     by design: no checker worker thread can outlive the check.
+     """
+     from hermes_startup_watchdog import report_startup_progress
++    import json
++
++    lease_path = _home_path(home, "state", "startup-progress-lease.json")
++
++    def _write_lease() -> None:
++        try:
++            lease_path.parent.mkdir(parents=True, exist_ok=True)
++            tmp = lease_path.with_suffix(".tmp")
++            tmp.write_text(json.dumps({
++                "phase": _INTEGRITY_CHECK_LEASE_PHASE,
++                "renewed_at": time.time(),
++                "monotonic": time.monotonic(),
++                "expected_s": _INTEGRITY_CHECK_LEASE_S,
++                "pid": os.getpid(),
++            }))
++            tmp.replace(lease_path)
++        except Exception:
++            pass
+ 
+     report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
++    _write_lease()
+     last_renew = time.monotonic()
+ 
+     def _on_progress() -> int:
+@@ -214,6 +233,7 @@ def _install_integrity_check_lease(conn: sqlite3.Connection) -> None:
+         if now - last_renew >= _INTEGRITY_CHECK_LEASE_RENEW_S:
+             last_renew = now
+             report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
++            _write_lease()
+         return 0
+ 
+     conn.set_progress_handler(_on_progress, _INTEGRITY_CHECK_PROGRESS_OPS)
+@@ -236,10 +256,15 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
+         return "absent"
+     try:
+         with closing(sqlite3.connect(str(path))) as conn:
+-            _install_integrity_check_lease(conn)
++            _install_integrity_check_lease(conn, home=home)
+             row = conn.execute("PRAGMA quick_check(1)").fetchone()
+     except Exception as exc:
+         return f"check-failed: {exc}"
++    finally:
++        try:
++            _home_path(home, "state", "startup-progress-lease.json").unlink(missing_ok=True)
++        except Exception:
++            pass
+     return "check-failed: no result" if not row or row[0] is None else str(row[0])
+ 
+ 

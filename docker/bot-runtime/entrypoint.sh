@@ -904,6 +904,11 @@ run_live_session_maintenance() {
   local manifest="${archive_dir}/live-sessions-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
   local list_file="${archive_dir}/.sessions.$$"
   local auth=(-H "Authorization: Bearer ${key}")
+  local state_db="${HERMES_HOME}/state.db"
+  local bytes_before=0 bytes_after=0
+  if [ -f "$state_db" ]; then
+    bytes_before="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
   : >"$list_file"
   local offset=0 page_file page_count
   while :; do
@@ -919,7 +924,8 @@ run_live_session_maintenance() {
 import json, sys
 try:
     value=json.load(open(sys.argv[1]))
-    print(len(value.get("sessions", [])) if isinstance(value, dict) else 0)
+    sessions = value.get("data") if "data" in value else value.get("sessions", [])
+    print(len(sessions) if isinstance(sessions, list) else 0)
 except Exception:
     print(0)
 PYEOF
@@ -940,10 +946,11 @@ try:
             value = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        for row in value.get("sessions", []) if isinstance(value, dict) else []:
+        sessions = value.get("data") if "data" in value else value.get("sessions", [])
+        for row in sessions if isinstance(sessions, list) else []:
             if not isinstance(row, dict) or row.get("pinned") or row.get("is_active"):
                 continue
-            last_active = row.get("last_active")
+            last_active = row.get("last_active") or row.get("ended_at") or row.get("started_at")
             if isinstance(last_active, (int, float)) and last_active < cutoff:
                 sid = row.get("id")
                 if isinstance(sid, str) and sid:
@@ -971,8 +978,13 @@ PYEOF
     sleep "$interval"
   done <<<"$ids"
   mv -f "${manifest}.tmp" "$manifest" 2>/dev/null || true
-  printf '{"downloaded":%s,"deleted":%s,"updatedAt":"%s"}\n' "$downloaded" "$deleted" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${HERMES_HOME}/.myrmidon/session-prune.json"
-  log "phase live_session_maintenance completed: downloaded ${downloaded}, deleted ${deleted}"
+  if [ -f "$state_db" ]; then
+    bytes_after="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
+  printf '{"stateDbBytesBefore":%s,"stateDbBytesAfter":%s,"deletedSessions":%s,"downloaded":%s,"deleted":%s,"updatedAt":"%s"}\n' \
+    "$bytes_before" "$bytes_after" "$deleted" "$downloaded" "$deleted" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"${HERMES_HOME}/.myrmidon/session-prune.json"
+  log "phase live_session_maintenance completed: downloaded ${downloaded}, deleted ${deleted}, state.db bytes: ${bytes_before} -> ${bytes_after}"
 }
 
 # Maintenance is intentionally detached from gateway startup. A failed pass is
