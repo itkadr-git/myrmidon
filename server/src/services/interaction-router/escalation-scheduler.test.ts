@@ -208,7 +208,10 @@ describe("interaction-router escalation scheduler: sweep contracts", () => {
       resolveSelect = resolve;
     });
 
-    const selectDue = vi.fn(() => selectPromise);
+    const selectDue = vi
+      .fn<() => Promise<DueEscalationItem[]>>()
+      .mockImplementationOnce(() => selectPromise)
+      .mockResolvedValueOnce([]);
     const escalateStep = vi.fn(async () => "escalated" as EscalationStepResult);
 
     const sweep = createInteractionEscalationSweep({
@@ -221,13 +224,11 @@ describe("interaction-router escalation scheduler: sweep contracts", () => {
     const pass1 = sweep();
     const pass2 = sweep();
 
-    // Resolving the batch
+    // Resolving the first batch lets the active pass process one card and then
+    // consume the second, already-configured empty batch.
     resolveSelect!([
       { interactionId: "card-concurrent", nextLevel: 1 },
     ]);
-
-    // Next pass for the loop termination
-    selectDue.mockResolvedValueOnce([]);
 
     const [res1, res2] = await Promise.all([pass1, pass2]);
     expect(res1).toBe(res2);
