@@ -104,7 +104,11 @@ function applyLocaleToShell(locale: Ui2Locale): void {
     null;
   if (root) root.setAttribute("lang", locale);
   const i18nInstance = (vendorI18n as { i18n?: typeof import("@/i18n").i18n }).i18n;
-  if (i18nInstance && typeof i18nInstance.changeLanguage === "function" && i18nInstance.language !== locale) {
+  if (
+    i18nInstance &&
+    typeof i18nInstance.changeLanguage === "function" &&
+    i18nInstance.language !== locale
+  ) {
     void i18nInstance.changeLanguage(locale);
   }
 }
@@ -157,8 +161,10 @@ export function Ui2I18nProvider({
 
   // Load the server preference once: it wins over the local mirror — but
   // only until the user switches in this session. A new user (no row)
-  // resolves to "en", the instance default.
+  // resolves to "en", the instance default. Explicit initialLocale (e.g. in tests)
+  // must not be overwritten.
   useEffect(() => {
+    if (initialLocale !== undefined) return;
     let active = true;
     void loadServerPreference().then((serverLocale) => {
       if (!active || userSwitched.current || !serverLocale) return;
@@ -171,7 +177,7 @@ export function Ui2I18nProvider({
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialLocale]);
 
   // Cross-tab sync: another tab switched the language.
   useEffect(() => {
