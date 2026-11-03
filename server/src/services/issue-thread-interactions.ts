@@ -17,6 +17,7 @@ import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
+  companyMemberships,
   companySecretProposals,
   companies,
   documents,
@@ -600,18 +601,26 @@ function isEquivalentCreateRequest(
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
 ) {
+  const inferredAddresseeMatches =
+    input.addresseeAgentId == null &&
+    input.addresseeUserId == null &&
+    (input as any).addresseeQueue == null;
   const addresseeAgentMatches =
     (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) ||
-    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+    inferredAddresseeMatches;
   const addresseeUserMatches =
     (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) ||
-    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+    inferredAddresseeMatches;
+  const addresseeQueueMatches =
+    (row.addresseeQueue ?? null) === ((input as any).addresseeQueue ?? null) ||
+    inferredAddresseeMatches;
 
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
     addresseeAgentMatches &&
     addresseeUserMatches &&
+    addresseeQueueMatches &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -3609,41 +3618,13 @@ export function issueThreadInteractionService(
           serviceQueue: (normalizedData as any).addresseeQueue,
         };
       } else {
-        if (
-          issueContextRow?.assigneeAgentId &&
-          (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
-        ) {
-          recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
-        } else if (
-          issueContextRow?.assigneeUserId &&
-          (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
-        ) {
-          recipientCandidate = { userId: issueContextRow.assigneeUserId };
-        } else if (
-          issueContextRow?.responsibleAgentId &&
-          (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
-        ) {
-          recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
-        } else if (
-          issueContextRow?.createdByAgentId &&
-          (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
-        ) {
-          recipientCandidate = { agentId: issueContextRow.createdByAgentId };
-        } else if (
-          (normalizedData.kind === "request_confirmation" ||
-            normalizedData.kind === "suggest_tasks" ||
-            normalizedData.kind === "ask_user_questions") &&
-          policy.effectiveResolverPolicy !== "human_only" &&
-          Boolean(actor.agentId) &&
-          !("toolAction" in normalizedData.payload) &&
-          !("secretProposal" in normalizedData.payload)
-        ) {
-          // Legacy agent-created interactions are handled by the board queue
-          // when no concrete owner can be inferred. Human-only interactions
-          // still go through the strict user-recipient branch above.
-          recipientCandidate = { serviceQueue: "default" };
-        } else if (policy.effectiveResolverPolicy === "human_only") {
+        if (policy.effectiveResolverPolicy === "human_only") {
           if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
             issueContextRow?.responsibleUserId &&
             (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
           ) {
@@ -3658,20 +3639,81 @@ export function issueThreadInteractionService(
             (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
           ) {
             recipientCandidate = { userId: issueContextRow.conversationUserId };
+          } else {
+            // 1.6.5-OWNER-FALLBACK: check company owners
+            const [ownerMembership] = await db
+              .select({ userId: companyMemberships.principalId })
+              .from(companyMemberships)
+              .where(
+                and(
+                  eq(companyMemberships.companyId, issue.companyId),
+                  eq(companyMemberships.principalType, "user"),
+                  eq(companyMemberships.status, "active"),
+                  eq(companyMemberships.membershipRole, "owner"),
+                ),
+              )
+              .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+              .limit(1);
+            if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
+              recipientCandidate = { userId: ownerMembership.userId };
+            } else if ((actor as any).systemId) {
+              // System runtime review without user falls back to the default operator queue
+              recipientCandidate = { serviceQueue: "default" };
+            }
           }
-        } else if (
-          actor.agentId &&
-          actor.agentId === issueContextRow?.assigneeAgentId
-        ) {
-          recipientCandidate = { serviceQueue: "default" };
-        } else if (
-          normalizedData.kind === "suggest_tasks" ||
-          normalizedData.kind === "ask_user_questions"
-        ) {
-          // Legacy agent-created interactions are handled by the board queue
-          // when no concrete owner can be inferred. Human-only interactions
-          // already returned through the strict user-recipient branch above.
-          recipientCandidate = { serviceQueue: "default" };
+        } else {
+          if (
+            issueContextRow?.assigneeAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
+          } else if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
+            issueContextRow?.responsibleAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
+          ) {
+            const [respAgent] = await db
+              .select({ status: agents.status })
+              .from(agents)
+              .where(and(eq(agents.id, issueContextRow.responsibleAgentId), eq(agents.companyId, issue.companyId)))
+              .limit(1);
+            if (respAgent && isAgentStatusInvokable(respAgent.status)) {
+              recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
+            }
+          } else if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.createdByAgentId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if (
+            issueContextRow?.conversationUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.conversationUserId };
+          } else if (
+            actor.agentId &&
+            actor.agentId === issueContextRow?.assigneeAgentId &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload)
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if ((actor as any).systemId) {
+            recipientCandidate = { serviceQueue: "default" };
+          }
         }
       }
 
@@ -3684,14 +3726,18 @@ export function issueThreadInteractionService(
       ) {
         routeType = "operator_action";
       } else if (
+        (recipientCandidate && "userId" in recipientCandidate) ||
+        normalizedData.kind === "ask_user_questions" ||
+        policy.effectiveResolverPolicy === "human_only"
+      ) {
+        routeType = "human_input";
+      } else if (
         normalizedData.kind === "request_checkbox_confirmation" ||
         normalizedData.kind === "request_item_verdicts"
       ) {
         routeType = "approval";
       } else {
-        routeType = policy.effectiveResolverPolicy === "human_only"
-          ? "human_input"
-          : "decision";
+        routeType = "decision";
       }
 
       let resolvedRecipient: InteractionRecipient;

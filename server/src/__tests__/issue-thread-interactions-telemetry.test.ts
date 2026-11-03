@@ -86,6 +86,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       level: "task",
       status: "active",
     });
+    const defaultOwnerUserId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -93,9 +94,10 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       title,
       status: "in_progress",
       priority: "medium",
+      responsibleUserId: defaultOwnerUserId,
     });
 
-    return { companyId, goalId, issueId };
+    return { companyId, goalId, issueId, defaultOwnerUserId };
   }
 
   async function seedAgent(companyId: string, role: string) {
