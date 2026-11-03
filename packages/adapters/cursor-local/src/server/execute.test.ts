@@ -213,6 +213,15 @@ describe("cursor execute", () => {
   });
 
   it("reruns sandbox command resolution after managed runtime setup and keeps the original sandbox home", async () => {
+    const systemPath = [
+      "/usr/local/bin",
+      "/opt/homebrew/bin",
+      "/usr/local/sbin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+    ].join(path.delimiter);
     setPrepareCursorSandboxCommand.mockReset();
     const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
     let finalPreparedCommand: string | null = null;
@@ -247,9 +256,10 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       expect(input.remoteSystemHomeDirHint).toBe(systemHomeDir);
       const preferredCommandPath = path.join(systemHomeDir, ".local", "bin", input.command);
       finalPreparedCommand = preferredCommandPath;
+      const inheritedPath = input.env.PATH ?? process.env.PATH ?? systemPath;
       const runtimeEnv = {
         ...input.env,
-        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${input.env.PATH}`,
+        PATH: `${path.join(systemHomeDir, ".local", "bin")}${path.delimiter}${inheritedPath}`,
       };
       await fs.mkdir(path.dirname(preferredCommandPath), { recursive: true });
       await fs.writeFile(preferredCommandPath, preferredAgentScript);
@@ -271,9 +281,14 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
     const runner = {
       execute: async (input: { command: string; args?: string[]; env?: Record<string, string>; stdin?: string }) => {
         runnerState.commands.push(input.command);
+        const inheritedPath = input.env?.PATH ?? process.env.PATH ?? systemPath;
         return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
           cwd: remoteWorkspace,
-          env: input.env ?? {},
+          env: {
+            HOME: systemHomeDir,
+            ...(input.env ?? {}),
+            PATH: inheritedPath,
+          },
           timeoutSec: 30,
           graceSec: 5,
           stdin: input.stdin,
