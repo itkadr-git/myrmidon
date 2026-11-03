@@ -84,32 +84,87 @@ export const defaultFsOps = {
 };
 
 /**
- * Build the docker CLI prefix that runs a PostgreSQL binary inside a container.
- * D9: myr-vm1 has no host-level PostgreSQL; use the pgvector image (same as the
- * standby service) so psql / pg_basebackup / pg_ctl are always available.
+ * Build the docker CLI prefix that executes a PostgreSQL binary inside the
+ * running myrmidon-pg-standby container via docker exec.
+ *
+ * ADM rehearsal feedback (03.11): the node wrapper runs in node:20-alpine
+ * which has no docker CLI, so `docker run` mode can never work.  Instead we
+ * exec into the already-running standby container which has all PG binaries:
+ *   /usr/bin/psql, /usr/bin/pg_basebackup, /usr/lib/postgresql/18/bin/pg_ctl
+ * The postgres user inside the container is uid 999.
  */
 export function dockerPgPrefix(config = DEFAULT_CONFIG) {
-  const image = config.pgImage || DEFAULT_CONFIG.pgImage;
-  return ["run", "--rm", "--user", "999", image];
+  const container = config.pgContainer || DEFAULT_CONFIG.pgContainer;
+  return ["exec", "-u", "postgres", container];
 }
 
 /**
- * Rewrite a PG command + args for docker execution.
- * Host paths under /srv or /var are bind-mounted read-write at the same path.
+ * Map a host-side PG tool path to the path inside the standby container.
+ * pg_ctl is not in the container PATH; it lives under the PostgreSQL lib dir.
+ */
+export function mapPgBinaryForDocker(cmd) {
+  if (cmd === "pg_ctl") {
+    return "/usr/lib/postgresql/18/bin/pg_ctl";
+  }
+  return cmd;
+}
+
+/**
+ * Determine whether a psql call targets the local standby (inside the
+ * container) or a remote host.  When the target is 127.0.0.1 / localhost and
+ * the port equals the configured standbyPort (host-mapped), we remap to the
+ * container-internal port 5432 so the query reaches the actual standby.
+ */
+export function remapHostPortForDocker(host, port, config = DEFAULT_CONFIG) {
+  const standbyPort = config.standbyPort || DEFAULT_CONFIG.standbyPort;
+  if (
+    (host === "127.0.0.1" || host === "localhost" || host === "::1") &&
+    String(port) === String(standbyPort)
+  ) {
+    return { host: "127.0.0.1", port: 5432 };
+  }
+  return { host, port };
+}
+
+/**
+ * Rewrite a PG command + args for docker exec execution inside the standby container.
+ * - Binary paths are mapped (pg_ctl → /usr/lib/postgresql/18/bin/pg_ctl).
+ * - Host/port pairs targeting the local standby are remapped to the container-internal port.
+ * - Host paths under /srv are already bind-mounted into the container at the same path.
  */
 export function wrapPgForDocker(cmd, args, config = DEFAULT_CONFIG) {
   const prefix = dockerPgPrefix(config);
-  const mounts = [];
-  const seen = new Set();
-  for (const a of args) {
-    if (typeof a === "string" && (a.startsWith("/srv/") || a.startsWith("/var/") || a.startsWith("/etc/"))) {
-      if (!seen.has(a)) {
-        seen.add(a);
-        mounts.push("-v", `${a}:${a}`);
-      }
+  const mappedCmd = mapPgBinaryForDocker(cmd);
+
+  // Find -h and -p pairs and remap them together
+  let targetHost = null;
+  let targetPort = null;
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "-h") targetHost = args[i + 1];
+    if (args[i] === "-p") targetPort = args[i + 1];
+  }
+
+  let remappedHost = targetHost;
+  let remappedPort = targetPort;
+  if (targetHost && targetPort) {
+    const r = remapHostPortForDocker(targetHost, targetPort, config);
+    remappedHost = r.host;
+    remappedPort = String(r.port);
+  }
+
+  const rewritten = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-h" && i + 1 < args.length && remappedHost !== null) {
+      rewritten.push("-h", remappedHost);
+      i++; // skip original value
+    } else if (args[i] === "-p" && i + 1 < args.length && remappedPort !== null) {
+      rewritten.push("-p", remappedPort);
+      i++; // skip original value
+    } else {
+      rewritten.push(args[i]);
     }
   }
-  return { cmd: "docker", args: [...prefix, ...mounts, cmd, ...args] };
+  return { cmd: "docker", args: [...prefix, mappedCmd, ...rewritten] };
 }
 
 /**
@@ -454,6 +509,40 @@ export function queryPostgres(sql, { host, port, user, db, timeoutMs = 10000 }, 
 }
 
 /**
+ * Fetch the primary's current WAL LSN via the replication protocol.
+ *
+ * ADM rehearsal feedback (03.11): the primary's pg_current_wal_lsn() requires
+ * the application password, but the passfile only contains myr_replicator.
+ * The replication protocol (IDENTIFY_SYSTEM) works under myr_replicator
+ * without an application password.
+ *
+ * Uses psql with replication=database, which speaks the PostgreSQL replication
+ * protocol.  IDENTIFY_SYSTEM returns: system_identifier | timeline | xlogpos | dbname
+ */
+export function queryPrimaryLsn({ host, port, user = "myr_replicator", timeoutMs = 10000 }, runner = defaultRunner) {
+  const args = [
+    "-h", String(host),
+    "-p", String(port),
+    "-U", String(user),
+    "-d", "replication=database",
+    "-t", "-A",
+    "-c", "IDENTIFY_SYSTEM;",
+  ];
+  const res = runner("psql", args, { timeoutMs });
+  if (res.exitCode !== 0 || !res.stdout) {
+    return { ok: false, lsn: null, error: res.stderr || "IDENTIFY_SYSTEM failed" };
+  }
+  // Output: system_identifier | timeline | xlogpos | dbname
+  const line = res.stdout.trim().split("\n")[0];
+  const parts = line.split("|").map((p) => p.trim());
+  const xlogpos = parts[2] || "";
+  if (!xlogpos || !xlogpos.includes("/")) {
+    return { ok: false, lsn: null, error: `Unexpected IDENTIFY_SYSTEM output: ${line}` };
+  }
+  return { ok: true, lsn: xlogpos, raw: line };
+}
+
+/**
  * Setup warm standby replication for cluster / target DB.
  */
 export function setupStandby(target = "board", options = {}, deps = {}) {
@@ -744,7 +833,8 @@ export function setupStandby(target = "board", options = {}, deps = {}) {
  * Implements fail-closed checks against primary LSN and standby replay LSN.
  */
 export function checkLag(target = "all", options = {}, deps = {}) {
-  const runner = deps.runner || defaultRunner;
+  const rawRunner = deps.runner || defaultRunner;
+  const runner = createPgRunner(rawRunner, options);
 
   if (target === "all") {
     const boardRes = checkLag("board", options, deps);
@@ -834,15 +924,20 @@ export function checkLag(target = "all", options = {}, deps = {}) {
     };
   }
 
-  // Standby is in recovery; now measure against primary current WAL LSN
+  // Standby is in recovery; now measure against primary current WAL LSN.
+  // ADM rehearsal feedback (03.11): use the replication protocol (IDENTIFY_SYSTEM)
+  // under myr_replicator — the passfile only has the replication user, not the
+  // application password needed for pg_current_wal_lsn().
   let primaryLsn = options.primaryLsn;
   if (!primaryLsn && !options.offline) {
-    const pRes = queryPostgres(
-      "SELECT COALESCE(pg_current_wal_lsn()::text, '');",
-      { host: primaryHost, port: primaryPort, user: dbUser, db: dbName },
+    const replUser = isBoard
+      ? options.boardReplUser || DEFAULT_CONFIG.boardReplUser
+      : options.hindsightReplUser || DEFAULT_CONFIG.hindsightReplUser;
+    const lsnRes = queryPrimaryLsn(
+      { host: primaryHost, port: primaryPort, user: replUser },
       runner
     );
-    if (pRes.exitCode !== 0 || !pRes.stdout || pRes.stderr?.includes("error")) {
+    if (!lsnRes.ok) {
       // Primary unreachable -> fail-closed: cannot prove RPO
       return {
         target,
@@ -851,12 +946,12 @@ export function checkLag(target = "all", options = {}, deps = {}) {
         role: "standby",
         inRecovery: true,
         rpoStatus: "primary_unreachable",
-        error: pRes.stderr || "Primary query failed",
+        error: lsnRes.error || "Primary LSN query failed",
         byteLag: null,
         timeLagSeconds: null,
       };
     }
-    primaryLsn = pRes.stdout.trim().split("\n")[0].trim();
+    primaryLsn = lsnRes.lsn;
   }
 
   let slotInfo = {};
@@ -1078,7 +1173,8 @@ export function executeFailover(target = "board", options = {}, deps = {}) {
  * Execute switchback: restore standby replica from primary.
  */
 export function executeSwitchback(target = "board", options = {}, deps = {}) {
-  const runner = deps.runner || defaultRunner;
+  const rawRunner = deps.runner || defaultRunner;
+  const runner = createPgRunner(rawRunner, options);
   const fsOps = deps.fsOps || defaultFsOps;
   const isBoard = target === "board";
   const primaryHost = options.primaryHost || DEFAULT_CONFIG.primaryHost;
@@ -1263,8 +1359,11 @@ export function executeRehearsal(target = "board", options = {}, deps = {}) {
     "-Xs",
     "-R",
   ];
-  if (options.maxRate) {
-    snapshotArgs.push(`--max-rate=${options.maxRate}`);
+  // ADM rehearsal feedback (03.11): default --max-rate to 100M for drill snapshots
+  // (49 GB on shared disk with CI runners). Explicit --max-rate overrides.
+  const effectiveMaxRate = options.maxRate || "100M";
+  if (effectiveMaxRate) {
+    snapshotArgs.push(`--max-rate=${effectiveMaxRate}`);
   }
   const snapRes = runner("pg_basebackup", snapshotArgs, {
     timeoutMs: basebackupTimeoutMs,

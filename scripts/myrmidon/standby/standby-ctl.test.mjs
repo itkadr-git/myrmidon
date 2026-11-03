@@ -19,6 +19,9 @@ import {
   dockerPgPrefix,
   wrapPgForDocker,
   createPgRunner,
+  mapPgBinaryForDocker,
+  remapHostPortForDocker,
+  queryPrimaryLsn,
 } from "./standby-ctl.mjs";
 
 test("parseLsn parses valid PostgreSQL LSN strings into BigInt", () => {
@@ -200,14 +203,14 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
       if (sql.includes("pg_replication_slots")) {
         return { exitCode: 0, stdout: "lost|1000|1024\n", stderr: "" };
       }
-      if (sql.includes("pg_current_wal_lsn")) {
-        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   };
-  const lostRes = checkLag("board", {}, { runner: lostSlotMock });
+  const lostRes = checkLag("board", { pgRunner: "host" }, { runner: lostSlotMock });
   assert.equal(lostRes.success, false);
   assert.equal(lostRes.rpoStatus, "slot_wal_lost");
   assert.match(lostRes.error, /standby_board_slot/);
@@ -219,14 +222,14 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
       if (sql.includes("pg_replication_slots")) {
         return { exitCode: 0, stdout: "streaming|1048576|2048\n", stderr: "" };
       }
-      if (sql.includes("pg_current_wal_lsn")) {
-        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   };
-  const okRes = checkLag("board", {}, { runner: healthySlotMock });
+  const okRes = checkLag("board", { pgRunner: "host" }, { runner: healthySlotMock });
   assert.equal(okRes.success, true);
   assert.equal(okRes.slotWalStatus, "streaming");
   assert.equal(okRes.slotRetainedBytes, 1048576);
@@ -259,8 +262,8 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
   // Normal lag check
   const normalMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
-    if (sql.includes("pg_current_wal_lsn")) {
-      return { exitCode: 0, stdout: "1/2000000\n", stderr: "" };
+    if (sql.includes("IDENTIFY_SYSTEM")) {
+      return { exitCode: 0, stdout: "729374172937|1|1/2000000|\n", stderr: "" };
     }
     return {
       exitCode: 0,
@@ -269,7 +272,7 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
     };
   };
 
-  const normal = checkLag("board", { now, rpoMaxSeconds: 900 }, { runner: normalMock });
+  const normal = checkLag("board", { now, rpoMaxSeconds: 900, pgRunner: "host" }, { runner: normalMock });
   assert.equal(normal.success, true);
   assert.equal(normal.role, "standby");
   assert.equal(normal.byteLag, 0x1000000n);
@@ -279,7 +282,7 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
 
   // Standby query failure -> fail-closed
   const failStandbyMock = () => ({ exitCode: 2, stdout: "", stderr: "psql: error: connection refused" });
-  const failedStandby = checkLag("board", {}, { runner: failStandbyMock });
+  const failedStandby = checkLag("board", { pgRunner: "host" }, { runner: failStandbyMock });
   assert.equal(failedStandby.success, false);
   assert.equal(failedStandby.rpoOk, false);
   assert.equal(failedStandby.role, "unreachable");
@@ -287,12 +290,12 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
   // Primary unreachable -> fail-closed
   const failPrimaryMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
-    if (sql.includes("pg_current_wal_lsn")) {
+    if (sql.includes("IDENTIFY_SYSTEM")) {
       return { exitCode: 2, stdout: "", stderr: "psql: error: primary host down" };
     }
     return { exitCode: 0, stdout: "t | 1/1000 | 1/1000 | 2026-10-30 11:59:00+00\n", stderr: "" };
   };
-  const failedPrimary = checkLag("board", {}, { runner: failPrimaryMock });
+  const failedPrimary = checkLag("board", { pgRunner: "host" }, { runner: failPrimaryMock });
   assert.equal(failedPrimary.success, false);
   assert.equal(failedPrimary.rpoOk, false);
   assert.equal(failedPrimary.rpoStatus, "primary_unreachable");
@@ -545,7 +548,7 @@ test("executeSwitchback fails closed without explicit force flag", () => {
     },
   };
 
-  const res = executeSwitchback("board", {}, { runner: mockRunner, fsOps: mockFs });
+  const res = executeSwitchback("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
   assert.equal(res.success, false);
   assert.match(res.error, /force/);
   assert.equal(rmCalled, false);
@@ -620,8 +623,8 @@ test("runCli commands output structured JSON and return correct exit codes", () 
       }
       return { exitCode: 0, stdout: `t|1/1000|1/1000|${new Date(Date.now() - 5000).toISOString()}\n`, stderr: "" };
     }
-    if (sql.includes("pg_current_wal_lsn")) {
-      return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+    if (sql.includes("IDENTIFY_SYSTEM")) {
+      return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "1\n", stderr: "" };
   };
@@ -636,7 +639,7 @@ test("runCli commands output structured JSON and return correct exit codes", () 
   };
 
   // check-lag within RPO -> exit 0
-  const codeCheck = runCli(["check-lag", "board", "--offline"], {}, { runner: mockRunner, fsOps: mockFs });
+  const codeCheck = runCli(["check-lag", "board", "--offline", "--pg-runner=host"], {}, { runner: mockRunner, fsOps: mockFs });
   assert.equal(codeCheck, 0);
 
   // failover dry-run -> exit 0
@@ -785,8 +788,8 @@ test("checkLag verifies both databases on shared standby cluster port 5433 witho
           stderr: "",
         };
       }
-      if (sql.includes("pg_current_wal_lsn")) {
-        return { exitCode: 0, stdout: "1/1000\n", stderr: "" };
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
       }
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -835,7 +838,7 @@ test("checkLag respects unified custom standbyPort and primaryPort on single clu
 
   const customStandbyPort = 5444;
   const customPrimaryPort = 5422;
-  const res = checkLag("all", { standbyPort: customStandbyPort, primaryPort: customPrimaryPort }, { runner: mockRunner });
+  const res = checkLag("all", { standbyPort: customStandbyPort, primaryPort: customPrimaryPort, pgRunner: "host" }, { runner: mockRunner });
   assert.equal(res.success, true);
 
   const standbyCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === String(customStandbyPort));
@@ -856,7 +859,7 @@ test("runCli check-lag defaults to checking both databases on shared cluster por
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
-  const code = runCli(["check-lag", "--offline"], {}, { runner: mockRunner });
+  const code = runCli(["check-lag", "--offline", "--pg-runner=host"], {}, { runner: mockRunner });
   assert.equal(code, 0);
 
   const queriedDbs = calls
@@ -902,4 +905,302 @@ test("runCli rehearse respects --drill-dir and --drill-port and executes success
 
   const drillCalls = calls.filter((c) => c.cmd === "psql" && c.args.includes("-p") && c.args[c.args.indexOf("-p") + 1] === "5599");
   assert.ok(drillCalls.length >= 2, "Smoke tests executed on custom drill port 5599");
+});
+
+// ── ADM rehearsal feedback (03.11) ─────────────────────────────────────────
+
+test("dockerPgPrefix uses docker exec into the standby container", () => {
+  const prefix = dockerPgPrefix();
+  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "myrmidon-pg-standby"]);
+});
+
+test("dockerPgPrefix respects custom pgContainer", () => {
+  const prefix = dockerPgPrefix({ pgContainer: "custom-pg" });
+  assert.deepStrictEqual(prefix, ["exec", "-u", "postgres", "custom-pg"]);
+});
+
+test("mapPgBinaryForDocker maps pg_ctl to full container path", () => {
+  assert.equal(mapPgBinaryForDocker("pg_ctl"), "/usr/lib/postgresql/18/bin/pg_ctl");
+  assert.equal(mapPgBinaryForDocker("psql"), "psql");
+  assert.equal(mapPgBinaryForDocker("pg_basebackup"), "pg_basebackup");
+  assert.equal(mapPgBinaryForDocker("pg_isready"), "pg_isready");
+});
+
+test("remapHostPortForDocker remaps standby 127.0.0.1:5433 to container port 5432", () => {
+  const r = remapHostPortForDocker("127.0.0.1", 5433);
+  assert.deepStrictEqual(r, { host: "127.0.0.1", port: 5432 });
+});
+
+test("remapHostPortForDocker does NOT remap primary connections", () => {
+  const r = remapHostPortForDocker("10.10.100.1", 15432);
+  assert.deepStrictEqual(r, { host: "10.10.100.1", port: 15432 });
+});
+
+test("remapHostPortForDocker does NOT remap non-standby localhost ports", () => {
+  const r = remapHostPortForDocker("127.0.0.1", 5533);
+  assert.deepStrictEqual(r, { host: "127.0.0.1", port: 5533 });
+});
+
+test("wrapPgForDocker builds docker exec command for psql to standby", () => {
+  const wrapped = wrapPgForDocker("psql", [
+    "-h", "127.0.0.1", "-p", "5433",
+    "-U", "paperclip", "-d", "paperclip",
+    "-t", "-A", "-c", "SELECT 1;",
+  ]);
+  assert.equal(wrapped.cmd, "docker");
+  assert.deepStrictEqual(wrapped.args, [
+    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "psql",
+    "-h", "127.0.0.1", "-p", "5432",
+    "-U", "paperclip", "-d", "paperclip",
+    "-t", "-A", "-c", "SELECT 1;",
+  ]);
+});
+
+test("wrapPgForDocker builds docker exec command for psql to primary (no remap)", () => {
+  const wrapped = wrapPgForDocker("psql", [
+    "-h", "10.10.100.1", "-p", "15432",
+    "-U", "myr_replicator", "-d", "replication=database",
+    "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
+  ]);
+  assert.equal(wrapped.cmd, "docker");
+  assert.deepStrictEqual(wrapped.args, [
+    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "psql",
+    "-h", "10.10.100.1", "-p", "15432",
+    "-U", "myr_replicator", "-d", "replication=database",
+    "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
+  ]);
+});
+
+test("wrapPgForDocker maps pg_ctl to container path", () => {
+  const wrapped = wrapPgForDocker("pg_ctl", ["promote", "-D", "/srv/standby/myrmidon-pg/data"]);
+  assert.equal(wrapped.cmd, "docker");
+  assert.deepStrictEqual(wrapped.args, [
+    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "/usr/lib/postgresql/18/bin/pg_ctl",
+    "promote", "-D", "/srv/standby/myrmidon-pg/data",
+  ]);
+});
+
+test("wrapPgForDocker maps pg_basebackup to docker exec", () => {
+  const wrapped = wrapPgForDocker("pg_basebackup", [
+    "-h", "127.0.0.1", "-p", "5433",
+    "-U", "myr_replicator", "-D", "/srv/standby/drill",
+    "-Fp", "-Xs", "-R", "--max-rate=100M",
+  ]);
+  assert.equal(wrapped.cmd, "docker");
+  assert.deepStrictEqual(wrapped.args, [
+    "exec", "-u", "postgres", "myrmidon-pg-standby",
+    "pg_basebackup",
+    "-h", "127.0.0.1", "-p", "5432",
+    "-U", "myr_replicator", "-D", "/srv/standby/drill",
+    "-Fp", "-Xs", "-R", "--max-rate=100M",
+  ]);
+});
+
+test("queryPrimaryLsn parses IDENTIFY_SYSTEM output", () => {
+  const mockRunner = (cmd, args) => {
+    if (cmd === "psql") {
+      return {
+        exitCode: 0,
+        stdout: "729374172937|1|0/17FCA00|\n",
+        stderr: "",
+      };
+    }
+    return { exitCode: 1, stdout: "", stderr: "" };
+  };
+  const res = queryPrimaryLsn({ host: "10.10.100.1", port: 15432, user: "myr_replicator" }, mockRunner);
+  assert.equal(res.ok, true);
+  assert.equal(res.lsn, "0/17FCA00");
+});
+
+test("queryPrimaryLsn handles failure", () => {
+  const mockRunner = () => ({ exitCode: 2, stdout: "", stderr: "connection refused" });
+  const res = queryPrimaryLsn({ host: "10.10.100.1", port: 15432 }, mockRunner);
+  assert.equal(res.ok, false);
+  assert.equal(res.lsn, null);
+});
+
+test("queryPrimaryLsn uses replication=database connection string", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    return { exitCode: 0, stdout: "729374172937|1|0/17FCA00|\n", stderr: "" };
+  };
+  queryPrimaryLsn({ host: "10.10.100.1", port: 15432, user: "myr_replicator" }, mockRunner);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "psql");
+  assert.ok(calls[0].args.includes("replication=database"));
+  assert.ok(calls[0].args.includes("IDENTIFY_SYSTEM;"));
+  assert.ok(calls[0].args.includes("myr_replicator"));
+});
+
+test("checkLag uses createPgRunner — docker mode wraps psql in docker exec", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "docker") {
+      // docker exec calls: simulate success with standby output
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = checkLag("board", { pgRunner: "docker" }, { runner: mockRunner });
+  assert.equal(res.success, true);
+
+  // Verify that psql calls were wrapped in docker exec
+  const dockerExecCalls = calls.filter((c) => c.cmd === "docker");
+  assert.ok(dockerExecCalls.length >= 1, "At least one docker exec call was made");
+  for (const call of dockerExecCalls) {
+    assert.ok(call.args[0] === "exec", "docker command uses exec");
+    assert.ok(call.args.includes("myrmidon-pg-standby"), "exec targets the standby container");
+  }
+});
+
+test("checkLag uses createPgRunner — host mode passes psql directly", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = checkLag("board", { pgRunner: "host" }, { runner: mockRunner });
+  assert.equal(res.success, true);
+
+  // In host mode, psql should be called directly (not wrapped in docker)
+  const psqlCalls = calls.filter((c) => c.cmd === "psql");
+  assert.ok(psqlCalls.length >= 1, "psql called directly in host mode");
+  const dockerCalls = calls.filter((c) => c.cmd === "docker");
+  assert.equal(dockerCalls.length, 0, "No docker exec calls in host mode");
+});
+
+test("checkLag primary LSN uses replication protocol (IDENTIFY_SYSTEM)", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "docker") {
+      // Check if this is an IDENTIFY_SYSTEM call
+      const isIdentify = args.includes("IDENTIFY_SYSTEM;");
+      if (isIdentify) {
+        return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = checkLag("board", { pgRunner: "docker" }, { runner: mockRunner });
+  assert.equal(res.success, true);
+  assert.equal(res.primaryLsn, "0/2000");
+
+  // Verify IDENTIFY_SYSTEM was called via replication protocol
+  const identifyCalls = calls.filter(
+    (c) => c.cmd === "docker" && c.args.includes("IDENTIFY_SYSTEM;")
+  );
+  assert.ok(identifyCalls.length >= 1, "IDENTIFY_SYSTEM was called");
+  for (const call of identifyCalls) {
+    assert.ok(call.args.includes("replication=database"), "Uses replication=database");
+    assert.ok(call.args.includes("myr_replicator"), "Uses myr_replicator user");
+  }
+});
+
+test("checkLag standby query goes to container port 5432 via docker exec", () => {
+  const calls = [];
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "docker") {
+      // Check if this is a standby query (not IDENTIFY_SYSTEM)
+      const isIdentify = args.includes("IDENTIFY_SYSTEM;");
+      if (isIdentify) {
+        return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "t|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = checkLag("board", { pgRunner: "docker" }, { runner: mockRunner });
+  assert.equal(res.success, true);
+
+  // Find the standby query call (has pg_is_in_recovery or pg_last_wal)
+  const standbyCalls = calls.filter(
+    (c) => c.cmd === "docker" && !c.args.includes("IDENTIFY_SYSTEM;")
+  );
+  assert.ok(standbyCalls.length >= 1, "Standby query was made");
+  for (const call of standbyCalls) {
+    const pIdx = call.args.indexOf("-p");
+    assert.ok(pIdx !== -1, "Has -p flag");
+    assert.equal(call.args[pIdx + 1], "5432", "Standby query uses container port 5432");
+  }
+});
+
+test("executeRehearsal passes --max-rate=100M to pg_basebackup by default", () => {
+  const calls = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", { pgRunner: "host" }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+
+  const basebackupCall = calls.find((c) => c.cmd === "pg_basebackup");
+  assert.ok(basebackupCall, "pg_basebackup was called");
+  assert.ok(
+    basebackupCall.args.includes("--max-rate=100M"),
+    "Default --max-rate=100M passed to pg_basebackup"
+  );
+});
+
+test("executeRehearsal respects explicit --max-rate override", () => {
+  const calls = [];
+  const mockFs = {
+    mkdirSync: () => {},
+    writeFileSync: () => {},
+    existsSync: () => true,
+    readFileSync: () => "",
+    rmSync: () => {},
+  };
+
+  const mockRunner = (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "psql") {
+      const sql = args[args.indexOf("-c") + 1] || "";
+      if (sql.includes("pg_is_in_recovery")) return { exitCode: 0, stdout: "f\n", stderr: "" };
+      if (sql.includes("SELECT 1;")) return { exitCode: 0, stdout: "1\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  const res = executeRehearsal("board", { pgRunner: "host", maxRate: "50M" }, { runner: mockRunner, fsOps: mockFs });
+  assert.equal(res.success, true);
+
+  const basebackupCall = calls.find((c) => c.cmd === "pg_basebackup");
+  assert.ok(basebackupCall, "pg_basebackup was called");
+  assert.ok(
+    basebackupCall.args.includes("--max-rate=50M"),
+    "Explicit --max-rate=50M overrides default"
+  );
+  assert.ok(
+    !basebackupCall.args.includes("--max-rate=100M"),
+    "Default 100M not present when overridden"
+  );
 });

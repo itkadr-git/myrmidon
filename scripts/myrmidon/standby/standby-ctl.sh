@@ -1,29 +1,41 @@
 #!/usr/bin/env bash
 # Wrapper for Myrmidon center warm standby management tool (T9).
 #
-# D9: myr-vm1 has no host-level Node.js or PostgreSQL client binaries.
-# When docker is available we run standby-ctl.mjs inside a node:20-alpine
-# container with the standby scripts and data directories bind-mounted.
-# Set STANDBY_CTL_NO_DOCKER=1 (or STANDBY_PG_RUNNER=host) to force host mode.
+# ADM rehearsal feedback (03.11): myr-vm1 has no host-level Node.js.
+# The wrapper runs standby-ctl.mjs inside a node:20-alpine container.
+# PostgreSQL tools (psql, pg_basebackup, pg_ctl, pg_isready) are NOT executed
+# via `docker run` — the node:20-alpine image has no docker CLI.  Instead,
+# standby-ctl.mjs invokes them via `docker exec` into the running
+# myrmidon-pg-standby container (see createPgRunner in standby-ctl.mjs).
+#
+# We install docker-cli inside the ephemeral node container so that
+# standby-ctl.mjs can issue `docker exec` commands through the mounted
+# docker socket.
+#
+# Set STANDBY_CTL_NO_DOCKER=1 to force host mode (requires host node + PG clients).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run_in_docker() {
   local node_image="${STANDBY_NODE_IMAGE:-node:20-alpine}"
+  # Mount the host docker socket so standby-ctl.mjs can `docker exec` into
+  # the standby container for PG binaries.  Mount standby dirs read-write.
+  # Install docker-cli inside the container via apk so node can call docker exec.
   exec docker run --rm \
     -v "$SCRIPT_DIR:/opt/standby:ro" \
     -v /srv/standby:/srv/standby \
     -v /srv/backups:/srv/backups \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -e STANDBY_PG_RUNNER="${STANDBY_PG_RUNNER:-docker}" \
-    -e STANDBY_PG_IMAGE="${STANDBY_PG_IMAGE:-pgvector/pgvector:pg18}" \
+    -e STANDBY_PG_CONTAINER="${STANDBY_PG_CONTAINER:-myrmidon-pg-standby}" \
     -e PG_REPLICATOR_PASSWORD="${PG_REPLICATOR_PASSWORD:-}" \
     -e PG_PASSFILE_PATH="${PG_PASSFILE_PATH:-}" \
     -e STANDBY_CREDENTIAL_PATH="${STANDBY_CREDENTIAL_PATH:-}" \
     -e PRIMARY_PG_HOST="${PRIMARY_PG_HOST:-}" \
     "$node_image" \
-    node /opt/standby/standby-ctl.mjs "$@"
+    sh -c "apk add --no-cache docker-cli >/dev/null 2>&1 && node /opt/standby/standby-ctl.mjs \"\$@\"" \
+    sh "$@"
 }
 
 if [ "${STANDBY_CTL_NO_DOCKER:-0}" != "1" ] && command -v docker >/dev/null 2>&1; then
