@@ -38,6 +38,7 @@ paths = [
   '''^ui/src/pages/apps/gateways/ConnectClientDialog\.test\.tsx$''',
   '''^ui/src/pages/apps/gateways/gateway-helpers\.test\.ts$''',
   '''^ui/src/pages/apps/gateways/panels/TokensPanel\.test\.tsx$''',
+  '''^server/src/myrmidon/litellm-audit/audit\.myrmidon\.test\.ts$''',
 ]
 
 [[allowlists]]
