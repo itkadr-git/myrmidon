@@ -91,6 +91,7 @@
   "api.use(myrmidonLitellmCostsRoutes(db))",
   "api.use(myrmidonLitellmKeysRoutes(db))",
   "api.use(myrmidonModelProviderRoutes(db))",
+  "api.use(myrmidonLitellmAuditRoutes(db))",
   "api.use(myrmidonAgentExchangeRoutes(db))",
   "api.use(myrmidonAgentExchangeFeedRoutes(db))",
   "api.use(myrmidonBaselineRoutes(db))",
