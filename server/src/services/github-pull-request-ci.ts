@@ -113,7 +113,8 @@ export function summarizeCheckRuns(
     meta?.conclusion === "missing" ||
     meta?.conclusion === "denied" ||
     meta?.conclusion === "unavailable" ||
-    meta?.conclusion === "incomplete"
+    meta?.conclusion === "incomplete" ||
+    meta?.conclusion === "rate_limited"
   ) {
     return {
       status: meta.status ?? "unavailable",
@@ -378,6 +379,7 @@ export async function fetchCommitCheckRuns(
         : getGitHubRateLimitResetTime() ?? "unknown";
       result.summary = `${staleRuns.summary ?? "checks unavailable"} (устарел; GitHub rate limit until ${until})`;
     } else if (rateLimited) {
+      result.authoritative = false;
       result.status = "unavailable";
       result.conclusion = "rate_limited";
       result.rateLimitResetAt = rateLimitResetAt;
@@ -766,6 +768,7 @@ export function createPullRequestCiResolver(
             headSha,
             headRef,
             ...summarized,
+            status: summarized.status,
             authoritative: false,
             conclusion: "rate_limited",
             summary: `${summarized.summary} (устарел; GitHub rate limit until ${resetStr})`,
@@ -866,6 +869,8 @@ export function createPullRequestCiResolver(
         headSha,
         headRef,
         ...summary,
+        conclusion: runs.conclusion === "rate_limited" ? "rate_limited" : summary.conclusion,
+        summary: runs.conclusion === "rate_limited" && runs.summary ? runs.summary : summary.summary,
         checkedAt: new Date().toISOString(),
         runs,
       };
