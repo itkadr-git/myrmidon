@@ -1,6 +1,19 @@
 // myrmidon(B1c): product name constant, see myrmidon-product.ts.
 export { PRODUCT_NAME, PRODUCT_DESCRIPTION } from "./myrmidon-product.js";
 export {
+  adminAssistantDryRunDiagnosticsSchema,
+  adminAssistantDryRunProbeResultSchema,
+  adminAssistantDryRunProbeStatusSchema,
+  adminAssistantDryRunSummarySchema,
+  sanitizeDryRunDiagnostics,
+  sanitizeDryRunDiagnosticsDetail,
+  toSafeDryRunDiagnosticsJson,
+  type AdminAssistantDryRunDiagnostics,
+  type AdminAssistantDryRunProbeResult,
+  type AdminAssistantDryRunProbeStatus,
+  type AdminAssistantDryRunSummary,
+} from "./admin-assistant-diagnostics.js";
+export {
   LEGACY_BLOCKED_IMPORT_RULE_VERSION,
   createLegacyBlockedImportKey,
   legacyBlockedClassSchema,
@@ -2548,6 +2561,9 @@ export {
   type BlockUserInput,
   auditQuerySchema,
   type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

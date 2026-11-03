@@ -61,8 +61,8 @@ function fakeEmbedder(dimensions = 4): { embedder: Embedder; calls: string[][] }
 }
 
 describe("document ingestion pipeline", () => {
-  it("uses the bge-m3 default model for corpus ingestion", () => {
-    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("hindsight-embed-bge-m3");
+  it("uses the default model for corpus ingestion", () => {
+    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("corpus-embed-pplx-0.6b");
   });
 
   it("chunks, embeds in batches and replaces the document chunks with normalized vectors", async () => {

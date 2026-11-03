@@ -12,6 +12,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@myrmidon/db";
+import { type Config, loadConfig } from "./config.js";
 import {
   derivePaperclipViteHmrPort,
   type DeploymentExposure,
@@ -76,6 +77,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
+import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -243,7 +245,8 @@ import {
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 // myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
-import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { configureCorpusAdapters, myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
+import { createCorpusShadowSearch } from "./myrmidon/corpus/shadow-search.js";
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
 import {
   myrmidonArchitectDataMcpRoutes,
@@ -1159,6 +1162,7 @@ export async function createApp(
   api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
+  api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
@@ -1372,7 +1376,9 @@ export async function createApp(
     trustedLocalStdioRuntimeHost,
   });
   const toolActionDeliveries = toolActionDeliveryService(db, heartbeatService(db, { pluginWorkerManager: workerManager }));
+  configureCorpusAdapters(db, loadConfig());
   const toolGateway = createToolGatewayService(db, {
+    corpusShadowSearch: createCorpusShadowSearch(db),
     onToolActionSettled: (id) => toolActionDeliveries.deliver(id),
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,

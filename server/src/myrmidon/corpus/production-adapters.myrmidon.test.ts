@@ -159,7 +159,7 @@ run("production corpus adapters", () => {
       insert into companies (id, name, issue_prefix) values
         (${companyId}, 'mcp-refresh', 'MCP')
     `);
-    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "hindsight-embed-bge-m3", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
+    const settings: CorpusPortContext["settings"] = { enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000, embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null, maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1, maxParseAttempts: 2, searchTopK: 5 };
     const { createCorpusMcpProvider } = await import("./adapters.js");
     const provider = createCorpusMcpProvider(async () => settings, (context) => createCorpusPorts(db, context, { storageLocalDiskBaseDir: storageDir! } as Config));
     const tools = await provider(companyId);
@@ -180,7 +180,7 @@ run("production corpus adapters", () => {
     await db.execute(sql`delete from corpus_parse_jobs where company_id <> ${companyId}`);
     const settings: CorpusPortContext["settings"] = {
       enabled: true, parserBaseUrl: "http://parser.invalid", parserTimeoutMs: 1000,
-      embedderModel: "hindsight-embed-bge-m3", embedderDimensions: 3, embedderBaseUrl: null,
+      embedderModel: "corpus-embed-pplx-0.6b", embedderDimensions: 3, embedderBaseUrl: null,
       maxDocumentBytes: 1024, maxDocumentsPerDataset: 5, parseConcurrency: 1,
       maxParseAttempts: 2, searchTopK: 5,
     };

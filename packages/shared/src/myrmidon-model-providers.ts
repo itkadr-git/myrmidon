@@ -151,6 +151,7 @@ export interface PoolAccountLimitWindow {
   usedPct: number | null;
   windowMin: number | null;
   resetsAt: number | null;
+  limitReached?: boolean;
 }
 
 /** Usage metrics observed on a subscription account. */

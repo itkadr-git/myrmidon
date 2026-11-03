@@ -11,6 +11,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNull, like } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import type { Db } from "@myrmidon/db";
+import { setBlockedUser } from "./store.js";
 import {
   activityLog,
   authAccounts,
@@ -40,6 +41,12 @@ export interface ManagedUser {
   blocked: boolean;
   syntheticEmail: boolean;
   createdAt: string;
+}
+
+export interface CreateUserResult extends ManagedUser {
+  user: ManagedUser;
+  token: string | null;
+  passwordSetLink: string | null;
 }
 
 export class UsersAdminError extends Error {
@@ -129,8 +136,8 @@ async function issueToken(
  */
 export async function createUser(
   db: Db,
-  input: { username: string; name: string; password?: string | null; role: ManagedRole; actorUserId: string },
-): Promise<{ user: ManagedUser; token: string | null }> {
+  input: { username: string; name?: string; displayName?: string; password?: string | null; role: ManagedRole; actorUserId: string },
+): Promise<CreateUserResult> {
   const username = input.username.trim().toLowerCase();
   if (!USERNAME_PATTERN.test(username)) {
     throw new UsersAdminError(422, "INVALID_USERNAME", "Username must be 3-32 chars: lowercase letters, digits, dots, dashes or underscores");
@@ -147,7 +154,8 @@ export async function createUser(
   let token: string | null = null;
   await db.transaction(async (tx) => {
     await tx.insert(authUsers).values({
-      id: userId, name: input.name.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
+      id: userId,
+      name: input.name?.trim() || username, email, emailVerified: true, createdAt: now, updatedAt: now,
     });
     await tx.insert(authAccounts).values({
       id: randomUUID(), issuer: CREDENTIAL_ISSUER, accountId: userId, providerId: "credential",
@@ -160,13 +168,18 @@ export async function createUser(
   });
   const row = await getUser(db, userId);
   const admins = new Set(input.role === "instance_admin" ? [userId] : []);
-  return { user: toManagedUser(row, admins, new Set()), token };
+  const user = toManagedUser(row, admins, new Set());
+  const link = token ? `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}` : null;
+  return Object.assign(
+    { ...user, user, token, passwordSetLink: link },
+    { user, token, passwordSetLink: link },
+  );
 }
 
 /** Blocks or unblocks a user; blocking closes every live session. */
 export async function setUserBlocked(
   db: Db,
-  input: { userId: string; blocked: boolean; actorUserId: string },
+  input: { userId: string; blocked: boolean; actorUserId: string; reason?: string | null },
 ): Promise<{ sessionsClosed: number }> {
   await getUser(db, input.userId);
   if (input.blocked && input.userId === input.actorUserId) {
@@ -174,12 +187,24 @@ export async function setUserBlocked(
   }
   if (!input.blocked) {
     await db.delete(userBlocks).where(eq(userBlocks.userId, input.userId));
+    await setBlockedUser(db, {
+      userId: input.userId,
+      blocked: false,
+      blockedBy: input.actorUserId,
+      reason: null,
+    });
     return { sessionsClosed: 0 };
   }
   await db
     .insert(userBlocks)
     .values({ userId: input.userId, blockedByUserId: input.actorUserId })
     .onConflictDoNothing();
+  await setBlockedUser(db, {
+    userId: input.userId,
+    blocked: true,
+    blockedBy: input.actorUserId,
+    reason: input.reason ?? null,
+  });
   // Board API keys are a second way in besides sessions: revoke them too. They stay
   // revoked after unblocking; the user issues a new key.
   await db
@@ -342,7 +367,10 @@ export async function listAuditLogs(
 }
 
 /** Revokes older live links of the user and returns a fresh raw token. */
-export async function resetUserPassword(db: Db, input: { userId: string; actorUserId: string }): Promise<{ token: string }> {
+export async function resetUserPassword(
+  db: Db,
+  input: { userId: string; actorUserId: string },
+): Promise<{ token: string; passwordSetLink: string }> {
   await getUser(db, input.userId);
   const now = new Date();
   return db.transaction(async (tx) => {
@@ -350,7 +378,9 @@ export async function resetUserPassword(db: Db, input: { userId: string; actorUs
       .update(userPasswordSetTokens)
       .set({ revokedAt: now, revokedReason: "superseded" })
       .where(and(eq(userPasswordSetTokens.userId, input.userId), isNull(userPasswordSetTokens.revokedAt)));
-    return { token: await issueToken(tx, { userId: input.userId, via: "reset", actorUserId: input.actorUserId, now }) };
+    const token = await issueToken(tx, { userId: input.userId, via: "reset", actorUserId: input.actorUserId, now });
+    const link = `/api/myrmidon/users-admin-a/password-set?token=${encodeURIComponent(token)}`;
+    return { token, passwordSetLink: link };
   });
 }
 

@@ -60,6 +60,7 @@ const apiPrefixes: Record<string, string> = {
   "llms.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "servers.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -144,6 +145,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   // scanner's route-file scope; their OpenAPI entries are contract-first here.
   "GET /api/admin-assistant/cluster-health",
   "GET /api/admin-assistant/health",
+  "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
 ]);
 
