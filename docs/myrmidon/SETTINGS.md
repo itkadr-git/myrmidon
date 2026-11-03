@@ -1771,20 +1771,26 @@ settings mean the defaults below.
 | `reviewerRoles` | `["reviewer"]` | Caste keys (`agents.role`) whose invokable agents may be picked as reviewers | An empty list — nobody is eligible, so every reviewer-less task is signalled as `no_reviewer` |
 | `maxLoadPerReviewer` | `5` | A reviewer already holding this many tasks in flight (`in_progress` + `in_review`, as assignee) is not picked. From 1 to 100 | — |
 | `reassignAfterHours` | `24` | Hours a review this routing started may stay without a verdict before it is signalled (`review_overdue` attention card, one system comment) and moved to another reviewer that has not had the task. From 0 to 2160 | `0` — never signal or reassign |
+| `reassignAfterMinutes` | — | Minutes a review on an issue with green CI (`head.ci === "green"`) and no verdict (`head.reviewDecision === null`) may stay before being moved to another reviewer of the same role. Takes precedence over `reassignAfterHours` when set. From 0 to 129600 | `0` — disable minute-based reassignment |
 
 How it works. A pass every 60 s (an in-module interval; passes are skipped during maintenance
 mode) looks at the 200 oldest-updated visible `in_review` tasks per company, 20 moves per pass.
 A task needs a reviewer when it has no review stage participant and no execution workflow in
 flight (a policy with no stages is kept and extended; a non-idle execution state or a monitor
-leaves the task alone). The picked reviewer is the least-loaded eligible agent (ties by id),
-never the task's author (`createdByAgentId`) or its assignee, and becomes the assignee while
-the review is pending; the previous assignee is the return assignee. Approving closes the task
-as done, requesting changes sends it back. The routing writes one system comment and one
-activity entry (`issue.review_routing.assigned` / `issue.review_routing.reassigned`) per move
-and wakes the reviewer. With no eligible reviewer the task is signalled on the attention desk
-(source kind `review_routing`, `no_reviewer`) instead of staying silent. The overdue clock and
-the reassignment apply only to reviews this routing started (they are found by their activity
-entries); a review set up by a person is never reassigned automatically.
+leaves the task alone). The picked reviewer prioritizes idle reviewers first (idle status, zero
+active runs, or zero load), then the least-loaded eligible agent (ties by id), never the task's
+author (`createdByAgentId`), its assignee, or reviewers who previously lapsed or had the task;
+and becomes the assignee while the review is pending; the previous assignee is the return
+assignee. If `reassignAfterMinutes` is set (> 0), reviews on tasks with green CI and no review
+verdict are reassigned to another available reviewer after the configured minutes, even without
+prior routing history. Approving closes the task as done, requesting changes sends it back.
+The routing writes one system comment and one activity entry
+(`issue.review_routing.assigned` / `issue.review_routing.reassigned`) per move and wakes the
+reviewer. With no eligible reviewer the task is signalled on the attention desk (source kind
+`review_routing`, `no_reviewer`) instead of staying silent. The overdue clock and the
+reassignment apply to reviews this routing started (found by their activity entries) and
+green-CI reviews past the minute threshold; a review set up by a person is never reassigned
+automatically unless covered by the green-CI timer rule.
 
 PR lane (REVIEW-ROUTING-PR). The fields live under `prWatch` in the same
 `instance_settings.general.reviewRouting` document, on the same settings screen;
