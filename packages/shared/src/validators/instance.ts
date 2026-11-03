@@ -124,6 +124,9 @@ import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
 // the same general settings row.
 import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): tool output limit for model-facing results
+import { toolOutputLimitSettingsSchema } from "../myrmidon-tool-output-limit.js";
+
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -441,6 +444,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
   // and `0` switches the cache off (every read is a fresh query).
   toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
+  // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool output limit
+  toolOutputLimit: toolOutputLimitSettingsSchema.optional(),
+  toolOutputChars: z.number().int().min(0).optional(),
+
   // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
   // role is idle (empty queue + a free agent), changed from
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,

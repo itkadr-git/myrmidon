@@ -73,6 +73,8 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
 // same general settings row.
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): tool output limit for model-facing results
+import type { ToolOutputLimitSettings } from "../myrmidon-tool-output-limit.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 import type { IdleStopSettings } from "../myrmidon-idle-stop.js";
 // myrmidon(1.7-REBRAND-F): the stored shape of the vendor-name gate setting.
@@ -516,6 +518,11 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   toolPolicyCache?: ToolPolicyCacheSettings;
+  /**
+   * myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool output limit
+   */
+  toolOutputLimit?: ToolOutputLimitSettings;
+  toolOutputChars?: number;
   // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
   foragingIdleGate?: ForagingIdleGateSettings;
   /**
