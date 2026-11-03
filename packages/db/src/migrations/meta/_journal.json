@@ -2646,14 +2646,7 @@
       "idx": 447,
       "version": "7",
       "when": 1793570006000,
-      "tag": "0450_clear_stale_block_metadata",
-      "breakpoints": true
-    },
-    {
-      "idx": 447,
-      "version": "7",
-      "when": 1793570006000,
-      "tag": "0450_clear_stale_block_metadata",
+      "tag": "0447_clear_stale_block_metadata",
       "breakpoints": true
     }
   ]
