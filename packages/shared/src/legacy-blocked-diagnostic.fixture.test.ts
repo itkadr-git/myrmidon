@@ -35,7 +35,7 @@ describe("legacy blocked diagnostic import fixture", () => {
     for (const task of fixture.tasks) {
       const metadata = issueBlockerMetadataSchema.safeParse(task.blockerMetadata);
       expect(metadata.success, `${task.identifier} has invalid blockerMetadata`).toBe(true);
-      if (metadata.success && "blockReason" in metadata.data) {
+      if (metadata.success && metadata.data && "blockReason" in metadata.data && typeof metadata.data.blockReason === "string") {
         reasons.add(metadata.data.blockReason);
         expect(metadata.data.blockReason).toBe(task.class);
       }
