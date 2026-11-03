@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { agents } from "../../../packages/db/src/schema/agents.js";
-import { issues, legacyBlockedImports, type Db } from "../../../packages/db/src/index.js";
+import { issues, issueRelations, legacyBlockedImports, type Db } from "../../../packages/db/src/index.js";
 import { buildRecoveryDedupeKey, type RecoveryFactoryKind } from "../../../packages/shared/src/recovery-factory.js";
 import { issueRecoveryActionService } from "../../../server/src/services/issue-recovery-actions.js";
 import { legacyBlockedReportRowSchema, type LegacyBlockedReportRow } from "../../../packages/shared/src/legacy-blocked.js";
@@ -118,6 +118,11 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
         });
         if (!result.recoveryIssueId) return { outcome: "skipped" as const, detail: "Recovery factory returned no issue; source retained blocked." };
         resultIssueId = result.recoveryIssueId;
+        await tx.delete(issueRelations).where(and(
+          eq(issueRelations.issueId, result.recoveryIssueId),
+          eq(issueRelations.relatedIssueId, source.id),
+          eq(issueRelations.type, "blocks"),
+        ));
       } else {
         const metadata = blockerMetadata(validRow, source);
         if (!metadata) return { outcome: "skipped" as const, detail: "No explicit owner or live blocker reference; retained blocked." };
