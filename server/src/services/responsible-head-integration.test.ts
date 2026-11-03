@@ -685,6 +685,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         priority: "medium",
         responsibleAgentId: admAgentId,
         assigneeAgentId: engAgentId,
+        executionRunId: headActiveRunId,
       });
 
       // Subordinate run
