@@ -10,7 +10,13 @@ import {
 const issueId = "issue-1";
 const companyId = "company-1";
 
-function product(input: { id: string; number: number; status?: string; replacement?: string }) {
+function product(input: {
+  id: string;
+  number: number;
+  status?: string;
+  replacement?: string;
+  metadata?: Record<string, unknown>;
+}) {
   return {
     id: input.id,
     companyId,
@@ -22,6 +28,7 @@ function product(input: { id: string; number: number; status?: string; replaceme
       repo: "acme/project",
       number: input.number,
       ...(input.replacement ? { replacementPullRequestUrl: input.replacement } : {}),
+      ...(input.metadata ?? {}),
     },
   };
 }
@@ -33,14 +40,28 @@ function fakeDb(products: ReturnType<typeof product>[]) {
   return { select } as never;
 }
 
-function resolver(states: Record<number, "open" | "draft" | "merged" | "closed" | "unknown">): PullRequestMergeDetailsResolver {
+function resolver(
+  states: Record<number, "open" | "draft" | "merged" | "closed" | "unknown" | {
+    state: "open" | "draft" | "merged" | "closed" | "unknown";
+    baseRef?: string | null;
+    defaultBranch?: string | null;
+    mergeCommitSha?: string | null;
+    mergeCommitReachable?: boolean;
+  }>,
+): PullRequestMergeDetailsResolver {
   return vi.fn<PullRequestMergeDetailsResolver>(async (_companyId, reference) => {
-    const state = states[reference.number] ?? "unknown";
+    const raw = states[reference.number] ?? "unknown";
+    const conf = typeof raw === "string" ? { state: raw } : raw;
+    const state = conf.state;
     return {
       state: state === "merged" ? "merged" : state === "unknown" ? "unknown" : "open",
       workProductState: state === "unknown" ? undefined : state,
       headRef: null,
       headSha: null,
+      baseRef: conf.baseRef ?? null,
+      defaultBranch: conf.defaultBranch ?? "main",
+      mergeCommitSha: conf.mergeCommitSha ?? null,
+      mergeCommitReachable: conf.mergeCommitReachable,
     };
   });
 }
@@ -235,5 +256,77 @@ describe("issue done pull-request gate", () => {
       resolver({ 12: "closed", 14: "closed" }),
     );
     expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/12");
+  });
+
+  // OPE-10815: PR merged into dead base branch where merge commit is not reachable from main or rel/*
+  it("blocks done when a PR is merged into a dead base branch and merge commit is unreachable (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-stacked", number: 1962 })]),
+      companyId,
+      issueId,
+      resolver({
+        1962: {
+          state: "merged",
+          baseRef: "bot/OPE-9262",
+          defaultBranch: "main",
+          mergeCommitSha: "28d9fbb69424c2ca4adbe3122bca5e16cc81209e",
+          mergeCommitReachable: false,
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrowError(
+      /Cannot mark this task done: PR .* was merged into bot\/OPE-9262, but its merge commit is not reachable from main or rel\/\*/,
+    );
+  });
+
+  it("allows done when a PR is merged into a non-main base but its merge commit is reachable from main (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-stacked-ok", number: 1963 })]),
+      companyId,
+      issueId,
+      resolver({
+        1963: {
+          state: "merged",
+          baseRef: "bot/OPE-9262",
+          defaultBranch: "main",
+          mergeCommitSha: "571c9a7941",
+          mergeCommitReachable: true,
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("allows done when a PR is merged into a rel/* branch (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-rel", number: 1964 })]),
+      companyId,
+      issueId,
+      resolver({
+        1964: {
+          state: "merged",
+          baseRef: "rel/1.6.6",
+          defaultBranch: "main",
+          mergeCommitSha: "abc1234",
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("blocks done in assertStoredIssueDonePullRequestsSettled when stored metadata indicates mergeCommitReachable is false (OPE-10815)", () => {
+    const unreachablePr = product({
+      id: "wp-stored-unreachable",
+      number: 1962,
+      status: "merged",
+      metadata: {
+        baseRef: "bot/OPE-9262",
+        defaultBranch: "main",
+        mergeCommitReachable: false,
+      },
+    });
+    expect(() => assertStoredIssueDonePullRequestsSettled([unreachablePr])).toThrowError(
+      /Cannot mark this task done: PR .* was merged into bot\/OPE-9262, but its merge commit is not reachable from main or rel\/\*/,
+    );
   });
 });

@@ -230,6 +230,8 @@ export function decideApproveLabel({
   mainGreen = true,
   isMainRed = false,
   baseBehind = false,
+  basePr = null,
+  cannotRetarget = false,
   migrationViolation = null,
   autoMerge = false,
 }) {
@@ -265,6 +267,28 @@ export function decideApproveLabel({
       return { action: "hold", disableAutoMerge: true, reason: "base-behind" };
     }
     return { action: "hold", reason: "base-behind" };
+  }
+
+  // Stacked PR base check (OPE-10815): if the PR's base is neither defaultBranch nor rel/*,
+  // check the PR of that base. If it's already merged or closed, the PR cannot be merged into
+  // the dead base branch.
+  const defaultBranch = pr.defaultBranch || "main";
+  const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+  if (!isBaseDelivering && basePr && (basePr.merged || basePr.state === "closed")) {
+    if (cannotRetarget) {
+      return {
+        action: "refuse",
+        reason: "cannot-retarget-base-to-main",
+        disableAutoMerge: Boolean(pr.autoMerge),
+        removeLabel: Boolean(pr.labels && pr.labels.includes(APPROVED_LABEL)),
+      };
+    }
+    return {
+      action: "hold",
+      reason: "base-retargeted-waiting-ci",
+      retargetBase: defaultBranch,
+      disableAutoMerge: Boolean(pr.autoMerge),
+    };
   }
 
   const alreadyLabeled = pr.labels.includes(APPROVED_LABEL);
@@ -360,9 +384,27 @@ export function createGitHubPort(repo, options = {}) {
         merged: Boolean(data.merged_at) || Boolean(data.merged),
         headSha: data.head?.sha ?? null,
         baseSha: data.base?.sha ?? null,
+        baseRef: data.base?.ref ?? null,
+        defaultBranch: data.base?.repo?.default_branch ?? "main",
         labels: (data.labels ?? []).map((label) => label.name),
         autoMerge: Boolean(data.auto_merge || data.autoMergeRequest),
       };
+    },
+    async updatePullRequestBase(number, base) {
+      await run(["-X", "PATCH", `repos/${repo}/pulls/${number}`, "-f", `base=${base}`]);
+    },
+    async findPullRequestByHead(headBranch) {
+      const owner = repo.split("/")[0];
+      const data = await run([`repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${headBranch}`)}&state=all`]);
+      if (Array.isArray(data) && data.length > 0) {
+        const item = data[0];
+        return {
+          number: item.number,
+          state: item.state,
+          merged: Boolean(item.merged_at || item.merged),
+        };
+      }
+      return null;
     },
     async pullRequestFiles(number) {
       const data = await run([`repos/${repo}/pulls/${number}/files?per_page=100`]);
@@ -645,6 +687,30 @@ export async function runOnce({
           continue;
         }
       }
+
+      // Stacked PR base check (OPE-10815): if base is non-main, non-rel/*, inspect base PR
+      let basePr = null;
+      let cannotRetarget = false;
+      const defaultBranch = pr.defaultBranch || "main";
+      const isBaseDelivering = !pr.baseRef || pr.baseRef === defaultBranch || pr.baseRef.startsWith("rel/");
+      if (pr.state === "open" && !pr.draft && !isBaseDelivering && typeof github.findPullRequestByHead === "function") {
+        try {
+          basePr = await github.findPullRequestByHead(pr.baseRef);
+          if (basePr && (basePr.merged || basePr.state === "closed")) {
+            if (!dryRun && typeof github.updatePullRequestBase === "function") {
+              try {
+                await github.updatePullRequestBase(prNumber, defaultBranch);
+              } catch (err) {
+                cannotRetarget = true;
+                log(`PR #${prNumber}: failed to retarget base to ${defaultBranch}: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          }
+        } catch (err) {
+          log(`PR #${prNumber}: failed to inspect base PR for ${pr.baseRef}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       const decision = decideApproveLabel({
         verdict,
         pr,
@@ -654,6 +720,8 @@ export async function runOnce({
         mainGreen: mainGreen && mainMigrationListOk,
         isMainRed: holdAutoMerge,
         baseBehind,
+        basePr,
+        cannotRetarget,
         migrationViolation,
         autoMerge: autoMerge && !holdAutoMerge,
       });
