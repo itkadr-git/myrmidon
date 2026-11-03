@@ -33,7 +33,7 @@ import {
 async function waitForQueuedRun(
   db: Db,
   agentId: string,
-  wakeupRequestId: string,
+  runId: string,
   timeoutMs = 5_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -44,7 +44,7 @@ async function waitForQueuedRun(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.wakeupRequestId, wakeupRequestId),
+          eq(heartbeatRuns.id, runId),
         ),
       );
     const matchingRun = runs[0];
@@ -559,9 +559,6 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
 
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun).toBeDefined();
-      // wakeup() returns the heartbeat run itself for an immediately queued wake;
-      // the request receipt is a separate persisted row linked by wakeupRequestId.
-      expect(targetRun?.id).toBe(wakeResult?.id);
       expect(targetRun?.wakeupRequestId).toBeDefined();
 
       // Verify no queued runs for owner or engineer
@@ -662,9 +659,6 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
       const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
       expect(targetRun).toBeDefined();
-      // wakeup() returns the heartbeat run itself for an immediately queued wake;
-      // the request receipt is a separate persisted row linked by wakeupRequestId.
-      expect(targetRun?.id).toBe(wakeResult?.id);
       expect(targetRun?.wakeupRequestId).toBeDefined();
     });
 
@@ -771,7 +765,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       // Verify wakeup request was parked in agentWakeupRequests and not lost
       const targetRequest = await waitForDeferredWakeRequest(db, admAgentId, interaction.id, wakeResult!.id);
       expect(targetRequest).toBeDefined();
-      expect(targetRequest?.runId).toBeDefined();
+      expect(targetRequest?.status).toBe("deferred_issue_execution");
       expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
     });
 
