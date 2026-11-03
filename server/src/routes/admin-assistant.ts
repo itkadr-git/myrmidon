@@ -12,6 +12,7 @@ import {
   toSafeDryRunDiagnosticsJson,
 } from "@myrmidon/shared";
 import { assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
+import { detectStuckRuns } from "../services/heartbeat-recovery.js";
 import { badRequest } from "../errors.js";
 import { redactSensitive } from "../middleware/redact-sensitive.js";
 
@@ -472,10 +473,28 @@ export function adminAssistantRoutes(db: Db): Router {
     res.json(redactSensitive(sanitized));
   }
 
+  async function handleStuckRuns(req: Request, res: Response) {
+    const companyId = (req.params.companyId || req.query.companyId) as string | undefined;
+    if (req.params.companyId) {
+      assertCompanyAccess(req, companyId as string);
+    } else if (companyId) {
+      assertCompanyAccess(req, companyId);
+    } else {
+      assertInstanceAdmin(req);
+    }
+
+    const timeoutMs = req.query.timeoutMs ? Number(req.query.timeoutMs) : undefined;
+    const timeoutSeconds = req.query.timeoutSeconds ? Number(req.query.timeoutSeconds) : undefined;
+    const stuckRuns = await detectStuckRuns(db, { companyId, timeoutMs, timeoutSeconds });
+    res.json(stuckRuns);
+  }
+
   router.get("/companies/:companyId/admin-assistant/cluster-health", handleClusterHealth);
   router.get("/admin-assistant/cluster-health", handleClusterHealth);
   router.get("/admin-assistant/health", handleClusterHealth);
   router.get("/admin-assistant/dry-run", handleDryRunDiagnostics);
+  router.get("/companies/:companyId/admin-assistant/stuck-runs", handleStuckRuns);
+  router.get("/admin-assistant/stuck-runs", handleStuckRuns);
 
   return router;
 }
