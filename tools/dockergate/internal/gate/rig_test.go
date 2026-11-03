@@ -250,6 +250,15 @@ func (r *rig) setCred(pid int, uid, gid uint32) {
 	r.cred = peer.Cred{PID: pid, UID: uid, GID: gid}
 }
 
+func (r *rig) addSiblingProcess(pid int) {
+	r.t.Helper()
+	if r.proc == nil {
+		r.t.Fatal("sibling process requires container-caller mode")
+	}
+	leaf := "docker-" + boardID + ".scope"
+	r.proc.add(pid, fproc{comm: "node", ppid: tiniPID, start: 1020, uid: 1000, gid: 1000, argv: []string{"node", "server.js"}, leaf: leaf})
+}
+
 func (r *rig) lstat(p string) (policy.FileInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

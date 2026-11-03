@@ -178,6 +178,9 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
         partitionRefuseOpenPercent: 88,
         partitionCriticalPercent: 93,
         botdIntervalSec: 300,
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
         // Neighbouring keys of the same settings row ride along untouched.
         pnpmStoreDir: "/cache/pnpm-store",
       }),
@@ -189,6 +192,9 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
       partitionRefuseOpenPercent: 88,
       partitionCriticalPercent: 93,
       botdIntervalSec: 300,
+      hermesPruneEnabled: true,
+      hermesPruneDays: 14,
+      gitMigrationEnabled: true,
     });
     // Garbage in the row never reaches the profile: invalid values are dropped to the defaults.
     expect(resolveBotDiskMechanics({ graceClosingMinutes: "soon" }).graceClosingMinutes).toBe(30);

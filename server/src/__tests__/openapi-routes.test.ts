@@ -119,7 +119,18 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
 // They are documented contract-first in openapi.ts — the deliverable of
 // OPE-5955 — and the handlers exist; only the scanner's directory scope keeps
 // them off the "actual" side.
+// routes/updates.ts is mounted through the app-plugin registry, while its
+// OpenAPI entries are contract-first and are not discovered by this scanner.
 const specOnlyContractFirstRoutes = new Set<string>([
+  "GET /api/myrmidon/updates/settings",
+  "PUT /api/myrmidon/updates/settings",
+  "GET /api/updates",
+  "PUT /api/updates",
+  "PATCH /api/updates",
+  "GET /api/updates/settings",
+  "PUT /api/updates/settings",
+  "PATCH /api/updates/settings",
+  "POST /api/updates/validate",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
@@ -313,6 +324,33 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("keeps the legacy OAuth route alias while exposing Myrmidon wording", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const legacyCallback =
+      res.body.paths["/api/tools/oauth/paperclip-id/callback"].get;
+    expect(legacyCallback.summary).toBe(
+      "Handle a legacy brokered Myrmidon ID OAuth callback",
+    );
+    expect(res.body.paths["/api/tools/oauth/cloud-connector/callback"].get.summary).toBe(
+      "Handle a brokered Myrmidon Cloud OAuth callback",
+    );
+  });
+
+  it("keeps validation errors documented for the aliased enrollment route", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const enrollment =
+      res.body.paths["/api/tools/oauth/cloud-connector/enrollment"].post;
+    expect(enrollment.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"],
+      additionalProperties: false,
+    });
+    expect(enrollment.responses["422"]).toBeDefined();
+  });
+
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
 

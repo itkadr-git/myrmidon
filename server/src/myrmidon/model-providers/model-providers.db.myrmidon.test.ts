@@ -44,6 +44,11 @@ function fakeSecrets(): ModelProviderSecretStoreDeps & { store: Map<string, stri
     rotateSecret: async (secretId, value) => {
       store.set(secretId.replace(/^id-/, ""), value);
     },
+    restoreSecret: async (secretId, value) => {
+      const name = secretId.replace(/^id-/, "");
+      if (value === null) store.delete(name);
+      else store.set(name, value);
+    },
     deleteSecret: async (secretId) => {
       store.delete(secretId.replace(/^id-/, ""));
     },
@@ -207,6 +212,17 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     ).rejects.toMatchObject({ status: 422 });
     expect(secrets.get(created.credentialSecretName!)).toBe(ROTATED_VALUE);
     expect((await service.listModels(companyId, created.id))).toHaveLength(3);
+
+    // Rollback to snapshot restores secret and model snapshot
+    const snapshot = await service.captureKeyRotationSnapshot(companyId, created.id);
+    expect(snapshot.secretValue).toBe(ROTATED_VALUE);
+    await service.rollbackProviderKey(companyId, created.id, {
+      ...snapshot,
+      secretValue: KEY_VALUE,
+      models: snapshot.models.slice(0, 1),
+    });
+    expect(secrets.get(created.credentialSecretName!)).toBe(KEY_VALUE);
+    expect((await service.listModels(companyId, created.id))).toHaveLength(1);
   });
 
   it("removes the provider, its cache and its secret", async () => {

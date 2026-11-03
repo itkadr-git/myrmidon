@@ -801,6 +801,9 @@ export function mergeBotDiskSettings(
       partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
       botdIntervalSec: pick(patch.botdIntervalSec, base.botdIntervalSec),
       legacyPressureIdleDays: pick(patch.legacyPressureIdleDays, base.legacyPressureIdleDays),
+      hermesPruneEnabled: pick(patch.hermesPruneEnabled, base.hermesPruneEnabled),
+      hermesPruneDays: pick(patch.hermesPruneDays, base.hermesPruneDays),
+      gitMigrationEnabled: pick(patch.gitMigrationEnabled, base.gitMigrationEnabled),
     }),
   };
 }
@@ -816,6 +819,9 @@ function optionalMechanicsKeys(values: Partial<BotDiskSettings>): Partial<BotDis
     ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
     ...(values.botdIntervalSec !== undefined ? { botdIntervalSec: values.botdIntervalSec } : {}),
     ...(values.legacyPressureIdleDays !== undefined ? { legacyPressureIdleDays: values.legacyPressureIdleDays } : {}),
+    ...(values.hermesPruneEnabled !== undefined ? { hermesPruneEnabled: values.hermesPruneEnabled } : {}),
+    ...(values.hermesPruneDays !== undefined ? { hermesPruneDays: values.hermesPruneDays } : {}),
+    ...(values.gitMigrationEnabled !== undefined ? { gitMigrationEnabled: values.gitMigrationEnabled } : {}),
   };
 }
 

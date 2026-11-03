@@ -42,6 +42,7 @@ import type {
 } from "./ports.js";
 import { myrmidonCorpusRoutes } from "./routes.js";
 import {
+  CorpusRequestError,
   corpusService,
   CORPUS_DOCUMENT_DELETED_ACTION,
   CORPUS_DOCUMENT_UPLOADED_ACTION,
@@ -96,6 +97,7 @@ interface Harness {
     chunks: Map<string, ParsedChunk[]>;
     stored: CorpusSettings | undefined;
     parse: ParsedDocument | Error | null;
+    embedderConfigured?: boolean;
   };
   calls: Record<"resolvePorts" | "claim" | "parse" | "index" | "indexDelete" | "complete" | "fail" | "blobDelete" | "updateGeneral", number>;
   audit: { action: string; companyId: string; entityType: string; entityId: string; details: Record<string, unknown> }[];
@@ -117,6 +119,7 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
     chunks: new Map(),
     stored: options.stored as CorpusSettings | undefined,
     parse: { text: "hello corpus", chunks: [{ index: 0, text: "hello corpus" }] },
+    embedderConfigured: true,
   };
   const calls: Harness["calls"] = {
     resolvePorts: 0,
@@ -324,6 +327,16 @@ function corpusHarness(options: { env?: Record<string, string | undefined>; stor
       },
     },
     index: {
+      async assertEmbedderConfigured(_companyId, _baseUrl) {
+        if (state.embedderConfigured === false) {
+          throw new CorpusRequestError(
+            422,
+            "corpus_embedder_not_configured",
+            "the corpus embedder is not configured for this company: missing secret MYRMIDON_CORPUS_EMBEDDER_API_KEY",
+            { hint: "Configure the active company secret MYRMIDON_CORPUS_EMBEDDER_API_KEY or set embedderBaseUrl." },
+          );
+        }
+      },
       async indexDocument(input) {
         calls.index += 1;
         state.chunks.set(input.documentId, input.chunks);
@@ -971,5 +984,46 @@ describe("corpus API: upload, parse and search", () => {
     expect(h.state.blobs.size).toBe(0);
     expect(h.audit.map((row) => row.action)).toContain(CORPUS_DOCUMENT_DELETED_ACTION);
     expect((await request(app).get(`${companyPath()}/documents/${documentId}`)).status).toBe(404);
+  });
+
+  it("checks embedder before search and upload: returns 422 corpus_embedder_not_configured with hint, marks document failed", async () => {
+    const h = enabled();
+    h.seedDataset();
+    const app = h.app();
+
+    // Disable embedder configuration
+    h.state.embedderConfigured = false;
+
+    // Search branch: non-fulltext search fails with 422 corpus_embedder_not_configured and hint
+    const searchRes = await request(app)
+      .post(`${companyPath()}/datasets/${DATASET_ID}/search`)
+      .send({ query: "find something", mode: "hybrid" });
+    expect(searchRes.status).toBe(422);
+    expect(searchRes.body.error).toBe("corpus_embedder_not_configured");
+    expect(searchRes.body.hint).toBeTruthy();
+
+    // Fulltext search does not require an embedder
+    const fulltextRes = await request(app)
+      .post(`${companyPath()}/datasets/${DATASET_ID}/search`)
+      .send({ query: "find something", mode: "fulltext" });
+    expect(fulltextRes.status).toBe(200);
+
+    // Upload branch: upload fails with 422 corpus_embedder_not_configured and hint
+    const uploadRes = await upload(app, DATASET_ID, "plain content");
+    expect(uploadRes.status).toBe(422);
+    expect(uploadRes.body.error).toBe("corpus_embedder_not_configured");
+    expect(uploadRes.body.hint).toBeTruthy();
+
+    // Document is recorded with status 'failed' and reason
+    const docId = uploadRes.body.documentId as string;
+    expect(docId).toBeTruthy();
+    const docRes = await request(app).get(`${companyPath()}/documents/${docId}`);
+    expect(docRes.status).toBe(200);
+    expect(docRes.body.document.status).toBe("failed");
+    expect(docRes.body.document.error).toContain("corpus_embedder_not_configured");
+
+    // No blob stored and no job enqueued for the unconfigured upload
+    expect(h.state.blobs.size).toBe(0);
+    expect(h.state.jobs.size).toBe(0);
   });
 });
