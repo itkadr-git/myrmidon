@@ -341,6 +341,6 @@ export const completeCodexOAuthSchema = z.object({
   label: z.string().trim().max(128).optional(),
   plan: z.string().trim().max(64).optional(),
   email: z.string().trim().email().max(256).optional().nullable(),
-  tokens: z.record(z.unknown()).optional(),
+  tokens: z.record(z.string(), z.unknown()).optional(),
 });
 export type CompleteCodexOAuthInput = z.infer<typeof completeCodexOAuthSchema>;
