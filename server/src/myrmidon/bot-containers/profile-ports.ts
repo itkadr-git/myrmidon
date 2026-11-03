@@ -387,7 +387,7 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
         const general = await instanceSettings.getGeneral();
         if (readCorpusModuleSettings(general.corpus).enabled) {
           const key = await this.ensureAgentApiKey(agent);
-          const base = context.boardUrl.trim().replace(/\\/+$/, "").replace(/\\/api$/, "");
+          const base = context.boardUrl.trim().replace(/\/+$/, "").replace(/\/api$/, "");
           servers.push({
             name: CORPUS_MCP_SERVER_NAME,
             url: `${base}/api${CORPUS_MCP_ROUTE.replace(":companyId", agent.companyId)}`,
