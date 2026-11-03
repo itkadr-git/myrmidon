@@ -36,6 +36,7 @@ export const MAX_REVIEW_ROUTING_QUEUE_THRESHOLD = 100;
 /** Hours without a verdict before the review is signalled and reassigned; 0 = never. */
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
+export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_MINUTES = 24 * 90 * 60;
 
 /** PR-watch defaults: the lane mirrors the board task it replaced, off only on request. */
 export const DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED = true;
@@ -210,6 +211,12 @@ export const reviewRoutingSettingsSchema = z
       .min(0)
       .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS)
       .default(DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS),
+    reassignAfterMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_REVIEW_ROUTING_REASSIGN_AFTER_MINUTES)
+      .optional(),
     queueThreshold: z
       .number()
       .int()

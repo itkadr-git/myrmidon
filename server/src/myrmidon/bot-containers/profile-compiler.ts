@@ -75,6 +75,11 @@ export interface HermesProfileAdapterConfig {
      */
     contextLength?: number;
     /**
+     * myrmidon(REASONING-OUTPUT-LIMIT): explicit output token budget for the
+     * card's model, written to `model.max_tokens`.
+     */
+    maxTokens?: number;
+    /**
      * myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute compression
      * threshold in tokens, written to `compression.threshold_tokens` (Hermes
      * compresses at the LOWER of the ratio threshold and this count). Wins
@@ -605,6 +610,12 @@ const COMPRESSION_THRESHOLD_TOKENS_MAX = 2_000_000;
 // myrmidon(BOT-RUNTIME-TUNING-B): validation range for model.context_length.
 const MODEL_CONTEXT_LENGTH_MIN = 8_000;
 const MODEL_CONTEXT_LENGTH_MAX = 10_000_000;
+// myrmidon(REASONING-OUTPUT-LIMIT): a reasoning-capable model needs enough
+// output room for hidden reasoning plus a visible answer. This is deliberately
+// conservative; callers may override it per card.
+const MODEL_MAX_TOKENS_DEFAULT = 32_000;
+const MODEL_MAX_TOKENS_MIN = 256;
+const MODEL_MAX_TOKENS_MAX = 10_000_000;
 
 /**
  * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the resolved cheap ceiling of the
@@ -881,6 +892,24 @@ function buildCompression(
  * (both the bare name and any "provider/model" form's model part). Range
  * 8_000..10_000_000; out of range — dropped with a warning, never thrown.
  */
+function buildMaxTokens(input: HermesProfileInput, warnings: string[]): number | undefined {
+  const explicit = input.adapterConfig.models?.maxTokens;
+  if (explicit !== undefined) {
+    if (Number.isInteger(explicit) && explicit >= MODEL_MAX_TOKENS_MIN && explicit <= MODEL_MAX_TOKENS_MAX) {
+      return explicit;
+    }
+    warnings.push(
+      `model.max_tokens: ${explicit} from the card is outside the supported range ${MODEL_MAX_TOKENS_MIN}..${MODEL_MAX_TOKENS_MAX}; using default ${MODEL_MAX_TOKENS_DEFAULT}`,
+    );
+    return MODEL_MAX_TOKENS_DEFAULT;
+  }
+  // When a model is configured on the card, default max_tokens so reasoning models have room
+  if (nonEmpty(input.adapterConfig.model)) {
+    return MODEL_MAX_TOKENS_DEFAULT;
+  }
+  return undefined;
+}
+
 function buildModelContextLength(
   input: HermesProfileInput,
   warnings: string[],
@@ -1042,6 +1071,7 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
     model: {
       default: nonEmpty(adapterConfig.model),
       provider: nonEmpty(adapterConfig.provider),
+      max_tokens: buildMaxTokens(input, warnings),
       // myrmidon(BOT-RUNTIME-TUNING-B): explicit context window override; see buildModelContextLength.
       context_length: buildModelContextLength(input, warnings),
       // Instance-level LLM gateway settings — see HermesProfileLlmSettings.

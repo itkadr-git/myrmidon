@@ -2692,6 +2692,54 @@ rl.on("line", (line) => {
     }
   });
 
+  it("canonicalizes MCP schemas so property order cannot change the descriptor", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(() => ({
+      body: { jsonrpc: "2.0", result: { content: [{ type: "text", text: "ok" }] } },
+    }));
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "canonical-schema",
+        toolName: "ordered_tool",
+        url: fake.url,
+      });
+      await db.update(toolCatalogEntries).set({
+        inputSchema: {
+          type: "object",
+          required: ["z", "a"],
+          properties: {
+            z: { type: "string", description: "last" },
+            a: { type: "object", properties: { y: { type: "number" }, b: { type: "boolean" } } },
+          },
+        },
+        outputSchema: { z: { type: "string" }, a: { type: "number" } },
+        annotations: { z: "last", a: "first" },
+      }).where(eq(toolCatalogEntries.id, remoteTool.catalogEntry.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find(
+        (entry) => entry.catalogEntryId === remoteTool.catalogEntry.id,
+      );
+      expect(tool?.parametersSchema).toEqual({
+        type: "object",
+        required: ["z", "a"],
+        properties: {
+          a: { type: "object", properties: { b: { type: "boolean" }, y: { type: "number" } } },
+          z: { type: "string", description: "last" },
+        },
+      });
+      expect(tool?.providerMetadata).toMatchObject({
+        inputSchema: tool?.parametersSchema,
+        outputSchema: { a: { type: "number" }, z: { type: "string" } },
+        annotations: { a: "first", z: "last" },
+      });
+    } finally {
+      await fake.close();
+    }
+  });
   it("uses virtual on-demand run_tool while applying target tool policy and audit metadata", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

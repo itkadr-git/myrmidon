@@ -15,6 +15,9 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -281,6 +284,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      timeZone: parsed.data.timeZone ?? DEFAULT_INSTANCE_TIME_ZONE,
+      numberFormat: parsed.data.numberFormat ?? DEFAULT_INSTANCE_NUMBER_FORMAT,
+      dateFormat: parsed.data.dateFormat ?? DEFAULT_INSTANCE_DATE_FORMAT,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
       // myrmidon(WORKSPACE-HYGIENE): the stored workspace quotas survive every general write
@@ -420,6 +426,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(DB-PERF-C-P4): the stored tool gateway policy cache TTL
       // survives every general write (it is edited on its own settings route).
       ...(parsed.data.toolPolicyCache ? { toolPolicyCache: parsed.data.toolPolicyCache } : {}),
+      // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): preserve instance-level
+      // model-facing tool output limit through general settings writes.
+      ...(parsed.data.toolOutputLimit ? { toolOutputLimit: parsed.data.toolOutputLimit } : {}),
+      ...(parsed.data.toolOutputChars !== undefined ? { toolOutputChars: parsed.data.toolOutputChars } : {}),
       // myrmidon(PERF-DIET-K): the session-generation thresholds are edited on the
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
@@ -474,6 +484,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    timeZone: DEFAULT_INSTANCE_TIME_ZONE,
+    numberFormat: DEFAULT_INSTANCE_NUMBER_FORMAT,
+    dateFormat: DEFAULT_INSTANCE_DATE_FORMAT,
   };
 }
 
@@ -925,6 +938,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.myrmidonAuthBlockedUsers !== undefined
                 ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
                 : {}),
+              // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): a patch carrying
+              // the limit wins over the preserved instance value.
+              ...(patch.toolOutputLimit !== undefined ? { toolOutputLimit: nextGeneral.toolOutputLimit } : {}),
+              ...(patch.toolOutputChars !== undefined ? { toolOutputChars: nextGeneral.toolOutputChars } : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
               ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
