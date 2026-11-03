@@ -126,7 +126,7 @@ export function applyOperatorGeneralDefaults(
     if (value === undefined) continue;
     if (general[key] === schemaDefaults[key] && general[key] !== value) {
       next ??= { ...general };
-      (next as Record<string, unknown>)[key] = value;
+      (next as unknown as Record<string, unknown>)[key] = value;
     }
   }
   return next ?? general;
@@ -167,7 +167,7 @@ export function stripOperatorGeneralEchoes(
       next[key] !== schemaDefaults[key]
     ) {
       result ??= { ...next };
-      (result as Record<string, unknown>)[key] = schemaDefaults[key];
+      (result as unknown as Record<string, unknown>)[key] = schemaDefaults[key];
     }
   }
   return result ?? next;
