@@ -32223,12 +32223,14 @@ export function heartbeatService(
             }
           }
 
-          const dailyCapBlock = await getHeartbeatDailyCapBlock(
-            agent,
-            policy,
-            {},
-            tx,
-          );
+          const dailyCapBlock = opts.manualUserWake
+            ? null
+            : await getHeartbeatDailyCapBlock(
+              agent,
+              policy,
+              {},
+              tx,
+            );
           if (dailyCapBlock) {
             if (
               source === "assignment" &&
@@ -32715,12 +32717,14 @@ export function heartbeatService(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
 
-      const dailyCapBlock = await getHeartbeatDailyCapBlock(
-        agent,
-        policy,
-        {},
-        tx,
-      );
+      const dailyCapBlock = opts.manualUserWake
+        ? null
+        : await getHeartbeatDailyCapBlock(
+          agent,
+          policy,
+          {},
+          tx,
+        );
       if (dailyCapBlock) {
         if (
           source === "assignment" &&
