@@ -459,7 +459,7 @@ describe('IdleStopService', () => {
       const botKey = 'exited-bot';
 
       vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'exited' })
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       const result = await idleStopService.wake(botKey);
@@ -472,7 +472,7 @@ describe('IdleStopService', () => {
       const botKey = 'created-bot';
 
       vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'created' })
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       const result = await idleStopService.wake(botKey);
@@ -548,7 +548,7 @@ describe('IdleStopService', () => {
       const botKey = 'exited-bot';
 
       vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'exited' })
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
@@ -559,7 +559,7 @@ describe('IdleStopService', () => {
       const botKey = 'created-bot';
 
       vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'created' })
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
@@ -576,7 +576,7 @@ describe('IdleStopService', () => {
       const botKey = 'exited-bot';
 
       vi.mocked(mockDriver.status)
-        .mockResolvedValueOnce({ botKey, state: 'exited' })
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
