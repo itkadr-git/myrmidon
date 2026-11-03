@@ -94,6 +94,7 @@ describe("FleetMoveService", () => {
         if (hooks.quarantineError) throw hooks.quarantineError;
         siteQuarantineCalls.push(`${siteName}:${key}`);
       },
+      async logs() { return "logs"; },
     });
 
     const service = new FleetMoveService({

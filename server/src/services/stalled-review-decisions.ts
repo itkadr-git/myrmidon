@@ -13,6 +13,7 @@ import {
   issueService,
   type IssuePostCommitAction,
 } from "./issues.js";
+import { triggerReviewApprovalPropagation } from "./pull-request-approval-propagation.js";
 
 export interface StalledReviewDecisionActor {
   userId: string;
@@ -126,6 +127,21 @@ export function stalledReviewDecisionService(db: Db) {
       });
       for (const publication of postCommitActivityPublications) publishActivity(publication);
       await executeIssuePostCommitActions(db, postCommitIssueActions);
+
+      if (input.action === "approve" && result.issue) {
+        void triggerReviewApprovalPropagation(db, {
+          companyId: result.issue.companyId,
+          issueId: result.issue.id,
+          decisionOutcome: "approved",
+          verdictBody: input.note ?? null,
+          actor: {
+            actorType: "user",
+            actorId: input.actor.userId,
+            runId: input.actor.runId ?? null,
+          },
+        }).catch(() => {});
+      }
+
       return result;
     },
   };

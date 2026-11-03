@@ -1,6 +1,6 @@
 // server/src/myrmidon/foraging/reader.ts
 //
-// myrmidon(1.6-FORAGE): the only place the sweep talks to the outside world.
+// myrmidon(1.6-FORAGE / 1.7-KNOWLEDGE-L14): the reader's boundary to the outside world.
 //
 // An automatic, repeating call to a third-party host carries rules of its own
 // (docs/myrmidon, and the fleet's own external-call discipline): a pause between
@@ -9,16 +9,15 @@
 // here, on module state shared by every pass and every company of the process, so
 // two agents of two companies pointing at one host cannot double the rate.
 //
-// The read itself is plain `fetch`: the URL is the registry row's, the token (if
-// the instance named a secret) is a bearer header. The answer is capped at
-// `MAX_SOURCE_BYTES`; a larger answer is cut, not rejected — the point of a pass
-// is a comparable snapshot, not a full mirror.
+// Network access is either delegated to the optional vm-exec gateway or made
+// directly to the registered source URL. Responses are bounded before parsing.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { logger } from "../../middleware/logger.js";
 import { MAX_SOURCE_BYTES } from "./domain.js";
 import type { ForagingReader, ForagingReaderResult } from "./service.js";
 import type { ForagingSourceRef } from "./domain.js";
+import { injectionScoreThreshold, scanForInjection } from "../guardrails/injection.js";
 
 /** The breaker: after this many consecutive failures a host is left alone. */
 export const BREAKER_FAILURE_THRESHOLD = 2;
@@ -28,6 +27,8 @@ export const BREAKER_OPEN_MS = 6 * 60 * 60 * 1000;
 export const READ_TIMEOUT_MS = 15_000;
 /** The tool name and contact the host sees; a host must know who is knocking. */
 export const FORAGING_USER_AGENT = "myrmidon-foraging/1.0 (+https://github.com/itkadr-git/myrmidon)";
+/** Maximum source response body accepted from the network, in bytes. */
+export const MAX_FORAGING_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 interface HostState {
   lastReadAt: number;
@@ -83,71 +84,218 @@ export interface ForagingReaderDeps {
   readKey?: (companyId: string, secretName: string | null) => Promise<string | null>;
   now?: () => number;
   fetchImpl?: typeof fetch;
+  /** Calls the authenticated optional vm-exec gateway; injected for tests. */
+  edgeFetch?: (request: ForagingEdgeFetchRequest, signal: AbortSignal) => Promise<ForagingEdgeFetchResponse>;
   log?: Pick<typeof logger, "warn" | "error">;
 }
 
-/** The production reader: `fetch` under the host rules above. */
-export function createForagingReader(deps: ForagingReaderDeps): ForagingReader {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+export interface ForagingEdgeFetchRequest {
+  request_id: string;
+  url: string;
+  mode: "scrape";
+  max_depth: 0;
+  timeout_ms: number;
+  idempotency_key: string;
+}
+
+export interface ForagingEdgeFetchResponse {
+  request_id: string;
+  status: "succeeded";
+  pages: Array<{
+    url: string;
+    final_url: string;
+    title: string | null;
+    markdown: string;
+    fetched_at: string;
+    content_sha256: string;
+  }>;
+  truncated: boolean;
+}
+
+/** The fetch->doc interface implemented by the reader. */
+export interface ForagingFetcher {
+  fetch(source: ForagingSourceRef, signal?: AbortSignal): Promise<ForagingReaderResult>;
+}
+
+/** The production reader: uses the optional gateway or reads the source directly. */
+export function createForagingReader(deps: ForagingReaderDeps): ForagingReader & ForagingFetcher {
+  const edgeFetch = deps.edgeFetch ?? createHttpEdgeFetchClient(deps);
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? logger;
 
-  return {
-    async read(source: ForagingSourceRef, signal: AbortSignal): Promise<ForagingReaderResult> {
-      const host = hostOf(source.url);
-      const state = stateOf(host);
-      const at = now();
-      if (state.openUntil > at) throw new ForagingHostPausedError(host);
-      if (at - state.lastReadAt < deps.minHostIntervalMs) {
-        throw new ForagingHostThrottledError(host);
-      }
-      state.lastReadAt = at;
+  async function read(source: ForagingSourceRef, signal?: AbortSignal): Promise<ForagingReaderResult> {
+    const host = hostOf(source.url);
+    const state = stateOf(host);
+    const at = now();
+    if (state.openUntil > at) throw new ForagingHostPausedError(host);
+    if (at - state.lastReadAt < deps.minHostIntervalMs) {
+      throw new ForagingHostThrottledError(host);
+    }
+    state.lastReadAt = at;
 
-      const key = deps.readKey && source.companyId
-        ? await deps.readKey(source.companyId, deps.env?.MYRMIDON_FORAGING_KEY_SECRET?.trim() || null)
-        : null;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
-      if (typeof timer.unref === "function") timer.unref();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    if (signal) {
       signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
 
-      try {
-        const response = await fetchImpl(source.url, {
-          method: "GET",
-          redirect: "follow",
-          headers: {
-            accept: "text/plain, text/markdown, text/html;q=0.8, */*;q=0.5",
-            "user-agent": FORAGING_USER_AGENT,
-            ...(key ? { authorization: `Bearer ${key}` } : {}),
-          },
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`source answered ${response.status}`);
-        const body = await response.text();
-        // A snapshot is compared by content; a body over the cap is cut and the
-        // cut is visible in the hash the caller never sees — kept simple here.
-        const cut = body.length > MAX_SOURCE_BYTES ? body.slice(0, MAX_SOURCE_BYTES) : body;
-        state.failures = 0;
-        return { text: cut, bytes: cut.length };
-      } catch (err) {
-        state.failures += 1;
-        if (state.failures >= BREAKER_FAILURE_THRESHOLD) {
-          state.openUntil = now() + BREAKER_OPEN_MS;
-          log.warn(
-            { host, failures: state.failures, openUntil: state.openUntil },
-            "foraging: host breaker opened after repeated failures",
-          );
-        }
-        throw err;
-      } finally {
-        clearTimeout(timer);
+    try {
+      const requestId = randomUUID();
+      const fetched = await edgeFetch({
+        request_id: requestId,
+        url: source.url,
+        mode: "scrape",
+        max_depth: 0,
+        timeout_ms: READ_TIMEOUT_MS,
+        idempotency_key: requestId,
+      }, controller.signal);
+      if (fetched.request_id !== requestId || fetched.status !== "succeeded") {
+        throw new Error("foraging: edge fetch returned an invalid response");
       }
-    },
+      const page = fetched.pages[0];
+      if (!page || page.url !== source.url || page.final_url !== source.url || !page.content_sha256 || !page.fetched_at) {
+        throw new Error("foraging: edge fetch response is missing source provenance or redirected");
+      }
+      const body = page.markdown;
+      const scannerVerdict = scanForInjection(body, injectionScoreThreshold(deps.env));
+      if (scannerVerdict.flagged) {
+        throw new Error(`foraging: edge fetch content rejected by injection scanner (${scannerVerdict.matched.join(",")})`);
+      }
+      // A snapshot is compared by content; a body over the cap is cut and the
+      // cut is visible in the hash the caller never sees — kept simple here.
+      const cut = body.length > MAX_SOURCE_BYTES ? body.slice(0, MAX_SOURCE_BYTES) : body;
+      state.failures = 0;
+      return {
+        text: cut,
+        bytes: cut.length,
+        page: { ...page, request_id: requestId, scanner_verdict: scannerVerdict },
+      };
+    } catch (err) {
+      state.failures += 1;
+      if (state.failures >= BREAKER_FAILURE_THRESHOLD) {
+        state.openUntil = now() + BREAKER_OPEN_MS;
+        log.warn(
+          { host, failures: state.failures, openUntil: state.openUntil },
+          "foraging: host breaker opened after repeated failures",
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    read,
+    fetch: read,
   };
 }
 
 /** A stable fingerprint of a snapshot; handy for logs and dedup in tests. */
 export function snapshotFingerprint(lines: readonly string[]): string {
   return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16);
+}
+
+function createHttpEdgeFetchClient(deps: ForagingReaderDeps): NonNullable<ForagingReaderDeps["edgeFetch"]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const gateway = deps.env?.MYRMIDON_VMEXEC_URL?.trim();
+  const token = deps.env?.MYRMIDON_VMEXEC_TOKEN?.trim();
+  if (gateway && token) {
+    const endpoint = new URL("/internal/v1/firecrawl/fetch", gateway).toString();
+    return async (request, signal) => {
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        redirect: "error",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(request),
+        signal,
+      });
+      if (!response.ok) throw new Error(`foraging: vm-exec edge fetch answered ${response.status}`);
+      return await response.json() as ForagingEdgeFetchResponse;
+    };
+  }
+  return async (request, signal) => {
+    const target = new URL(request.url);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      throw new Error("foraging: source URL must use http or https");
+    }
+    const response = await fetchImpl(target, {
+      method: "GET",
+      redirect: "manual",
+      headers: { "user-agent": FORAGING_USER_AGENT, accept: "text/html,text/plain,application/xhtml+xml" },
+      signal,
+    });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new Error("foraging: source redirects are not allowed");
+    }
+    if (!response.ok) throw new Error(`foraging: source answered ${response.status}`);
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (!contentType.startsWith("text/") && contentType !== "application/xhtml+xml") {
+      await response.body?.cancel();
+      throw new Error("foraging: source content type is not text");
+    }
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_FORAGING_RESPONSE_BYTES) {
+      await response.body?.cancel();
+      throw new Error("foraging: source response exceeds the 2 MB limit");
+    }
+    const bytes = await readBoundedBody(response, signal);
+    const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const text = contentType === "text/html" || contentType === "application/xhtml+xml" ? htmlToMarkdown(raw) : raw;
+    return {
+      request_id: request.request_id,
+      status: "succeeded",
+      truncated: false,
+      pages: [{
+        url: request.url,
+        final_url: request.url,
+        title: null,
+        markdown: text,
+        fetched_at: new Date().toISOString(),
+        content_sha256: createHash("sha256").update(bytes).digest("hex"),
+      }],
+    };
+  };
+}
+
+async function readBoundedBody(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      if (signal.aborted) throw new Error("foraging: source read timed out");
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_FORAGING_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("foraging: source response exceeds the 2 MB limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function htmlToMarkdown(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
 }

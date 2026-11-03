@@ -3,6 +3,7 @@ import {
   ALERT_RECOVERY_UPDATED_ACTION,
   alertRecoveryIdentity,
   mergeAlertRecoverySettings,
+  isAlertRecoveryRecurrence,
   pruneAlertRecoveryRecords,
   type AlertRecoveryLimitKey,
   type AlertRecoveryLimitSource,
@@ -55,10 +56,7 @@ export type AlertRecoveryIssueWriteResult = "applied" | "already" | "refused";
 
 /** The issue side of alert recovery, as the service needs it. */
 export interface AlertRecoveryIssuePort {
-  /**
-   * Open the task of an alert: the owner role's agent gets it, the body carries
-   * the runbook steps. Null when the create was refused.
-   */
+  /** Create the task. The agent assignment is delayed until the alert hold ends. */
   createIssue(input: {
     companyId: string;
     title: string;
@@ -68,6 +66,15 @@ export interface AlertRecoveryIssuePort {
     /** The alert identity, stamped on the task so the board can trace it back. */
     originId: string;
   }): Promise<{ id: string; identifier: string | null } | null>;
+  /** Delay issue assignment and worker dispatch until the configured threshold. */
+  holdMinutes?: number;
+  /** Can identify a closed task without guessing whether a human closed it. */
+  isSystemRecoveryClosed?(issueId: string, companyId: string): Promise<boolean>;
+  getIssueStatus?(issueId: string, companyId: string): Promise<string | null>;
+  /** Delay assignment and worker wake until hold has elapsed. */
+  delayIssueWake?(issueId: string, companyId: string, holdMinutes: number): Promise<void>;
+  /** Dispatch only after hold expires if the alert is still active. */
+  dispatchAlertWake?(issueId: string, companyId: string): Promise<void>;
   addComment(issueId: string, body: string): Promise<boolean>;
   /** Close the task of a resolved alert, with the closing comment in one write. */
   closeIssue(input: {
@@ -75,6 +82,7 @@ export interface AlertRecoveryIssuePort {
     companyId: string;
     body: string;
   }): Promise<AlertRecoveryIssueWriteResult>;
+
   /** Put a repeat back into work on the same task, comment included. */
   reopenIssue(input: {
     issueId: string;
@@ -146,6 +154,8 @@ export type AlertRecoveryActor = Pick<
 >;
 
 export interface AlertRecoveryService {
+  lookup(alert: AlertRecoveryAlert): Promise<AlertRecoveryRecord | null>;
+  bindIssue(identity: string, companyId: string, link: { issueId: string; issueIdentifier: string | null }): Promise<void>;
   ingest(alert: AlertRecoveryAlert): Promise<AlertRecoveryIngestResult>;
   sweep(): Promise<AlertRecoverySweepResult>;
   readSettings(): Promise<ResolvedAlertRecoverySettings>;
@@ -214,6 +224,18 @@ export function createAlertRecoveryService(deps: AlertRecoveryServiceDeps): Aler
   }
 
   return {
+    async lookup(alert) {
+      const settings = await deps.store.readResolved();
+      const identity = planAlertRecoveryEvent({ alert, record: null, settings: settings.settings, now: now() }).identity;
+      return (await deps.store.readRecords(alert.companyId)).find((record) => record.identity === identity) ?? null;
+    },
+    async bindIssue(identity, companyId, link) {
+      const records = await deps.store.readRecords(companyId);
+      const record = records.find((candidate) => candidate.identity === identity);
+      if (record && !record.issueId) {
+        await writeRecord(companyId, { ...record, issueId: link.issueId, issueIdentifier: link.issueIdentifier });
+      }
+    },
     readSettings: () => deps.store.readResolved(),
 
     updateSettings: (patch, actor) =>
@@ -289,33 +311,52 @@ export function createAlertRecoveryService(deps: AlertRecoveryServiceDeps): Aler
         let issueIdentifier = existing?.issueIdentifier ?? null;
 
         if (plan.kind === "create") {
-          const created = await deps.issues.createIssue({
-            companyId: alert.companyId,
-            title: alertRecoveryIssueTitle(alert),
-            body: renderAlertRecoveryIssueBody(alert, plan.runbook, plan.ownerRole, settings),
-            priority: alertRecoveryPriority(alert.severity),
-            ownerRole: plan.ownerRole,
-            originId: identity,
-          });
-          if (!created) {
-            // The task could not be opened (no room, a refused create): the next
-            // firing of the alert tries again, and no record is written, so the
-            // alert is not marked as having a task.
-            log("alert_recovery_create_refused", { identity, trigger: alert.trigger });
-            return {
-              kind: plan.kind,
-              identity,
-              issueId: null,
-              issueIdentifier: null,
-              runbookKey: plan.runbook.key,
+          const withinRecurrence = existing && existing.state === "closed" && isAlertRecoveryRecurrence(existing, at, settings.recurrenceWindowMinutes);
+          if (withinRecurrence && existing.issueId) {
+            issueId = existing.issueId;
+            issueIdentifier = existing.issueIdentifier;
+            const status = await deps.issues.getIssueStatus?.(issueId, alert.companyId);
+            if (status === "done" || status === "cancelled") {
+              await deps.issues.reopenIssue({ issueId, companyId: alert.companyId, body: renderAlertRecoveryReopenComment(alert, existing.closedAt, plan.runbook, plan.ownerRole, settings) });
+            }
+          } else {
+            const alertTitle = alert.title?.trim() || alert.trigger.trim();
+            const title = `[${alert.source}] ${alertTitle}${alert.hosts?.length ? ` — ${alert.hosts.join(", ")}` : ""}`;
+            const created = await deps.issues.createIssue({
+              companyId: alert.companyId,
+              title,
+              body: renderAlertRecoveryIssueBody(alert, plan.runbook, plan.ownerRole, settings),
+              priority: alertRecoveryPriority(alert.severity),
               ownerRole: plan.ownerRole,
-              state: null,
-              firedCount: 0,
-            };
+              originId: identity,
+            });
+            if (!created) {
+              log("alert_recovery_create_refused", { identity, trigger: alert.trigger });
+              return {
+                kind: plan.kind,
+                identity,
+                issueId: null,
+                issueIdentifier: null,
+                runbookKey: plan.runbook.key,
+                ownerRole: plan.ownerRole,
+                state: null,
+                firedCount: 0,
+              };
+            }
+            issueId = created.id;
+            issueIdentifier = created.identifier;
+            if (deps.issues.delayIssueWake) {
+              await deps.issues.delayIssueWake(
+                created.id,
+                alert.companyId,
+                deps.issues.holdMinutes ?? settings.holdMinutes ?? ALERT_RECOVERY_HOLD_MINUTES_DEFAULT,
+              );
+            }
           }
-          issueId = created.id;
-          issueIdentifier = created.identifier;
         } else if (plan.kind === "join" && issueId) {
+          if (existing?.state === "open" && existing.heldAt == null && issueId && deps.issues.delayIssueWake) {
+            await deps.issues.delayIssueWake(issueId, alert.companyId, settings.holdMinutes);
+          }
           await deps.issues.addComment(
             issueId,
             renderAlertRecoveryFiringComment(alert, plan.record?.firedCount ?? 1, settings),
@@ -323,26 +364,15 @@ export function createAlertRecoveryService(deps: AlertRecoveryServiceDeps): Aler
         } else if (plan.kind === "cancel-close" && issueId) {
           await deps.issues.addComment(issueId, renderAlertRecoveryCancelCloseComment(alert));
         } else if (plan.kind === "reopen" && issueId) {
-          const body = renderAlertRecoveryReopenComment(
-            alert,
-            existing?.closedAt ?? null,
-            plan.runbook,
-            plan.ownerRole,
-            settings,
-          );
-          const write = await deps.issues.reopenIssue({ issueId, companyId: alert.companyId, body });
-          if (write === "refused") {
-            // The task stayed closed: say so on it, so a person can lift it.
-            await deps.issues.addComment(
-              issueId,
-              `${body}\n\nАвтоматически вернуть задачу в работу не удалось — переведите её в работу вручную.`,
-            );
+          const status = await deps.issues.getIssueStatus?.(issueId, alert.companyId);
+          if (!status || status === "done" || status === "cancelled") {
+            if (!deps.issues.isSystemRecoveryClosed || (await deps.issues.isSystemRecoveryClosed(issueId, alert.companyId))) {
+              const body = renderAlertRecoveryReopenComment(alert, existing?.closedAt ?? null, plan.runbook, plan.ownerRole, settings);
+              await deps.issues.reopenIssue({ issueId, companyId: alert.companyId, body });
+            }
           }
         } else if (plan.kind === "await-close" && issueId) {
-          await deps.issues.addComment(
-            issueId,
-            renderAlertRecoveryResolvedComment(alert, at, plan.runbook, settings),
-          );
+          await deps.issues.addComment(issueId, renderAlertRecoveryResolvedComment(alert, at, plan.runbook, settings));
         }
 
         const record = plan.record
@@ -377,6 +407,19 @@ export function createAlertRecoveryService(deps: AlertRecoveryServiceDeps): Aler
         const resolved = await deps.store.readResolved();
         const settings = resolved.settings;
         const records = await deps.store.readRecords();
+        const pendingWake = records.filter((record) => record.state === "open" && record.heldAt == null);
+        for (const record of pendingWake) {
+          const age = at.getTime() - Date.parse(record.firstFiredAt);
+          const issueStatus = await deps.issues.getIssueStatus?.(record.issueId, record.companyId);
+          if (issueStatus !== "todo") continue;
+          const stillClosed = await deps.issues.isSystemRecoveryClosed?.(record.issueId, record.companyId);
+          if (stillClosed) continue;
+          const holdExpired = Number.isFinite(age) && age >= settings.holdMinutes * 60_000;
+          if (record.heldAt == null && holdExpired && deps.issues.dispatchAlertWake) {
+            await deps.issues.dispatchAlertWake(record.issueId, record.companyId);
+            await deps.store.markWakeDispatched(record.identity, at.toISOString());
+          }
+        }
         const due = dueAlertRecoveryRecords(records, at, settings);
         const closed: AlertRecoverySweepResult["closed"] = [];
         const retried: AlertRecoverySweepResult["retried"] = [];

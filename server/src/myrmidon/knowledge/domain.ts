@@ -526,3 +526,89 @@ export function createMemorySearchIndex(): SearchIndex & { clear(): void } {
     },
   };
 }
+
+export interface KnowledgeWriteProtectionViolation {
+  kind: "probe_marker" | "short_single_line" | "severe_truncation";
+  message: string;
+}
+
+/**
+ * Detects whether new content triggers write-protection guards (OPE-9762).
+ *
+ * Rules:
+ * 1. Probe marker `__probe` is always rejected (both on create and update).
+ * 2. On update of an existing item (previousContent !== null && previousContent.length > 0):
+ *    - Single-line content shorter than 20 characters is rejected to prevent
+ *      destructive existence-probe overwrites (e.g. `test`, `ping`, `__probe`).
+ *      Initial creation (previousContent === null) permits short initial stubs
+ *      and titles unless they contain explicit probe markers (`__probe`).
+ *    - New content shorter than 20% of previous revision length is rejected
+ *      as severe truncation.
+ */
+export function detectKnowledgeWriteProtectionViolation(input: {
+  newContent: string;
+  previousContent: string | null;
+  allowEmpty?: boolean;
+}): KnowledgeWriteProtectionViolation | null {
+  const { newContent, previousContent, allowEmpty } = input;
+  const trimmed = newContent.trim();
+
+  if (allowEmpty && trimmed.length === 0) {
+    return null;
+  }
+
+  if (newContent.includes("__probe")) {
+    return {
+      kind: "probe_marker",
+      message: "content contains probe marker '__probe'",
+    };
+  }
+
+  if (previousContent !== null && previousContent.length > 0) {
+    if (!trimmed.includes("\n") && trimmed.length < 20) {
+      return {
+        kind: "short_single_line",
+        message: "single-line content shorter than 20 characters resembles a probe marker",
+      };
+    }
+
+    if (newContent.length < previousContent.length * 0.2) {
+      return {
+        kind: "severe_truncation",
+        message: `new content length (${newContent.length}) is less than 20% of previous revision (${previousContent.length})`,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Write protection against truncation and probe markers (OPE-9762).
+ * Evaluates the protection rules first. If a violation is detected, requires
+ * explicit `force: true` and non-empty `reason` to override.
+ * Returns the violation if overridden, or null if no violation occurred.
+ */
+export function assertKnowledgeWriteProtection(input: {
+  newContent: string;
+  previousContent: string | null;
+  force?: boolean;
+  reason?: string | null;
+  allowEmpty?: boolean;
+}): KnowledgeWriteProtectionViolation | null {
+  const violation = detectKnowledgeWriteProtectionViolation(input);
+  if (!violation) {
+    return null;
+  }
+
+  const hasForceAndReason = input.force === true && typeof input.reason === "string" && input.reason.trim().length > 0;
+  if (!hasForceAndReason) {
+    throw new KnowledgeDomainError(
+      "write_protection_rejected",
+      422,
+      `Write rejected: ${violation.message}. Pass force: true and a valid reason to override.`,
+    );
+  }
+
+  return violation;
+}

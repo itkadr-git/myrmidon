@@ -45,6 +45,9 @@ import {
   type Ui2MessageKey,
 } from "./locales";
 
+const STORAGE_KEY = "myrmidon.ui2.locale";
+const APP_LANGUAGE_STORAGE_KEY = "myrmidon:ui-language";
+
 /** Legacy mirror key (kept so existing choices survive), shared key, and app key. */
 const STORAGE_KEYS = [
   "myrmidon.ui2.locale",
@@ -54,6 +57,15 @@ const STORAGE_KEYS = [
 
 export function isUi2Locale(value: unknown): value is Ui2Locale {
   return typeof value === "string" && (UI2_LOCALES as readonly string[]).includes(value);
+}
+
+export function readAppLanguage(): Ui2Locale | null {
+  try {
+    const raw = window.localStorage.getItem(APP_LANGUAGE_STORAGE_KEY);
+    return isUi2Locale(raw) ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Read the stored locale without crashing on private-mode/quota failures. */
@@ -122,12 +134,14 @@ const Ui2I18nContext = createContext<Ui2I18nContextValue | null>(null);
 
 export function Ui2I18nProvider({
   children,
-  initialLocale = readStoredLocale() ?? UI2_DEFAULT_LOCALE,
+  initialLocale,
 }: {
-  children: ReactNode;
+  children?: ReactNode;
   initialLocale?: Ui2Locale;
 }) {
-  const [locale, setLocaleState] = useState<Ui2Locale>(initialLocale);
+  const [locale, setLocaleState] = useState<Ui2Locale>(
+    () => initialLocale ?? readStoredLocale() ?? readAppLanguage() ?? UI2_DEFAULT_LOCALE,
+  );
   // Once the user has chosen a language in this session, a late server
   // response must not overwrite their choice.
   const userSwitched = useRef(false);
@@ -159,7 +173,13 @@ export function Ui2I18nProvider({
   // Cross-tab sync: another tab switched the language.
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
-      if (!(STORAGE_KEYS as readonly string[]).includes(event.key ?? "")) return;
+      if (
+        event.key !== STORAGE_KEY &&
+        event.key !== APP_LANGUAGE_STORAGE_KEY &&
+        !(STORAGE_KEYS as readonly string[]).includes(event.key ?? "")
+      ) {
+        return;
+      }
       if (!isUi2Locale(event.newValue)) return;
       const next = event.newValue;
       setLocaleState((current: Ui2Locale) => {
@@ -202,4 +222,8 @@ export function useUi2I18n(): Ui2I18nContextValue {
   const ctx = useContext(Ui2I18nContext);
   if (!ctx) throw new Error("useUi2I18n requires a Ui2I18nProvider ancestor");
   return ctx;
+}
+
+export function useUi2I18nOptional(): Ui2I18nContextValue | null {
+  return useContext(Ui2I18nContext);
 }

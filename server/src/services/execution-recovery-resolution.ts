@@ -32,6 +32,7 @@ import {
   CHAT_CONTINUATION_REPLAY,
   isChatBackedIssue,
 } from "../myrmidon/chat-holds/chat-backed.js";
+import { clearExpiredReplayHolds } from "../myrmidon/settled-holds/clear.js";
 // myrmidon(OPE-6954): a task an actor returned to the ready queue keeps the
 // status that actor set: the recovery records its hold but never overwrites
 // `todo`/`backlog` with `blocked`. See
@@ -677,5 +678,10 @@ export async function settleUnrecoverableExecutions(
         "Automatic recovery disposition remains pending",
       );
     }
+  }
+  try {
+    await clearExpiredReplayHolds(db);
+  } catch (err) {
+    logger.warn({ err }, "Periodic clear of expired replay holds failed");
   }
 }

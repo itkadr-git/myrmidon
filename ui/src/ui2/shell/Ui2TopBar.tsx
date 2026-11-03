@@ -18,9 +18,12 @@
 import { useState } from "react";
 import { CircleAlert, ChevronDown, MessagesSquare, Server, Users, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 import { useCompany } from "@/context/CompanyContext";
 import { useUi2StatusStrip } from "../useUi2Status";
+import { LanguageSwitch } from "../i18n/LanguageSwitch";
 import { Ui2CommanderPalette } from "./Ui2CommanderPalette";
+import { Ui2AccountMenu } from "./Ui2AccountMenu";
 
 function StatusChip({
   icon: Icon,
@@ -65,7 +68,12 @@ function StatusChip({
 }
 
 export function Ui2TopBar() {
-  const { t } = useTranslation("ui2");
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   const { selectedCompanyId } = useCompany();
   const strip = useUi2StatusStrip(selectedCompanyId);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -220,8 +228,11 @@ export function Ui2TopBar() {
             {waiting ? (waiting.count > 99 ? "99+" : waiting.count) : t("ui2.chip.empty")}
           </span>
         ) : null}
+
+        <Ui2AccountMenu compact />
       </div>
 
+      <div style={{ marginLeft: "auto" }}><LanguageSwitch compact /></div>
       {paletteOpen ? <Ui2CommanderPalette onClose={() => setPaletteOpen(false)} /> : null}
     </header>
   );

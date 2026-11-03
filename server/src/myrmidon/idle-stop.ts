@@ -1,4 +1,4 @@
-import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
+import { BotContainerDriver, BotContainerStatus, IDLE_STOP_UNSUPPORTED_MESSAGE } from './bot-containers/driver.js';
 import { Db, heartbeatRuns, agents, botApplyJobs } from '@myrmidon/db';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { readMaintenanceDocument } from './maintenance/store.js';
@@ -56,7 +56,7 @@ export class IdleStopService {
     this.config = {
       enabled: config.enabled ?? true,
       afterSec: config.afterSec ?? 1800, // 30 minutes default
-      healthTimeoutMs: config.healthTimeoutMs ?? 30000,
+      healthTimeoutMs: config.healthTimeoutMs ?? 420000,
       sweepIntervalMs: config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
     };
   }
@@ -209,7 +209,7 @@ export class IdleStopService {
 
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
-      if (!this.driver.stopIdle) throw new Error('idle-stop route is not supported by this driver');
+      if (!this.driver.stopIdle) throw new Error(IDLE_STOP_UNSUPPORTED_MESSAGE);
       await this.driver.stopIdle(botKey);
     } catch (error) {
       this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);

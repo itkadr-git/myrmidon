@@ -24,6 +24,13 @@ describe("run retry policy: failure classification", () => {
         reason: "transient_error_code",
       })),
     );
+    expect(isTransientFailure({ errorCode: "hermes_transient_upstream" })).toBe(true);
+    expect(classifyRunFailureForRetry({ errorCode: "hermes_transient_upstream" })).toEqual({
+      classification: "transient",
+      errorCode: "hermes_transient_upstream",
+      errorFamily: null,
+      reason: "transient_error_code",
+    });
   });
 
   it("calls a known permanent failure terminal", () => {

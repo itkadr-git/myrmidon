@@ -13,7 +13,7 @@
 // The vendor tree is out of scope here: the legacy shell translations are a
 // separate track (UI-RU). This guard owns the 2.0 tree only.
 import { describe, expect, it } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { en } from "./catalogs/en";
@@ -72,6 +72,19 @@ for (const file of readdirSync(AREAS_DIR)) {
   for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
     target.add(key);
     target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+  }
+}
+// myrmidon(OPE-9382): ui2 shell components can also use top-level keys from
+// legacy locales (e.g. uiSwitch from ui/src/i18n/locales/{en,ru}.json).
+const LOCALES_DIR = join(UI2_ROOT, "../i18n/locales");
+for (const locale of ["en", "ru"] as const) {
+  const filePath = join(LOCALES_DIR, `${locale}.json`);
+  if (existsSync(filePath)) {
+    const target = locale === "en" ? catalogKeys : ruKeys;
+    for (const key of flatten(JSON.parse(readFileSync(filePath, "utf8")))) {
+      target.add(key);
+      target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+    }
   }
 }
 

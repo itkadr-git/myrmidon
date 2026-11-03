@@ -43,7 +43,7 @@ company of the instance, and the castes narrow it.
 |---|---|---|
 | Swarm enabled | The switch of the whole swarm | off |
 | Lease TTL, seconds | How long one lease lives without a heartbeat; the run refreshes it on every checkout pass | `900` |
-| Max active tasks per agent | The ceiling of live leases per agent; empty = no ceiling. A caste can set its own ceiling, which wins for its agents | `3` |
+| Max active tasks per agent | The ceiling of live leases per agent; empty = no ceiling. A caste can set its own ceiling, which wins for its agents | `2` |
 | Sweep interval, seconds | How often the safety-net pass runs; read live, the startup value stays the floor | `30` |
 | P0 preempts the queue | On — a `critical` task is first in line. Off — strictly oldest-first | on |
 

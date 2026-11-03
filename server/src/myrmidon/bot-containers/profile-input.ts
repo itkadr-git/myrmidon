@@ -19,7 +19,13 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidon/shared";
 // into config.yaml's `delegation` section (and the toolset switch).
 import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@myrmidon/shared";
 // myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role/card.
-import { botLspHermesBlock, resolveBotLsp, type BotLspSettings } from "@myrmidon/shared";
+import {
+  BOT_LSP_TSSERVER_MEMORY_MIN_MB,
+  botLspHermesBlock,
+  resolveBotLsp,
+  resolveBotLspHeap,
+  type BotLspSettings,
+} from "@myrmidon/shared";
 import { BOT_BOARD_GATEWAY_SERVER_NAME } from "./board-gateway.js";
 import type {
   HermesProfileAdapterConfig,
@@ -460,11 +466,20 @@ export function parseBotAuxFallbackModels(raw: string | null): string[] | null {
   return models.length > 0 ? models : null;
 }
 
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
 
 export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): BotProfileSettings {
+  // Lists saved from the UI win over the environment (nothing changes before one is saved).
+  const savedBanks = env === process.env ? liveSavedSetting<string[]>("bot_hindsight_allowed_banks") : undefined;
+  const hindsightAllowedBanksValue = Array.isArray(savedBanks)
+    ? savedBanks.join(",")
+    : readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
+  const hindsightAllowedBanks = parseBotHindsightAllowedBanks(hindsightAllowedBanksValue);
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
-  const mcp = parseBotMcpServers(readSetting(env, BOT_MCP_SERVERS_ENV));
+  const savedServers = env === process.env ? liveSavedSetting<unknown[]>("bot_mcp_servers") : undefined;
+  const mcpValue = Array.isArray(savedServers) ? JSON.stringify(savedServers) : readSetting(env, BOT_MCP_SERVERS_ENV);
+  const mcp = parseBotMcpServers(mcpValue);
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the instance defaults the profile compiler
   // writes into config.yaml — read here so a corrected variable takes effect
   // on the next compile tick, like the rest of this settings object.
@@ -494,7 +509,7 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
   return {
     hindsightApiUrl: readSetting(env, BOT_HINDSIGHT_API_URL_ENV),
     hindsightBank: readSetting(env, BOT_HINDSIGHT_BANK_ENV),
-    hindsightAllowedBanks: parseBotHindsightAllowedBanks(readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV)),
+    hindsightAllowedBanks,
     llmBaseUrl: readSetting(env, BOT_LLM_BASE_URL_ENV),
     llmApiKeyEnv,
     llmApiKeySecret: readSetting(env, BOT_LLM_API_KEY_SECRET_ENV) ?? llmApiKeyEnv,
@@ -937,17 +952,42 @@ function buildMcpServers(
 
 /**
  * myrmidon(BOT-LSP-DEFAULTS): the role policy and the card's pin -> the
- * compiler's per-agent `lsp` settings. Undefined = write no `lsp` block (full
- * mode with no exclusions, i.e. Hermes' own defaults).
+ * compiler's per-agent `lsp` settings. Full mode writes an enabled block only
+ * to carry conservative default excluded roots; Hermes keeps server defaults.
  */
 function buildBotLsp(
   role: string | undefined,
   card: Record<string, unknown>,
   settings: BotLspSettings | undefined,
+  warnings: string[],
 ): HermesProfileLspSettings | undefined {
   const resolved = resolveBotLsp(role, card, settings);
-  const block = botLspHermesBlock(resolved.mode, settings);
+  if (resolved.mode === "off") return { enabled: false };
+  const container = asRecord(card.container);
+  const containerMemoryMb =
+    container.enabled === true && typeof container.memoryMb === "number" && Number.isFinite(container.memoryMb) && container.memoryMb > 0
+      ? container.memoryMb
+      : null;
+  const block = botLspHermesBlock(resolved.mode, settings, containerMemoryMb);
   if (!block) return undefined;
+  if (resolved.mode === "limited") {
+    const heapRes = resolveBotLspHeap(containerMemoryMb, settings?.tsserverMemoryMb);
+    if (!heapRes.ok) {
+      if (heapRes.reason === "unknown_memory") {
+        warnings.push("lsp: limited language server disabled because container memory limit is unknown");
+      } else {
+        warnings.push(
+          `lsp: limited language server disabled because container memory (${containerMemoryMb} MB) is insufficient for tsserver (minimum heap is ${BOT_LSP_TSSERVER_MEMORY_MIN_MB} MB, 40% cap is ${heapRes.cap} MB)`,
+        );
+      }
+      return { enabled: false };
+    }
+    if (heapRes.clamped) {
+      warnings.push(
+        `lsp: configured tsserver heap (${heapRes.configured} MB) exceeds the 40% container budget (${heapRes.cap} MB for ${containerMemoryMb} MB container); safely clamped to ${heapRes.cap} MB`,
+      );
+    }
+  }
   return {
     enabled: block.enabled,
     ...(block.idleTimeout !== undefined ? { idleTimeout: block.idleTimeout } : {}),
@@ -1062,7 +1102,7 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
     // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
     // Resolved here (not in the compiler) for the same reason as the helpers:
     // the pure compiler keeps no settings knowledge.
-    lsp: buildBotLsp(source.role, card, source.botLspSettings),
+    lsp: buildBotLsp(source.role, card, source.botLspSettings, warnings),
     apiServerKey: source.apiServerKey,
     // settings.boardUrl is non-null here: assertBotProfileSettings threw otherwise.
     paperclipApiUrl: settings.boardUrl as string,

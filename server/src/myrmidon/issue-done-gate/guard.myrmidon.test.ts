@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
 import {
   assertIssueDonePullRequestsSettled,
+  assertStoredIssueDonePullRequestsSettled,
   inspectIssueDonePullRequests,
   ISSUE_DONE_PULL_REQUEST_GATE,
 } from "./guard.js";
@@ -45,6 +46,48 @@ function resolver(states: Record<number, "open" | "draft" | "merged" | "closed" 
 }
 
 describe("issue done pull-request gate", () => {
+  it("allows PATCH done to use live merged facts when the stored work product is stale", async () => {
+    const db = fakeDb([product({ id: "wp-live", number: 91, status: "open" })]);
+    const resolve = resolver({ 91: "merged" });
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolve);
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+    expect(() => assertStoredIssueDonePullRequestsSettled([product({ id: "wp-live", number: 91, status: "open" })])).toThrowError(/Cannot mark this task done until/);
+  });
+
+  it("does not accept a mixed stored set until every non-closed PR is settled", () => {
+    const merged = product({ id: "wp-merged", number: 92, status: "merged" });
+    const closed = product({ id: "wp-closed", number: 93, status: "closed" });
+    const open = product({ id: "wp-open", number: 94, status: "open" });
+    expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed])).not.toThrow();
+    expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed, open])).toThrowError(/Cannot mark this task done until/);
+    expect(() => assertStoredIssueDonePullRequestsSettled([closed])).toThrowError(/Cannot mark this task done until/);
+  });
+
+  it("does not treat non-PR work products as blocking a done issue", () => {
+    expect(() => assertStoredIssueDonePullRequestsSettled([
+      { ...product({ id: "wp-doc", number: 94, status: "open" }), type: "document" },
+    ])).not.toThrow();
+  });
+
+  it("uses live merged facts through transaction validation when stored status is stale", async () => {
+    const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
+    const staleProduct = product({ id: "wp-merged-now", number: 95, status: "open" });
+    const snapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "open" }));
+    const liveSnapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "merged" }));
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      select: vi.fn()
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{
+          ...product({ id: "wp-merged-now", number: 95, status: "merged" }),
+          metadata: { repo: "acme/project", number: 95, state: "merged", draft: false },
+        }]) })) }),
+    } as never;
+    await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
+  });
+
   it.each(["open", "draft", "unknown"] as const)("blocks a %s PR with a stable retryable error", async (state) => {
     const snapshot = await inspectIssueDonePullRequests(
       fakeDb([product({ id: "wp-1", number: 12 })]),
@@ -166,5 +209,31 @@ describe("issue done pull-request gate", () => {
       resolver({ 12: "merged", 14: "open" }),
     );
     expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/14");
+  });
+
+  it("allows done when a mixed set contains a closed PR and another linked PR is merged", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([
+        product({ id: "wp-1", number: 12 }),
+        product({ id: "wp-2", number: 14 }),
+      ]),
+      companyId,
+      issueId,
+      resolver({ 12: "merged", 14: "closed" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("blocks done when all linked PRs in a set are closed without any merged PR", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([
+        product({ id: "wp-1", number: 12 }),
+        product({ id: "wp-2", number: 14 }),
+      ]),
+      companyId,
+      issueId,
+      resolver({ 12: "closed", 14: "closed" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/12");
   });
 });

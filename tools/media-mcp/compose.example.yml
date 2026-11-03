@@ -3,8 +3,13 @@
 # same network as the bots use (MYRMIDON_BOT_NETWORK). `media-backend` is internal:
 # no route out and no route from the bots; only the facade and the worker sit on it.
 #
-# Before `up`: create ./config/bots.json (see README) and the secret file
-# ./secrets/worker_token (random, >= 32 chars). The `spool` volume is a named volume: the images
+# The ACL registry is the external Docker volume `myrmidon_media-acl-config`.
+# The board compose stack mounts it read-write at `/config` and exports
+# `MYRMIDON_MEDIA_BOTS_FILE=/config/bots.json`; this stack mounts the same
+# volume read-only. Create the volume before starting this stack and preserve any
+# existing `bots.json` during the migration.
+#
+# Before `up`: create ./secrets/worker_token (random, >= 32 chars). The `spool` volume is a named volume: the images
 # create /spool owned by uid 10001, so Docker initialises the volume with that owner on first use.
 # A named volume has no size limit of its own; see the `spool` volume below.
 
@@ -18,11 +23,9 @@ networks:
     internal: true
 
 volumes:
-  # Everything the bots store and every job writes lives here (48 h TTL). Two limits protect the host:
-  # the service refuses new data past MEDIA_SPOOL_MAX_BYTES and when less than MEDIA_SPOOL_MIN_FREE_BYTES
-  # is free on this filesystem. The second one only helps if the volume is not the host's root disk, so
-  # put the spool on its own size-limited filesystem (a dedicated partition or LV, or a loop-mounted
-  # image, mounted e.g. at /srv/media-spool and chowned to 10001:10001) and use the driver_opts form.
+  media-acl-config:
+    external: true
+    name: myrmidon_media-acl-config
   spool: {}
   # spool:
   #   driver: local
@@ -66,7 +69,7 @@ services:
       MEDIA_SPOOL_MIN_FREE_BYTES: "2147483648"  # refuse writes when the spool filesystem has less free
     secrets: [worker_token, stt_api_key]
     volumes:
-      - ./config:/config:ro
+      - media-acl-config:/config:ro
       - spool:/spool
     tmpfs: ["/tmp:size=64m"]
     mem_limit: 512m

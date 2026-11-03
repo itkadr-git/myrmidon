@@ -74,10 +74,36 @@ export function legacySnapshot(a, deps, key, nested) {
   };
   try {
     const current = expected.map((part) => `${part.key}:${part.tree ? "tree" : "repo"}:${signature(part.path)}`).sort();
-    const matching = entries.filter((entry) => entry.key === key && entry.sourceSnapshot === JSON.stringify(current));
-    if (!matching.length) return null;
-    const fileFields = ["bundle", "patch", "untrackedTar", "fullTar", "dirTar"];
-    return matching.some((entry) => fileFields.some((field) => entry[field] && !fs.existsSync(entry[field]))) ? null : current;
+    const encodedCurrent = JSON.stringify(current);
+
+    // Verify all required parts are present with matching sourceSnapshot and valid archive content
+    const verifyOpts = deps.archiveMod && typeof deps.archiveMod.verifyEntry === "function"
+      ? { verifyEntry: deps.archiveMod.verifyEntry }
+      : {};
+
+    for (const exp of expected) {
+      // Find candidate entries for this part
+      const matching = entries.filter((e) => e.key === exp.key && e.sourceSnapshot === encodedCurrent);
+      if (matching.length === 0) return null;
+
+      // At least one candidate must have all required files and pass verification
+      const valid = matching.some((entry) => {
+        const fileFields = ["bundle", "patch", "untrackedTar", "fullTar", "dirTar"];
+        const files = fileFields.map((f) => entry[f]).filter((f) => typeof f === "string" && f);
+        if (files.length === 0) return false;
+        for (const f of files) {
+          if (!fs.existsSync(f)) return false;
+        }
+        if (verifyOpts.verifyEntry) {
+          const v = verifyOpts.verifyEntry(entry, { repoPath: exp.path });
+          if (!v || v.ok !== true) return false;
+        }
+        return true;
+      });
+      if (!valid) return null;
+    }
+
+    return current;
   } catch { return null; }
 }
 /**
@@ -149,11 +175,13 @@ export function archiveThenRemove(a, deps) {
     return "previous archive verified unchanged; removed";
   }
   const own = isGit(a.path) && (deps.isRepo ?? isUsableRepo)(a.path);
+  const newVerifiedEntries = [];
   const check = (what, r) => {
     if (!r || r.ok !== true) throw new Error(`archive-incomplete: ${what}: ${String((r && r.reason) || "unknown").slice(0, 300)}, not removed`);
     if (r.entry && r.entry.truncatedUntracked === true) {
       throw new Error(`archive-incomplete: ${what}: untracked files over the cap were not archived, not removed`);
     }
+    if (r.entry) newVerifiedEntries.push(r.entry);
   };
   for (const n of nested) {
     const rel = path.relative(a.path, n) || ".";
@@ -181,13 +209,28 @@ export function archiveThenRemove(a, deps) {
     } catch { return null; }
   })();
   const writeSnapshot = () => {
-    if (!snapshot) return;
+    if (!snapshot || newVerifiedEntries.length === 0) return;
     const file = path.join(archiveRoot || "/data/hermes/.myrmidon/archive", "manifest.json");
     try {
-      const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+      const p = path.join(archiveRoot || "/data/hermes/.myrmidon/archive", "manifest.json");
+      const manifest = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf8")) : { version: 1, archives: [] };
       const encoded = JSON.stringify(snapshot);
-      for (const entry of manifest.archives || []) if (entry.key === key && !entry.sourceSnapshot) entry.sourceSnapshot = encoded;
-      fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+      const targetEntries = new Set(newVerifiedEntries);
+      for (const entry of manifest.archives || []) {
+        const matches = targetEntries.has(entry) || newVerifiedEntries.some((n) =>
+          (n.archiveId && n.archiveId === entry.archiveId) ||
+          (n.createdAt && n.createdAt === entry.createdAt && n.key === entry.key) ||
+          (n.bundle && n.bundle === entry.bundle) ||
+          (n.dirTar && n.dirTar === entry.dirTar) ||
+          (n.fullTar && n.fullTar === entry.fullTar)
+        );
+        if (matches && !entry.sourceSnapshot) {
+          entry.sourceSnapshot = encoded;
+        }
+      }
+      const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`);
+      fs.renameSync(tmp, p);
     } catch { /* no snapshot means a future pass conservatively re-archives */ }
   };
   writeSnapshot();

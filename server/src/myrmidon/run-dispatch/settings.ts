@@ -5,22 +5,14 @@
 //
 //   general.processes.runStartDispatch  "inline" | "notify"   default "inline"
 //   general.processes.queuedResweepSec  integer 5..3600       default 30
+//   general.processes.queuedRunStaleAfterSec integer 60..604800 default 1800
 //
 // The stored row is read RAW on purpose. `instanceSettingsService(db).getGeneral()`
 // builds its view from a whitelist (`normalizeGeneralSettings`, instance-settings.ts),
-// so any key the vendor schema does not carry is dropped there even when the stored
-// row holds it. The `processes` key itself belongs to T1.1 (OPE-6424, `role` and the
-// `processes` settings key); part A of T1.4 only READS it, so this module touches no
-// shared validator and cannot collide with that ticket's files. Part B can switch the
-// reader to the typed one once T1.1 has landed.
-//
-// Both values are resolved on every use — the mode per dispatch, the interval per
-// resweep cycle — so a saved change applies without a restart. Live application on
-// a `settings_changed` event is T1.8 and deliberately not here.
-//
-// Reading is tolerant: anything malformed falls back to the default instead of
-// failing the pass. A dispatcher pass must never break because an operator typed a
-// wrong value into a JSON blob.
+// so the stale age is read here because the operator-facing whitelist has not yet
+// adopted this key. `general.processes.queuedRunStaleAfterSec` is therefore
+// configurable through the stored process settings blob; malformed values fall back
+// to the default rather than breaking a dispatcher pass.
 
 import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@myrmidon/db";
@@ -31,6 +23,8 @@ export const RUN_DISPATCH_SETTINGS_KEY = "processes";
 export const RUN_START_DISPATCH_KEY = "runStartDispatch";
 /** `general.processes.queuedResweepSec` — the queued-run resweep interval. */
 export const QUEUED_RESWEEP_SEC_KEY = "queuedResweepSec";
+/** `general.processes.queuedRunStaleAfterSec` — max queued age before expiry. */
+export const QUEUED_RUN_STALE_AFTER_SEC_KEY = "queuedRunStaleAfterSec";
 
 export const RUN_START_DISPATCH_MODES = ["inline", "notify"] as const;
 /**
@@ -42,6 +36,7 @@ export type RunStartDispatchMode = (typeof RUN_START_DISPATCH_MODES)[number];
 
 export const DEFAULT_RUN_START_DISPATCH: RunStartDispatchMode = "inline";
 export const DEFAULT_QUEUED_RESWEEP_SEC = 30;
+export const DEFAULT_QUEUED_RUN_STALE_AFTER_SEC = 1800;
 /** Floor of `queuedResweepSec`: below this the pass is a busy loop, not a fallback. */
 export const MIN_QUEUED_RESWEEP_SEC = 5;
 /** Ceiling of `queuedResweepSec`: above this the NOTIFY fallback is slower than the 5 min tick. */
@@ -53,11 +48,13 @@ const DEFAULT_SINGLETON_KEY = "default";
 export interface RunDispatchSettings {
   runStartDispatch: RunStartDispatchMode;
   queuedResweepSec: number;
+  queuedRunStaleAfterSec: number;
 }
 
 export const DEFAULT_RUN_DISPATCH_SETTINGS: RunDispatchSettings = {
   runStartDispatch: DEFAULT_RUN_START_DISPATCH,
   queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
+  queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
 };
 
 function readProcessesRecord(general: unknown): Record<string, unknown> | null {
@@ -89,6 +86,12 @@ function resolveIntervalSec(raw: unknown): number {
   return rounded;
 }
 
+function resolveStaleAfterSec(raw: unknown): number {
+  const numeric = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
+  if (!Number.isFinite(numeric)) return DEFAULT_QUEUED_RUN_STALE_AFTER_SEC;
+  return Math.max(60, Math.min(604800, Math.round(numeric)));
+}
+
 /**
  * Resolve the dispatcher settings out of a raw `instance_settings.general` value.
  * Pure, so the tests can drive every malformed shape without a database.
@@ -99,6 +102,7 @@ export function resolveRunDispatchSettings(general: unknown): RunDispatchSetting
   return {
     runStartDispatch: resolveMode(processes[RUN_START_DISPATCH_KEY]),
     queuedResweepSec: resolveIntervalSec(processes[QUEUED_RESWEEP_SEC_KEY]),
+    queuedRunStaleAfterSec: resolveStaleAfterSec(processes[QUEUED_RUN_STALE_AFTER_SEC_KEY]),
   };
 }
 

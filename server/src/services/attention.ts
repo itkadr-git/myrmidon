@@ -88,9 +88,10 @@ import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admissi
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
-import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
+import { readPoolAccountSignals, readPackageExpirySignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
 import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
@@ -100,6 +101,9 @@ import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
 import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
+// myrmidon(OPE-7202): provider-reported warnings surface before reset.
+import { buildProviderUsageAttentionCard } from "../myrmidon/provider-usage/attention.js";
+import { providerUsageService } from "./provider-usage.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -230,6 +234,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
+  "provider_usage_warning",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -293,6 +298,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
   // with the other capacity signals.
   queue_stall: 14,
+  provider_usage_warning: 19,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
@@ -1545,6 +1551,29 @@ async function buildAttentionFeedSnapshot(
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });
       };
+
+      for (const aggregate of await providerUsageService(db).list(companyId)) {
+        const warning = aggregate.warning;
+        if (!warning || Date.parse(warning.observedAt) >= Date.parse(warning.resetsAt)) continue;
+        const card = buildProviderUsageAttentionCard(warning);
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: { kind: "company", id: companyId, companyId, title: card.title, identifier: null, status: null, href: `/${prefix}/apps`, metadata: card.metadata },
+          whyNow: card.whyNow,
+          decisionVerbs: [],
+          inlineResolvable: false,
+          entryRule: warning.trigger === "usage" ? `provider usage reached ${warning.thresholdPercent}% before reset` : `provider window passed ${warning.thresholdPercent}% of its length before reset`,
+          exitRule: "provider window resets or usage falls below threshold",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: warning.observedAt,
+          createdAt: warning.observedAt,
+          updatedAt: warning.observedAt,
+          relatedIssue: null,
+          detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
+        }));
+      }
 
       const pendingApprovals = await db
         .select({
@@ -3062,7 +3091,8 @@ async function buildAttentionFeedSnapshot(
       // /issues/:id/execution-hold/confirm-continue: the person attests the
       // failed run left no external action, the hold is superseded and the
       // assignee is woken explicitly.
-      for (const card of await listExecutionHoldCards(db, companyId)) {
+      const executionHoldCards = await listExecutionHoldCards(db, companyId);
+      for (const card of executionHoldCards) {
         add(createItem({
           companyId,
           sourceKind: "replay_blocked",
@@ -3109,6 +3139,44 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(OPE-7707): company-level visibility alarm when tasks are held by replay=blocked
+      if (executionHoldCards.length > 0) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "company",
+            id: `execution-holds-aggregate:${companyId}`,
+            companyId,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
+            identifier: null,
+            status: "active",
+            href: `/${prefix}/company/settings`,
+            metadata: {
+              heldCount: executionHoldCards.length,
+            },
+          },
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
+          ),
+          inlineResolvable: false,
+          entryRule: "at least one issue is held by execution recovery replay=blocked",
+          exitRule: "no issues are held by execution recovery replay=blocked",
+          dedupKey: `execution-holds-aggregate:${companyId}`,
+          severity: executionHoldCards.length >= 5 ? "critical" : "high",
+          activityAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: `${executionHoldCards.length} open issues are currently excluded from swarm pickup by execution recovery holds.`,
             images: [],
           },
         }));
@@ -3652,6 +3720,49 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.6 OPE-7189 part J): attention card when an LLM provider package
+      // is nearing expiration (e.g. 15-day packages like nghimmo) or expired.
+      for (const sig of readPackageExpirySignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: {
+            kind: "company",
+            id: sig.providerId,
+            companyId,
+            title: sig.title,
+            identifier: sig.packageName ?? sig.providerName,
+            status: sig.status,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              providerId: sig.providerId,
+              providerName: sig.providerName,
+              packageName: sig.packageName,
+              expiresAt: sig.expiresAt,
+            },
+          },
+          whyNow: sig.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and rotate/extend package." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this package alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: sig.status === "expired" ? "LLM provider package has expired" : "LLM provider package reached expiration warning threshold",
+          exitRule: "the key is rotated, package is renewed, or the alert is dismissed.",
+          dedupKey: sig.dedupKey,
+          severity: sig.severity,
+          activityAt: sig.observedAt,
+          createdAt: sig.observedAt,
+          updatedAt: sig.observedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(sig.whyNow),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(1.6.5-F11-A): one card per bot whose profile carries no media
       // MCP block because no media token is issued. The compile pass records the
       // signals (bot-containers/media-mcp.ts); the card clears when the pass
@@ -3902,7 +4013,7 @@ async function buildAttentionFeedSnapshot(
       // operator desk (the Features page holds the detail). The signals come
       // from the process-level clock the health pass feeds (features/
       // attention.ts); the card disappears when the feature is healthy again.
-      for (const feature of readFeatureAttentionSignals()) {
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
@@ -3935,6 +4046,32 @@ async function buildAttentionFeedSnapshot(
             summaryExcerpt: excerpt(feature.whyNow),
             images: [],
           },
+        }));
+      }
+
+      // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
+      // the existing attention runtime. Recovery removes the card automatically.
+      for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
+        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
+            title: signal.title, identifier: null, status: "warning",
+            href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
+          exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
+          dedupKey: signal.dedupKey, severity: "medium",
+          activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },
         }));
       }
 

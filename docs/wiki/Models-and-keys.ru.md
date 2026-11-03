@@ -63,6 +63,15 @@
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md),
 `MYRMIDON_LITELLM_KEY_SECRET`.
 
+## Расходы по задачам
+
+Для запросов о расходах на уровне задач API расходов компании предоставляет
+`GET /api/companies/:companyId/costs/by-issue?from&to&limit`. Он группирует
+события расходов по задачам, сортирует их по убыванию суммы и возвращает
+идентификаторы и названия задач, итоги токенов и число уникальных запусков.
+Лимит по умолчанию — 20, максимум — 100; большее значение возвращает HTTP
+400. См. [описание изменения эндпоинта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+
 ## Подробнее
 
 - [Провайдеры моделей компании](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)

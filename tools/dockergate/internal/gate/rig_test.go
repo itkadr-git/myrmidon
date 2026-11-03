@@ -181,12 +181,14 @@ func (f *fakeProc) CgroupLeaf(pid int) (string, error) {
 // --- the rig ---------------------------------------------------------------------
 
 type rigOptions struct {
-	cfg       []func(*config.Config)
-	container bool
-	noServe   bool
-	log       io.Writer
-	disk      gate.DiskQuota
-	diskHost  disk.Deps
+	cfg           []func(*config.Config)
+	container     bool
+	noServe       bool
+	log           io.Writer
+	disk          gate.DiskQuota
+	diskHost      disk.Deps
+	oom           *gate.OomStore
+	enableOomLoop bool
 }
 
 type rigOpt func(*rigOptions)
@@ -205,6 +207,12 @@ func withDisk(d gate.DiskQuota) rigOpt { return func(o *rigOptions) { o.disk = d
 // withDiskHost replaces the host side of GET /myrmidon/disk (statfs, xfs_quota, the
 // project table).
 func withDiskHost(d disk.Deps) rigOpt { return func(o *rigOptions) { o.diskHost = d } }
+
+// withOom replaces the OomStore of the gate (A19).
+func withOom(s *gate.OomStore) rigOpt { return func(o *rigOptions) { o.oom = s } }
+
+// withOomLoop enables the background oomLoop in the test rig.
+func withOomLoop() rigOpt { return func(o *rigOptions) { o.enableOomLoop = true } }
 
 // withoutServe builds the gate and the daemon but does not listen.
 func withoutServe() rigOpt { return func(o *rigOptions) { o.noServe = true } }
@@ -334,7 +342,8 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 
 	gopt := gate.Options{
 		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
-		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost,
+		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost, Oom: o.oom,
+		DisableOomLoop: !o.enableOomLoop,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc

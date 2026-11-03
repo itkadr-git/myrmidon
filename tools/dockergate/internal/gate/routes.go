@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
@@ -224,6 +225,16 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 			return derr
 		}
 		ans.body, ans.ctype = trimmed, jsonType
+		if cr.Form == policy.FormBot && rt.Suffix != route.SuffixNext {
+			registerCtx, cancel := context.WithTimeout(ctx, def)
+			_, err := rs.g.opt.Disk.Ensure(registerCtx, rt.BotKey)
+			cancel()
+			if err != nil {
+				rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_register_failed", BotKey: rt.BotKey, Reason: "create"})
+			} else {
+				rs.g.log.Write(Line{Event: "disk_project_registered", BotKey: rt.BotKey})
+			}
+		}
 	}
 	rs.respond(ans)
 	return nil
@@ -675,6 +686,31 @@ func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
+	return nil
+}
+
+// a19 answers route A19 (GET /myrmidon/events/oom) with buffered OOM events.
+func (rs *reqState) a19(ctx context.Context, st *runtime) *deny.Error {
+	var sinceNano int64
+	if q := rs.r.URL.Query().Get("since"); q != "" {
+		if val, err := strconv.ParseInt(q, 10, 64); err == nil {
+			sinceNano = val
+		}
+	}
+	events := rs.g.oom.Since(sinceNano)
+	if events == nil {
+		events = []OomEvent{}
+	}
+	resp := struct {
+		Events []OomEvent `json:"events"`
+	}{
+		Events: events,
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("events_oom_json")
 	}
 	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil
