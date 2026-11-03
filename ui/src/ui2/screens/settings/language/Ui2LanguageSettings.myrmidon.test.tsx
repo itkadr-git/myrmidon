@@ -115,8 +115,8 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     await flushReact();
     // The language screen is one of the legacy UI2 surfaces whose catalog is
     // still sourced from the shared application i18n catalog.
-    expect(container.textContent).toContain("Часовой пояс и форматы");
-    expect(container.textContent).toContain("1 234,56 · 31.10.2026 09:00");
+    expect(container.textContent).toContain("Time zone and formats");
+    expect(container.textContent).toContain("1,234.56 · 2026-10-31 09:00");
     const selects = container.querySelectorAll("select");
     (selects[1] as HTMLSelectElement).value = "ru-RU";
     selects[1].dispatchEvent(new Event("change", { bubbles: true }));
