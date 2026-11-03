@@ -99,6 +99,20 @@ func TestAllow_A18_LimitsAtTheCap(t *testing.T) {
 	wantStatus(t, res, 200)
 }
 
+func TestDeny_A18_AuthenticationFailureDoesNotReachDaemon(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	// In UID/GID mode, the admitted peer must match the configured caller.
+	// A sibling process with the same uid/gid is not the pinned caller.
+	res := r.send("POST", r.target("", "/update"), map[string]string{
+		"Content-Type": "application/json",
+	}, updateBody(1*gib, 2*gib, 512))
+	wantDeny(t, res, deny.CallerNotBoardMain)
+	if r.count("POST", "/v1.45/containers/") != 0 {
+		t.Errorf("the daemon was told to update after auth failure: %v", r.uris())
+	}
+}
+
 func TestDeny_A18_ContentType(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")
