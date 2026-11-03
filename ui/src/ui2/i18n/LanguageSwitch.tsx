@@ -16,7 +16,7 @@ import { UI2_LOCALES, type Ui2Locale } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
-  const { t, locale, setLocale, availableLocales } = useUi2I18n();
+  const { t, locale, setLocale, availableLocales = UI2_LOCALES } = useUi2I18n();
 
   return (
     <div
