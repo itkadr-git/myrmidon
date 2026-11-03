@@ -181,6 +181,9 @@ if (args[0] === 'dump-env') {
     if (/^(GIT_CONFIG_|GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_|GIT_COMMITTER_|GIT_TERMINAL_PROMPT)/.test(key)) env[key] = value;
   }
   process.stdout.write(JSON.stringify(env));
+} else if (args[0] === 'clone' || args[0] === 'push') {
+  // These cases only verify repository extraction; never contact a real remote.
+  process.exit(0);
 } else {
   execFileSync('/usr/bin/git', args, { stdio: 'inherit', env: process.env });
 }
