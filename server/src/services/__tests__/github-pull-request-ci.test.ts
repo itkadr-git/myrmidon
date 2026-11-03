@@ -805,6 +805,7 @@ describe("createPullRequestCiResolver", () => {
       number: 10,
     });
     expect(first.conclusion).toBe("rate_limited");
+    expect(first.summary).toContain("checks unavailable (GitHub rate limit until");
     const countAfterFirst = callsCount;
 
     const second = await resolver.resolveForPullRequest("company-1", {
@@ -814,7 +815,83 @@ describe("createPullRequestCiResolver", () => {
     });
     expect(callsCount).toBe(countAfterFirst);
     expect(second.conclusion).toBe("rate_limited");
+    expect(second.summary).toContain("checks unavailable (GitHub rate limit until");
+  });
+
+  it("acceptance: repeated call after previous fetch returns stale cached results marked as устарел", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    let failCheckRuns = false;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/12")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-stale-cached", ref: "bot/stale" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-stale-cached/check-runs")) {
+        if (!failCheckRuns) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ etag: '"etag-init"' }),
+            json: async () => ({
+              total_count: 1,
+              check_runs: [
+                {
+                  id: 201,
+                  name: "ci-check",
+                  status: "in_progress",
+                  conclusion: null,
+                  started_at: "2026-11-03T10:00:00Z",
+                  completed_at: null,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const initial = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 12,
+    });
+    expect(initial.status).toBe("in_progress");
+
+    failCheckRuns = true;
+    const second = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 12,
+    });
+    expect(second.conclusion).toBe("rate_limited");
     expect(second.summary).toContain("устарел");
+    expect(second.summary).toContain("GitHub rate limit until");
   });
 
   it("acceptance: completed CI for same head is taken from cache", async () => {

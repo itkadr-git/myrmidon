@@ -250,6 +250,7 @@ export async function fetchCommitCheckRuns(
   let failStatus: number | null = null;
   let rateLimitResetAt: number | undefined;
   let rateLimited = false;
+  let tokenPermissionDenied = false;
   let rateLimitCachedRuns: CommitCheckRunsCacheEntry | undefined;
 
   const headers: Record<string, string> = {
@@ -286,6 +287,18 @@ export async function fetchCommitCheckRuns(
 
     if (!res.ok) {
       failStatus = res.status;
+      let errorMessage: string | undefined;
+      if (typeof (res as { clone?: unknown }).clone === "function") {
+        const body = await (res as Response).clone().json().catch(() => null) as { message?: unknown } | null;
+        if (typeof body?.message === "string") errorMessage = body.message;
+      } else if (typeof (res as { json?: unknown }).json === "function") {
+        const body = await (res as Response).json().catch(() => null) as { message?: unknown } | null;
+        if (typeof body?.message === "string") errorMessage = body.message;
+      }
+      tokenPermissionDenied = Boolean(token)
+        && res.status === 403
+        && errorMessage === "Resource not accessible by personal access token";
+
       const remaining = getResponseHeader(res, "x-ratelimit-remaining");
       const retryText = typeof res.clone === "function"
         ? (await res.clone().text().catch(() => "")).toLowerCase()
@@ -359,7 +372,7 @@ export async function fetchCommitCheckRuns(
       result.status = staleRuns.status;
       result.conclusion = "rate_limited";
       result.rateLimitResetAt = rateLimitResetAt;
-      result.etag = rateLimitCachedRuns.etag;
+      result.etag = rateLimitCachedRuns.etag ?? undefined;
       const until = rateLimitResetAt
         ? formatUtcTime(new Date(rateLimitResetAt))
         : getGitHubRateLimitResetTime() ?? "unknown";
@@ -379,7 +392,9 @@ export async function fetchCommitCheckRuns(
     } else if (failStatus === 403 || failStatus === 401) {
       result.status = "unavailable";
       result.conclusion = "denied";
-      result.summary = "checks unavailable (access denied)";
+      result.summary = tokenPermissionDenied
+        ? "checks unavailable (token lacks checks/actions read)"
+        : "checks unavailable (access denied)";
     } else if (failStatus === 422) {
       result.status = "unavailable";
       result.conclusion = "unavailable";
@@ -729,11 +744,32 @@ export function createPullRequestCiResolver(
       }
 
       if (isGitHubRateLimited()) {
+        const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
         if (cached) {
           return {
             ...cached.result,
             authoritative: false,
-            summary: `${cached.result.summary} (устарел; GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"})`,
+            summary: `${cached.result.summary} (устарел; GitHub rate limit until ${resetStr})`,
+          };
+        }
+        const cachedRunsForHead = checkRunsCache.get(commitCacheKey);
+        if (cachedRunsForHead) {
+          const summarized = summarizeCheckRuns(cachedRunsForHead.runs, {
+            headSha,
+            repository: repoKey,
+            pullNumber: reference.number,
+          });
+          return {
+            repository: repoKey,
+            pullNumber: reference.number,
+            headSha,
+            headRef,
+            ...summarized,
+            authoritative: false,
+            conclusion: "rate_limited",
+            summary: `${summarized.summary} (устарел; GitHub rate limit until ${resetStr})`,
+            checkedAt: new Date().toISOString(),
+            runs: cachedRunsForHead.runs,
           };
         }
         return {
@@ -743,7 +779,7 @@ export function createPullRequestCiResolver(
           headRef,
           status: "unavailable",
           conclusion: "rate_limited",
-          summary: `checks unavailable (GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"})`,
+          summary: `checks unavailable (GitHub rate limit until ${resetStr})`,
           authoritative: false,
           checkedAt: new Date().toISOString(),
           completedAt: null,
@@ -839,10 +875,12 @@ export function createPullRequestCiResolver(
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);
       }
-      ciCache.set(cacheKey, {
-        expiresAt: Date.now() + ttlMs,
-        result,
-      });
+      if (result.conclusion !== "rate_limited") {
+        ciCache.set(cacheKey, {
+          expiresAt: Date.now() + ttlMs,
+          result,
+        });
+      }
 
       return result;
     },
