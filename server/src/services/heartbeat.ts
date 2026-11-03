@@ -32141,23 +32141,42 @@ export function heartbeatService(
             });
           }
 
-          const wakeupRequest = await tx
-            .insert(agentWakeupRequests)
-            .values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason,
-              payload,
-              status: "queued",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-            })
-            .returning()
-            .then((rows) => rows[0]);
+          const existingWakeupRequest = opts.idempotencyKey
+            ? await tx
+                .select()
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.agentId, agentId),
+                    eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                    eq(agentWakeupRequests.status, "queued"),
+                    isNull(agentWakeupRequests.runId),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
+
+          const wakeupRequest =
+            existingWakeupRequest ??
+            (await tx
+              .insert(agentWakeupRequests)
+              .values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "queued",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+              .returning()
+              .then((rows) => rows[0]));
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;

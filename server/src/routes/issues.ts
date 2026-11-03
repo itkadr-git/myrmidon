@@ -3736,7 +3736,7 @@ export function issueRoutes(
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
-    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean }>;
+    ) => Promise<{ created: boolean; skippedMissingAgent?: boolean; deduplicated?: boolean }>;
   } = {},
 ) {
   const router = Router();
