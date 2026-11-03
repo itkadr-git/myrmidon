@@ -295,6 +295,14 @@ export const en = {
           },
           subtitle: "Interface language",
           title: "Language and formats",
+          formats: {
+            title: "Time zone and formats",
+            timeZone: "Time zone",
+            numberFormat: "Number format",
+            dateFormat: "Date format",
+            preview: "Preview",
+            source: { default: "Default", settings: "Settings", pending: "Unsaved changes" },
+          },
         },
         runs: {
           drain: {

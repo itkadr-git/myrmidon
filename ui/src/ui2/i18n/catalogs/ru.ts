@@ -289,6 +289,14 @@ export const ru: Ui2Catalog = {
           },
           subtitle: "Язык интерфейса",
           title: "Язык и форматы",
+          formats: {
+            title: "Часовой пояс и форматы",
+            timeZone: "Часовой пояс",
+            numberFormat: "Формат чисел",
+            dateFormat: "Формат дат",
+            preview: "Предпросмотр",
+            source: { default: "По умолчанию", settings: "Настройки", pending: "Несохранённые изменения" },
+          },
         },
         runs: {
           drain: {

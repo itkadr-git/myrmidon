@@ -10,7 +10,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 import { formatUi2Message } from "../../../i18n/locales";
@@ -27,7 +27,20 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: true,
+      feedbackDataSharingPreference: "full",
+      backupRetention: "30d",
+      timeZone: "Asia/Irkutsk",
+      numberFormat: "en-US",
+      dateFormat: "ymd",
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+  });
+
   afterEach(() => {
+    vi.unstubAllGlobals();
     flushSync(() => {
       root?.unmount();
     });
@@ -86,6 +99,38 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     enOption?.click();
     await flushReact();
     expect(container.textContent).toContain("Raise the soft limit for the day");
+  });
+
+  it("shows the timezone and format controls with a live preview", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() => root!.render(<Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider>));
+    await flushReact();
+    expect(container.textContent).toContain("Time zone and formats");
+    expect(container.textContent).toContain("1,234.56 · 2026-10-31 09:00");
+    const selects = container.querySelectorAll("select");
+    (selects[1] as HTMLSelectElement).value = "ru-RU";
+    selects[1].dispatchEvent(new Event("change", { bubbles: true }));
+    await flushReact();
+    expect(container.textContent).toContain("1 234,56 · 2026-10-31 09:00");
+  });
+
+  it("patches only changed format fields", async () => {
+    const fetchMock = vi.mocked(fetch);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() => root!.render(<Ui2I18nProvider initialLocale="en"><Ui2LanguageSettings /></Ui2I18nProvider>));
+    await flushReact();
+    const selects = container.querySelectorAll("select");
+    (selects[1] as HTMLSelectElement).value = "ru-RU";
+    selects[1].dispatchEvent(new Event("change", { bubbles: true }));
+    await flushReact();
+    [...container.querySelectorAll("button")].find((button) => button.textContent === "Save")?.click();
+    await flushReact();
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ numberFormat: "ru-RU" });
   });
 
   it("formats the preview metadata through the same helper the screens use", () => {

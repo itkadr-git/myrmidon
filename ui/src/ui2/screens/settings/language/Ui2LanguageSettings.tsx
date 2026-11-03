@@ -11,6 +11,7 @@
 import { LanguageSwitch } from "../../../i18n/LanguageSwitch";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import { Ui2Page, Ui2Section } from "../../../components/ui2Primitives";
+import { Ui2LanguageFormatsBlock } from "./Ui2LanguageFormatsBlock";
 
 export function Ui2LanguageSettings() {
   const { t } = useUi2I18n();
@@ -23,6 +24,8 @@ export function Ui2LanguageSettings() {
           {t("ui2.settings.language.note")}
         </p>
       </Ui2Section>
+
+      <Ui2LanguageFormatsBlock />
 
       <Ui2Section title={t("ui2.settings.language.preview.title")}>
         <div className="ui2-language-preview rounded-md border border-border p-3">
