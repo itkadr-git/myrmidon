@@ -45,10 +45,10 @@ export function Ui2LanguageFormatsBlock() {
         {fieldError && <span className="text-sm text-destructive">{fieldError}</span>}
       </label>
       <label className="block text-sm"><span>{t("ui2.settings.language.formats.numberFormat")}</span> <span className="text-xs text-muted-foreground">({source("numberFormat")})</span>
-        <select className="mt-1 block rounded-md border border-border bg-background p-2" value={values.numberFormat} onChange={(event) => setValue("numberFormat", event.target.value as InstanceNumberFormat)}><option value="en-US">en-US</option><option value="ru-RU">ru-RU</option></select>
+        <select className="mt-1 block rounded-md border border-border bg-background p-2" value={values.numberFormat} onChange={(event) => setValue("numberFormat", event.target.value as InstanceNumberFormat)}><option value="en-US">{t("ui2.settings.language.formats.numberFormatEnUs")}</option><option value="ru-RU">{t("ui2.settings.language.formats.numberFormatRuRu")}</option></select>
       </label>
       <label className="block text-sm"><span>{t("ui2.settings.language.formats.dateFormat")}</span> <span className="text-xs text-muted-foreground">({source("dateFormat")})</span>
-        <select className="mt-1 block rounded-md border border-border bg-background p-2" value={values.dateFormat} onChange={(event) => setValue("dateFormat", event.target.value as InstanceDateFormat)}><option value="ymd">ymd</option><option value="dmy">dmy</option><option value="mdy">mdy</option></select>
+        <select className="mt-1 block rounded-md border border-border bg-background p-2" value={values.dateFormat} onChange={(event) => setValue("dateFormat", event.target.value as InstanceDateFormat)}><option value="ymd">{t("ui2.settings.language.formats.dateFormatYmd")}</option><option value="dmy">{t("ui2.settings.language.formats.dateFormatDmy")}</option><option value="mdy">{t("ui2.settings.language.formats.dateFormatMdy")}</option></select>
       </label>
       <p className="rounded-md border border-border p-3 text-sm"><strong>{t("ui2.settings.language.formats.preview")}</strong>: {preview}</p>
       <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" disabled={!Object.keys(draft).length || mutation.isPending} onClick={() => mutation.mutate(draft)}>{t("ui2.common.save")}</button>
