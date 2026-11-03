@@ -1,4 +1,5 @@
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
+import { objectWithoutDefaults } from "./validators/partial.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
 export {
   DEFAULT_INSTANCE_TIME_ZONE,
@@ -56,7 +57,7 @@ export interface ParsedSettingDefaults {
   unknown: string[];
 }
 
-const defaultableFieldsSchema = instanceGeneralSettingsSchema
+const defaultableFieldsSchema = objectWithoutDefaults(instanceGeneralSettingsSchema)
   .pick(
     Object.fromEntries(DEFAULTABLE_GENERAL_SETTINGS.map((key) => [key, true])) as {
       [K in DefaultableGeneralSetting]: true;
