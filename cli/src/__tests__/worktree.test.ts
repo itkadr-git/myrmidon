@@ -2,11 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomUUID, createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
@@ -1661,33 +1659,41 @@ describe("worktree helpers", () => {
       const migrationsRoot = new URL("../../../packages/db/src/migrations/", import.meta.url);
       const journal = JSON.parse(fs.readFileSync(new URL("meta/_journal.json", migrationsRoot), "utf8"));
       const priorEntries = journal.entries.slice(0, -1);
-      const priorMigrations = path.join(tempRoot, "prior-migrations");
-      fs.mkdirSync(path.join(priorMigrations, "meta"), { recursive: true });
-      const priorJournal = { ...journal, entries: priorEntries };
-      fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify(priorJournal));
-      const priorMigrationHashes: string[] = [];
-      for (const entry of priorEntries) {
-        const sourcePath = new URL(`${entry.tag}.sql`, migrationsRoot);
-        const sql = fs.readFileSync(sourcePath, "utf8");
-        priorMigrationHashes.push(createHash("sha256").update(sql).digest("hex"));
-        // Drizzle applies migrations in a transaction; concurrent index creation
-        // from the prior schema must be non-concurrent in this isolated fixture.
-        fs.writeFileSync(
-          path.join(priorMigrations, `${entry.tag}.sql`),
-          sql.replace(/\bINDEX\s+CONCURRENTLY\b/gi, "INDEX"),
-        );
-      }
       const sourceDbClient = createDb(sourceDb.connectionString);
-      await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
-      const migrationRows = await sourceDbClient.$client.unsafe<Array<{ id: number; hash: string }>>(
-        'SELECT "id", "hash" FROM "drizzle"."__drizzle_migrations" ORDER BY "id"',
-      );
-      expect(migrationRows).toHaveLength(priorEntries.length);
+      await sourceDbClient.$client.unsafe(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
       await sourceDbClient.$client.unsafe(
-        'UPDATE "drizzle"."__drizzle_migrations" SET "hash" = CASE "id"' +
-          migrationRows.map((row, index) => ` WHEN ${row.id} THEN '${priorMigrationHashes[index]!}'`).join("") +
-          ' ELSE "hash" END',
+        `CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`,
       );
+      for (const entry of priorEntries) {
+        const migrationSql = fs.readFileSync(new URL(`${entry.tag}.sql`, migrationsRoot), "utf8");
+        const hash = createHash("sha256").update(migrationSql).digest("hex");
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter((statement) => statement.length > 0);
+        const requiresNonTransactional = statements.some((statement) =>
+          /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+            statement.replace(/^\s*--.*$/gm, "").trim(),
+          ),
+        );
+        if (requiresNonTransactional) {
+          for (const statement of statements) {
+            await sourceDbClient.$client.unsafe(statement);
+          }
+          await sourceDbClient.$client.unsafe(
+            `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+          );
+        } else {
+          await sourceDbClient.$client.begin(async (tx) => {
+            for (const statement of statements) {
+              await tx.unsafe(statement);
+            }
+            await tx.unsafe(
+              `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+            );
+          });
+        }
+      }
       await seedValidWorktreeSource(sourceDb.connectionString);
       await sourceDbClient.$client.unsafe(`
         WITH pair AS (

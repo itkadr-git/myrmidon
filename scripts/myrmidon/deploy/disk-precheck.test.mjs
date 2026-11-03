@@ -31,13 +31,15 @@ case "$1" in
     esac ;;
   buildx)
     case "$*" in
-      *'@sha256:amd64'*) echo '{"Config":{"size":1048576},"Layers":[{"size":2097152},{"size":4194304}]}' ;;
-      *'{{json .Manifest}}'*)
+      *'@sha256:amd64'*'--raw'*) echo '{"config":{"size":1048576},"layers":[{"size":2097152},{"size":4194304}]}' ;;
+      *'--raw'*)
         if [ -f "$SANDBOX/index-manifest" ]; then
           cat <<'EOF'
 {"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:amd64","platform":{"architecture":"amd64","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}}]}
 EOF
-        elif [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; elif [ -f "$SANDBOX/big-image" ]; then echo '{"Config":{"size":1048576},"Layers":[{"size":7516192768},{"size":6442450944}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
+        elif [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"config":{"size":1},"layers":[{"size":"unknown"}]}' ; elif [ -f "$SANDBOX/big-image" ]; then echo '{"layers":[{"size":7516192768},{"size":6442450944}]}' ; else echo '{"layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
+      # buildx 0.37: --format '{{json .Manifest}}' is a descriptor without layers; the precheck must not depend on it.
+      *'{{json .Manifest}}'*) echo '{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:abc","size":2747}' ;;
       *) echo '{"Labels":{}}' ;;
     esac
     exit 0 ;;
@@ -112,6 +114,14 @@ describe("deploy_disk_precheck", () => {
     assert.equal(result.code, 0, result.out);
     assert.match(result.calls, /@sha256:amd64/);
     assert.doesNotMatch(result.out, /invalid registry layer sizes/i);
+  });
+
+  it("reads sizes from the raw registry manifest, not the buildx --format descriptor (rc.31, buildx 0.37)", () => {
+    const sb = fixture({ freeGb: 42 });
+    const result = run(sb, ["registry.example/app@sha256:abc"]);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.calls, /buildx imagetools inspect registry\.example\/app@sha256:abc --raw/);
+    assert.doesNotMatch(result.calls, /json \.Manifest/);
   });
 
   it("warns and continues when registry size is unknown in dry-run", () => {
