@@ -58,31 +58,38 @@ function pickReadableTextColor(background: string): string {
  * worktree name/color branding is absent.
  */
 export function isWorktreeRuntime(): boolean {
-  return readMetaContent("paperclip-worktree-enabled") === "true";
+  return (
+    readMetaContent("myrmidon-worktree-enabled") === "true" ||
+    readMetaContent("paperclip-worktree-enabled") === "true"
+  );
 }
 
 /**
  * Runtime instance id of the worktree preview serving this UI, injected by the
- * server as a `<meta name="paperclip-instance-id">` tag. Returns null outside a
- * worktree or when the server did not surface the id. Used by the experimental
- * "Run tasks in this worktree" card to fail closed when a copied settings row
- * was armed in a different instance.
+ * server as a `<meta name="myrmidon-instance-id">` (or legacy `paperclip-instance-id`) tag.
+ * Returns null outside a worktree or when the server did not surface the id.
  */
 export function getWorktreeInstanceId(): string | null {
-  return readMetaContent("paperclip-instance-id");
+  return readMetaContent("myrmidon-instance-id") ?? readMetaContent("paperclip-instance-id");
 }
 
 export function getWorktreeUiBranding(): WorktreeUiBranding | null {
-  if (readMetaContent("paperclip-worktree-enabled") !== "true") return null;
+  if (!isWorktreeRuntime()) return null;
 
-  const name = readMetaContent("paperclip-worktree-name");
-  const color = normalizeHexColor(readMetaContent("paperclip-worktree-color"));
+  const name = readMetaContent("myrmidon-worktree-name") ?? readMetaContent("paperclip-worktree-name");
+  const color = normalizeHexColor(
+    readMetaContent("myrmidon-worktree-color") ?? readMetaContent("paperclip-worktree-color"),
+  );
   if (!name || !color) return null;
+
+  const textColor = normalizeHexColor(
+    readMetaContent("myrmidon-worktree-text-color") ?? readMetaContent("paperclip-worktree-text-color"),
+  ) ?? pickReadableTextColor(color);
 
   return {
     enabled: true,
     name,
     color,
-    textColor: normalizeHexColor(readMetaContent("paperclip-worktree-text-color")) ?? pickReadableTextColor(color),
+    textColor,
   };
 }

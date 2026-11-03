@@ -1,11 +1,16 @@
 // myrmidon(1.7 LOCALE-UPLOAD): server-side catalog validator integration
 import { existsSync, readFileSync } from "node:fs";
 import {
+  extractPlaceholders,
+  flattenCatalog,
+  isPlainObject,
   parseCatalogJson,
   validateCatalogStructure,
   type LocaleValidationResult,
   type ValidateCatalogOptions,
 } from "@myrmidon/shared";
+
+export type { ValidateCatalogOptions } from "@myrmidon/shared";
 
 export {
   parseCatalogJson,
@@ -13,9 +18,32 @@ export {
   flattenCatalog,
   lintStringValue,
   validateCatalogStructure,
+  isPlainObject,
 } from "@myrmidon/shared";
 
 let cachedReferenceCatalog: Record<string, unknown> | null = null;
+
+export function validateCatalog(
+  candidate: unknown,
+  baseCatalog: Record<string, unknown>,
+  options: ValidateCatalogOptions = {},
+): LocaleValidationResult {
+  return validateCatalogStructure(candidate, { ...options, baseCatalog });
+}
+
+export function formatPath(parts: string[]): string {
+  return parts.filter(Boolean).join(".") || "<root>";
+}
+
+export function findDisallowedPayloads(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  const findings: string[] = [];
+  if (/<script\b/i.test(value)) findings.push("<script");
+  if (/\son[a-zA-Z]+\s*=/i.test(value)) findings.push("event-handler attribute");
+  if (/\b(?:javascript|vbscript)\s*:/i.test(value)) findings.push("javascript:");
+  if (/\bdata\s*:/i.test(value)) findings.push("data:");
+  return findings;
+}
 
 export function loadBaseReferenceCatalog(customPath?: string): Record<string, unknown> {
   if (!customPath && cachedReferenceCatalog) {

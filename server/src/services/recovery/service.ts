@@ -1089,7 +1089,7 @@ async function resolvePrCiState(
   companyId: string,
   prProduct: typeof issueWorkProducts.$inferSelect,
   resolver?: PullRequestHeadResolver,
-): Promise<{ ci: "green" | "not_green"; headSha: string | null }> {
+): Promise<{ ci: "green" | "not_green" | "pending"; headSha: string | null }> {
   const metadata = parseObject(prProduct.metadata);
   if (metadata) {
     if (metadata.ci === "green" || metadata.ci === "not_green") {
@@ -5958,6 +5958,16 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      // The candidate list is a snapshot. A continuation may have been closed
+      // after it was read; never reconcile or escalate a terminal issue from
+      // that stale snapshot.
+      const [currentIssue] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+        .limit(1);
+      if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {

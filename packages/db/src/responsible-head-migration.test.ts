@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
@@ -163,5 +164,5 @@ d("migration 0423 responsible head backfill", () => {
     `;
     expect(defaultRow.responsible_agent_id).toBe(admId);
     expect(defaultRow.responsible_user_id).toBeNull();
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });

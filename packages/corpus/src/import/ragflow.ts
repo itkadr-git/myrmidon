@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { assertEmbeddingVector, isL2Normalized, l2Normalize } from "../search/vector.js";
 
-export const DEFAULT_RAGFLOW_PAGE_SIZE = 500;
+// myrmidon(OPE-10668): RAGFlow rejects page_size > 100 with error 101
+// ("page_size must be less than or equal to 100").
+export const DEFAULT_RAGFLOW_PAGE_SIZE = 100;
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
 export const DEFAULT_EMBEDDING_CONCURRENCY = 4;
-export const DEFAULT_EMBEDDING_MODEL = "hindsight-embed-bge-m3";
+export const DEFAULT_EMBEDDING_MODEL = "corpus-embed-pplx-0.6b";
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1024;
 
 export type RagflowDataset = {
@@ -110,6 +112,8 @@ export type CorpusImporterOptions = {
   embeddingBatchSize?: number;
   embeddingConcurrency?: number;
   chunkCountTolerance?: number;
+  /** myrmidon(OPE-10668): when set, only datasets whose name is in this list are imported. */
+  datasetNames?: readonly string[];
   onProgress?: (progress: CorpusImportProgress) => void;
 };
 
@@ -139,6 +143,46 @@ export class RagflowApiError extends Error {
     super(message);
     this.name = "RagflowApiError";
   }
+}
+
+/**
+ * myrmidon(OPE-10668): RAGFlow document metadata and chunk text can carry raw
+ * NUL characters (U+0000). PostgreSQL rejects them in text/jsonb values with
+ * "unsupported Unicode escape sequence" / "invalid byte sequence", so every
+ * string that reaches corpus_documents / corpus_chunks must pass through here
+ * before it is written or hashed. NULs are removed, not replaced: they carry
+ * no information in extracted text and a replacement char would churn the
+ * embedding-content hash.
+ */
+const NUL_CHARACTER = "\u0000";
+
+export function sanitizeNulText(value: string): string {
+  return value.includes(NUL_CHARACTER) ? value.replaceAll(NUL_CHARACTER, "") : value;
+}
+
+/**
+ * myrmidon(OPE-10668): deep-copy a JSON-shaped value while stripping NULs from
+ * every string. Document/chunk metadata from RAGFlow is arbitrary JSON.
+ */
+export function sanitizeNulJson(value: unknown): unknown {
+  if (typeof value === "string") return sanitizeNulText(value);
+  if (Array.isArray(value)) return value.map(sanitizeNulJson);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) out[key] = sanitizeNulJson(entry);
+    return out;
+  }
+  return value;
+}
+
+/** myrmidon(OPE-10668): declared vs observed counts may drift slightly on a
+ * live RAGFlow instance (document reports 1020 chunks, endpoint enumerates
+ * 1019). The importer tolerates a per-document relative drift instead of
+ * aborting the whole run. */
+export function isWithinChunkTolerance(expected: number, actual: number, tolerance: number): boolean {
+  const minimum = Math.floor(expected * (1 - tolerance));
+  const maximum = Math.ceil(expected * (1 + tolerance));
+  return actual >= minimum && actual <= maximum;
 }
 
 /** Implements the read-only RAGFlow API. It never invokes document parsing. */
@@ -262,7 +306,10 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
 
   const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0, reused: 0 };
   const report = () => options.onProgress?.({ ...progress });
-  const datasets = await options.source.listDatasets();
+  const datasets = (await options.source.listDatasets()).filter((dataset) => {
+    if (!options.datasetNames || options.datasetNames.length === 0) return true;
+    return options.datasetNames.includes(dataset.name ?? "");
+  });
   const tolerance = options.chunkCountTolerance ?? 0;
   if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1) throw new RangeError("chunkCountTolerance must be between 0 and 1");
   const embeddingModel = options.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
@@ -292,7 +339,11 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       const sourceChunkCount = options.source.countChunks
         ? sourceCount(await options.source.countChunks(dataset.id, document.id))
         : undefined;
-      if (declaredChunks !== undefined && sourceChunkCount !== undefined && declaredChunks !== sourceChunkCount) {
+      // myrmidon(OPE-10668): a live RAGFlow instance can report a per-document
+      // chunk total one off from what the endpoint enumerates (1020 declared
+      // vs 1019 listed). Apply the configured tolerance instead of aborting.
+      if (declaredChunks !== undefined && sourceChunkCount !== undefined
+        && !isWithinChunkTolerance(declaredChunks, sourceChunkCount, tolerance)) {
         throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: document reports ${declaredChunks}, source endpoint reports ${sourceChunkCount}`);
       }
       const expectedChunks = sourceChunkCount ?? declaredChunks;
@@ -303,7 +354,9 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       datasetChunks += expectedChunks;
     }
     const declaredChunks = sourceCount(dataset.chunk_count, dataset.chunk_num);
-    if (declaredChunks !== undefined && declaredChunks !== datasetChunks) {
+    // myrmidon(OPE-10668): the dataset total can drift the same way as the
+    // per-document totals on a live instance; apply the tolerance here too.
+    if (declaredChunks !== undefined && !isWithinChunkTolerance(declaredChunks, datasetChunks, tolerance)) {
       throw new RagflowApiError(`RAGFlow chunk count mismatch for dataset ${dataset.id}: source reports ${declaredChunks}, listed documents report ${datasetChunks}`);
     }
     sourceChunkCount += datasetChunks;
@@ -352,7 +405,11 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
         byteSize: safeInteger(document.size),
         contentType: mimeTypeFromName(filename, document.type),
         contentHash: null,
-        metadata: { ragflowDatasetId: dataset.id, ragflowDocumentId: document.id, ragflow: document },
+        metadata: sanitizeNulJson({
+          ragflowDatasetId: dataset.id,
+          ragflowDocumentId: document.id,
+          ragflow: document,
+        }) as Record<string, unknown>,
       });
       progress.phase = "document";
       progress.documentId = document.id;
@@ -370,18 +427,21 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
           companyId: options.companyId,
           documentId,
           chunkIndex: index,
-          content: source.content,
+          // myrmidon(OPE-10668): strip NULs before the value reaches Postgres or
+          // the embedding-content hash; a drift between stored content and the
+          // hash would defeat embedding reuse.
+          content: sanitizeNulText(source.content),
           embedding: null as number[] | null,
-          metadata: {
+          metadata: sanitizeNulJson({
             ragflowDatasetId: dataset.id,
             ragflowDocumentId: document.id,
             ragflowChunkId: source.id || null,
-            embeddingContentHash: createHash("sha256").update(source.content).digest("hex"),
+            embeddingContentHash: createHash("sha256").update(sanitizeNulText(source.content)).digest("hex"),
             embeddingModel,
             embeddingDimensions: dimensions,
             positions: source.positions ?? [],
             importantKeywords: source.important_keywords ?? [],
-          },
+          }) as Record<string, unknown>,
         }));
         const existing = await options.target.getChunkStates(options.companyId, targetChunks.map((chunk) => chunk.id));
         // Persist RAGFlow's parsed content/positions before a possibly long or fallible
@@ -444,7 +504,8 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       }
       await flush();
       const expectedDocumentChunks = expectedChunksByDocument.get(JSON.stringify([dataset.id, document.id]));
-      if (expectedDocumentChunks !== undefined && documentChunks !== expectedDocumentChunks) {
+      // myrmidon(OPE-10668): apply the same tolerance as the preflight checks.
+      if (expectedDocumentChunks !== undefined && !isWithinChunkTolerance(expectedDocumentChunks, documentChunks, tolerance)) {
         throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: source reports ${expectedDocumentChunks}, imported ${documentChunks}`);
       }
       await options.target.markDocumentReady(options.companyId, documentId);

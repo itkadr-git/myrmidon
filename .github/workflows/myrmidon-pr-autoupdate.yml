@@ -90,6 +90,12 @@ jobs:
           gh api -X POST "repos/$REPO/labels" -f name='needs-rebase' -f color='B60205' \
             -f description='Conflicts with main: rebase needed (set by myrmidon-pr-autoupdate)' >/dev/null 2>&1 || true
 
+          # MERGE-ON-RED-MAIN (OPE-10789): do not autoupdate PRs while main CI is red or pending.
+          if ! ./scripts/myrmidon/ci/main-green-gate.sh --check; then
+            echo "Main CI is not green. Auto-update skipped to prevent merging onto broken main." | tee -a "$summary"
+            exit 0
+          fi
+
           prs="$(gh pr list -R "$REPO" --base main --state open --limit 200 \
             --json number,isCrossRepository,autoMergeRequest)"
           numbers="$(jq -r '[.[] | select(.autoMergeRequest != null and (.isCrossRepository | not))] | sort_by(.number) | .[].number' <<<"$prs")"

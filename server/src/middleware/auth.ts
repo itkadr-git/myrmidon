@@ -244,7 +244,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
+    // myrmidon(OPE-10602): only a board heartbeat-run uuid is a run id. A gateway-internal
+    // `run_<hex>` (or any other non-uuid) is ignored here instead of reaching uuid columns
+    // downstream and failing the agent's write with HTTP 500.
+    const rawRunIdHeader = req.header("x-myrmidon-run-id") ?? req.header("x-paperclip-run-id");
+    const runIdHeader = rawRunIdHeader && isUuidLike(rawRunIdHeader.trim()) ? rawRunIdHeader.trim() : undefined;
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
@@ -258,6 +262,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       (publicMcpGatewayProtocolPath.test(req.path) || monitoringAlertsWebhookPath.test(req.originalUrl))
     ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "public_path_bypass";
+      }
       next();
       return;
     }
@@ -278,6 +285,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         try {
           session = await opts.resolveSession(req);
         } catch (err) {
+          req.actorNoneReason = "session_resolution_error";
           logger.warn(
             { err, method: req.method, url: req.originalUrl },
             "Failed to resolve auth session from request headers",
@@ -312,8 +320,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           next();
           return;
         }
+        if (session && (!session.user?.id || !session.session?.id)) {
+          req.actorNoneReason = "session_invalid";
+        }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
+      if (req.actor.type === "none" && !req.actorNoneReason) {
+        req.actorNoneReason = "no_credentials";
+      }
       next();
       return;
     }
@@ -321,6 +335,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
       next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
+      return;
+    }
+    if (/^(?:\$|PAPERCLIP_API_KEY$)/.test(token)) {
+      next(unauthorized(
+        "Authorization contains the literal $PAPERCLIP_API_KEY; the environment variable was not expanded (possibly due to single quotes). Read the value from the environment using double quotes or os.environ.",
+        { code: "agent_token_unexpanded_variable" },
+      ));
       return;
     }
 
@@ -360,6 +381,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
         const context = unverifiedAgentTokenContext(token);
+        req.actorNoneReason = context.expired ? "agent_token_expired" : "agent_token_invalid";
         logger.warn(
           {
             agentId: context.agentId,
@@ -382,15 +404,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        req.actorNoneReason = "agent_token_agent_mismatch";
         next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
         return;
       }
 
       if (agentRecord.status === "terminated") {
+        req.actorNoneReason = "agent_token_agent_terminated";
         next(unauthorized("Agent is terminated and cannot authenticate"));
         return;
       }
       if (agentRecord.status === "pending_approval") {
+        req.actorNoneReason = "agent_token_agent_pending";
         next(unauthorized("Agent is pending approval and cannot authenticate"));
         return;
       }
@@ -472,14 +497,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
+      req.actorNoneReason = "agent_key_agent_mismatch";
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
       return;
     }
     if (agentRecord.status === "terminated") {
+      req.actorNoneReason = "agent_key_agent_terminated";
       next(unauthorized("Agent is terminated and cannot authenticate"));
       return;
     }
     if (agentRecord.status === "pending_approval") {
+      req.actorNoneReason = "agent_key_agent_pending";
       next(unauthorized("Agent is pending approval and cannot authenticate"));
       return;
     }

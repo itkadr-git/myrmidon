@@ -141,6 +141,14 @@ async function main(): Promise<void> {
   const isDryRun = args.includes("--dry-run");
   const isHelp = args.includes("--help") || args.includes("-h");
 
+  // myrmidon(OPE-10668): comma-separated allowlist of dataset names (or ids)
+  // to import. CORPUS_IMPORT_DATASET_IDS is kept as a legacy alias because the
+  // first operational patch used it.
+  const rawFilter = process.env.CORPUS_IMPORT_DATASET_NAMES ?? process.env.CORPUS_IMPORT_DATASET_IDS;
+  const datasetFilter = rawFilter
+    ? rawFilter.split(",").map((name) => name.trim()).filter((name) => name.length > 0)
+    : undefined;
+
   if (isHelp) {
     process.stdout.write(`RAGFlow-to-Corpus Import CLI
 
@@ -163,6 +171,7 @@ Environment variables (names only):
   CORPUS_IMPORT_BATCH_SIZE      Chunk batch size (default: ${DEFAULT_EMBEDDING_BATCH_SIZE})
   CORPUS_IMPORT_CONCURRENCY     Embedding concurrency (default: ${DEFAULT_EMBEDDING_CONCURRENCY})
   CORPUS_CHUNK_COUNT_TOLERANCE  Chunk count tolerance ratio (default: 0.01)
+  CORPUS_IMPORT_DATASET_NAMES   Comma-separated allowlist of dataset names to import (alias: CORPUS_IMPORT_DATASET_IDS)
 `);
     return;
   }
@@ -199,6 +208,7 @@ Environment variables (names only):
         embeddingModel: model,
         embeddingDimensions: dimensions,
         chunkCountTolerance: Number(env.CORPUS_CHUNK_COUNT_TOLERANCE ?? 0.01),
+        datasetNames: datasetFilter,
         onProgress(progress) {
           process.stdout.write(`${JSON.stringify({ ...progress, elapsedMs: Date.now() - startedAt })}\n`);
         },
@@ -222,6 +232,7 @@ Environment variables (names only):
       embeddingModel: model,
       embeddingDimensions: dimensions,
       chunkCountTolerance: Number(env.CORPUS_CHUNK_COUNT_TOLERANCE ?? 0.01),
+      datasetNames: datasetFilter,
       embeddingBatchSize: Number(env.CORPUS_IMPORT_BATCH_SIZE ?? DEFAULT_EMBEDDING_BATCH_SIZE),
       embeddingConcurrency: Number(env.CORPUS_IMPORT_CONCURRENCY ?? DEFAULT_EMBEDDING_CONCURRENCY),
       onProgress(progress) {
@@ -236,7 +247,23 @@ Environment variables (names only):
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    // myrmidon(OPE-10668): drizzle surfaces the failing query text as
+    // error.message while the real cause (constraint violation, bad Unicode
+    // escape, connection failure) sits on error.cause. Print the full chain.
+    const lines: string[] = [];
+    let current: unknown = error;
+    let depth = 0;
+    while (current !== undefined && current !== null && depth < 10) {
+      if (current instanceof Error) {
+        lines.push(depth === 0 ? current.message : `caused by: ${current.message}`);
+        current = current.cause;
+      } else {
+        lines.push(`caused by: ${String(current)}`);
+        current = undefined;
+      }
+      depth += 1;
+    }
+    process.stderr.write(`${lines.join("\n")}\n`);
     process.exitCode = 1;
   });
 }

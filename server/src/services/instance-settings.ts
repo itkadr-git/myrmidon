@@ -38,6 +38,7 @@ import { eq } from "drizzle-orm";
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";
 // myrmidon(R5-A): keep deploy job state across vendor writes of `general`
 import { preserveDeployJobsGeneralKey } from "../myrmidon/deploy-jobs/store.js";
+import { preserveAutoUpdateGeneralKey } from "../myrmidon/deploy-jobs/auto-update-store.js"; // myrmidon(1.7-AUTO-UPDATE-B)
 // myrmidon(SUA): the stack registry cache survives every vendor general write
 import { preserveStackGeneralKey } from "../myrmidon/stack-registry/store.js";
 // myrmidon(R5-B): keep bot image canary state across vendor writes of `general`
@@ -98,8 +99,10 @@ import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settin
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
 // myrmidon(DB-PERF-C-P4): keep the tool gateway policy cache TTL across vendor writes of `general`
 import { preserveToolPolicyCacheGeneralKey } from "../myrmidon/tool-policy-cache/settings.js";
+import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-usage/settings.js"; // myrmidon(OPE-7202)
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
 import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
+import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -458,6 +461,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
       // survives every general write (edited on its own settings block).
       ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
+      // myrmidon(1.7 USERS-ADMIN-UI A): the stored self-registration switch and blocked users map
+      ...(parsed.data.authSelfSignUp ? { authSelfSignUp: parsed.data.authSelfSignUp } : {}),
+      ...(parsed.data.myrmidonAuthBlockedUsers ? { myrmidonAuthBlockedUsers: parsed.data.myrmidonAuthBlockedUsers } : {}),
     };
   }
   return {
@@ -861,6 +867,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...nextGeneral,
               ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
               ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
+              ...preserveAutoUpdateGeneralKey(current.general), // myrmidon(1.7-AUTO-UPDATE-B)
               ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
               ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
               ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
@@ -910,7 +917,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.
               ...(patch.toolPolicyCache !== undefined ? { toolPolicyCache: nextGeneral.toolPolicyCache } : {}),
+              ...preserveUsersAdminAGeneralKey(current.general), // myrmidon(1.7 USERS-ADMIN-UI A)
+              ...(patch.myrmidonAuthBlockedUsers !== undefined
+                ? { myrmidonAuthBlockedUsers: patch.myrmidonAuthBlockedUsers }
+                : {}),
               ...preserveBudgetLimitsGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG A)
+              ...preserveProviderUsageThresholdGeneralKey(current.general), // myrmidon(OPE-7202)
               ...preserveDatastoreCareGeneralKey(current.general), // myrmidon(1.6.5-DBC1)
               // The preserve line above restores the stored value: a patch that
               // carries the key must win, the same rule as ownerDelivery.

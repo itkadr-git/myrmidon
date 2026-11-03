@@ -94,6 +94,7 @@ import {
   statusCardService,
   toolAccessService,
   workspaceOperationService,
+  providerUsageService,
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
@@ -214,6 +215,7 @@ import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmido
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { resolveRunScratchSweeperConfig, startRunScratchSweeper } from "./services/run-scratch-sweeper.js"; // myrmidon(1.6.6 TMP-HYGIENE)
 import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
+import { buildRunsReconnectingWatchdog } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.6.6 rc.19 MONITORING OPE-10046)
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
 // a no-op while the module is off or its ports (parts A/B) are not wired.
 import {
@@ -1769,6 +1771,14 @@ async function startServerWithDatabaseTeardown(
     );
     heartbeatSchedulerInterval?.unref?.();
   };
+  const scheduleProviderUsageWarningDelivery = () => {
+    if (heartbeatSchedulerStopped || !processRoleProfile.runsBackground) return;
+    trackHeartbeatSchedulerWork(providerUsageService(db).deliverPendingWarnings()
+      .then((result) => {
+        if (result.delivered || result.failed) logger.info(result, "provider usage warning delivery sweep completed");
+      })
+      .catch((err) => logger.error({ err }, "provider usage warning delivery sweep failed")));
+  };
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -2091,6 +2101,31 @@ async function startServerWithDatabaseTeardown(
       }).catch((err) => {
         logger.error({ err }, "Monitoring link sweep failed");
       }));
+    };
+  })();
+  // myrmidon(1.6.6 rc.19 MONITORING OPE-10046): periodic sweep for runs hanging in reconnecting
+  const scheduleRunsReconnectingSweep = (() => {
+    const watchdog = buildRunsReconnectingWatchdog(db as any);
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(
+        watchdog
+          .sweep()
+          .then((result) => {
+            if (result.firingCount > 0) {
+              logger.warn(
+                {
+                  evaluatedCompanies: result.evaluatedCompanies,
+                  firingCount: result.firingCount,
+                },
+                "Runs reconnecting sweep: alert active",
+              );
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "Runs reconnecting watchdog sweep failed");
+          }),
+      );
     };
   })();
   // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its 1/5/15 min
@@ -2679,6 +2714,7 @@ async function startServerWithDatabaseTeardown(
         }
 
         if (heartbeatSchedulerStopped) return;
+        scheduleProviderUsageWarningDelivery();
         scheduleExternalObjectRefreshSweep(new Date());
 
         if (heartbeatSchedulerStopped) return;
@@ -2705,6 +2741,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+        scheduleRunsReconnectingSweep(); // myrmidon(1.6.6 rc.19 MONITORING OPE-10046)
         scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
         scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
@@ -2918,6 +2955,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+      scheduleRunsReconnectingSweep(); // myrmidon(1.6.6 rc.19 MONITORING OPE-10046)
       scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
       scheduleGuardReturnSweep(); // myrmidon(1.6.6 GUARD-RETURN)
       scheduleGitHubConnectionEventPoll();

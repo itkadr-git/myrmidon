@@ -143,6 +143,10 @@ export interface DatastoreCareRetentionLastRun {
   /** Sum over all passes since the key was first written. */
   compactedTotal: number;
   freedBytesTotal: number;
+  /** Keyset cursor per company so passes do not re-scan already-compacted runs (OPE-9967). */
+  cursors?: Record<string, { createdAt: string; id: string }>;
+  /** Consecutive passes that timed out without making progress (OPE-9967). */
+  consecutiveTimeoutCount?: number;
 }
 
 export function emptyDatastoreCareRetentionLastRun(): DatastoreCareRetentionLastRun {
@@ -189,6 +193,22 @@ export function normalizeDatastoreCareRetentionLastRun(
         ...(gateRaw.externalMachineBackup === true ? { externalMachineBackup: true } : {}),
       }
     : undefined;
+  const rawCursors =
+    typeof raw.cursors === "object" && raw.cursors !== null
+      ? (raw.cursors as Record<string, unknown>)
+      : null;
+  const cursors: Record<string, { createdAt: string; id: string }> = {};
+  if (rawCursors) {
+    for (const [k, v] of Object.entries(rawCursors)) {
+      if (typeof v === "object" && v !== null) {
+        const item = v as Record<string, unknown>;
+        if (typeof item.createdAt === "string" && typeof item.id === "string") {
+          cursors[k] = { createdAt: item.createdAt, id: item.id };
+        }
+      }
+    }
+  }
+
   return {
     lastRunAt: iso(raw.lastRunAt),
     waitingForBackup: raw.waitingForBackup === true,
@@ -198,5 +218,9 @@ export function normalizeDatastoreCareRetentionLastRun(
     lastFreedBytes: num(raw.lastFreedBytes, 0),
     compactedTotal: num(raw.compactedTotal, 0),
     freedBytesTotal: num(raw.freedBytesTotal, 0),
+    ...(Object.keys(cursors).length > 0 ? { cursors } : {}),
+    ...(typeof raw.consecutiveTimeoutCount === "number" && raw.consecutiveTimeoutCount > 0
+      ? { consecutiveTimeoutCount: raw.consecutiveTimeoutCount }
+      : {}),
   };
 }

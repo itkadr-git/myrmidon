@@ -295,6 +295,27 @@ describeEmbeddedPostgres(
       invalidateOwnerActiveChannelSettingsCache();
     });
 
+    it("an owner whose last channel touch expired falls back to the standing Telegram DM", async () => {
+      invalidateOwnerActiveChannelSettingsCache();
+      const fixture = await seedFixture();
+      // The default threshold is 120 minutes. Once the portal touch expires,
+      // the owner-delivery gate must return to the existing U2 Telegram path.
+      await markOwnerActivity(db, {
+        userId: fixture.boardUserId,
+        channel: "web",
+        at: new Date(Date.now() - 121 * 60_000),
+      });
+
+      const interaction = await createQuestionCard(fixture);
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+      invalidateOwnerActiveChannelSettingsCache();
+    });
+
     it("an owner active in the portal keeps the card board-only", async () => {
       invalidateOwnerActiveChannelSettingsCache();
       const fixture = await seedFixture();
