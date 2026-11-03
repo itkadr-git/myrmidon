@@ -32,10 +32,12 @@ import {
   countKeyedAgents,
   isKeysNotEnabledError,
   litellmFallbacksKey,
+  litellmKeyBudgetsKey,
   litellmKeysApi,
   litellmKeysKey,
   type AgentGatewayKeyView,
   type GatewayFallbackReport,
+  type KeyBudgetLimitView,
 } from "./litellmKeysApi";
 import { GatewayFallbacksEditor } from "./GatewayFallbacksEditor";
 
@@ -47,6 +49,8 @@ export interface GatewayKeyRow {
   present: boolean;
   valueHash: string | null;
   models: string[];
+  /** Projected key budget limit (OPE-9859), when the company has one. */
+  budget?: KeyBudgetLimitView | null;
 }
 
 /** Joins the key views with the agent names the page already knows. */
@@ -59,6 +63,7 @@ export function keyRows(keys: AgentGatewayKeyView[], agentNames: Map<string, str
       present: entry.present,
       valueHash: entry.valueHash ?? null,
       models: entry.models ?? [],
+      budget: entry.budget ?? null,
     }))
     .sort((a, b) => (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId));
 }
@@ -241,9 +246,29 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                       )}
                     </div>
                   )}
-                </div>
+
+                {row.budget && (
+                  <div
+                    data-testid={`key-budget-${row.agentId}`}
+                    className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
+                  >
+                    <span>{t("area.costs-budgets-2.gateway-keys-tab.budgets.label")}</span>
+                    <span className="font-medium text-foreground">
+                      ${row.budget.amountUsd?.toFixed(2) ?? "—"}
+                    </span>
+                    <span>/ {row.budget.periodHours}h</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono">
+                      {row.budget.effectiveMode}
+                    </span>
+                    {row.budget.caste && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono">{row.budget.caste}</span>
+                    )}
+                  </div>
+                )}
+              </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
+
                   {!row.present ? (
                     <Button
                       size="sm"
@@ -406,11 +431,103 @@ function GatewayFallbacksCard({ companyId }: { companyId: string }) {
   );
 }
 
+/** Service/scoped key budgets projected from the OPE-8675 budget projection (OPE-9859). */
+function KeyBudgetsCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
+  const { data, isLoading, error } = useQuery({
+    queryKey: litellmKeyBudgetsKey(companyId),
+    queryFn: () => litellmKeysApi.keyBudgets(companyId),
+    staleTime: 60_000,
+  });
+
+  if (error) {
+    return (
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">
+            {t("area.costs-budgets-2.gateway-keys-tab.budgets.title")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 pb-5">
+          <p className="text-sm text-destructive">{error instanceof Error ? error.message : String(error)}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">
+          {t("area.costs-budgets-2.gateway-keys-tab.budgets.title")}
+        </CardTitle>
+        <CardDescription>
+          {t("area.costs-budgets-2.gateway-keys-tab.budgets.description")}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-5 pb-5 pt-2">
+        {error ? (
+          <p className="text-sm text-destructive">
+            {isKeysNotEnabledError(error)
+              ? t("area.costs-budgets-2.gateway-keys-tab.notEnabled")
+              : (error as Error).message}
+          </p>
+        ) : isLoading ? (
+          <p className="text-sm text-muted-foreground">
+            {t("area.costs-budgets-2.gateway-keys-tab.budgets.loading")}
+          </p>
+        ) : !data ? (
+          <p className="text-sm text-muted-foreground">
+            {t("area.costs-budgets-2.gateway-keys-tab.budgets.empty")}
+          </p>
+        ) : (
+          <>
+            <div className="text-xs text-muted-foreground">
+              {t("area.costs-budgets-2.gateway-keys-tab.budgets.signalOnly", {
+                mode: data.signalOnly ? "signal" : "enforce",
+              })}
+            </div>
+            {data.agents.map((agent) => (
+              <div key={agent.agentId} className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2">
+                <span className="font-medium">{agent.agentName ?? agent.agentId}</span>
+                <span className="text-xs text-muted-foreground">{agent.role ?? "agent"}</span>
+                {agent.budget ? (
+                  <span className="font-medium">${agent.budget.amountUsd?.toFixed(2) ?? "—"}/{agent.budget.periodHours}h</span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">—</span>
+                )}
+              </div>
+            ))}
+            {data.services.length === 0 && data.agents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {t("area.costs-budgets-2.gateway-keys-tab.budgets.empty")}
+              </p>
+            ) : null}
+            {data.services.map((service) => (
+              <div
+                key={service.serviceId}
+                data-testid={`service-budget-${service.serviceId}`}
+                className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2"
+              >
+                <span className="font-medium">{service.serviceName}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{service.level}</span>
+                <span className="font-medium">${service.budget.amountUsd?.toFixed(2) ?? "—"}/{service.budget.periodHours}h</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{service.budget.effectiveMode}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** The whole "Gateway keys" tab. */
 export function GatewayKeysTab({ companyId }: { companyId: string }) {
   return (
     <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
       <GatewayKeysCard companyId={companyId} />
+      <KeyBudgetsCard companyId={companyId} />
       <GatewayFallbacksCard companyId={companyId} />
     </div>
   );

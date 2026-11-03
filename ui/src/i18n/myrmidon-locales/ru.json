@@ -1640,6 +1640,8 @@
     "inactive": "Выключен",
     "noLimit": "Нет лимита",
     "overLimit": "Сверх лимита",
+    "warning80": "Приближение к лимиту (80%)",
+    "warning95": "Приближение к лимиту (95%)",
     "percentUsed": "{{percent}}% израсходовано",
     "amountPlaceholder": "0.00",
     "amountRequired": "Введите сумму.",
@@ -1650,6 +1652,7 @@
     "refErrorCaste": "Значение касты состоит из строчных латинских букв, цифр и дефисов.",
     "refErrorForaging": "У уровня фуражировки одно значение, и оно уже есть в дереве.",
     "refErrorIssue": "Значение задачи — идентификатор задачи (UUID).",
+    "refAlreadyExists": "Лимит для этого значения уже добавлен в список.",
     "addTo": "Добавить лимит: {{level}}",
     "addProjectLabel": "Проект",
     "addProjectPlaceholder": "Выберите проект",
@@ -1751,8 +1754,8 @@
     "injectionTitle": "Детектор инъекций промпта",
     "injectionEnabled": "Включён",
     "injectionThreshold": "Порог оценки",
-    "injectionHint": "Действует на всю компанию: что делает срабатывание, задаётся режимом правила injection выше. Переменные окружения (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) при задании имеют приоритет.",
-    "injectionEffective": "Сейчас действует: {enabled} ({enabledSource}) · порог {score} ({scoreSource})",
+    "injectionHint": "Действует на всю компанию: что делает срабатывание, задаётся режимом правила о внедрении инструкций выше. Переменные окружения (MYRMIDON_GUARDRAILS_INJECTION_ENABLED / _SCORE) при задании имеют приоритет.",
+    "injectionEffective": "Сейчас действует: {{enabled}} ({{enabledSource}}) · порог {{score}} ({{scoreSource}})",
     "onOff": {
       "on": "вкл",
       "off": "выкл"

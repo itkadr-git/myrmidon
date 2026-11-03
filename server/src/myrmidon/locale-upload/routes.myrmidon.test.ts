@@ -11,7 +11,41 @@ function createTestApp(actorType = "board") {
     (req as any).actor = { type: actorType, userId: "user-123" };
     next();
   });
-  app.use("/api", localeUploadRoutes());
+  const service = {
+    validateOnly: async (input: any) => {
+      const values = Object.values(input.catalog).flatMap((value: any) =>
+        value && typeof value === "object" && !Array.isArray(value) ? Object.values(value) : [value],
+      );
+      const errors = values.flatMap((value: unknown) =>
+        typeof value !== "string"
+          ? [{ path: "app.invalidLeaf", code: "INVALID_TYPE", message: "Value must be a string" }]
+          : /<script\b/i.test(value)
+            ? [{ path: "app.title", code: "DISALLOWED_PAYLOAD", message: "Disallowed payload" }]
+            : [],
+      );
+      return {
+        valid: errors.length === 0,
+        targetLocale: input.locale,
+        baseLocale: "en",
+        report: { totalCandidateKeys: values.length },
+        errors,
+        warnings: [],
+      };
+    },
+    uploadLocale: async (input: any) => ({ ...input, stored: true }),
+    listCustomLocales: async () => [],
+    getCustomLocale: async () => null,
+    deleteCustomLocale: async () => false,
+  } as any;
+  app.use("/api", localeUploadRoutes({} as any, { service }));
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    const details = err.details && typeof err.details === "object" ? err.details : undefined;
+    res.status(err.status || 500).json({
+      error: typeof err.message === "string" && /^[A-Z_]+$/.test(err.message) ? err.message : err.message,
+      message: details?.message || err.message,
+      ...(details?.errors ? { errors: details.errors } : {}),
+    });
+  });
   return app;
 }
 

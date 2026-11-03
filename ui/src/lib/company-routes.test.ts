@@ -12,7 +12,7 @@ describe("company routes", () => {
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
-    const expectedRouteRoots = new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge", "more"]);
+    const expectedRouteRoots = new Set(["fleet", "decisions", "activity", "agents", "company", "commander", "commander-chat", "knowledge", "more"]);
     expect(boardRouteRoots).toEqual(expectedRouteRoots);
     expect([...expectedRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
@@ -21,7 +21,7 @@ describe("company routes", () => {
     const routesSource = readFileSync(fileURLToPath(new URL("../ui2/routes.tsx", import.meta.url)), "utf8");
     const routePaths = [...routesSource.matchAll(/\bpath:\s*"([^"]+)"/g)].map(([, path]) => path!);
     const routeRoots = new Set(routePaths.map((path) => path.split("/")[0]!));
-    expect(routeRoots).toEqual(new Set(["fleet", "decisions", "activity", "agents", "company", "commander-chat", "knowledge", "more"]));
+    expect(routeRoots).toEqual(new Set(["fleet", "decisions", "activity", "agents", "company", "commander", "commander-chat", "knowledge", "more"]));
     for (const root of routeRoots) expect(extractCompanyPrefixFromPath(`/${root}`), `/${root}`).toBeNull();
   });
 

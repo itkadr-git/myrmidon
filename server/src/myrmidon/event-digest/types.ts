@@ -25,6 +25,8 @@ export interface EventDigest {
   issueId?: string | null;
   events: BufferedEvent[];
   eventCount: number;
+  /** Events counted in eventCount but not delivered in `events` (only the newest MAX_DIGEST_EVENTS are). */
+  omittedEventCount?: number;
   oldestEventAt: Date;
   newestEventAt: Date;
 }

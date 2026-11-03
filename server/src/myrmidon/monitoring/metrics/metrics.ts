@@ -18,6 +18,12 @@
 //  - index.ts — the app wiring (app.ts mounts that).
 
 import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import type { ExecutionProjection } from "@myrmidon/shared";
+import { executionProjectionsForRuns } from "../../../services/execution-projection.js";
+import {
+  KNOWN_EXECUTION_PHASES,
+  computeRunsExecutionEvaluation,
+} from "./runs-reconnecting.js";
 import {
   agents,
   companies,
@@ -34,6 +40,7 @@ import {
 } from "@myrmidon/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
+import { getStaleBlockOldestUnsweptSeconds } from "../../stale-block/index.js";
 import { createPgReviewRoutingStore } from "../../review-routing/store.js";
 import { readFeatureAttentionSignals } from "../../features/attention.js";
 import {
@@ -64,8 +71,10 @@ import { readFleetSiteMetrics, type FleetSiteMetricsSample } from "../../bot-con
 import { resolveBoardProcessRole } from "../../process-registry/domain.js";
 import { collectBlockerRootMetrics, renderBlockerRootMetrics, type BlockerRootMetrics } from "./blocker-roots.js";
 import { swarmClaimMetrics, SWARM_LEASE_RECOVERY_REASONS } from "../../swarm-claim/metrics.js";
+import { scentMetrics } from "../../scent/metrics.js";
 import { continuationDedupeMetrics } from "../../../services/continuation-dedupe-metrics.js";
 import { guardrailTriggerMetrics, GUARDRAIL_METRIC_MODES, GUARDRAIL_METRIC_RULES, type GuardrailTriggerCounts } from "../../guardrails/metrics.js";
+import { datastoreRetentionMetrics } from "../../datastore-care/retention/metrics.js";
 import { collectBlockedMetrics, type BlockedMetricsGroup } from "./blocked.js";
 import { loadBlockedGraph } from "../../../services/blocker-graph/load-edges.js";
 import {
@@ -136,9 +145,12 @@ export const METRIC_FAMILIES = [
   "myrmidon_deferred_issue_execution_over_30m",
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
+  "myrmidon_empty_runs_total",
   "myrmidon_run_duration_seconds",
   "myrmidon_knowledge_on_change_share",
   "myrmidon_knowledge_revision_delay_seconds",
+  "myrmidon_runs_execution_phase",
+  "myrmidon_runs_reconnecting_oldest_seconds",
   "myrmidon_role_queue_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
@@ -147,6 +159,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_swarm_claims_total",
   "swarm_claim_conflicts_total",
   "swarm_lease_recovered_total",
+  "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
   "myrmidon_recovery_created_total",
@@ -213,13 +226,16 @@ export const METRIC_FAMILIES = [
   "blocker_root_fanout",
   "blocker_terminal_count",
   "blocker_roots_over_limit",
-
   // myrmidon(1.6.6 CAPACITY-POLICY): provider-only dashboard contract.
   "myrmidon_readiness_ratio",
   "myrmidon_queue_age_seconds",
   "myrmidon_project_share",
   "myrmidon_starvation_total",
   "myrmidon_claim_rejection_total",
+
+  // myrmidon(1.6.6 OPE-9967): retention compaction timeouts without progress
+  "myrmidon_datastore_retention_consecutive_timeouts",
+  "myrmidon_datastore_retention_timeouts_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -282,6 +298,8 @@ export interface MetricsSnapshotFields {
   runsFailedTotal: number;
   /** Failed runs inside the error window. */
   runsFailedWindow: number;
+  /** Successful empty-response runs in the error window, by agent. */
+  emptyRunsByAgent: Array<{ agentId: string; count: number }>;
   /** p50/p95 of finished run durations inside the latency window (seconds). */
   runDurationSecondsP50: number | null;
   runDurationSecondsP95: number | null;
@@ -355,6 +373,8 @@ export interface MetricsSnapshotFields {
    * process (in-process, no DB). null renders HELP/TYPE with no samples.
    */
   fleetSites?: FleetSiteMetricsSample | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: number | null;
   blockerRoots?: BlockerRootMetrics | null;
   capacityDashboard?: CapacityDashboardMetricsSnapshot | null;
 
@@ -376,6 +396,16 @@ export interface MetricsSnapshotFields {
 
   /** OPE-9476: runs that failed before the model emitted output, per agentId. */
   failedBeforeModel?: Record<string, number> | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): live runs by projection phase.
+   */
+  runsExecutionPhase?: Array<{ phase: string; count: number }> | null;
+
+  /**
+   * myrmidon(1.6.6 rc.19 MONITORING OPE-10046): duration in seconds of the oldest run in reconnecting.
+   */
+  runsReconnectingOldestSeconds?: number | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -461,6 +491,8 @@ export interface MetricsCollectorDeps {
 
   /** myrmidon(1.6.6 REMOTE-SITES-T4): where the remote-site metrics come from; tests inject a fake. */
   fleetSites?: (() => FleetSiteMetricsSample) | null;
+  /** Age in seconds of the blocked task that has gone longest without being swept. */
+  staleBlockOldestUnsweptSeconds?: (() => number | null) | null;
   /** Per-process RecoveryFactory event counters; tests inject an isolated port. */
   recoveryFactoryMetrics?: RecoveryFactoryMetricsPort | null;
 
@@ -532,6 +564,33 @@ async function readRunCounters(db: Db, now: Date): Promise<{
   };
 }
 
+async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ agentId: string; count: number }>> {
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, total: count() })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "succeeded"),
+        sql`exists (
+          select 1 from issue_comments
+          where issue_comments.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from issue_work_products
+          where issue_work_products.created_by_run_id = ${heartbeatRuns.id}
+        )`,
+        sql`not exists (
+          select 1 from activity_log
+          where activity_log.run_id = ${heartbeatRuns.id}
+            and activity_log.action not in ('issue.comment_added', 'issue.comment.created')
+        )`,
+        gte(heartbeatRuns.finishedAt, windowStart),
+      ),
+    )
+    .groupBy(heartbeatRuns.agentId);
+  return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
 export async function readAgentFailedBeforeModel(
   db: Db,
@@ -557,6 +616,74 @@ export async function readAgentFailedBeforeModel(
   } catch {
     return {};
   }
+
+}
+
+/**
+ * Reads live runs, computes execution projections, and returns phase counts and oldest reconnecting seconds.
+ * myrmidon(1.6.6 rc.19 MONITORING OPE-10046).
+ */
+async function readRunsExecutionMetrics(
+  db: Db,
+  now: Date,
+): Promise<{
+  runsExecutionPhase: Array<{ phase: string; count: number }>;
+  runsReconnectingOldestSeconds: number;
+}> {
+  const liveRuns = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      createdAt: heartbeatRuns.createdAt,
+      lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      lastOutputAt: heartbeatRuns.lastOutputAt,
+      updatedAt: heartbeatRuns.updatedAt,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.status, "running"));
+
+  const runsByCompany = new Map<string, string[]>();
+  for (const run of liveRuns) {
+    const list = runsByCompany.get(run.companyId) ?? [];
+    list.push(run.id);
+    runsByCompany.set(run.companyId, list);
+  }
+
+  const allProjections = new Map<string, ExecutionProjection>();
+  for (const [companyId, runIds] of runsByCompany.entries()) {
+    const projections = await executionProjectionsForRuns(
+      db,
+      companyId,
+      runIds,
+      now,
+    );
+    for (const [runId, proj] of projections.entries()) {
+      allProjections.set(runId, proj);
+    }
+  }
+
+  const evaluation = computeRunsExecutionEvaluation(
+    liveRuns,
+    allProjections,
+    now,
+  );
+
+  const phaseList: Array<{ phase: string; count: number }> = [];
+  for (const phase of KNOWN_EXECUTION_PHASES) {
+    phaseList.push({ phase, count: evaluation.phaseCounts[phase] ?? 0 });
+  }
+  for (const [phase, count] of Object.entries(evaluation.phaseCounts)) {
+    if (!KNOWN_EXECUTION_PHASES.includes(phase as any)) {
+      phaseList.push({ phase, count });
+    }
+  }
+
+  return {
+    runsExecutionPhase: phaseList,
+    runsReconnectingOldestSeconds: evaluation.reconnectingOldestSeconds,
+  };
 }
 
 /** p50/p95 over finished run durations (finishedAt - startedAt), seconds. */
@@ -824,6 +951,17 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRunCounters(deps.db, now),
     { active: 0, queued: 0, queuedOver30m: 0, failedTotal: 0 },
   );
+  const runsExecution = await guarded(
+    "myrmidon_runs_execution_phase|myrmidon_runs_reconnecting_oldest_seconds",
+    () => readRunsExecutionMetrics(deps.db, now),
+    {
+      runsExecutionPhase: KNOWN_EXECUTION_PHASES.map((phase) => ({
+        phase,
+        count: 0,
+      })),
+      runsReconnectingOldestSeconds: 0,
+    },
+  );
   const durations = await guarded(
     "myrmidon_run_duration_seconds",
     () => readRunDurations(deps.db, latencyWindowStart),
@@ -902,6 +1040,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
         .then((rows) => Number(rows[0]?.total ?? 0)),
     0,
   );
+  const emptyRunsByAgent = await guarded(
+    "myrmidon_empty_runs_total",
+    () => readEmptyRunsByAgent(deps.db, errorWindowStart),
+    [] as Array<{ agentId: string; count: number }>,
+  );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
   // and names the six families, never kills the scrape.
@@ -962,6 +1105,12 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     null as FleetSiteMetricsSample | null,
   );
 
+  const staleBlockOldestUnsweptSeconds = await guarded(
+    "stale_block_oldest_unswept_seconds",
+    async () => (deps.staleBlockOldestUnsweptSeconds ? deps.staleBlockOldestUnsweptSeconds() : getStaleBlockOldestUnsweptSeconds()),
+    null as number | null,
+  );
+
   const recoveryPort = deps.recoveryFactoryMetrics ?? processRecoveryMetrics;
   const recoveryCounters = recoveryPortSnapshot(recoveryPort);
   const recoveryRows = await guarded(
@@ -1009,8 +1158,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       deferredIssueExecutionOver30m,
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
+      emptyRunsByAgent,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
+      runsExecutionPhase: runsExecution.runsExecutionPhase,
+      runsReconnectingOldestSeconds: runsExecution.runsReconnectingOldestSeconds,
       corpusShadowRagflowSecondsP50: shadowLatencies.ragflow.p50,
       corpusShadowRagflowSecondsP95: shadowLatencies.ragflow.p95,
       corpusShadowModuleSecondsP50: shadowLatencies.module.p50,
@@ -1053,6 +1205,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
           ),
         null as Record<string, number> | null,
       ),
+      staleBlockOldestUnsweptSeconds,
       blockerRoots: await guarded(
         "blocker_root_fanout|blocker_terminal_count|blocker_roots_over_limit",
         () => collectBlockerRootMetrics(deps.db),
@@ -1279,6 +1432,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
   blocks.push(
     familyBlock(
+      "myrmidon_empty_runs_total",
+      "Successful empty-response heartbeat runs in the scrape error window, by agent.",
+      "gauge",
+      snapshot.emptyRunsByAgent.map(({ agentId, count: total }) =>
+        `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
+    ),
+  );
+  blocks.push(
+    familyBlock(
       "myrmidon_run_duration_seconds",
       "Run duration quantiles (finishedAt - startedAt) over the latency window.",
       "summary",
@@ -1289,6 +1451,31 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ...(snapshot.runDurationSecondsP95 !== null
           ? [`myrmidon_run_duration_seconds{${R},quantile="0.95"} ${formatSampleValue(snapshot.runDurationSecondsP95)}`]
           : []),
+      ],
+    ),
+  );
+  const phaseSamples = (
+    snapshot.runsExecutionPhase ??
+    KNOWN_EXECUTION_PHASES.map((phase) => ({ phase, count: 0 }))
+  ).map(
+    (item) =>
+      `myrmidon_runs_execution_phase{${R},phase="${escapeLabelValue(item.phase)}"} ${formatSampleValue(item.count)}`,
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_execution_phase",
+      "Live runs (status running) by execution projection phase.",
+      "gauge",
+      phaseSamples,
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_runs_reconnecting_oldest_seconds",
+      "Duration in seconds of the oldest run currently in reconnecting.",
+      "gauge",
+      [
+        `myrmidon_runs_reconnecting_oldest_seconds{${R}} ${formatSampleValue(snapshot.runsReconnectingOldestSeconds ?? 0)}`,
       ],
     ),
   );
@@ -1448,7 +1635,17 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ),
     ),
   );
+  const scentSnapshot = scentMetrics.read();
+  blocks.push(
+    familyBlock(
+      "swarm_scent_classifier_alarm",
+      "Alarm flag (1 if active, 0 otherwise) when scent classifier has >=10 attempts and 0 successes in the last hour.",
+      "gauge",
+      [`swarm_scent_classifier_alarm{${R}} ${formatSampleValue(scentSnapshot.alarm)}`],
+    ),
+  );
   const continuationCounters = continuationDedupeMetrics.read();
+  const retention = datastoreRetentionMetrics.read();
   blocks.push(
     familyBlock(
       "myrmidon_continuation_created_total",
@@ -1461,6 +1658,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Continuation keys suppressed because they were already claimed, cumulative since process start.",
       "counter",
       [`myrmidon_continuation_deduped_total{${R}} ${formatSampleValue(continuationCounters.deduped)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_consecutive_timeouts",
+      "Consecutive context retention passes that timed out without progress.",
+      "gauge",
+      [`myrmidon_datastore_retention_consecutive_timeouts{${R}} ${formatSampleValue(retention.consecutiveTimeouts)}`],
+    ),
+    familyBlock(
+      "myrmidon_datastore_retention_timeouts_total",
+      "Total context retention passes that timed out without progress, cumulative since process start.",
+      "counter",
+      [`myrmidon_datastore_retention_timeouts_total{${R}} ${formatSampleValue(retention.timeoutsTotal)}`],
     ),
   );
 
@@ -1748,5 +1957,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
 
   blocks.push(renderBlockerRootMetrics(snapshot.blockerRoots ?? { companies: [] }).trimEnd());
+  if (snapshot.staleBlockOldestUnsweptSeconds !== null && snapshot.staleBlockOldestUnsweptSeconds !== undefined) {
+    blocks.push(
+      familyBlock(
+        "stale_block_oldest_unswept_seconds",
+        "Age in seconds of the blocked task that has gone the longest without being swept by the stale-block watchdog.",
+        "gauge",
+        [`stale_block_oldest_unswept_seconds{${R}} ${formatSampleValue(snapshot.staleBlockOldestUnsweptSeconds)}`],
+      ),
+    );
+  }
   return `${blocks.join("\n\n")}\n`;
 }

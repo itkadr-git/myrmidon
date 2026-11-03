@@ -103,9 +103,19 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const provider = await deps.service.createProvider({
       companyId,
       body,
+      autoProbeToolCall: true,
       activity: (entry) => activity(entry),
     });
     res.status(201).json(provider);
+  });
+
+  router.get("/myrmidon/companies/:companyId/model-providers/package-warnings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAdmin(req, companyId);
+    const warnings = deps.service.checkPackageExpirations
+      ? await deps.service.checkPackageExpirations(companyId)
+      : [];
+    res.json({ warnings });
   });
 
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
@@ -127,6 +137,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
         companyId,
         providerId,
         key: body.key,
+        autoProbeToolCall: true,
         activity: (entry) => activity(entry),
       });
       res.json(view);

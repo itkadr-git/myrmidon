@@ -3,6 +3,14 @@
 import { api } from "@/api/client";
 import type { FallbackChain } from "@myrmidon/shared";
 
+export interface KeyBudgetLimitView {
+  amountUsd: number | null;
+  periodHours: number;
+  mode: "block" | "soft";
+  effectiveMode: "block" | "soft";
+  caste: string | null;
+}
+
 export interface AgentGatewayKeyView {
   agentId: string;
   secretName: string;
@@ -12,6 +20,28 @@ export interface AgentGatewayKeyView {
   canManageKeys: boolean;
   /** Allowed models list. Empty array means all models allowed. */
   models?: string[];
+  /** Key budget limit projected from the OPE-8675 budget projection (OPE-9859). */
+  agentName?: string | null;
+  role?: string | null;
+  budget?: KeyBudgetLimitView | null;
+}
+
+export interface ServiceKeyBudgetView {
+  serviceId: string;
+  serviceName: string;
+  level: "caste" | "nest" | "foraging" | "ticket";
+  scopeId: string;
+  tag: string;
+  secretName: string | null;
+  budget: KeyBudgetLimitView;
+}
+
+export interface CompanyKeyBudgetsReport {
+  companyId: string;
+  signalOnly: boolean;
+  projectionEnabled: boolean;
+  agents: AgentGatewayKeyView[];
+  services: ServiceKeyBudgetView[];
 }
 
 export interface GatewayFallbackCycle {
@@ -43,6 +73,8 @@ const base = (companyId: string) => `/myrmidon/companies/${encodeURIComponent(co
 
 export const litellmKeysApi = {
   keys: (companyId: string) => api.get<AgentGatewayKeyView[]>(`${base(companyId)}/keys`),
+  keyBudgets: (companyId: string) =>
+    api.get<CompanyKeyBudgetsReport>(`${base(companyId)}/key-budgets`),
   fallbacks: (companyId: string) => api.get<GatewayFallbackReport>(`${base(companyId)}/fallbacks`),
   updateFallbacks: (companyId: string, chains: readonly FallbackChain[]) =>
     api.put<GatewayFallbackReport>(`${base(companyId)}/fallbacks`, { chains }),
@@ -64,6 +96,8 @@ export const litellmKeysApi = {
 
 export const litellmKeysKey = (companyId: string) =>
   ["myrmidon", "litellm", "keys", companyId] as const;
+export const litellmKeyBudgetsKey = (companyId: string) =>
+  ["myrmidon", "litellm", "key-budgets", companyId] as const;
 export const litellmFallbacksKey = (companyId: string) =>
   ["myrmidon", "litellm", "fallbacks", companyId] as const;
 

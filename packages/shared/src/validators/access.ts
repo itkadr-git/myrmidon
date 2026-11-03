@@ -5,6 +5,7 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
+  MEMBERSHIP_STATUSES,
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
@@ -256,6 +257,8 @@ export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSche
 
 export const searchAdminUsersQuerySchema = z.object({
   query: z.string().trim().max(120).optional().default(""),
+  role: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional(),
+  status: z.enum(MEMBERSHIP_STATUSES).optional(),
 });
 
 export type SearchAdminUsersQuery = z.infer<typeof searchAdminUsersQuerySchema>;
