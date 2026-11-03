@@ -134,6 +134,7 @@ import {
   myrmidonLitellmCostsRoutes,
   myrmidonLitellmKeysRoutes,
   myrmidonModelProviderRoutes,
+  myrmidonLitellmAuditRoutes,
   bindModelProviderPluginLifecycle,
   myrmidonAgentExchangeRoutes,
   myrmidonAgentExchangeFeedRoutes,
@@ -263,7 +264,6 @@ import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
-import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
 // the «to skill» action that registers a room outcome as a skill candidate.
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
