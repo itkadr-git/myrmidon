@@ -7,18 +7,26 @@
 
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
+import { act } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 
 async function flushReact() {
-  for (let index = 0; index < 5; index += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-  flushSync(() => {});
+  await act(async () => {
+    for (let index = 0; index < 5; index += 1) {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+  });
+}
+
+function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = input instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
 }
 
 describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
@@ -33,7 +41,7 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   });
 
   afterEach(() => {
-    flushSync(() => {
+    act(() => {
       root?.unmount();
     });
     root = null;
@@ -42,7 +50,7 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   });
 
   it("renders upload section with locale code input, file input, and JSON area", async () => {
-    flushSync(() => {
+    await act(async () => {
       root!.render(
         <Ui2I18nProvider initialLocale="en">
           <Ui2LanguageSettings />
@@ -58,7 +66,7 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   });
 
   it("displays key diff preview with matched, missing, extra counts and before/after values", async () => {
-    flushSync(() => {
+    await act(async () => {
       root!.render(
         <Ui2I18nProvider initialLocale="en">
           <Ui2LanguageSettings />
@@ -85,12 +93,12 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
     );
 
     // Simulate entering target locale and JSON catalog content
-    flushSync(() => {
-      localeInput.value = "de";
+    await act(async () => {
+      setInputValue(localeInput, "de");
       localeInput.dispatchEvent(new Event("input", { bubbles: true }));
       localeInput.dispatchEvent(new Event("change", { bubbles: true }));
 
-      jsonInput.value = sampleCatalog;
+      setInputValue(jsonInput, sampleCatalog);
       jsonInput.dispatchEvent(new Event("input", { bubbles: true }));
       jsonInput.dispatchEvent(new Event("change", { bubbles: true }));
     });
@@ -113,7 +121,7 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   });
 
   it("applies the uploaded catalog live without restart and updates user language", async () => {
-    flushSync(() => {
+    await act(async () => {
       root!.render(
         <Ui2I18nProvider initialLocale="en">
           <Ui2LanguageSettings />
@@ -134,11 +142,11 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
       "ui2.settings.language.subtitle": "Benutzeroberfläche Sprache",
     });
 
-    flushSync(() => {
-      localeInput.value = "de";
+    await act(async () => {
+      setInputValue(localeInput, "de");
       localeInput.dispatchEvent(new Event("change", { bubbles: true }));
 
-      jsonInput.value = sampleCatalog;
+      setInputValue(jsonInput, sampleCatalog);
       jsonInput.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushReact();
@@ -150,8 +158,9 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
     expect(applyButton?.disabled).toBe(false);
 
     // Apply the catalog
-    applyButton?.click();
-    await flushReact();
+    await act(async () => {
+      applyButton?.click();
+    });
 
     // Verify success banner is shown
     const successBanner = container.querySelector('[data-testid="upload-success-message"]');
@@ -175,17 +184,21 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
     const enSwitchButton = [...container.querySelectorAll<HTMLButtonElement>(
       ".ui2-language-switch-option",
     )].find((button) => button.textContent?.includes("English"));
-    enSwitchButton?.click();
+    await act(async () => {
+      enSwitchButton?.click();
+    });
     await flushReact();
     expect(container.textContent).toContain("Language");
 
-    deSwitchButton?.click();
+    await act(async () => {
+      deSwitchButton?.click();
+    });
     await flushReact();
     expect(container.textContent).toContain("Sprache");
   });
 
   it("handles invalid JSON safely by displaying validation error and disabling apply", async () => {
-    flushSync(() => {
+    await act(async () => {
       root!.render(
         <Ui2I18nProvider initialLocale="en">
           <Ui2LanguageSettings />
@@ -198,8 +211,8 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
       '[data-testid="locale-json-input"]',
     )!;
 
-    flushSync(() => {
-      jsonInput.value = "{ invalid json syntax: 123 ";
+    await act(async () => {
+      setInputValue(jsonInput, "{ invalid json syntax: 123 ");
       jsonInput.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushReact();
