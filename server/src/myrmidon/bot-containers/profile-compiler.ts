@@ -61,7 +61,12 @@ export interface HermesProfileAdapterConfig {
   provider?: string;
   /** adapterConfig.effort — the vendor "Thinking effort" field (reasoning level). */
   effort?: string;
-  /** adapterConfig.models.{vision,video,stt,tts,fallbacks} — the M1 "Additional models" block. */
+  /**
+   * `adapterConfig.maxOutputTokens` — output budget for the main model, written to
+   * `model.max_tokens` in Hermes config.yaml. An unset value keeps Hermes defaults.
+   */
+  maxOutputTokens?: number;
+  /** `adapterConfig.models.{vision,video,stt,tts,fallbacks}` — the M1 "Additional models" block. */
   models?: {
     vision?: string;
     video?: string;
@@ -74,6 +79,10 @@ export interface HermesProfileAdapterConfig {
      * instance-wide alias map (HermesProfileInstanceDefaults.modelContextLengths).
      */
     contextLength?: number;
+    /**
+     * myrmidon(BOT-MAXTOKENS): explicit output budget from card models block.
+     */
+    maxOutputTokens?: number;
     /**
      * myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute compression
      * threshold in tokens, written to `compression.threshold_tokens` (Hermes
@@ -605,6 +614,16 @@ const COMPRESSION_THRESHOLD_TOKENS_MAX = 2_000_000;
 // myrmidon(BOT-RUNTIME-TUNING-B): validation range for model.context_length.
 const MODEL_CONTEXT_LENGTH_MIN = 8_000;
 const MODEL_CONTEXT_LENGTH_MAX = 10_000_000;
+const MODEL_MAX_OUTPUT_TOKENS_MIN = 1_000;
+const MODEL_MAX_OUTPUT_TOKENS_MAX = 200_000;
+
+function buildMaxOutputTokens(value: number | undefined, warnings: string[]): number | undefined {
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && value >= MODEL_MAX_OUTPUT_TOKENS_MIN && value <= MODEL_MAX_OUTPUT_TOKENS_MAX) return value;
+  warnings.push(`model.max_tokens: ${value} from the card is outside the supported range ${MODEL_MAX_OUTPUT_TOKENS_MIN}..${MODEL_MAX_OUTPUT_TOKENS_MAX}; dropped`);
+  return undefined;
+}
+
 
 /**
  * myrmidon(BOT-RUNTIME-TUNING-AUX-CEILING): the resolved cheap ceiling of the
@@ -1044,6 +1063,9 @@ function buildConfigYaml(input: HermesProfileInput, warnings: string[]): string 
       provider: nonEmpty(adapterConfig.provider),
       // myrmidon(BOT-RUNTIME-TUNING-B): explicit context window override; see buildModelContextLength.
       context_length: buildModelContextLength(input, warnings),
+      // myrmidon(BOT-MAXTOKENS): configured value wins; custom gateway gets the 32k fallback.
+      max_tokens: buildMaxOutputTokens(adapterConfig.maxOutputTokens ?? adapterConfig.models?.maxOutputTokens, warnings)
+        ?? (adapterConfig.provider === "custom" ? 32_000 : undefined),
       // Instance-level LLM gateway settings — see HermesProfileLlmSettings.
       // api_key is a "${VAR}" reference, never the key's value.
       base_url: llmBaseUrl,
