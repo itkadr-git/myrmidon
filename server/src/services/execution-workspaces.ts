@@ -2711,6 +2711,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedInspectFailedSamples: [] as Array<{ id: string; path: string | null }>,
         skippedDirtySamples: [] as Array<{ id: string; path: string | null }>,
         skippedUnmergedSamples: [] as Array<{ id: string; path: string | null }>,
+        skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
         clearedStaleReopenPending: 0,
