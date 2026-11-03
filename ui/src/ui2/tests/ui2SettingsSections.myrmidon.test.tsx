@@ -129,7 +129,7 @@ export const SETTINGS_SECTION_SPECS: SettingsSectionSpec[] = [
   {
     name: "language",
     path: "/company/settings/language",
-    sidebarKey: null,
+    sidebarKey: "language",
     componentRenderer: () => <Ui2LanguageSettings />,
   },
   {
