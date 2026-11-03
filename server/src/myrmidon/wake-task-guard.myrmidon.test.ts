@@ -200,7 +200,13 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
 
   async function seedAutoRun(
     issueId: string,
-    overrides: { status?: string; livenessState?: string | null; finishedAt?: Date; cancellationCode?: string } = {},
+    overrides: {
+      status?: string;
+      errorCode?: string | null;
+      livenessState?: string | null;
+      finishedAt?: Date;
+      cancellationCode?: string;
+    } = {},
   ) {
     const finishedAt = overrides.finishedAt ?? new Date();
     await db.insert(heartbeatRuns).values({
@@ -208,6 +214,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       agentId,
       invocationSource: "automation",
       status: overrides.status ?? "failed",
+      errorCode: overrides.errorCode ?? null,
       ...(overrides.cancellationCode ? { resultJson: { executionCancellation: { source: { code: overrides.cancellationCode } } } } : {}),
       ...(overrides.status === "succeeded"
         ? { livenessState: overrides.livenessState ?? "empty_response" }
@@ -491,5 +498,85 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     );
     expect(runs.length).toBe(0);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("OPE-10784: 10 hermes_gateway_connect_failed runs in a row do not cause cooling; 3 empty successful runs cool as before", async () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+
+    // 10 runs failed with hermes_gateway_connect_failed in a row
+    const infraIssue = await seedIssue("todo");
+    for (let i = 10; i >= 1; i -= 1) {
+      await seedAutoRun(infraIssue, {
+        status: "failed",
+        errorCode: "hermes_gateway_connect_failed",
+        finishedAt: new Date(now.getTime() - i * 60_000),
+      });
+    }
+    const infraStatus = await isIssueCoolingDown(db, companyId, infraIssue, settings, now);
+    expect(infraStatus.cooling).toBe(false);
+
+    // 3 empty successful runs in a row -> cooling as before (staleCount = 3, cooldown = 120m)
+    const emptyIssue = await seedIssue("todo");
+    for (let i = 3; i >= 1; i -= 1) {
+      await seedAutoRun(emptyIssue, {
+        status: "succeeded",
+        livenessState: "empty_response",
+        finishedAt: new Date(now.getTime() - i * 60_000),
+      });
+    }
+    const emptyStatus = await isIssueCoolingDown(db, companyId, emptyIssue, settings, now);
+    expect(emptyStatus.cooling).toBe(true);
+    expect(emptyStatus.staleCount).toBe(3);
+    expect(emptyStatus.cooldownMin).toBe(120);
+  });
+
+  it("OPE-10784 decideIssueCooling: infra failure runs (process_lost, setup_failed, rollout drain) do not start cooling or count as stale", () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+
+    // 10 hermes_gateway_connect_failed runs
+    const gatewayRuns = Array.from({ length: 10 }, (_, i) => ({
+      agentId,
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      livenessState: null,
+      finishedAt: new Date(now.getTime() - (10 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (10 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (10 - i) * 60_000 - 30_000),
+    }));
+    expect(decideIssueCooling({ issueStatus: "todo", runs: gatewayRuns, moves: [], settings, now }).cooling).toBe(false);
+
+    // Mixed infra runs: process_lost, setup_failed, maintenance interrupt, shutdown
+    const mixedInfraRuns = [
+      "hermes_gateway_connect_failed",
+      "process_lost",
+      "setup_failed",
+      "server_shutdown_interrupted",
+      "myrmidon_maintenance_interrupted",
+    ].map((errorCode, i) => ({
+      agentId,
+      status: "failed",
+      errorCode,
+      livenessState: null,
+      finishedAt: new Date(now.getTime() - (5 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (5 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (5 - i) * 60_000 - 30_000),
+    }));
+    expect(decideIssueCooling({ issueStatus: "todo", runs: mixedInfraRuns, moves: [], settings, now }).cooling).toBe(false);
+
+    // 3 empty successful runs
+    const emptyRuns = Array.from({ length: 3 }, (_, i) => ({
+      agentId,
+      status: "succeeded",
+      livenessState: "empty_response",
+      finishedAt: new Date(now.getTime() - (3 - i) * 60_000),
+      startedAt: new Date(now.getTime() - (3 - i) * 60_000 - 30_000),
+      createdAt: new Date(now.getTime() - (3 - i) * 60_000 - 30_000),
+    }));
+    const emptyDecision = decideIssueCooling({ issueStatus: "todo", runs: emptyRuns, moves: [], settings, now });
+    expect(emptyDecision.cooling).toBe(true);
+    expect(emptyDecision.staleCount).toBe(3);
+    expect(emptyDecision.cooldownMin).toBe(120);
   });
 });
