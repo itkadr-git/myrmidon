@@ -405,4 +405,31 @@ run("corpus end to end over the production adapters", () => {
     await expect(shadow.search({ companyId: COMPANY, dataset: "fed987", text: query })).rejects.toThrow("dataset not found");
     await expect(shadow.search({ companyId: OTHER_COMPANY, dataset: "def456", text: query })).rejects.toThrow("dataset not found");
   });
+
+  it("rejects search and upload with 422 corpus_embedder_not_configured when embedder is not configured", async () => {
+    await setCorpusBlock({ enabled: true, embedderBaseUrl: null, parserBaseUrl: standInUrl });
+    const app = restApp(COMPANY);
+    const created = await request(app).post(restUrl(COMPANY, "datasets")).send({ name: "unconfigured-embedder" }).expect(201);
+    const datasetId = created.body.dataset.id;
+
+    const searchRes = await request(app)
+      .post(restUrl(COMPANY, `datasets/${datasetId}/search`))
+      .send({ query: "test query" })
+      .expect(422);
+    expect(searchRes.body.error).toBe("corpus_embedder_not_configured");
+    expect(searchRes.body.hint).toBeTruthy();
+
+    const uploadRes = await request(app)
+      .post(restUrl(COMPANY, `datasets/${datasetId}/documents`))
+      .attach("file", Buffer.from("document content"), "file.txt")
+      .expect(422);
+    expect(uploadRes.body.error).toBe("corpus_embedder_not_configured");
+    expect(uploadRes.body.hint).toBeTruthy();
+    const docId = uploadRes.body.documentId;
+    expect(docId).toBeDefined();
+
+    const docRes = await request(app).get(restUrl(COMPANY, `documents/${docId}`)).expect(200);
+    expect(docRes.body.document.status).toBe("failed");
+    expect(docRes.body.document.error).toContain("corpus_embedder_not_configured");
+  });
 });
