@@ -2624,8 +2624,15 @@
     {
       "idx": 444,
       "version": "7",
-      "when": 1793560001000,
-      "tag": "0444_corpus_embedding_model",
+      "when": 1793570000000,
+      "tag": "0444_litellm_cost_events_collected_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 445,
+      "version": "7",
+      "when": 1793570001000,
+      "tag": "0445_corpus_embedding_model",
       "breakpoints": true
     }
   ]

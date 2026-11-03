@@ -1,5 +1,5 @@
 {
-  "id": "5407772a-74cb-43b7-96ea-ee5455a951ca",
+  "id": "e85741b2-c0be-45f8-8bb3-47be0b95738a",
   "prevId": "efa18085-76f1-46f2-a7b6-46cf9085e721",
   "version": "7",
   "dialect": "postgresql",
@@ -15603,7 +15603,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'corpus-embed-pplx-0.6b'"
+          "default": "'dashscope-text-embedding-v4'"
         },
         "embedding_dimensions": {
           "name": "embedding_dimensions",
@@ -16081,7 +16081,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'corpus-embed-pplx-0.6b'"
+          "default": "'dashscope-text-embedding-v4'"
         },
         "default_parser_url": {
           "name": "default_parser_url",
@@ -38522,6 +38522,33 @@
             },
             {
               "expression": "heartbeat_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "litellm_cost_events_company_occurred_collected_idx": {
+          "name": "litellm_cost_events_company_occurred_collected_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "collected_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
