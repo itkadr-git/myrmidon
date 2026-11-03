@@ -3741,6 +3741,15 @@ export function issueThreadInteractionService(
       }
 
       let routeType: InteractionRouteType;
+      if (
+        !recipientCandidate &&
+        (normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "suggest_tasks")
+      ) {
+        // Operational interactions may be claimed from the default service
+        // queue when no concrete human or agent recipient is available.
+        recipientCandidate = { serviceQueue: "default" };
+      }
       if ((normalizedData as any).routeType) {
         routeType = (normalizedData as any).routeType;
       } else if (

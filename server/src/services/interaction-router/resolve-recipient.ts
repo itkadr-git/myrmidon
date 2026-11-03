@@ -133,7 +133,7 @@ export function resolveInteractionRecipient(
     if (!recipient) throw new InteractionRecipientUnresolvedError(`${input.routeType} requires a typed human or matching project role`);
   }
 
-  if (sameRecipient(recipient, input.creator)) {
+  if (sameRecipient(recipient, input.creator) && !input.recipient) {
     throw new InteractionRecipientUnresolvedError("The interaction creator cannot be its recipient");
   }
   if (
