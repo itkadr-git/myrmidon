@@ -10,10 +10,11 @@ export type ReconciliationInventoryEntry = {
 export type ReconciliationResult = {
   issueId: string;
   class: string;
-  evidence?: readonly string[];
   proposedOwner?: string;
   proposedSlaMinutes?: number;
+  evidence?: string | readonly string[];
   importKey?: string;
+  oldBlockers?: readonly string[];
 };
 
 export type ReconciliationDuplicate = { importKey: string; issueIds: string[] };
@@ -45,15 +46,19 @@ function toReportRow(
   const blockClass = legacyBlockedClassSchema.safeParse(result.class);
   if (!blockClass.success) return undefined;
   const proposedKey = typeof result.importKey === "string" ? result.importKey.trim() : "";
+  const oldBlockers = result.oldBlockers ?? [];
+  const normalizedEvidence = Array.isArray(result.evidence)
+    ? result.evidence.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).join("; ")
+    : typeof result.evidence === "string" ? result.evidence.trim() : "";
   const parsed = legacyBlockedReportRowSchema.safeParse({
     issueId: inventory.id,
     identifier: inventory.identifier,
     oldStatus: inventory.status,
-    oldBlockers: Array.isArray(inventory.blockerMetadata) ? inventory.blockerMetadata.map(String) : [],
     class: blockClass.data,
     proposedOwner: result.proposedOwner,
     proposedSlaMinutes: result.proposedSlaMinutes,
-    evidence: (result.evidence ?? []).map((item) => item.trim()).filter(Boolean).join("; ") || "No classification evidence provided.",
+    evidence: normalizedEvidence || "No classification evidence provided.",
+    oldBlockers,
     importKey: proposedKey || createLegacyBlockedImportKey(inventory.id),
   });
   return parsed.success ? parsed.data : undefined;
