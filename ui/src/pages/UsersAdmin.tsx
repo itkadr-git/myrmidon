@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Search, Shield, ShieldCheck, ShieldOff, UserRoundPlus } from "lucide-react";
 import { api, ApiError } from "@/api/client";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -49,7 +59,9 @@ function formatAuditDetails(action: string, details: Record<string, unknown>): s
     return `role: ${String(details.role ?? "member")}, mode: ${String(details.passwordMode ?? "")}`;
   }
   if (action === "instance.user.blocked" || action === "instance.user.unblocked") {
-    return `sessions closed: ${String(details.sessionsClosed ?? 0)}`;
+    const reason =
+      typeof details.reason === "string" && details.reason.trim() ? `, reason: ${details.reason.trim()}` : "";
+    return `sessions closed: ${String(details.sessionsClosed ?? 0)}${reason}`;
   }
   if (action === "instance.user.password_reset" || action === "instance.user.password_set") {
     return `via: ${String(details.via ?? "")}`;
@@ -66,6 +78,12 @@ export function UsersAdmin() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<ManagedUser["role"]>("member");
   const [oneTimeLink, setOneTimeLink] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<
+    | { type: "block"; user: ManagedUser }
+    | { type: "resetPassword"; user: ManagedUser }
+    | null
+  >(null);
+  const [blockReason, setBlockReason] = useState("");
 
   const [auditUser, setAuditUser] = useState<string>("");
   const [auditActor, setAuditActor] = useState<string>("");
@@ -124,18 +142,30 @@ export function UsersAdmin() {
       userId,
       blocked,
       role: nextRole,
+      reason,
     }: {
       userId: string;
       blocked?: boolean;
       role?: ManagedUser["role"];
-    }) => api.patch(`${endpoint}/${encodeURIComponent(userId)}`, { blocked, role: nextRole }),
-    onSuccess: refresh,
+      reason?: string;
+    }) =>
+      api.patch(`${endpoint}/${encodeURIComponent(userId)}`, {
+        blocked,
+        role: nextRole,
+        ...(reason?.trim() ? { reason: reason.trim() } : {}),
+      }),
+    onSuccess: async () => {
+      setConfirmAction(null);
+      setBlockReason("");
+      await refresh();
+    },
   });
 
   const reset = useMutation({
     mutationFn: (userId: string) =>
       api.patch<OneTimeLink>(`${endpoint}/${encodeURIComponent(userId)}`, { resetPassword: true }),
     onSuccess: async (result) => {
+      setConfirmAction(null);
       setOneTimeLink(result.passwordSetLink ?? null);
       await refresh();
     },
@@ -331,7 +361,15 @@ export function UsersAdmin() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => update.mutate({ userId: user.id, blocked: !user.blocked })}
+                          data-testid={`user-block-toggle-${user.id}`}
+                          onClick={() => {
+                            if (user.blocked) {
+                              update.mutate({ userId: user.id, blocked: false });
+                            } else {
+                              setBlockReason("");
+                              setConfirmAction({ type: "block", user });
+                            }
+                          }}
                           disabled={update.isPending}
                         >
                           {user.blocked
@@ -341,7 +379,8 @@ export function UsersAdmin() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => reset.mutate(user.id)}
+                          data-testid={`user-reset-password-${user.id}`}
+                          onClick={() => setConfirmAction({ type: "resetPassword", user })}
                           disabled={reset.isPending}
                         >
                           <KeyRound aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
@@ -491,6 +530,113 @@ export function UsersAdmin() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AlertDialog
+        open={Boolean(confirmAction)}
+        onOpenChange={(open) => {
+          if (!open && !update.isPending && !reset.isPending) {
+            setConfirmAction(null);
+            setBlockReason("");
+          }
+        }}
+      >
+        {confirmAction && (
+          <AlertDialogContent
+            data-testid={
+              confirmAction.type === "block"
+                ? "confirm-block-dialog"
+                : "confirm-reset-dialog"
+            }
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {confirmAction.type === "block"
+                  ? t("area.access-secrets-3.users-admin.confirmBlockTitle")
+                  : t("area.access-secrets-3.users-admin.confirmResetTitle")}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {confirmAction.type === "block"
+                  ? t("area.access-secrets-3.users-admin.confirmBlockDescription", {
+                      name: confirmAction.user.name,
+                      username: confirmAction.user.username,
+                    })
+                  : t("area.access-secrets-3.users-admin.confirmResetDescription", {
+                      name: confirmAction.user.name,
+                      username: confirmAction.user.username,
+                    })}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+
+            {confirmAction.type === "block" && (
+              <div className="space-y-1.5 py-2">
+                <Label htmlFor="block-reason-input" className="text-sm font-medium">
+                  {t("area.access-secrets-3.users-admin.blockReasonLabel")}
+                </Label>
+                <Input
+                  id="block-reason-input"
+                  data-testid="confirm-block-reason"
+                  value={blockReason}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                  placeholder={t("area.access-secrets-3.users-admin.blockReasonPlaceholder")}
+                  maxLength={1000}
+                  disabled={update.isPending}
+                />
+              </div>
+            )}
+
+            {(update.error || reset.error) && (
+              <p role="alert" className="text-sm text-destructive" data-testid="confirm-dialog-error">
+                {update.error instanceof Error
+                  ? update.error.message
+                  : reset.error instanceof Error
+                    ? reset.error.message
+                    : t("area.access-secrets-3.users-admin.updateError")}
+              </p>
+            )}
+
+            <AlertDialogFooter>
+              <AlertDialogCancel
+                data-testid="confirm-dialog-cancel"
+                disabled={update.isPending || reset.isPending}
+                onClick={() => {
+                  setConfirmAction(null);
+                  setBlockReason("");
+                }}
+              >
+                {t("common.cancel")}
+              </AlertDialogCancel>
+              {confirmAction.type === "block" ? (
+                <AlertDialogAction
+                  data-testid="confirm-block-submit"
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  disabled={update.isPending}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    update.mutate({
+                      userId: confirmAction.user.id,
+                      blocked: true,
+                      ...(blockReason.trim() ? { reason: blockReason.trim() } : {}),
+                    });
+                  }}
+                >
+                  {t("area.access-secrets-3.users-admin.confirmBlockAction")}
+                </AlertDialogAction>
+              ) : (
+                <AlertDialogAction
+                  data-testid="confirm-reset-submit"
+                  disabled={reset.isPending}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    reset.mutate(confirmAction.user.id);
+                  }}
+                >
+                  {t("area.access-secrets-3.users-admin.confirmResetAction")}
+                </AlertDialogAction>
+              )}
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
     </main>
   );
 }
