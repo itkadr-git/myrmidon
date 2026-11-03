@@ -71,8 +71,47 @@ case "$1" in
   inspect)
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
-    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    case "$*" in
+      *'{{.State.Status}} {{.State.Restarting}}'*) echo "running false" ;;
+      *State.Health*)
+        case "$*" in
+          *predeploy*|*dockergate*|*fleetd*)
+            echo "healthy" ;;
+          *)
+            if [ -e "$SANDBOX/bot-unhealthy" ]; then
+              echo "unhealthy"
+            else
+              echo "healthy"
+            fi ;;
+        esac ;;
+    esac
     exit 0 ;;
+  logs)
+    case "$*" in
+      *predeploy*)
+        echo "database system is ready to accept connections"
+        echo "PostgreSQL init process complete; ready for start up." ;;
+      *dockergate*)
+        echo "myrmidon-dockergate self-check: ok (version=1.4.0, config_sha256=abcdef)" ;;
+      *)
+        if [ -e "$SANDBOX/bot-unhealthy" ]; then
+          echo "Traceback (most recent call last):"
+          echo "  File \"/workspace/gateway/run_startup.py\", line 42, in <module>"
+          echo "NameError: name 'SessionStore' is not defined"
+        else
+          echo "Gateway initialized successfully."
+        fi ;;
+    esac
+    exit 0 ;;
+  exec)
+    case "$*" in
+      *predeploy*) exit 0 ;;
+      *)
+        if [ -e "$SANDBOX/bot-unhealthy" ]; then
+          exit 1
+        fi
+        exit 0 ;;
+    esac ;;
   compose)
     case "$*" in
       *--services)
@@ -200,6 +239,18 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "ssh"), FAKE_SSH, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash
+case "$1" in
+  --version) echo systemd 255 ; exit 0 ;;
+  is-enabled|daemon-reload|enable|start) exit 0 ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+echo "Filesystem 1K-blocks Used Available Use% Mounted on"
+echo "/dev/sda1 100000000 10000000 90000000 10% /"
+exit 0
+`, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   const lbls = registryLabels === undefined ? labels() : registryLabels;
@@ -306,17 +357,19 @@ function sandbox({
 }
 
 function run(sb, script, args) {
+  const env = {
+    ...process.env,
+    PATH: `${sb.bin}:${process.env.PATH}`,
+    SANDBOX: sb.dir,
+    COMPOSE_FAILS: sb.composeFails ?? "0",
+    ...(sb.env ?? {}),
+  };
+  delete env.BASH_ENV;
   const result = spawnSync(
     process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
     [path.join(HERE, script), "--config", sb.config, ...args],
     {
-      env: {
-        ...process.env,
-        PATH: `${sb.bin}:${process.env.PATH}`,
-        SANDBOX: sb.dir,
-        COMPOSE_FAILS: sb.composeFails ?? "0",
-        ...(sb.env ?? {}),
-      },
+      env,
       encoding: "utf8",
     },
   );
@@ -439,6 +492,16 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     assert.match(out, /rollback-component\.sh --config/);
     // The board and the components DID roll out; the failure is the smoke.
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon-dockergate@${DG}`));
+  });
+
+  it("deploy fails (rc != 0) with DEPLOYED-DEGRADED when all bot containers are unhealthy in post-deploy smoke", () => {
+    const sb = sandbox({ smoke: "ok" });
+    fs.writeFileSync(path.join(sb.dir, "bot-unhealthy"), "");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /SessionStore/);
+    assert.match(out, /rollback\.sh --config/);
   });
 
   it("warns when the smoke cannot run (no company configured)", () => {
@@ -650,10 +713,12 @@ describe("rollback-component.sh", () => {
 
 describe("bot-apply-smoke.sh", () => {
   function runSmoke(sb, args) {
+    const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir };
+    delete env.BASH_ENV;
     const result = spawnSync(
       process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
       [path.join(HERE, "bot-apply-smoke.sh"), ...args],
-      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+      { env, encoding: "utf8" },
     );
     return { code: result.status, out: `${result.stdout}${result.stderr}` };
   }
@@ -680,6 +745,20 @@ describe("bot-apply-smoke.sh", () => {
     ]);
     assert.notEqual(code, 0);
     assert.match(out, /SMOKE FAILED/);
+  });
+
+  it("fails with DEPLOYED-DEGRADED and prints gateway logs when containers are unhealthy", () => {
+    const sb = sandbox({ smoke: "ok" });
+    fs.writeFileSync(path.join(sb.dir, "bot-unhealthy"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /SessionStore/);
   });
 });
 
