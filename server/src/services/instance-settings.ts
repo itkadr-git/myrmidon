@@ -105,6 +105,7 @@ import { preserveProviderUsageThresholdGeneralKey } from "../myrmidon/provider-u
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel threshold survives vendor general writes.
 import { preserveOwnerActiveChannelGeneralKey } from "../myrmidon/owner-active-channel/settings.js";
 import { preserveUsersAdminAGeneralKey } from "../myrmidon/users-admin-a/store.js"; // myrmidon(1.7 USERS-ADMIN-UI A)
+import { preserveUpdateSettingsGeneralKey } from "../routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -935,6 +936,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.ownerActiveChannel !== undefined
                 ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
                 : {}),
+              ...preserveUpdateSettingsGeneralKey(current.general), // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
             },
             updatedAt: now,
           })
