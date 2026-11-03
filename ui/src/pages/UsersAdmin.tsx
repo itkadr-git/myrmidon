@@ -148,12 +148,17 @@ export function UsersAdmin() {
       blocked?: boolean;
       role?: ManagedUser["role"];
       reason?: string;
-    }) =>
-      api.patch(`${endpoint}/${encodeURIComponent(userId)}`, {
-        blocked,
-        role: nextRole,
-        ...(reason?.trim() ? { reason: reason.trim() } : {}),
-      }),
+    }) => {
+      const payload: {
+        blocked?: boolean;
+        role?: ManagedUser["role"];
+        reason?: string;
+      } = {};
+      if (blocked !== undefined) payload.blocked = blocked;
+      if (nextRole !== undefined) payload.role = nextRole;
+      if (reason?.trim()) payload.reason = reason.trim();
+      return api.patch(`${endpoint}/${encodeURIComponent(userId)}`, payload);
+    },
     onSuccess: async () => {
       setConfirmAction(null);
       setBlockReason("");

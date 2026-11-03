@@ -48,10 +48,29 @@ const mockBlockedUser = {
   createdAt: "2026-10-02T12:00:00.000Z",
 };
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value"
+  )?.set;
+  nativeInputValueSetter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 describe("UsersAdmin confirmation dialogs", () => {
   let container: HTMLDivElement;
   let root: Root;
   let client: QueryClient;
+
+  async function eventually(assertion: () => void | Promise<void>) {
+    await vi.waitFor(async () => {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await assertion();
+    });
+  }
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -105,7 +124,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       );
     });
     // Wait for initial queries to settle
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(container.querySelector('[data-testid="user-block-toggle-user-1"]')).not.toBeNull();
     });
   }
@@ -120,7 +139,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       blockBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       const dialog = document.querySelector('[data-testid="confirm-block-dialog"]');
       expect(dialog).not.toBeNull();
       expect(dialog?.textContent).toContain("Alice Smith");
@@ -134,7 +153,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       cancelBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-block-dialog"]')).toBeNull();
     });
     expect(mocks.patch).not.toHaveBeenCalled();
@@ -152,7 +171,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       blockBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-block-dialog"]')).not.toBeNull();
     });
 
@@ -160,9 +179,7 @@ describe("UsersAdmin confirmation dialogs", () => {
     expect(reasonInput).toBeDefined();
 
     await act(async () => {
-      reasonInput.value = "Security violation";
-      reasonInput.dispatchEvent(new Event("input", { bubbles: true }));
-      reasonInput.dispatchEvent(new Event("change", { bubbles: true }));
+      setInputValue(reasonInput, "Security violation");
     });
 
     const submitBtn = document.querySelector<HTMLButtonElement>('[data-testid="confirm-block-submit"]')!;
@@ -170,14 +187,14 @@ describe("UsersAdmin confirmation dialogs", () => {
       submitBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(mocks.patch).toHaveBeenCalledWith(
         "/myrmidon/users-admin-a/users/user-1",
         { blocked: true, reason: "Security violation" }
       );
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-block-dialog"]')).toBeNull();
     });
   });
@@ -194,7 +211,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       blockBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-block-dialog"]')).not.toBeNull();
     });
 
@@ -203,7 +220,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       submitBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(mocks.patch).toHaveBeenCalledWith(
         "/myrmidon/users-admin-a/users/user-1",
         { blocked: true }
@@ -225,7 +242,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       unblockBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(mocks.patch).toHaveBeenCalledWith(
         "/myrmidon/users-admin-a/users/user-2",
         { blocked: false }
@@ -248,7 +265,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       resetBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       const dialog = document.querySelector('[data-testid="confirm-reset-dialog"]');
       expect(dialog).not.toBeNull();
       expect(dialog?.textContent).toContain("Alice Smith");
@@ -261,7 +278,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       cancelBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-reset-dialog"]')).toBeNull();
     });
     expect(mocks.patch).not.toHaveBeenCalled();
@@ -271,7 +288,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       resetBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-reset-dialog"]')).not.toBeNull();
     });
 
@@ -280,14 +297,14 @@ describe("UsersAdmin confirmation dialogs", () => {
       submitBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(mocks.patch).toHaveBeenCalledWith(
         "/myrmidon/users-admin-a/users/user-1",
         { resetPassword: true }
       );
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-reset-dialog"]')).toBeNull();
       expect(container.textContent).toContain("http://localhost:3100/set-password?token=abc-123");
     });
@@ -303,7 +320,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       blockBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       expect(document.querySelector('[data-testid="confirm-block-dialog"]')).not.toBeNull();
     });
 
@@ -312,7 +329,7 @@ describe("UsersAdmin confirmation dialogs", () => {
       submitBtn.click();
     });
 
-    await vi.waitFor(() => {
+    await eventually(() => {
       const errorMsg = document.querySelector('[data-testid="confirm-dialog-error"]');
       expect(errorMsg).not.toBeNull();
       expect(errorMsg?.textContent).toContain("Database connection error");
