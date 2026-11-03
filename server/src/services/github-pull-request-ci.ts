@@ -292,6 +292,7 @@ export async function fetchCommitCheckRuns(
       break;
     }
 
+    const responseEtag = res.headers.get("etag");
     const data = (await res.json().catch(() => null)) as {
       total_count?: number;
       check_runs?: Array<{
@@ -329,6 +330,7 @@ export async function fetchCommitCheckRuns(
     }
 
     if (data.check_runs.length < 100 || (totalCount !== null && allRuns.length >= totalCount)) {
+      (allRuns as CheckRunsFetchResult).etag = responseEtag ?? undefined;
       break;
     }
 
