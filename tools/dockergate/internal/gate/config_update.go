@@ -15,6 +15,9 @@ func (rs *reqState) a20(st *runtime, rt *route.Route) *deny.Error {
 	if rs.g.opt.ConfigPath == "" {
 		return deny.New(deny.RouteNotAllowed).WithDetail("config_path_disabled")
 	}
+	if rt.ConfigBotKey == "" {
+		return deny.New(deny.RouteNotAllowed).WithDetail("target_bot_required")
+	}
 	body, derr := rs.readBody(st.cfg.Limits.MaxJSONBody, "application/json", deny.JSONSyntax)
 	if derr != nil {
 		return derr
@@ -58,11 +61,11 @@ func (rs *reqState) a20(st *runtime, rt *route.Route) *deny.Error {
 	g.imgMu.Unlock()
 	g.log.Write(Line{Event: "config_updated", Bot: u.BotKey, ConfigHash: hash})
 	resp, err := json.Marshal(struct {
-		OK        bool    `json:"ok"`
-		BotKey    string  `json:"botKey"`
-		Memory    int64   `json:"memoryMb"`
-		CPUs      float64 `json:"cpus"`
-		Pids      int64   `json:"pidsLimit"`
+		OK     bool    `json:"ok"`
+		BotKey string  `json:"botKey"`
+		Memory int64   `json:"memoryMb"`
+		CPUs   float64 `json:"cpus"`
+		Pids   int64   `json:"pidsLimit"`
 	}{true, u.BotKey, u.MemoryMB, u.CPUs, u.PidsLimit})
 	if err != nil {
 		return deny.New(deny.UpstreamError).WithDetail("config_response")

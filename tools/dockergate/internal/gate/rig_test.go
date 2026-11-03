@@ -350,12 +350,16 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	})
 
 	gopt := gate.Options{
-		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Cfg:        cfg, ConfigHash: "test", Version: "test", Log: r.log,
 		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost, Oom: o.oom,
 		DisableOomLoop: !o.enableOomLoop,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc
+	}
+	if err := os.WriteFile(gopt.ConfigPath, []byte("{}"), 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)
 	if err != nil {

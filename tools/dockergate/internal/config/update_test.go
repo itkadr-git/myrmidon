@@ -12,31 +12,25 @@ import (
 const bot1Key = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const bot2Key = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-func validBaseConfig() *config.Config {
-	return &config.Config{
-		Listen:     "/run/dg/engine.sock",
-		Upstream:   "/var/run/docker.sock",
-		APIVersion: "1.45",
-		Caller: &config.Caller{
-			Container: "board",
-			UID:       1000,
-			GID:       1000,
-			Argv:      []string{"node", "server.js"},
-			Mode:      config.ModeContainerMainProcess,
-		},
-		VolumeRoot: "/srv/myrmidon-bots",
-		Network:    "bots-net",
-		StatsFile:  "/run/dg-stats/stats.json",
-		Limits:     config.DefaultLimits(),
-		Bots: []config.Bot{
-			{BotKey: bot1Key, MaxMemoryMB: 512, MaxCPUs: 2, MaxPids: 100},
-			{BotKey: bot2Key, MaxMemoryMB: 256, MaxCPUs: 1, MaxPids: 50},
-		},
+func validBaseConfig(t *testing.T) *config.Config {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "init.json")
+	if err := os.WriteFile(p, []byte(goodJSON), 0600); err != nil {
+		t.Fatalf("write goodJSON: %v", err)
 	}
+	cfg, _, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("load goodJSON: %v", err)
+	}
+	cfg.Bots = []config.Bot{
+		{BotKey: bot1Key, MaxMemoryMB: 512, MaxCPUs: 2, MaxPids: 100, CeilingMemoryMB: 2048, CeilingCPUs: 4, CeilingPids: 2048},
+		{BotKey: bot2Key, MaxMemoryMB: 256, MaxCPUs: 1, MaxPids: 50},
+	}
+	return cfg
 }
 
 func TestApplyBotUpdatePreservesOtherBotsAndPersistsAtomically(t *testing.T) {
-	cfg := validBaseConfig()
+	cfg := validBaseConfig(t)
 	if err := config.ApplyBotUpdate(cfg, config.BotUpdate{BotKey: bot1Key, MemoryMB: 384, CPUs: 1.5, PidsLimit: 80}); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +58,7 @@ func TestApplyBotUpdatePreservesOtherBotsAndPersistsAtomically(t *testing.T) {
 }
 
 func TestApplyBotUpdateRejectsEachPlatformCeiling(t *testing.T) {
-	cfg := validBaseConfig()
+	cfg := validBaseConfig(t)
 	cfg.PlatformLimits = &config.PlatformLimits{MaxMemoryMB: 512, MaxCPUs: 2, MaxPids: 100}
 
 	cases := []struct {
@@ -83,5 +77,34 @@ func TestApplyBotUpdateRejectsEachPlatformCeiling(t *testing.T) {
 				t.Fatalf("error = %v; want %q", err, tc.part)
 			}
 		})
+	}
+}
+
+func TestConfigClonePreservesCeilings(t *testing.T) {
+	cfg := validBaseConfig(t)
+	copy := cfg.Clone()
+	if copy.PlatformLimits == nil || copy.PlatformLimits.MaxMemoryMB != 4096 {
+		t.Fatalf("platform limits not cloned: %+v", copy.PlatformLimits)
+	}
+	got, ok := copy.Bot(bot1Key)
+	if !ok || got.CeilingMemoryMB != 2048 || got.CeilingCPUs != 4 || got.CeilingPids != 2048 {
+		t.Fatalf("bot ceilings not cloned: %+v, found=%v", got, ok)
+	}
+}
+
+func TestDecodeBotUpdateRejectsMissingAndMalformedBotKey(t *testing.T) {
+	for _, body := range []string{
+		`{"memoryMb":1,"cpus":1,"pidsLimit":1}`,
+		`{"botKey":"bad","memoryMb":1,"cpus":1,"pidsLimit":1}`,
+	} {
+		if _, err := config.DecodeBotUpdate([]byte(body)); err == nil {
+			t.Errorf("DecodeBotUpdate(%s) succeeded; want error", body)
+		}
+	}
+}
+
+func TestWriteAtomicRejectsEmptyPath(t *testing.T) {
+	if err := config.WriteAtomic("", validBaseConfig(t)); err == nil {
+		t.Fatal("WriteAtomic with empty path succeeded; want error")
 	}
 }

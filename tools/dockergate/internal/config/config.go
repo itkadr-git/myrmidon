@@ -177,10 +177,10 @@ type Config struct {
 	// A bot may bind only an instance listed in its own scopeInstances. Empty
 	// (the default) means "<volumeRoot>/.scopes" ("." can never begin a bot
 	// key, so the name cannot collide with a bot's directory).
-	ScopeRoot string `json:"scopeRoot"`
-	Bots      []Bot  `json:"bots"`
-	Limits    Limits `json:"limits"`
-	StatsFile string `json:"statsFile"`
+	ScopeRoot      string          `json:"scopeRoot"`
+	Bots           []Bot           `json:"bots"`
+	Limits         Limits          `json:"limits"`
+	StatsFile      string          `json:"statsFile"`
 	PlatformLimits *PlatformLimits `json:"platformLimits,omitempty"`
 }
 
@@ -360,10 +360,16 @@ func (c *Config) Validate() error {
 		if b.CeilingMemoryMB < 0 || b.CeilingCPUs < 0 || b.CeilingPids < 0 {
 			return errors.New("config: bot ceilings must not be negative")
 		}
-		if b.CeilingMemoryMB > 0 && b.MaxMemoryMB > b.CeilingMemoryMB ||
-			b.CeilingCPUs > 0 && b.MaxCPUs > b.CeilingCPUs ||
-			b.CeilingPids > 0 && b.MaxPids > b.CeilingPids {
+		if b.CeilingMemoryMB > 0 && b.CeilingMemoryMB < b.MaxMemoryMB ||
+			b.CeilingCPUs > 0 && b.CeilingCPUs < b.MaxCPUs ||
+			b.CeilingPids > 0 && b.CeilingPids < b.MaxPids {
 			return errors.New("config: bot limits exceed configured ceilings")
+		}
+		if c.PlatformLimits != nil &&
+			(c.PlatformLimits.MaxMemoryMB > 0 && b.MaxMemoryMB > c.PlatformLimits.MaxMemoryMB ||
+				c.PlatformLimits.MaxCPUs > 0 && b.MaxCPUs > c.PlatformLimits.MaxCPUs ||
+				c.PlatformLimits.MaxPids > 0 && b.MaxPids > c.PlatformLimits.MaxPids) {
+			return errors.New("config: bot limits exceed platform limits")
 		}
 		if b.MaxMemoryMB <= 0 || b.MaxPids <= 0 || !(b.MaxCPUs > 0) {
 			return errors.New("config: the ceilings of a bot must be greater than zero")
@@ -461,7 +467,9 @@ func (c *Config) CeilingsFor(botKey string) (maxMem int64, maxCPUs float64, maxP
 	return maxMem, maxCPUs, maxPids, true
 }
 
-func CeilingsForTest(c *Config, botKey string) (int64, float64, int64, bool) { return c.CeilingsFor(botKey) }
+func CeilingsForTest(c *Config, botKey string) (int64, float64, int64, bool) {
+	return c.CeilingsFor(botKey)
+}
 
 // Clone returns a deep copy of the configuration.
 func (c *Config) Clone() *Config {

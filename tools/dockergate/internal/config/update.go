@@ -25,6 +25,9 @@ func ValidateBotUpdate(c *Config, u BotUpdate) error {
 	if u.BotKey == "" {
 		return errors.New("botKey is required")
 	}
+	if !botKeyRe.MatchString(u.BotKey) {
+		return errors.New("botKey must be a lowercase uuid")
+	}
 	maxMem, maxCPUs, maxPids, ok := c.CeilingsFor(u.BotKey)
 	if !ok {
 		return fmt.Errorf("bot %q is not enrolled", u.BotKey)
@@ -85,6 +88,9 @@ func WriteAtomic(path string, c *Config) error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("config update: %w", err)
 	}
+	if path == "" {
+		return errors.New("config update: path is required")
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config update: marshal: %w", err)
@@ -137,6 +143,9 @@ func DecodeBotUpdate(data []byte) (BotUpdate, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		return BotUpdate{}, errors.New("invalid config update: trailing data")
+	}
+	if u.BotKey == "" {
+		return BotUpdate{}, errors.New("invalid config update: botKey is required")
 	}
 	return u, nil
 }

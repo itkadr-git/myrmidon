@@ -64,8 +64,6 @@ const (
 	A16 = "A16"
 	A17 = "A17"
 	A18 = "A18"
-	// A20 is the authenticated dockergate configuration update route.
-	A20 = "A20"
 )
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
@@ -300,15 +298,18 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		return nil, notAllowed()
 	}
+	if method == "PUT" && (target == "/myrmidon/config/update" || strings.HasPrefix(target, "/myrmidon/config/update?")) {
+		return &Route{ID: A20, Method: method}, nil
+	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
 		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
-		if hasLimitsSuffix && IsBotKey(key) && (method == "PUT" || method == "POST") {
+		if hasLimitsSuffix && IsBotKey(key) && method == "PUT" {
 			return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
 		}
 		return nil, notAllowed()
 	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
-		if IsBotKey(rest) && (method == "PUT" || method == "POST") {
+		if IsBotKey(rest) && method == "PUT" {
 			return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
 		}
 		return nil, notAllowed()
