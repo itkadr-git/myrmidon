@@ -32,16 +32,16 @@
 // and state is preserved. Once main turns green, merge resumes and backoff is reset.
 // Repeated runs are safe and idempotent.
 //
-// Usage (run it every few minutes from the operator host or devflow cron):
+// Usage (run it from CI or a Myrmidon worker; no host-installed scripts are needed):
 //   node scripts/myrmidon/review-approve-label.mjs --repo owner/name \
-//        --verdicts <file.json> | --psql-cmd '<command that runs psql -At and reads SQL on stdin>' \
 //        [--since-hours 48] [--reviewer-pattern '^adm-dev-review'] [--dry-run] [--json] \
 //        [--check-main] [--base-branch main] [--auto-merge] [--state-file <path>]
 //   node scripts/myrmidon/review-approve-label.mjs --print-sql [--since-hours 48]
 //
-// The verdict file is a JSON array of {id, issueId, createdAt, authorName, body}.
-// GitHub is reached with `gh api` and `gh pr merge` (GH_TOKEN must be allowed to edit labels and merge); the
-// token is never printed. Exit code: 0 ok, 1 a GitHub/board call failed, 2 usage.
+// Verdicts are fetched from the Myrmidon REST API using PAPERCLIP_API_URL,
+// PAPERCLIP_COMPANY_ID, and PAPERCLIP_API_KEY. PAPERCLIP_RUN_ID is forwarded
+// as X-Paperclip-Run-Id for board requests. Exit code: 0 ok, 1 a board/GitHub
+// call failed, 2 usage.
 
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -829,21 +829,53 @@ export async function main(argv, io = {}) {
       return 0;
     }
     if (!args.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repo)) throw new Error("--repo owner/name is required");
-    if (Boolean(args.verdicts) === Boolean(args.psqlCmd)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
+    if (!args.verdicts && !args.psqlCmd && !io.fetchImpl && (!process.env.PAPERCLIP_API_KEY || !process.env.PAPERCLIP_COMPANY_ID)) throw new Error("give exactly one of --verdicts <file> or --psql-cmd <command>");
     new RegExp(args.reviewerPattern);
   } catch (e) {
     err(e instanceof Error ? e.message : String(e));
     return 2;
   }
   let comments;
-  try {
-    comments = args.verdicts
-      ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
-      : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
-    if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
-  } catch (e) {
-    err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
-    return 1;
+  if (args.verdicts || args.psqlCmd) {
+    try {
+      comments = args.verdicts
+        ? JSON.parse(fs.readFileSync(args.verdicts, "utf8"))
+        : await (io.readFromPsql ?? readVerdictsFromPsql)(args.psqlCmd, boardVerdictSql(args.sinceHours));
+      if (!Array.isArray(comments)) throw new Error("the verdict source is not a JSON array");
+    } catch (e) {
+      err(`cannot read the verdicts: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
+  } else {
+    const apiUrl = process.env.PAPERCLIP_API_URL || "http://127.0.0.1:3100";
+    const apiKey = process.env.PAPERCLIP_API_KEY;
+    const companyId = process.env.PAPERCLIP_COMPANY_ID;
+    if (!apiKey || !companyId) {
+      err("PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID are required");
+      return 1;
+    }
+    const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+    if (process.env.PAPERCLIP_RUN_ID) headers["X-Paperclip-Run-Id"] = process.env.PAPERCLIP_RUN_ID;
+    const get = async (path) => {
+      const response = await (io.fetchImpl ?? fetch)(`${apiUrl.replace(/\/$/, "")}${path}`, { headers });
+      if (!response.ok) throw new Error(`GET ${path} failed: ${response.status}`);
+      return response.json();
+    };
+    try {
+      const issues = await get(`/api/companies/${encodeURIComponent(companyId)}/issues?limit=200&view=compact`);
+      const cutoff = Date.now() - args.sinceHours * 60 * 60 * 1000;
+      comments = [];
+      for (const issue of issues) {
+        const issueComments = await get(`/api/issues/${encodeURIComponent(issue.id)}/comments`);
+        for (const comment of issueComments) {
+          if (new Date(comment.createdAt).getTime() < cutoff) continue;
+          comments.push({ ...comment, authorName: comment.authorName ?? comment.author?.name ?? "" });
+        }
+      }
+    } catch (e) {
+      err(`cannot read verdicts from Myrmidon API: ${e instanceof Error ? e.message : String(e)}`);
+      return 1;
+    }
   }
   const github = io.github ?? createGitHubPort(args.repo);
   const stateStore = io.stateStore ?? (args.stateFile ? createFileStateStore(args.stateFile) : null);

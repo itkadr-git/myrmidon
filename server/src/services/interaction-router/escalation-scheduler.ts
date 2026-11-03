@@ -1,0 +1,15 @@
+export {
+  createInteractionEscalationSweep,
+  readInteractionEscalationSettings,
+  escalateInteractionStep,
+  selectDueEscalations,
+  DEFAULT_INTERACTION_ESCALATION_INTERVAL_SEC,
+  DEFAULT_INTERACTION_ESCALATION_BATCH_SIZE,
+  INTERACTION_ESCALATION_SETTINGS_KEY,
+  type DueEscalationItem,
+  type EscalationStepResult,
+  type InteractionEscalationSettings,
+  type InteractionEscalationSweepDeps,
+  type InteractionEscalationSweepOptions,
+  type InteractionEscalationSweepResult,
+} from "../../myrmidon/interaction-escalation/index.js";

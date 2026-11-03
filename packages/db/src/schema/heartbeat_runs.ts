@@ -236,6 +236,21 @@ export const heartbeatRuns = pgTable(
         sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
       )
       .where(sql`${table.contextSnapshot} ? 'paperclipIssue'`),
+    // myrmidon(DB-CARE / DBC-2): migration 0302 creates this index, but the
+    // schema lacked a declaration, leaving pg_indexes and Drizzle out of sync.
+    companyIssueCoalesceCreatedIdx: index("heartbeat_runs_company_issue_coalesce_created_idx").on(
+      table.companyId,
+      sql`(coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot} ->> 'issueId'))`,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    // myrmidon(DB-CARE / DBC-2): supports valuesForIssue lookup by company and
+    // snapshot issue id; production already has this index, so migration is safe.
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx").on(
+      table.companyId,
+      sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
+      table.createdAt.desc(),
+    ),
     // myrmidon(DB-CARE): the stuck-run sweeper scans the runs by updated_at,
     // which no other index serves. Persisted from the production database, see
     // migration 0308_db_care_audit_indexes.
