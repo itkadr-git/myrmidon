@@ -26,6 +26,7 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  renderWakeBlockDelta,
   isPaperclipRecoveryWakePayload,
   resolvePaperclipWakeHistoryMode,
   selectPaperclipTaskMarkdown,
@@ -441,9 +442,15 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null, idempotencyRunId: string): {
+function buildInput(
+  ctx: AdapterExecutionContext,
+  paperclipApiUrl: string | null,
+  idempotencyRunId: string,
+  previousDigests?: Record<string, string> | null,
+): {
   text: string;
   sections: Record<string, string | null | undefined>;
+  wakeBlockDigests: Record<string, string>;
 } {
   // Stable session keys (issue/agent strategy) resume the same remote Hermes
   // conversation across runs; a stored session id from a prior run means that
@@ -458,22 +465,39 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
-  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
+  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
+  const isCompacted = Boolean(sessionHandoff);
+  const effectivePreviousDigests = resumedSession && !isCompacted ? (previousDigests ?? null) : null;
+  const outDigests: Record<string, string> = {};
+
+  const rawTaskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, {
+    // A compaction handoff starts a fresh provider context: restore the full
+    // task brief even though the transport still reports a resumed session.
+    resumedSession: resumedSession && !isCompacted,
+  }));
+  let taskMarkdown = rawTaskMarkdown;
+  if (rawTaskMarkdown) {
+    const delta = renderWakeBlockDelta({ taskMarkdown: rawTaskMarkdown }, effectivePreviousDigests);
+    taskMarkdown = delta.blocks.taskMarkdown ?? rawTaskMarkdown;
+    Object.assign(outDigests, delta.digests);
+  }
+
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     conversationMode: ctx.context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: Boolean(taskMarkdown),
+    suppressIssueDescription: Boolean(rawTaskMarkdown),
     // myrmidon(WAKE-HISTORY): how much task history the wake carries — the
     // card's wakeHistory, else by session strategy (run | none: summary only).
     // The effective strategy decides, so a developer run forced to "run"
     // (WAKE-9) gets the summary even when its card still says issue/agent.
     wakeHistory: resolvePaperclipWakeHistoryMode({ ...ctx.config, sessionKeyStrategy }),
+    previousDigests: effectivePreviousDigests,
+    outDigests,
   });
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-    omitIssueDescription: Boolean(taskMarkdown),
+    omitIssueDescription: Boolean(rawTaskMarkdown),
   });
-  const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   // myrmidon(1.6.5 PROMPT-BUDGET A): the identity/contract head of the input,
   // measured as its own prompt section.
@@ -528,6 +552,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
       taskMarkdown,
       wakePayloadJson: wakePayloadBlock,
     },
+    wakeBlockDigests: outDigests,
   };
 }
 
@@ -678,11 +703,13 @@ function buildRunBody(
    * token heuristic. Needed because the trace schema stores both tokens and
    * chars per section. */
   sectionChars: Record<string, number>;
+  wakeBlockDigests: Record<string, string>;
 } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
-  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId);
+  const previousDigests = (ctx.runtime?.sessionParams?.wakeBlockDigests as Record<string, string>) ?? null;
+  const builtInput = buildInput(ctx, paperclipApiUrl, idempotencyRunId, previousDigests);
   const input = configuredInput && ctx.context.conversationMode === true
     ? `${configuredInput}\n\n${builtInput.text}`
     : configuredInput ?? builtInput.text;
@@ -779,7 +806,7 @@ function buildRunBody(
       sectionChars[name] = value.length;
     }
   }
-  return { body, promptBreakdown, sectionChars };
+  return { body, promptBreakdown, sectionChars, wakeBlockDigests: builtInput.wakeBlockDigests };
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -2186,6 +2213,8 @@ export function mapFinalResultForTest(input: {
   postCompactChars?: number | null;
   /** Overrides payload model metadata for an adapter-dispatched retry attempt. */
   modelAttemptId?: string | null;
+  /** Digests of static wake blocks to persist for delta computation on next turn. */
+  wakeBlockDigests?: Record<string, string>;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -2322,6 +2351,7 @@ export function mapFinalResultForTest(input: {
       hermesRunId: input.terminal.runId,
       ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
+      ...(input.wakeBlockDigests ? { wakeBlockDigests: input.wakeBlockDigests } : {}),
     },
     sessionDisplayId,
     resultJson: {
@@ -3502,6 +3532,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests ? { wakeBlockDigests: body.wakeBlockDigests } : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3545,6 +3576,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: {
         hermesRunId: runId,
         strategy,
+        ...(body.wakeBlockDigests ? { wakeBlockDigests: body.wakeBlockDigests } : {}),
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
@@ -3604,6 +3636,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     toolSchemaTokens,
     toolResultChars,
     toolResultTokens,
+    wakeBlockDigests: body.wakeBlockDigests,
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's
