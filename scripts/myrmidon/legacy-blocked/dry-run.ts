@@ -17,11 +17,6 @@ import {
   type ReconciliationResult,
 } from "./report.js";
 
-const resolvedBlockerStatuses = new Set(["done", "cancelled"]);
-
-function normalized(value: string | undefined): string {
-  return value?.trim().toLowerCase().replace(/[ -]+/g, "_") ?? "";
-}
 
 export type DryRunOptions = {
   outputFile?: string;
@@ -104,10 +99,6 @@ async function extractIssueFacts(
       };
     });
 
-  const activeBlockerIds = blockerIssues
-    .filter((blocker) => !resolvedBlockerStatuses.has(normalized(blocker.status)))
-    .map((blocker) => blocker.id);
-
   return {
     taskStatus: issue.status,
     latestComments: [
@@ -117,7 +108,7 @@ async function extractIssueFacts(
         .filter((b: string) => b.length > 0),
     ],
     links,
-    blockerIds: activeBlockerIds,
+    blockerIds: blockerIssues.map((b) => b.id),
   };
 }
 
