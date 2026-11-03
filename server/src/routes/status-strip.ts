@@ -132,10 +132,10 @@ export function statusStripRoutes(db: Db) {
       colony,
       runs,
       costs: {
-        monthSpendCents: cost.spendCents,
-        budgetCents: cost.budgetCents,
-        unpricedEvents: cost.unpricedEvents,
-        forecastCents: cost.forecastCents,
+        monthSpendCents: cost.spendCents ?? 0,
+        budgetCents: cost.budgetCents ?? 0,
+        unpricedEvents: cost.unpricedEvents ?? 0,
+        forecastCents: cost.forecastCents ?? null,
       },
       waiting: {
         approvals: approvalsCount,
