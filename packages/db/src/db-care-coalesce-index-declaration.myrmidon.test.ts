@@ -12,11 +12,11 @@ describe("DBC-2 heartbeat run indexes", () => {
     expect(coalesceIndex).toBeGreaterThan(0);
     expect(journal.entries[coalesceIndex - 1].tag).toBe("0301_heartbeat_run_ownership_index");
 
-    const migrationIndex = journal.entries.findIndex((entry: { tag: string }) => entry.tag === "0451_db_care_heartbeat_runs_ctx_paperclip_issue_created");
+    const migrationIndex = journal.entries.findIndex((entry: { tag: string }) => entry.tag === "0452_db_care_heartbeat_runs_ctx_paperclip_issue_created");
     expect(migrationIndex).toBeGreaterThan(0);
     expect(journal.entries[migrationIndex - 1].tag).toBe("0447_project_development_process");
 
-    const migration = await readFile(new URL("./migrations/0451_db_care_heartbeat_runs_ctx_paperclip_issue_created.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("./migrations/0452_db_care_heartbeat_runs_ctx_paperclip_issue_created.sql", import.meta.url), "utf8");
     expect(migration).toContain('CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_ctx_paperclip_issue_created_idx"');
   });
 });
