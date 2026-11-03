@@ -5,10 +5,10 @@
 // and execution of basic system inventory scripts (uname, os-release, lscpu, free, df, sudo).
 // Records all executed commands in-memory for test assertions.
 
-import type { SshDryRunResult } from \"../../onboarding/ssh-dry-run.js\";
+import type { SshDryRunResult } from "../../onboarding/ssh-dry-run.js";
 
 /** Recognized scenario outcomes for the mock executor. */
-export type SshAuthScenario = \"success\" | \"timeout\" | \"auth_fail\";
+export type SshAuthScenario = "success" | "timeout" | "auth_fail";
 
 /** Connection configuration for an SSH target host. */
 export interface SshConnectionOptions {
@@ -52,34 +52,34 @@ export interface SshExecutor {
 
 /** Error raised when an SSH connection or command times out. */
 export class SshTimeoutError extends Error {
-  readonly code = \"ETIMEDOUT\";
-  readonly outcome = \"timeout\" as const;
+  readonly code = "ETIMEDOUT";
+  readonly outcome = "timeout" as const;
 
-  constructor(message = \"SSH connection timed out\") {
+  constructor(message = "SSH connection timed out") {
     super(message);
-    this.name = \"SshTimeoutError\";
+    this.name = "SshTimeoutError";
   }
 }
 
 /** Error raised when SSH authentication fails. */
 export class SshAuthenticationError extends Error {
-  readonly code = \"AUTH_FAILED\";
-  readonly outcome = \"auth_fail\" as const;
+  readonly code = "AUTH_FAILED";
+  readonly outcome = "auth_fail" as const;
 
-  constructor(message = \"SSH authentication failed (wrong credentials or key not authorized)\") {
+  constructor(message = "SSH authentication failed (wrong credentials or key not authorized)") {
     super(message);
-    this.name = \"SshAuthenticationError\";
+    this.name = "SshAuthenticationError";
   }
 }
 
 /** Error raised when an SSH host cannot be reached or connected. */
 export class SshConnectionError extends Error {
-  readonly code = \"ECONNREFUSED\";
-  readonly outcome = \"host_unreachable\" as const;
+  readonly code = "ECONNREFUSED";
+  readonly outcome = "host_unreachable" as const;
 
-  constructor(message = \"SSH connection failed: host unreachable\") {
+  constructor(message = "SSH connection failed: host unreachable") {
     super(message);
-    this.name = \"SshConnectionError\";
+    this.name = "SshConnectionError";
   }
 }
 
@@ -112,30 +112,30 @@ export interface MockServerInventory {
 
 /** Default Linux server inventory profile. */
 export const DEFAULT_MOCK_INVENTORY: Required<MockServerInventory> = {
-  osRelease: `NAME=\"Ubuntu\"
-VERSION=\"24.04 LTS (Noble Numbat)\"
+  osRelease: `NAME="Ubuntu"
+VERSION="24.04 LTS (Noble Numbat)"
 ID=ubuntu
 ID_LIKE=debian
-PRETTY_NAME=\"Ubuntu 24.04 LTS\"
-VERSION_ID=\"24.04\"
-HOME_URL=\"https://www.ubuntu.com/\"
-SUPPORT_URL=\"https://help.ubuntu.com/\"
-BUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"
-PRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"
+PRETTY_NAME="Ubuntu 24.04 LTS"
+VERSION_ID="24.04"
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
 UBUNTU_CODENAME=noble`,
-  uname: \"Linux srv-node-01 6.8.0-40-generic #40-Ubuntu SMP PREEMPT_DYNAMIC x86_64 x86_64 x86_64 GNU/Linux\",
-  kernel: \"6.8.0-40-generic\",
-  arch: \"x86_64\",
-  hostname: \"srv-node-01\",
+  uname: "Linux srv-node-01 6.8.0-40-generic #40-Ubuntu SMP PREEMPT_DYNAMIC x86_64 x86_64 x86_64 GNU/Linux",
+  kernel: "6.8.0-40-generic",
+  arch: "x86_64",
+  hostname: "srv-node-01",
   cpuCores: 4,
-  cpuModel: \"AMD EPYC 7763 64-Core Processor\",
+  cpuModel: "AMD EPYC 7763 64-Core Processor",
   memoryTotalMb: 8192,
   memoryFreeMb: 6144,
   diskTotalGb: 100,
   diskFreeGb: 75,
   passwordlessSudo: true,
   dockerInstalled: true,
-  dockerVersion: \"Docker version 27.1.1, build 6312585\",
+  dockerVersion: "Docker version 27.1.1, build 6312585",
 };
 
 export type CommandHandler = (
@@ -184,7 +184,7 @@ export class MockSshExecutor implements SshExecutor {
 
   constructor(config: MockSshConfig = {}) {
     this.config = {
-      scenario: \"success\",
+      scenario: "success",
       ...config,
       inventory: {
         ...DEFAULT_MOCK_INVENTORY,
@@ -194,7 +194,7 @@ export class MockSshExecutor implements SshExecutor {
 
     if (config.connection) {
       this.currentConnection = { ...config.connection };
-      if (this.config.scenario === \"success\") {
+      if (this.config.scenario === "success") {
         this.connected = true;
       }
     }
@@ -208,7 +208,7 @@ export class MockSshExecutor implements SshExecutor {
   /** Configure or update scenario dynamically. */
   setScenario(scenario: SshAuthScenario): void {
     this.config.scenario = scenario;
-    if (scenario !== \"success\") {
+    if (scenario !== "success") {
       this.connected = false;
     }
   }
@@ -226,7 +226,7 @@ export class MockSshExecutor implements SshExecutor {
     commandOrPattern: string | RegExp,
     response: Partial<SshExecutionResult> | string | CommandHandler,
   ): void {
-    if (typeof commandOrPattern === \"string\" && typeof response !== \"function\") {
+    if (typeof commandOrPattern === "string" && typeof response !== "function") {
       this.config.commandResponses = {
         ...this.config.commandResponses,
         [commandOrPattern]: response,
@@ -242,9 +242,9 @@ export class MockSshExecutor implements SshExecutor {
   /** Connect to the remote host according to the configured scenario. */
   async connect(options?: SshConnectionOptions): Promise<void> {
     const conn = options ?? this.config.connection ?? {
-      host: \"127.0.0.1\",
+      host: "127.0.0.1",
       port: 22,
-      username: \"root\",
+      username: "root",
     };
 
     this.connectionHistory.push({ ...conn });
@@ -254,14 +254,14 @@ export class MockSshExecutor implements SshExecutor {
       await new Promise((resolve) => setTimeout(resolve, this.config.latencyMs));
     }
 
-    if (this.config.scenario === \"timeout\") {
+    if (this.config.scenario === "timeout") {
       this.connected = false;
       throw new SshTimeoutError(
         `SSH connection to ${conn.host}:${conn.port ?? 22} timed out after ${this.config.timeoutMs ?? 10000}ms`,
       );
     }
 
-    if (this.config.scenario === \"auth_fail\") {
+    if (this.config.scenario === "auth_fail") {
       this.connected = false;
       throw new SshAuthenticationError(
         this.config.authFailReason ??
@@ -288,15 +288,15 @@ export class MockSshExecutor implements SshExecutor {
 
     // Auto-connect on execute if not yet connected and not configured with an error scenario
     if (!this.connected) {
-      if (this.config.scenario === \"auth_fail\") {
+      if (this.config.scenario === "auth_fail") {
         const error = new SshAuthenticationError(
-          this.config.authFailReason ?? \"SSH authentication failed: Permission denied\",
+          this.config.authFailReason ?? "SSH authentication failed: Permission denied",
         );
         this.executedCommands.push({ command, options, timestamp, error });
         throw error;
       }
-      if (this.config.scenario === \"timeout\") {
-        const error = new SshTimeoutError(\"SSH command execution timed out: not connected\");
+      if (this.config.scenario === "timeout") {
+        const error = new SshTimeoutError("SSH command execution timed out: not connected");
         this.executedCommands.push({ command, options, timestamp, error });
         throw error;
       }
@@ -308,7 +308,7 @@ export class MockSshExecutor implements SshExecutor {
     }
 
     // Check if this specific command should time out
-    if (this.config.timeoutCommands?.some((t) => (typeof t === \"string\" ? command.includes(t) : t.test(command)))) {
+    if (this.config.timeoutCommands?.some((t) => (typeof t === "string" ? command.includes(t) : t.test(command)))) {
       const error = new SshTimeoutError(`Command execution timed out: ${command}`);
       this.executedCommands.push({ command, options, timestamp, error });
       throw error;
@@ -318,7 +318,7 @@ export class MockSshExecutor implements SshExecutor {
     const failureMatch = this.config.failCommands ? this.config.failCommands[command] : undefined;
     if (failureMatch) {
       const result: SshExecutionResult = {
-        stdout: \"\",
+        stdout: "",
         stderr: failureMatch.stderr ?? `Command failed with exit code ${failureMatch.exitCode ?? 1}`,
         exitCode: failureMatch.exitCode ?? 1,
         signal: null,
@@ -353,25 +353,25 @@ export class MockSshExecutor implements SshExecutor {
 
     const durationMs = Date.now() - startedAt;
 
-    if (this.config.scenario === \"auth_fail\") {
+    if (this.config.scenario === "auth_fail") {
       return {
-        outcome: \"auth_failed\",
-        reason: this.config.authFailReason ?? \"authentication failed (wrong credentials or key not authorized)\",
+        outcome: "auth_failed",
+        reason: this.config.authFailReason ?? "authentication failed (wrong credentials or key not authorized)",
         durationMs,
       };
     }
 
-    if (this.config.scenario === \"timeout\") {
+    if (this.config.scenario === "timeout") {
       return {
-        outcome: \"connection_timeout\",
-        reason: \"connection timed out\",
+        outcome: "connection_timeout",
+        reason: "connection timed out",
         durationMs,
       };
     }
 
     const inv = { ...DEFAULT_MOCK_INVENTORY, ...this.config.inventory };
     return {
-      outcome: \"ok\",
+      outcome: "ok",
       passwordlessSudo: inv.passwordlessSudo ?? true,
       remoteUname: inv.uname ?? DEFAULT_MOCK_INVENTORY.uname,
       durationMs,
@@ -395,7 +395,7 @@ export class MockSshExecutor implements SshExecutor {
 
   /** Checks whether a command matching the given pattern was executed. */
   hasExecuted(pattern: string | RegExp): boolean {
-    if (typeof pattern === \"string\") {
+    if (typeof pattern === "string") {
       return this.executedCommands.some((c) => c.command.includes(pattern));
     }
     return this.executedCommands.some((c) => pattern.test(c.command));
@@ -403,7 +403,7 @@ export class MockSshExecutor implements SshExecutor {
 
   /** Finds the first logged command matching the given pattern. */
   findCommand(pattern: string | RegExp): LoggedCommand | undefined {
-    if (typeof pattern === \"string\") {
+    if (typeof pattern === "string") {
       return this.executedCommands.find((c) => c.command.includes(pattern));
     }
     return this.executedCommands.find((c) => pattern.test(c.command));
@@ -411,7 +411,7 @@ export class MockSshExecutor implements SshExecutor {
 
   /** Filters logged commands matching the given pattern. */
   filterCommands(pattern: string | RegExp): LoggedCommand[] {
-    if (typeof pattern === \"string\") {
+    if (typeof pattern === "string") {
       return this.executedCommands.filter((c) => c.command.includes(pattern));
     }
     return this.executedCommands.filter((c) => pattern.test(c.command));
@@ -447,9 +447,9 @@ export class MockSshExecutor implements SshExecutor {
     // 2. Pattern responses
     if (this.config.patternResponses) {
       for (const pr of this.config.patternResponses) {
-        const matches = typeof pr.pattern === \"string\" ? trimmed.includes(pr.pattern) : pr.pattern.test(trimmed);
+        const matches = typeof pr.pattern === "string" ? trimmed.includes(pr.pattern) : pr.pattern.test(trimmed);
         if (matches) {
-          const resp = typeof pr.response === \"function\" ? pr.response(trimmed, options) : pr.response;
+          const resp = typeof pr.response === "function" ? pr.response(trimmed, options) : pr.response;
           if (resp !== undefined) {
             return this.normalizeResult(resp);
           }
@@ -473,8 +473,8 @@ export class MockSshExecutor implements SshExecutor {
 
     // 5. Default benign success response
     return {
-      stdout: \"\",
-      stderr: \"\",
+      stdout: "",
+      stderr: "",
       exitCode: 0,
       signal: null,
       durationMs: 5,
@@ -500,15 +500,15 @@ export class MockSshExecutor implements SshExecutor {
     };
 
     // Sudo check
-    if (command === \"sudo -n true\" || command.includes(\"sudo -n true\")) {
+    if (command === "sudo -n true" || command.includes("sudo -n true")) {
       if (inv.passwordlessSudo) {
         // If command includes the SUDO_OK marker chain (like in ssh-dry-run)
-        const stdout = command.includes(\"echo SUDO_OK\") ? \"SUDO_OK\\n\" : \"\";
-        return { stdout, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+        const stdout = command.includes("echo SUDO_OK") ? "SUDO_OK\\n" : "";
+        return { stdout, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
-        stdout: \"\",
-        stderr: \"sudo: a password is required\\n\",
+        stdout: "",
+        stderr: "sudo: a password is required\\n",
         exitCode: 1,
         signal: null,
         durationMs: 5,
@@ -517,41 +517,41 @@ export class MockSshExecutor implements SshExecutor {
 
     // OS release / distribution details
     if (
-      command.includes(\"/etc/os-release\") ||
-      command.includes(\"/etc/system-release\") ||
-      command.includes(\"/etc/*release\")
+      command.includes("/etc/os-release") ||
+      command.includes("/etc/system-release") ||
+      command.includes("/etc/*release")
     ) {
-      return { stdout: `${inv.osRelease}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${inv.osRelease}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Uname inspection
-    if (command === \"uname -a\" || command.startsWith(\"uname -a\")) {
+    if (command === "uname -a" || command.startsWith("uname -a")) {
       let stdout = inv.uname;
-      if (command.includes(\"echo SUDO_OK\") && inv.passwordlessSudo) {
-        stdout += \"\\nSUDO_OK\";
+      if (command.includes("echo SUDO_OK") && inv.passwordlessSudo) {
+        stdout += "\\nSUDO_OK";
       }
-      return { stdout: `${stdout}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${stdout}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
-    if (command === \"uname -m\") {
-      return { stdout: `${inv.arch}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "uname -m") {
+      return { stdout: `${inv.arch}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
-    if (command === \"uname -r\") {
-      return { stdout: `${inv.kernel}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "uname -r") {
+      return { stdout: `${inv.kernel}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
-    if (command === \"uname -s\") {
-      return { stdout: \"Linux\\n\", stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "uname -s") {
+      return { stdout: "Linux\\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Hostname
-    if (command === \"hostname\" || command === \"hostname -f\") {
-      return { stdout: `${inv.hostname}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "hostname" || command === "hostname -f") {
+      return { stdout: `${inv.hostname}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // CPU details
-    if (command === \"nproc\") {
-      return { stdout: `${inv.cpuCores}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "nproc") {
+      return { stdout: `${inv.cpuCores}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
-    if (command === \"lscpu\" || command.includes(\"lscpu\")) {
+    if (command === "lscpu" || command.includes("lscpu")) {
       const lscpuOutput = `Architecture:                    ${inv.arch}
 CPU op-mode(s):                  32-bit, 64-bit
 Address sizes:                   48 bits physical, 48 bits virtual
@@ -565,11 +565,11 @@ Model:                           1
 Thread(s) per core:              1
 Core(s) per socket:              ${inv.cpuCores}
 Socket(s):                       1`;
-      return { stdout: `${lscpuOutput}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${lscpuOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Memory details
-    if (command === \"free -m\" || command.includes(\"free -m\")) {
+    if (command === "free -m" || command.includes("free -m")) {
       const total = inv.memoryTotalMb;
       const free = inv.memoryFreeMb;
       const used = total - free;
@@ -577,11 +577,11 @@ Socket(s):                       1`;
       const freeOutput = `               total        used        free      shared  buff/cache   available
 Mem:            ${total}        ${used}        ${free}           0           0        ${available}
 Swap:           2048           0        2048`;
-      return { stdout: `${freeOutput}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${freeOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Disk details
-    if (command.startsWith(\"df -h\") || command.startsWith(\"df -P\") || command === \"df -h /\") {
+    if (command.startsWith("df -h") || command.startsWith("df -P") || command === "df -h /") {
       const total = `${inv.diskTotalGb}G`;
       const avail = `${inv.diskFreeGb}G`;
       const used = `${inv.diskTotalGb - inv.diskFreeGb}G`;
@@ -589,36 +589,36 @@ Swap:           2048           0        2048`;
       const dfOutput = `Filesystem      Size  Used Avail Use% Mounted on
 /dev/root        ${total}   ${used}   ${avail}  ${usePercent} /
 tmpfs           4.0G     0  4.0G   0% /dev/shm`;
-      return { stdout: `${dfOutput}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+      return { stdout: `${dfOutput}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // User identification
-    if (command === \"whoami\") {
-      const user = this.currentConnection?.username ?? \"root\";
-      return { stdout: `${user}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+    if (command === "whoami") {
+      const user = this.currentConnection?.username ?? "root";
+      return { stdout: `${user}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
     }
 
     // Docker verification
-    if (command === \"docker --version\" || command === \"docker -v\") {
+    if (command === "docker --version" || command === "docker -v") {
       if (inv.dockerInstalled) {
-        return { stdout: `${inv.dockerVersion}\\n`, stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+        return { stdout: `${inv.dockerVersion}\\n`, stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
-        stdout: \"\",
-        stderr: \"docker: command not found\\n\",
+        stdout: "",
+        stderr: "docker: command not found\\n",
         exitCode: 127,
         signal: null,
         durationMs: 5,
       };
     }
 
-    if (command === \"which docker\") {
+    if (command === "which docker") {
       if (inv.dockerInstalled) {
-        return { stdout: \"/usr/bin/docker\\n\", stderr: \"\", exitCode: 0, signal: null, durationMs: 5 };
+        return { stdout: "/usr/bin/docker\\n", stderr: "", exitCode: 0, signal: null, durationMs: 5 };
       }
       return {
-        stdout: \"\",
-        stderr: \"which: no docker in (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)\\n\",
+        stdout: "",
+        stderr: "which: no docker in (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)\\n",
         exitCode: 1,
         signal: null,
         durationMs: 5,
@@ -630,18 +630,18 @@ tmpfs           4.0G     0  4.0G   0% /dev/shm`;
 
   /** Normalizes a response value into a full SshExecutionResult. */
   private normalizeResult(val: Partial<SshExecutionResult> | string): SshExecutionResult {
-    if (typeof val === \"string\") {
+    if (typeof val === "string") {
       return {
         stdout: val,
-        stderr: \"\",
+        stderr: "",
         exitCode: 0,
         signal: null,
         durationMs: 5,
       };
     }
     return {
-      stdout: val.stdout ?? \"\",
-      stderr: val.stderr ?? \"\",
+      stdout: val.stdout ?? "",
+      stderr: val.stderr ?? "",
       exitCode: val.exitCode ?? 0,
       signal: val.signal ?? null,
       durationMs: val.durationMs ?? 5,
