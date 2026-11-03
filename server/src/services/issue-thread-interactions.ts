@@ -3725,6 +3725,8 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           } else if (
             actor.agentId &&
+            (normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "suggest_tasks") &&
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload)
           ) {
