@@ -69,7 +69,7 @@ export interface IngestDocumentRequest {
 }
 
 export interface IngestionDependencies {
-  /** The module's Embedder port (hindsight bge-m3 through the company gateway). */
+  /** The module's Embedder port (corpus-embed-pplx-0.6b through the company gateway). */
   readonly embedder: Embedder;
   readonly writer: CorpusChunkWriter;
 }
