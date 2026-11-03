@@ -402,37 +402,63 @@ export async function defaultTokenProvider(
   const settings = await readGitHubSharedIdentitySettings(db, companyId);
   if (!settings.enabled) return null;
   const apps = settings.apps.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
-  if (apps.length === 0) return null;
   if (apps.length > 1) throw new Error("Several GitHub Apps allow this repository");
-  const app = apps[0]!;
-  const [keySecret] = await db
-    .select({ id: companySecrets.id })
-    .from(companySecrets)
-    .where(and(
-      eq(companySecrets.id, app.privateKeySecretId),
-      eq(companySecrets.companyId, companyId),
-      eq(companySecrets.scope, "company"),
-      eq(companySecrets.status, "active"),
-      isNull(companySecrets.deletedAt),
-    ));
-  if (!keySecret) return null;
-  try {
-    const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
-      accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
-    });
-    const minted = await mintGitHubAppInstallationToken({
-      appId: app.appId,
-      privateKeyPem,
-      installationId: app.installationId,
-      repository: normalized,
-      permissions: READ_ONLY_APP_PERMISSIONS,
-      fetchImpl: fetchImpl as typeof fetch | undefined,
-    });
-    return minted.token;
-  } catch {
-    // App not installed on the repo / key unreadable / GitHub down: read anonymously, as before.
-    return null;
+  if (apps.length === 1) {
+    const app = apps[0]!;
+    const [keySecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, app.privateKeySecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!keySecret) return null;
+    try {
+      const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
+      });
+      const minted = await mintGitHubAppInstallationToken({
+        appId: app.appId,
+        privateKeyPem,
+        installationId: app.installationId,
+        repository: normalized,
+        permissions: READ_ONLY_APP_PERMISSIONS,
+        fetchImpl: fetchImpl as typeof fetch | undefined,
+      });
+      return minted.token;
+    } catch {
+      return null;
+    }
   }
+
+  const pats = settings.pats.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
+  if (pats.length > 1) throw new Error("Several GitHub PATs allow this repository");
+  if (pats.length === 1) {
+    const pat = pats[0]!;
+    const [tokenSecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, pat.tokenSecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!tokenSecret) return null;
+    try {
+      const token = await secrets.resolveSecretValue(companyId, tokenSecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_pat:${normalized}` },
+      });
+      return token.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function createGitHubExternalObjectProvider(

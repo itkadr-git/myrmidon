@@ -42,11 +42,15 @@ function appEntry(id: string, allowedRepos: string[]) {
   };
 }
 
-function settings(apps: ReturnType<typeof appEntry>[], enabled = true) {
-  return { enabled, apps, pats: [], commitEmailDomain: null };
+function patEntry(id: string, allowedRepos: string[]) {
+  return { id, name: `pat-${id}`, tokenSecretId: `pat-secret-${id}`, agentIds: [], allowedRepos };
 }
 
-function fakeDb(keyRows: unknown[] = [{ id: "key-secret-a" }]) {
+function settings(apps: ReturnType<typeof appEntry>[], enabled = true, pats = []) {
+  return { enabled, apps, pats, commitEmailDomain: null };
+}
+
+function fakeDb(keyRows: unknown[] = [{ id: "key-secret-a" }, { id: "pat-secret-a" }, { id: "pat-secret-p" }]) {
   return { select: vi.fn(() => ({ from: () => ({ where: async () => keyRows }) })) } as never;
 }
 
@@ -164,6 +168,23 @@ describe("GitHub external object resolver: shared-identity App token", () => {
     expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${PAT_TOKEN}` });
   });
 
+  it("uses a matching PAT when no App covers the repository", async () => {
+    settingsMock.read.mockResolvedValue(settings([], true, [patEntry("a", [PRIVATE_REPO])]));
+    secretMocks.resolveSecretValue.mockResolvedValue(PAT_TOKEN);
+    const fetch = githubFetch();
+    const result = await prResolver(fetch).resolve({ companyId: COMPANY, object: prObject() });
+    expect(result.ok).toBe(true);
+    const [prCall] = calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63");
+    expect((prCall![1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${PAT_TOKEN}` });
+  });
+
+  it("prefers an App over a matching PAT", async () => {
+    settingsMock.read.mockResolvedValue(settings([appEntry("a", [PRIVATE_REPO])], true, [patEntry("p", [PRIVATE_REPO])]));
+    const fetch = githubFetch();
+    await prResolver(fetch).resolve({ companyId: COMPANY, object: prObject() });
+    expect(calls(fetch, "/app/installations/77/access_tokens")).toHaveLength(1);
+    expect(secretMocks.resolveSecretValue).toHaveBeenCalledWith(COMPANY, "key-secret-a", "latest", expect.anything());
+  });
   it.each([
     ["no App allows the repository", settings([appEntry("a", ["itkadr-git/other"])])],
     ["the shared identity is disabled", settings([appEntry("a", [PRIVATE_REPO])], false)],
