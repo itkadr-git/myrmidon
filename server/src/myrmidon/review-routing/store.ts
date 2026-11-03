@@ -56,6 +56,8 @@ export interface ReviewerAgentRow {
   role: string;
   model?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Queue eligibility is checked separately from enabled/role eligibility. */
+  swarmQueueEligible?: boolean;
   status?: string | null;
   invokable?: boolean;
 }
@@ -397,6 +399,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         metadata: (metadata as Record<string, unknown> | null) ?? null,
         model: lastRunModel ?? model,
         invokable: isAgentStatusInvokable(status),
+        swarmQueueEligible: metadata?.swarmQueueEligible !== false,
       }));
     },
 

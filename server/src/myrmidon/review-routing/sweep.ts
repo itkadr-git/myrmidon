@@ -399,6 +399,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         status: agent.status,
         model: agent.model ?? null,
         metadata: agent.metadata,
+        swarmQueueEligible: agent.metadata?.["swarmQueueEligible"] !== false,
         invokable: agent.invokable ?? true,
         load: load.get(agent.id) ?? 0,
       }));
@@ -435,9 +436,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     };
     const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
       const all = await pool();
-      if (!groupKey) return all;
-      const matching = all.filter((c) => resolveAgentGroupKey(c) === groupKey);
-      return matching.length > 0 ? matching : all;
+      if (!groupKey) return all.filter((c) => c.swarmQueueEligible !== false);
+      const matching = all.filter((c) => c.swarmQueueEligible !== false && resolveAgentGroupKey(c) === groupKey);
+      return matching.length > 0 ? matching : all.filter((c) => c.swarmQueueEligible !== false);
     };
     const bumpLoad = (agentId: string, delta: number) => {
       if (reviewerPool) {

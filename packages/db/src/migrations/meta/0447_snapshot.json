@@ -1,5 +1,5 @@
 {
-  "id": "831ef298-b12c-4ace-b17d-897f3e869d8e",
+  "id": "df27e475-9174-4064-90f7-0e4cc51e59f3",
   "prevId": "3f1959c5-8c82-4baf-9e3c-6ce08fd37e46",
   "version": "7",
   "dialect": "postgresql",
@@ -46617,6 +46617,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "development_process": {
+          "name": "development_process",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -59181,113 +59187,6 @@
           "schemaTo": "",
           "columnsFrom": [
             "owner_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.knowledge_settings": {
-      "name": "knowledge_settings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "max_items": {
-          "name": "max_items",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "max_revision_bytes": {
-          "name": "max_revision_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_accept_enabled": {
-          "name": "auto_accept_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_accept_min_confidence": {
-          "name": "auto_accept_min_confidence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "schedule": {
-          "name": "schedule",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "section_reviewers": {
-          "name": "section_reviewers",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "knowledge_settings_company_uq": {
-          "name": "knowledge_settings_company_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "knowledge_settings_company_id_companies_id_fk": {
-          "name": "knowledge_settings_company_id_companies_id_fk",
-          "tableFrom": "knowledge_settings",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
           ],
           "columnsTo": [
             "id"

@@ -3,7 +3,7 @@
 // No database and no clock here; the sweep feeds these functions.
 
 import { randomUUID } from "node:crypto";
-import type { IssueExecutionPolicy } from "@myrmidon/shared";
+import { SWARM_QUEUE_ELIGIBILITY_METADATA_KEY, type IssueExecutionPolicy } from "@myrmidon/shared";
 import { applyIssueExecutionPolicyTransition } from "../../services/issue-execution-policy.js";
 
 export interface RoutingIssue {
@@ -32,6 +32,8 @@ export interface ReviewerCandidate {
   role: string;
   model?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Agent switched out of the automatic-work queue; it must not be a reviewer either. */
+  swarmQueueEligible?: boolean;
   /** Active runs in flight (queued + running). */
   load: number;
   status?: string | null;
@@ -199,6 +201,7 @@ export function evaluateReviewerAvailability(input: {
   reviewers: readonly {
     id: string;
     role: string;
+    metadata?: Record<string, unknown> | null;
     status?: string | null;
     isIdle?: boolean;
     activeRuns?: number;
@@ -215,6 +218,7 @@ export function evaluateReviewerAvailability(input: {
       candidates: input.reviewers.map((reviewer) => ({
         id: reviewer.id,
         role: reviewer.role,
+        metadata: reviewer.metadata,
         status: reviewer.status,
         isIdle: reviewer.isIdle,
         activeRuns: reviewer.activeRuns,
@@ -245,6 +249,7 @@ export function pickReviewer(input: {
 }): ReviewerCandidate | null {
   const eligible = input.candidates.filter((candidate) => {
     if (candidate.invokable === false) return false;
+    if (candidate.swarmQueueEligible === false || candidate.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) return false;
     if (input.authorModel != null && candidate.model === input.authorModel) return false;
     return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
   });

@@ -119,7 +119,18 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
 // They are documented contract-first in openapi.ts — the deliverable of
 // OPE-5955 — and the handlers exist; only the scanner's directory scope keeps
 // them off the "actual" side.
+// routes/updates.ts is mounted through the app-plugin registry, while its
+// OpenAPI entries are contract-first and are not discovered by this scanner.
 const specOnlyContractFirstRoutes = new Set<string>([
+  "GET /api/myrmidon/updates/settings",
+  "PUT /api/myrmidon/updates/settings",
+  "GET /api/updates",
+  "PUT /api/updates",
+  "PATCH /api/updates",
+  "GET /api/updates/settings",
+  "PUT /api/updates/settings",
+  "PATCH /api/updates/settings",
+  "POST /api/updates/validate",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
