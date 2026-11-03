@@ -217,6 +217,47 @@ function scanBuildCaches(root, now, ttlHours) {
   return results;
 }
 
+function issueIdentifierFromCloneName(name) {
+  return name.split("@")[0];
+}
+
+export async function fetchIssueStatus(identifier, {
+  baseUrl = process.env.BOARD_API_URL,
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!baseUrl || typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const url = `${baseUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(identifier)}`;
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(url, { headers });
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const issue = await response.json();
+    if (!issue || typeof issue.status !== "string") return { ok: false, reason: "issue-not-found" };
+    return { ok: true, status: issue.status };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function filterClosedTaskClones(clones, options = {}) {
+  const candidates = [];
+  const skipped = [];
+  for (const clone of clones) {
+    const identifier = issueIdentifierFromCloneName(clone.name);
+    const result = await fetchIssueStatus(identifier, options);
+    if (!result.ok) {
+      skipped.push({ ...clone, identifier, reason: result.reason });
+    } else if (!["done", "cancelled"].includes(result.status)) {
+      skipped.push({ ...clone, identifier, status: result.status, reason: "issue-status" });
+    } else {
+      candidates.push({ ...clone, identifier, issueStatus: result.status });
+    }
+  }
+  return { candidates, skipped };
+}
+
 // --- Atomic deletion --------------------------------------------------------
 
 export function atomicDrop(filePath, expectedRoot) {
@@ -276,7 +317,7 @@ function archiveClone(clonePath, archiveRoot) {
 
 // --- Main -------------------------------------------------------------------
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
   const now = Date.now();
 
@@ -295,7 +336,17 @@ function main() {
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
-    for (const c of clones) {
+    const cloneStatuses = await filterClosedTaskClones(clones);
+    for (const skipped of cloneStatuses.skipped) {
+      journalRecord(args.journal, {
+        event: "clone-skipped",
+        path: skipped.path,
+        identifier: skipped.identifier,
+        status: skipped.status,
+        reason: skipped.reason,
+      });
+    }
+    for (const c of cloneStatuses.candidates) {
       if (c.safeToRemove) {
         plan.clones.push({ ...c, action: "remove" });
       } else {
@@ -366,5 +417,8 @@ function main() {
 
 // Only run main when executed directly (not when imported by tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
-  main();
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
 }

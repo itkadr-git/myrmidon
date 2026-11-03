@@ -7,7 +7,7 @@ import path from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
-const { parseArgs, acquireLock, journalRecord, safeJoin, atomicDrop } = await import(
+const { parseArgs, acquireLock, journalRecord, safeJoin, atomicDrop, fetchIssueStatus, filterClosedTaskClones } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
 
@@ -21,6 +21,42 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+describe("board status guard", () => {
+  const response = (status, body = { status }) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+
+  for (const status of ["done", "cancelled"]) {
+    it(`accepts ${status}`, async () => {
+      const result = await fetchIssueStatus("OPE-1", {
+        baseUrl: "http://board",
+        fetchImpl: async (url) => {
+          assert.equal(url, "http://board/api/issues/OPE-1");
+          return response(200, { status });
+        },
+      });
+      assert.deepEqual(result, { ok: true, status });
+    });
+  }
+
+  for (const status of ["in_progress", "blocked", "todo"]) {
+    it(`skips ${status} as issue-status`, async () => {
+      const result = await filterClosedTaskClones([{ name: "OPE-1@agent", path: "/x" }], {
+        baseUrl: "http://board",
+        fetchImpl: async () => response(200, { status }),
+      });
+      assert.equal(result.candidates.length, 0);
+      assert.equal(result.skipped[0].reason, "issue-status");
+    });
+  }
+
+  it("fails closed when the board is unavailable", async () => {
+    const result = await filterClosedTaskClones([{ name: "OPE-1", path: "/x" }], {
+      baseUrl: "http://board",
+      fetchImpl: async () => { throw new Error("offline"); },
+    });
+    assert.equal(result.candidates.length, 0);
+    assert.equal(result.skipped[0].reason, "board-unavailable");
+  });
+});
 describe("parseArgs", () => {
   it("defaults to dry-run with standard paths", () => {
     const args = parseArgs(["node", "script.mjs"]);
