@@ -116,7 +116,7 @@ describe("handleTelegramOwnerReply", () => {
   it("stays out of the way outside the via_bot mode", async () => {
     const { deps, resolveCard } = setup([confirmation("ix-1")]);
     const outcome = await handleTelegramOwnerReply(
-      { ...deps, readMode: async () => "all" as never },
+      { ...deps, readMode: async () => "all" },
       { ...base, text: "да", loadReplied: null },
     );
     expect(outcome.outcome).toBe("skipped_mode");
