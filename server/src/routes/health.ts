@@ -411,7 +411,6 @@ export function healthRoutes(
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
-        githubRateLimit: getGitHubRateLimitMetrics(),
       });
       return;
     }
