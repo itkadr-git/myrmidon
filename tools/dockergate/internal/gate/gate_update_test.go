@@ -99,6 +99,22 @@ func TestAllow_A18_LimitsAtTheCap(t *testing.T) {
 	wantStatus(t, res, 200)
 }
 
+func TestDeny_A18_AuthenticationFailureDoesNotReachDaemon(t *testing.T) {
+	r := newRig(t, withContainerCaller())
+	r.seedMain("running")
+	// Authenticate the real board main process first, then attempt the request
+	// from a different process in the same board container.
+	r.addSiblingProcess(102)
+	r.setCred(102, 1000, 1000)
+	res := r.send("POST", r.target("", "/update"), map[string]string{
+		"Content-Type": "application/json",
+	}, updateBody(1*gib, 2*gib, 512))
+	wantDeny(t, res, deny.CallerNotBoardMain)
+	if r.count("POST", "/v1.45/containers/") != 0 {
+		t.Errorf("the daemon was told to update after auth failure: %v", r.uris())
+	}
+}
+
 func TestDeny_A18_ContentType(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")

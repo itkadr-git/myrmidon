@@ -56,7 +56,7 @@ export const legacyBlockedReportRowSchema = {
       return { success: false, error: classCheck.error };
     }
     const blockClass: LegacyBlockedClass = classCheck.data ?? "unknown";
-    if (blockClass === "unknown") {
+    if (blockClass === "unknown" || blockClass === "human_decision") {
       if (r.proposedOwner !== undefined && (typeof r.proposedOwner !== "string" || r.proposedOwner.trim().length === 0)) {
         return { success: false, error: new Error("Invalid proposedOwner") };
       }
@@ -78,10 +78,10 @@ export const legacyBlockedReportRowSchema = {
       issueId: r.issueId,
       identifier: (r.identifier as string).trim(),
       oldStatus: (r.oldStatus as string).trim(),
-      oldBlockers: r.oldBlockers as string[],
       class: blockClass ?? "unknown",
       evidence: (r.evidence as string).trim(),
       importKey: (r.importKey as string).trim(),
+      oldBlockers: r.oldBlockers as string[],
     };
     if (typeof r.proposedOwner === "string" && r.proposedOwner.trim().length > 0) {
       rowData.proposedOwner = r.proposedOwner.trim();

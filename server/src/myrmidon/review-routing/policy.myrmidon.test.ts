@@ -375,6 +375,16 @@ describe("pending review and reassignment", () => {
     });
   });
 
+  describe("pickReviewer", () => {
+    it("excludes agents with swarmQueueEligible=false", () => {
+      expect(pickReviewer({
+        candidates: [{ id: "bbq-video-director", role: "lead", metadata: { swarmQueueEligible: false }, load: 0 }],
+        excluded: new Set(),
+        maxLoad: 5,
+      })).toBeNull();
+    });
+  });
+
   describe("resolveAgentGroupKey", () => {
     it("uses metadata telegramGroup when provided", () => {
       expect(resolveAgentGroupKey({ name: "eng-1", metadata: { telegramGroup: "-100123" } })).toBe("-100123");

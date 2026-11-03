@@ -55,6 +55,7 @@ interface Fixture {
   reviewers: Array<{
     id: string;
     role: string;
+    metadata?: Record<string, unknown> | null;
     status?: string | null;
     invokable?: boolean;
     model?: string | null;
@@ -698,6 +699,17 @@ describe("no reviewer available", () => {
       expect.objectContaining({ kind: "no_reviewer", issueId: "1", identifier: "T-1" }),
     ]);
     expect(t.comments).toHaveLength(0);
+  });
+
+  it("does not select agents explicitly excluded from reviewer routing", async () => {
+    const t = setup({}, { reviewers: [
+      { id: "bbq-video-director", role: "lead", metadata: { swarmQueueEligible: false } },
+    ] });
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.assigned).toBe(0);
+    expect(result.signaled).toBe(1);
+    expect(t.fixture.rows.get("1")?.executionPolicy).toBeNull();
   });
 
   it("raises the signal when every reviewer is at the load ceiling", async () => {

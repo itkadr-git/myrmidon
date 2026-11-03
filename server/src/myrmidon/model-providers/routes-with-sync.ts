@@ -177,6 +177,9 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     assertCompanyAdmin(req, companyId);
     const body = parse(patchModelProviderSchema, bodyOf(req));
     if (body.key !== undefined) {
+      const snapshot = deps.service.captureKeyRotationSnapshot
+        ? await deps.service.captureKeyRotationSnapshot(companyId, providerId)
+        : null;
       const view = await deps.service.rotateProviderKey({
         companyId,
         providerId,
@@ -186,10 +189,21 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
       // The credential name the gateway reads is unchanged (part A rotates
       // the store under the same name); re-register the enabled models so the
       // gateway reloads the value, then re-apply the agent allowlists.
-      await propagate(companyId, async (sync) => {
-        await sync.handleProviderCredentialRotation(companyId, providerId);
-        if (deps.refreshAgentAllowlists) await deps.refreshAgentAllowlists(companyId);
-      });
+      try {
+        await propagate(companyId, async (sync) => {
+          await sync.handleProviderCredentialRotation(companyId, providerId);
+          if (deps.refreshAgentAllowlists) await deps.refreshAgentAllowlists(companyId);
+        });
+      } catch (err) {
+        if (snapshot && deps.service.rollbackProviderKey) {
+          try {
+            await deps.service.rollbackProviderKey(companyId, providerId, snapshot);
+          } catch (rollbackErr) {
+            // Rollback failure is secondary to original sync failure
+          }
+        }
+        throw err;
+      }
       res.json(view);
       return;
     }

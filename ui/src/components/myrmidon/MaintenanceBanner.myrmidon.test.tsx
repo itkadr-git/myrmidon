@@ -188,6 +188,126 @@ describe("MaintenanceBanner", () => {
     }
   });
 
+  it("renders Russian discrete banner for multiple bot containers", () => {
+    i18n.changeLanguage("ru");
+    try {
+      const windows = [
+        window({
+          id: "w-eng-1",
+          scope: { type: "agent", id: "adm-dev-eng-1" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-1)",
+        }),
+        window({
+          id: "w-eng-2",
+          scope: { type: "agent", id: "adm-dev-eng-2" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-2)",
+        }),
+        window({
+          id: "w-eng-3",
+          scope: { type: "agent", id: "adm-dev-eng-3" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-3)",
+        }),
+        window({
+          id: "w-eng-4",
+          scope: { type: "agent", id: "adm-dev-eng-4" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-4)",
+        }),
+        window({
+          id: "w-eng-5",
+          scope: { type: "agent", id: "adm-dev-eng-5" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-5)",
+        }),
+        window({
+          id: "w-eng-6",
+          scope: { type: "agent", id: "adm-dev-eng-6" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-6)",
+        }),
+        window({
+          id: "w-eng-7",
+          scope: { type: "agent", id: "adm-dev-eng-7" },
+          companyId: "company-a",
+          reason: "bot container profile update (adm-dev-eng-7)",
+        }),
+      ];
+      const scoped = renderScopedBanner(status(windows), "company-a")!;
+      expect(scoped).not.toBeNull();
+      expect(scoped.textContent).toBe("Обновляются контейнеры ботов (7) (~1 мин), остальная доска работает");
+      expect(renderBanner(status(windows), "company-a")).toBeNull();
+    } finally {
+      i18n.changeLanguage("en");
+    }
+  });
+
+  it("renders Russian discrete banner for single bot general maintenance", () => {
+    i18n.changeLanguage("ru");
+    try {
+      const agentWindow = window({
+        id: "w-eng-17",
+        scope: { type: "agent", id: "adm-dev-eng-17" },
+        companyId: "company-a",
+        reason: "routine maintenance (adm-dev-eng-17)",
+      });
+      const scoped = renderScopedBanner(status([agentWindow]), "company-a")!;
+      expect(scoped).not.toBeNull();
+      expect(scoped.textContent).toContain("Обслуживается бот");
+      expect(scoped.textContent).toContain("adm-dev-eng-17");
+      expect(scoped.textContent).toContain("(~1 мин), остальная доска работает");
+      expect(renderBanner(status([agentWindow]), "company-a")).toBeNull();
+    } finally {
+      i18n.changeLanguage("en");
+    }
+  });
+
+  it("renders Russian discrete banner for multiple bots general maintenance", () => {
+    i18n.changeLanguage("ru");
+    try {
+      const windows = [
+        window({
+          id: "w-eng-1",
+          scope: { type: "agent", id: "adm-dev-eng-1" },
+          companyId: "company-a",
+          reason: "routine maintenance (adm-dev-eng-1)",
+        }),
+        window({
+          id: "w-eng-2",
+          scope: { type: "agent", id: "adm-dev-eng-2" },
+          companyId: "company-a",
+          reason: "routine maintenance (adm-dev-eng-2)",
+        }),
+      ];
+      const scoped = renderScopedBanner(status(windows), "company-a")!;
+      expect(scoped).not.toBeNull();
+      expect(scoped.textContent).toBe("Обслуживаются боты (2) (~1 мин), остальная доска работает");
+      expect(renderBanner(status(windows), "company-a")).toBeNull();
+    } finally {
+      i18n.changeLanguage("en");
+    }
+  });
+
+  it("renders Russian discrete banner for department maintenance", () => {
+    i18n.changeLanguage("ru");
+    try {
+      const deptWindow = window({
+        id: "w-dept-1",
+        scope: { type: "department", id: "dept-1" },
+        companyId: "company-a",
+        reason: "department routine upgrade",
+      });
+      const scoped = renderScopedBanner(status([deptWindow]), "company-a")!;
+      expect(scoped).not.toBeNull();
+      expect(scoped.textContent).toBe("Обслуживается проект (~1 мин), остальная доска работает");
+      expect(renderBanner(status([deptWindow]), "company-a")).toBeNull();
+    } finally {
+      i18n.changeLanguage("en");
+    }
+  });
+
   it("shows discrete banner for department scope", () => {
     const deptWindow = window({
       id: "w-dept-1",

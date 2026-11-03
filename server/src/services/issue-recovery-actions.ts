@@ -130,7 +130,7 @@ function isUniqueRecoveryActionConflict(error: unknown) {
 }
 
 export function issueRecoveryActionService(
-  db: Db,
+  db: DbOrTransaction,
   metrics: RecoveryFactoryMetrics = recoveryFactoryMetrics,
 ) {
   async function ensureRecoveryIssue(request: RecoveryFactoryRequest): Promise<RecoveryFactoryResult> {

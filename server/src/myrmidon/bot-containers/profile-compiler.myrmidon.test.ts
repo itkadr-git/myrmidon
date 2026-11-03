@@ -403,7 +403,7 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", effort: "High" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  provider: "anthropic"');
+    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  max_tokens: 32000\n  provider: "anthropic"');
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
@@ -1394,6 +1394,29 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
       const yaml = yamlOf(baseInput({ instanceDefaults: { compression: {} } }));
       expect(yaml).not.toContain("compression:");
       expect(yaml).not.toContain("threshold_tokens");
+    });
+  });
+
+  // myrmidon(REASONING-OUTPUT-LIMIT): explicit/default model output ceiling.
+  describe("myrmidon(REASONING-OUTPUT-LIMIT) model.max_tokens", () => {
+    it("compiles the card value, defaults to 32000, and warns on invalid overrides", () => {
+      const configured = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { models: { maxTokens: 64_000 } } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(configured).toContain("max_tokens: 64000");
+
+      const defaulted = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { model: "model-a" } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(defaulted).toContain("max_tokens: 32000");
+
+      const invalid = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { model: "model-a", models: { maxTokens: 1 } } }),
+      );
+      expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
+      expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
     });
   });
 
