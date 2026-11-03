@@ -535,7 +535,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           result.signaled += 1;
           continue;
         }
-        const state = await reassign(row, review.reviewerAgentId, picked, hoursInReview, undefined, sinceDate);
+        const state = await reassign(row, review.reviewerAgentId, picked, hoursInReview, undefined, {
+          sinceDate,
+          now,
+          reassignAfterMinutes: settings.reassignAfterMinutes,
+        });
         if (state) {
           moves += 1;
           result.reassigned += 1;
@@ -1012,7 +1016,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     reviewer: ReviewerCandidate,
     hoursInReview: number,
     overload?: { reason: "queue"; currentLoad: number; threshold: number },
-    sinceDate?: Date,
+    options?: { sinceDate?: Date; now?: Date; reassignAfterMinutes?: number },
   ) {
     const applied = await deps.store.applyPatch({
       issueId: row.id,
@@ -1021,9 +1025,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       build: (fresh) => buildReviewRoutingReassignPatch({ issue: fresh, newReviewerAgentId: reviewer.id }),
     });
     if (!applied) return null;
-    const minutesInReview = sinceDate ? minutesSince(sinceDate, now) : hoursInReview * 60;
+    const minutesInReview =
+      options?.sinceDate && options?.now
+        ? minutesSince(options.sinceDate, options.now)
+        : hoursInReview * 60;
     const durationText =
-      settings.reassignAfterMinutes !== undefined && settings.reassignAfterMinutes < 60
+      options?.reassignAfterMinutes !== undefined
         ? `${minutesInReview} min`
         : `${hoursInReview} h`;
     await deps.addComment(
