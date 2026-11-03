@@ -832,6 +832,24 @@ function stableSerialize(value: unknown): string {
     .join(",")}}`;
 }
 
+/**
+ * Normalize JSON schema objects before they enter the tool descriptor. MCP
+ * servers are allowed to emit object properties in any order; preserving that
+ * order makes otherwise identical profile revisions produce different prompt
+ * prefixes and defeats provider prompt caching.
+ */
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalizeJson(nested)]),
+    );
+  }
+  return value;
+}
+
 function stableHash(value: unknown): string {
   return createHash("sha256").update(stableSerialize(value)).digest("hex");
 }
@@ -1410,10 +1428,12 @@ export function createToolGatewayService(
         const applicationKey = application.applicationKey ?? null;
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
-          catalogEntry.inputSchema ?? {},
+          canonicalizeJson(catalogEntry.inputSchema ?? {}) as Record<string, unknown>,
         );
-        const outputSchema = catalogEntry.outputSchema ?? null;
-        const annotations = catalogEntry.annotations ?? {};
+        const outputSchema = catalogEntry.outputSchema
+          ? (canonicalizeJson(catalogEntry.outputSchema) as Record<string, unknown>)
+          : null;
+        const annotations = canonicalizeJson(catalogEntry.annotations ?? {}) as Record<string, unknown>;
         const risk = riskFromCatalogEntry(catalogEntry);
         const onDemandTools = readOnDemandToolsEnabled(connection);
         const providerMetadata: ConnectedMcpGatewayMetadata = {
