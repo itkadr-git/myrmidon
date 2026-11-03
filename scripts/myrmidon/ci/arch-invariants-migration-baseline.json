@@ -308,7 +308,8 @@
     308,
     309,
     310,
-    311
+    311,
+    447
   ],
   "recorded": "2026-10-09",
   "note": "historic gaps grandfathered; new gaps/duplicates fail INV-13",
@@ -388,6 +389,8 @@
     438,
     439,
     441,
-    442
+    442,
+    448,
+    449
   ]
 }
