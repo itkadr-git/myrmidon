@@ -743,6 +743,7 @@ export function createPullRequestCiResolver(
         return cached.result;
       }
 
+      const commitCacheKey = `${repoKey}@${headSha}`;
       if (isGitHubRateLimited()) {
         const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
         if (cached) {
@@ -814,7 +815,6 @@ export function createPullRequestCiResolver(
         };
       }
 
-      const commitCacheKey = `${repoKey}@${headSha}`;
       const cachedRunsEntry = checkRunsCache.get(commitCacheKey);
       let runs: CheckRunsFetchResult;
       try {
