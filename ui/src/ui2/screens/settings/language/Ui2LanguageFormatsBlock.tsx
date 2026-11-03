@@ -40,7 +40,7 @@ export function Ui2LanguageFormatsBlock() {
   return <Ui2Section title={t("ui2.settings.language.formats.title")}>
     <div className="space-y-4">
       <label className="block text-sm"><span>{t("ui2.settings.language.formats.timeZone")}</span> <span className="text-xs text-muted-foreground">({source("timeZone")})</span>
-        <input className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={search} placeholder={values.timeZone} onChange={(event) => setSearch(event.target.value)} onBlur={() => { if (search && timeZones.includes(search)) setValue("timeZone", search); }} />
+        <input className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={search} placeholder={t("ui2.settings.language.formats.timeZonePlaceholder")} onChange={(event) => setSearch(event.target.value)} onBlur={() => { if (search && timeZones.includes(search)) setValue("timeZone", search); }} />
         <select className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={values.timeZone} onChange={(event) => setValue("timeZone", event.target.value)}>{filteredZones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select>
         {fieldError && <span className="text-sm text-destructive">{fieldError}</span>}
       </label>

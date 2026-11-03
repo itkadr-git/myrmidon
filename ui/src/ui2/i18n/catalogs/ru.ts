@@ -292,6 +292,7 @@ export const ru: Ui2Catalog = {
           formats: {
             title: "Часовой пояс и форматы",
             timeZone: "Часовой пояс",
+            timeZonePlaceholder: "Поиск часовых поясов",
             numberFormat: "Формат чисел",
             dateFormat: "Формат дат",
             preview: "Предпросмотр",

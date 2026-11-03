@@ -298,6 +298,7 @@ export const en = {
           formats: {
             title: "Time zone and formats",
             timeZone: "Time zone",
+            timeZonePlaceholder: "Search time zones",
             numberFormat: "Number format",
             dateFormat: "Date format",
             preview: "Preview",
