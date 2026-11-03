@@ -238,7 +238,7 @@ function fakeService() {
         n: 2,
         label: input.label ?? "oauth-acc",
         email: input.email ?? null,
-        plan: input.plan ?? "pro",
+        plan: (input.plan ?? "pro").toLowerCase() as any,
         state: "active",
         stateRu: "Активен",
         isBanned: false,

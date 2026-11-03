@@ -94,7 +94,15 @@ export function getRegisteredPoolAccount(
 export function registerPoolAccount(
   companyId: string,
   providerId: string,
-  input: AddPoolAccountInput,
+  input: {
+    label: string;
+    plan?: string;
+    email?: string | null;
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    models?: string[];
+  },
 ): PoolAccountRecord {
   const accMap = getProviderAccountMap(companyId, providerId);
 
@@ -259,6 +267,58 @@ export function updateRegisteredPoolAccount(
   recordPoolAccountSignals(companyId, providerId, signals);
 
   return updated;
+}
+
+/**
+ * Updates sliding window usage for an account and automatically triggers limit flags and signals.
+ */
+export function updatePoolAccountUsage(
+  companyId: string,
+  providerId: string,
+  accountNumber: number,
+  usage: {
+    primaryWindow?: Partial<PoolAccountLimitWindow>;
+    secondaryWindow?: Partial<PoolAccountLimitWindow>;
+  },
+): PoolAccountRecord | null {
+  const existing = getRegisteredPoolAccount(companyId, providerId, accountNumber);
+  if (!existing) {
+    return null;
+  }
+
+  const currentPrimary: PoolAccountLimitWindow = existing.windows?.primary ?? {
+    windowMin: CODEX_PRIMARY_WINDOW_MIN,
+    usedPct: 0,
+    resetsAt: null,
+    limitReached: false,
+  };
+  const currentSecondary: PoolAccountLimitWindow = existing.windows?.secondary ?? {
+    windowMin: CODEX_SECONDARY_WINDOW_MIN,
+    usedPct: 0,
+    resetsAt: null,
+    limitReached: false,
+  };
+
+  const updatedPrimary: PoolAccountLimitWindow = usage.primaryWindow
+    ? {
+        ...currentPrimary,
+        ...usage.primaryWindow,
+      }
+    : currentPrimary;
+
+  const updatedSecondary: PoolAccountLimitWindow = usage.secondaryWindow
+    ? {
+        ...currentSecondary,
+        ...usage.secondaryWindow,
+      }
+    : currentSecondary;
+
+  return updateRegisteredPoolAccount(companyId, providerId, accountNumber, {
+    windows: {
+      primary: updatedPrimary,
+      secondary: updatedSecondary,
+    },
+  });
 }
 
 /** Initiates a Codex / ChatGPT OAuth flow. */

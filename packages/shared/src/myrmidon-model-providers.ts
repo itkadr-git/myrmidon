@@ -226,6 +226,7 @@ export interface PoolAccountRoleSignal {
   accountNumber: number;
   label: string;
   kind: "banned" | "exhausted";
+  signalKind?: "banned" | "exhausted";
   severity: "critical" | "high" | "medium";
   title: string;
   whyNow: string;

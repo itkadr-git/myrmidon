@@ -103,6 +103,18 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    async addAccount() {
+      throw new Error("not implemented in fakeService");
+    },
+    async deleteAccount() {
+      throw new Error("not implemented in fakeService");
+    },
+    async startOAuth() {
+      throw new Error("not implemented in fakeService");
+    },
+    async completeOAuth() {
+      throw new Error("not implemented in fakeService");
+    },
   };
   return service;
 }

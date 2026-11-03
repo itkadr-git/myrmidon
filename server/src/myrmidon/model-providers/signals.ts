@@ -50,10 +50,16 @@ export function evaluateAccountSignals(
   companyId: string,
   providerId: string,
   accounts: PoolAccountChannelView[],
-  nowDate: Date = new Date(),
+  nowDate: Date | number = new Date(),
 ): PoolAccountRoleSignal[] {
   const signals: PoolAccountRoleSignal[] = [];
-  const isoNow = nowDate.toISOString();
+  const dateObj =
+    nowDate instanceof Date
+      ? nowDate
+      : typeof nowDate === "number"
+        ? new Date(nowDate < 1e11 ? nowDate * 1000 : nowDate)
+        : new Date();
+  const isoNow = dateObj.toISOString();
 
   for (const acc of accounts) {
     if (acc.isBanned) {
@@ -63,6 +69,7 @@ export function evaluateAccountSignals(
         accountNumber: acc.n,
         label: acc.label,
         kind: "banned",
+        signalKind: "banned",
         severity: "high",
         title: `Codex/ChatGPT account #${acc.n} (${acc.label}) banned / token expired`,
         whyNow:
@@ -139,6 +146,7 @@ export function evaluateAccountSignals(
         accountNumber: acc.n,
         label: acc.label,
         kind: "exhausted",
+        signalKind: "exhausted",
         severity: "medium",
         title: `Codex/ChatGPT account #${acc.n} (${acc.label}) quota exhausted`,
         whyNow:
