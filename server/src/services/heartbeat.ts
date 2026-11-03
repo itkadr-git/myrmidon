@@ -16132,10 +16132,6 @@ export function heartbeatService(
       runFinishedAt: run.finishedAt,
       runStartedAt: run.startedAt,
     });
-    const isContainerNotStarted =
-      run.errorCode === "hermes_gateway_connect_failed" &&
-      typeof run.error === "string" &&
-      run.error.includes("container failed to start");
     const retryDelayMs = isContainerNotStarted
       ? Math.min(
           60_000 * 2 ** Math.max(0, nextAttempt - 1),
