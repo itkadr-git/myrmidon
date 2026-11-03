@@ -24,7 +24,7 @@ describe("legacy blocked diagnostic import fixture", () => {
       for (const field of requiredRowFields) {
         expect(task).toHaveProperty(field);
       }
-      expect(task.importKey).toBe(createLegacyBlockedImportKey(task.issueId));
+      expect(task.importKey).toBe(createLegacyBlockedImportKey(task.issueId!));
       expect(legacyBlockedReportRowSchema.safeParse(task).success).toBe(true);
     }
   });
