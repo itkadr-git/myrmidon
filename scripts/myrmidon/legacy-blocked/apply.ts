@@ -130,6 +130,7 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
           eq(issues.id, source.id), eq(issues.status, "blocked"), isNull(issues.blockerMetadata),
         )).returning({ id: issues.id });
         if (!updated) return { outcome: "skipped" as const, detail: "Source changed before metadata could be applied." };
+        resultIssueId = updated.id;
       }
 
       await tx.insert(legacyBlockedImports).values({
