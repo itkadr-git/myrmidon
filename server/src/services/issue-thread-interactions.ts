@@ -3724,15 +3724,14 @@ export function issueThreadInteractionService(
           ) {
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           } else if (
-            (normalizedData.kind === "ask_user_questions" ||
-              normalizedData.kind === "suggest_tasks") &&
+            actor.agentId &&
+            policy.effectiveResolverPolicy !== "human_only" &&
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload)
           ) {
-            // Legacy questions and task suggestions without an explicit typed
-            // recipient remain operational queue work. Do not infer a human
-            // addressee from issue metadata for non-human policies: that
-            // creates an audience the creator cannot resolve as.
+            // Legacy agent-created interactions without a typed recipient are
+            // operational work. Keep them on the default queue unless the
+            // payload is a governed action that requires a concrete human.
             recipientCandidate = { serviceQueue: "default" };
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
