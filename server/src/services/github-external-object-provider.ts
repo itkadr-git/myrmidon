@@ -4,6 +4,7 @@ import type { ExternalObjectCanonicalUrl } from "@myrmidon/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 export { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
+import { recordGitHubRequest } from "./github-rate-limit.js";
 import { secretService } from "./secrets.js";
 import { readGitHubSharedIdentitySettings } from "../myrmidon/github-shared-identity/store.js";
 import { isRepositoryAllowed, normalizeGitHubRepository } from "../myrmidon/github-shared-identity/settings.js";
@@ -540,6 +541,7 @@ export function createGitHubExternalObjectProvider(
           "x-github-api-version": "2022-11-28",
         };
         if (token) headers.authorization = `Bearer ${token}`;
+        if (object?.snapshot?.etag) headers["if-none-match"] = object.snapshot.etag;
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
         const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
@@ -547,6 +549,7 @@ export function createGitHubExternalObjectProvider(
         let response: Response;
         try {
           response = await fetchImpl(url, { headers });
+          recordGitHubRequest("task-pr-sync", response);
         } catch {
           return {
             ok: false,
@@ -555,6 +558,10 @@ export function createGitHubExternalObjectProvider(
             errorMessage: "GitHub could not be reached while refreshing this object.",
             retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
           };
+        }
+
+        if (response.status === 304 && object?.snapshot) {
+          return { ok: true, snapshot: object.snapshot };
         }
 
         const etag = response.headers?.get ? response.headers.get("etag") : null;

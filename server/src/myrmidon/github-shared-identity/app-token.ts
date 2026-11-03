@@ -24,6 +24,7 @@
 // state: GitHub error bodies are reduced to the HTTP status.
 
 import { createPrivateKey, createSign } from "node:crypto";
+import { recordGitHubRequest } from "../../services/github-rate-limit.js";
 
 /** One repository-permission key of the installation-token API. */
 export const GITHUB_APP_TOKEN_PERMISSION_KEYS = [
@@ -155,6 +156,7 @@ async function githubRequest(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    recordGitHubRequest("broker", response);
   } catch {
     throw new GitHubAppTokenError("GitHub is unreachable");
   }

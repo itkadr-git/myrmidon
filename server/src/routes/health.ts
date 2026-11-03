@@ -43,6 +43,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { getGitHubRateLimitMetrics } from "../services/github-rate-limit.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -410,6 +411,7 @@ export function healthRoutes(
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
+        githubRateLimit: getGitHubRateLimitMetrics(),
       });
       return;
     }
@@ -438,6 +440,7 @@ export function healthRoutes(
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      githubRateLimit: getGitHubRateLimitMetrics(),
     });
   });
 
