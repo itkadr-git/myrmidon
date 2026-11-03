@@ -12398,7 +12398,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
                 .where(eq(chatConversations.id, source.conversationId)).for("update");
             } else {
               await tx.select().from(issues)
-                .where(eq(issues.id, child.issueId)).for("update");
+                .where(eq(issues.id, source.issueId)).for("update");
             }
             ready();
             await held;
