@@ -370,7 +370,7 @@ describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 ma
       baseInput({ adapterConfig: { model: "anthropic/claude-sonnet-5", provider: "anthropic", effort: "High" } }),
     );
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
-    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  provider: "anthropic"');
+    expect(yaml).toContain('model:\n  default: "anthropic/claude-sonnet-5"\n  max_tokens: 32000\n  provider: "anthropic"');
     expect(yaml).toContain('agent:\n  reasoning_effort: "high"');
   });
 
