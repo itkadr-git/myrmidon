@@ -932,8 +932,8 @@ test("remapHostPortForDocker remaps standby 127.0.0.1:5433 to container port 543
 });
 
 test("remapHostPortForDocker does NOT remap primary connections", () => {
-  const r = remapHostPortForDocker("10.10.100.1", 15432);
-  assert.deepStrictEqual(r, { host: "10.10.100.1", port: 15432 });
+  const r = remapHostPortForDocker("192.0.2.1", 15432);
+  assert.deepStrictEqual(r, { host: "192.0.2.1", port: 15432 });
 });
 
 test("remapHostPortForDocker does NOT remap non-standby localhost ports", () => {
@@ -959,7 +959,7 @@ test("wrapPgForDocker builds docker exec command for psql to standby", () => {
 
 test("wrapPgForDocker builds docker exec command for psql to primary (no remap)", () => {
   const wrapped = wrapPgForDocker("psql", [
-    "-h", "10.10.100.1", "-p", "15432",
+    "-h", "192.0.2.1", "-p", "15432",
     "-U", "myr_replicator", "-d", "replication=database",
     "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
   ]);
@@ -967,7 +967,7 @@ test("wrapPgForDocker builds docker exec command for psql to primary (no remap)"
   assert.deepStrictEqual(wrapped.args, [
     "exec", "-u", "postgres", "myrmidon-pg-standby",
     "psql",
-    "-h", "10.10.100.1", "-p", "15432",
+    "-h", "192.0.2.1", "-p", "15432",
     "-U", "myr_replicator", "-d", "replication=database",
     "-t", "-A", "-c", "IDENTIFY_SYSTEM;",
   ]);
@@ -1010,14 +1010,14 @@ test("queryPrimaryLsn parses IDENTIFY_SYSTEM output", () => {
     }
     return { exitCode: 1, stdout: "", stderr: "" };
   };
-  const res = queryPrimaryLsn({ host: "10.10.100.1", port: 15432, user: "myr_replicator" }, mockRunner);
+  const res = queryPrimaryLsn({ host: "192.0.2.1", port: 15432, user: "myr_replicator" }, mockRunner);
   assert.equal(res.ok, true);
   assert.equal(res.lsn, "0/17FCA00");
 });
 
 test("queryPrimaryLsn handles failure", () => {
   const mockRunner = () => ({ exitCode: 2, stdout: "", stderr: "connection refused" });
-  const res = queryPrimaryLsn({ host: "10.10.100.1", port: 15432 }, mockRunner);
+  const res = queryPrimaryLsn({ host: "192.0.2.1", port: 15432 }, mockRunner);
   assert.equal(res.ok, false);
   assert.equal(res.lsn, null);
 });
@@ -1028,7 +1028,7 @@ test("queryPrimaryLsn uses replication=database connection string", () => {
     calls.push({ cmd, args });
     return { exitCode: 0, stdout: "729374172937|1|0/17FCA00|\n", stderr: "" };
   };
-  queryPrimaryLsn({ host: "10.10.100.1", port: 15432, user: "myr_replicator" }, mockRunner);
+  queryPrimaryLsn({ host: "192.0.2.1", port: 15432, user: "myr_replicator" }, mockRunner);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, "psql");
   assert.ok(calls[0].args.includes("replication=database"));
