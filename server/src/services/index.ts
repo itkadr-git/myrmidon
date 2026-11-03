@@ -240,3 +240,19 @@ export {
   setSessionDb,
   getSessionDb,
 } from "./session-service.js";
+export {
+  MockSshExecutor,
+  createMockSshExecutor,
+  SshAuthenticationError,
+  SshConnectionError,
+  SshTimeoutError,
+  type CommandHandler,
+  type LoggedCommand,
+  type MockServerInventory,
+  type MockSshConfig,
+  type SshAuthScenario,
+  type SshConnectionOptions,
+  type SshExecuteOptions,
+  type SshExecutionResult,
+  type SshExecutor,
+} from "./fleet/mock-ssh-executor.js";
