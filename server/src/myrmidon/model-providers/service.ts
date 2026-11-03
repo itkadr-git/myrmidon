@@ -23,9 +23,10 @@
 // Everything injectable arrives through ModelProviderServiceDeps, so the suite
 // runs the real service with fakes (the real wiring is wiring.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  evaluateModelProviderPackageWarning,
   getModelProviderConnector,
   isModelProviderTypeAvailable,
   listAvailableModelProviderTypes,
@@ -34,6 +35,7 @@ import {
   modelProviderSecretName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
   type PoolAccountChannelView,
@@ -46,7 +48,9 @@ import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
+  recordPackageExpirySignals,
   recordPoolAccountSignals,
+  type ModelProviderPackageSignal,
 } from "./signals.js";
 
 /** The provider surface this module needs from the secret store. */
@@ -146,6 +150,7 @@ export interface ModelProviderView {
   toolCallCheckedAt: string | null;
   toolCallCheckError: string | null;
   keyValidatedAt: string | null;
+  packageWarning?: ModelProviderPackageWarning | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -187,6 +192,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
       toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
+      packageWarning: evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: now() },
+      ),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -300,6 +317,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     body: CreateModelProviderInput;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const name = input.body.name.trim();
     const existing = await deps.db
@@ -364,6 +382,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name, type: row.type, baseUrl: stored.baseUrl, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...stored, updatedAt: now() }, true);
   }
 
@@ -377,6 +409,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     providerId: string;
     key: string;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const row = await loadProvider(input.companyId, input.providerId);
     const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
@@ -401,6 +434,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       providerId: row.id,
       details: { name: row.name, type: row.type, models: models.length },
     });
+
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
 
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
   }
@@ -836,6 +883,59 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return aggregated;
   }
 
+  /**
+   * Evaluates package expiration and consumption warnings for all registered
+   * providers of a company, emits board attention signals, and returns warnings.
+   */
+  async function checkPackageExpirations(
+    companyId: string,
+    options?: { now?: Date; thresholdPercent?: number },
+  ): Promise<ModelProviderPackageWarning[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, companyId), isNotNull(modelProviders.expiresAt)));
+
+    const warnings: ModelProviderPackageWarning[] = [];
+    const signals: ModelProviderPackageSignal[] = [];
+    const checkNow = options?.now ?? now();
+
+    for (const row of rows) {
+      const warning = evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: checkNow, thresholdPercent: options?.thresholdPercent },
+      );
+
+      if (warning) {
+        warnings.push(warning);
+        signals.push({
+          providerId: row.id,
+          providerName: row.name,
+          packageName: row.packageName,
+          kind: warning.trigger === "limit" ? "package_limit" : "package_expiry",
+          status: warning.status,
+          severity: warning.status === "expired" ? "high" : "medium",
+          title: `LLM key package ${warning.status === "expired" ? "expired" : "nearing expiration"}: ${row.name}`,
+          whyNow: warning.message,
+          expiresAt: warning.expiresAt,
+          observedAt: checkNow.toISOString(),
+          dedupKey: warning.key,
+        });
+      }
+    }
+
+    recordPackageExpirySignals(companyId, signals);
+    return warnings;
+  }
+
   return {
     createProvider,
     rotateProviderKey,
@@ -849,6 +949,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     listChannels,
     syncPoolSignals,
     checkToolCallCompatibility,
+    checkPackageExpirations,
   };
 }
 

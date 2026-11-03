@@ -91,7 +91,7 @@ import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/at
 import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
-import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
+import { readPoolAccountSignals, readPackageExpirySignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
 import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
@@ -3715,6 +3715,49 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(poolSignal.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.6 OPE-7189 part J): attention card when an LLM provider package
+      // is nearing expiration (e.g. 15-day packages like nghimmo) or expired.
+      for (const sig of readPackageExpirySignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_provider_package_expiry",
+          subject: {
+            kind: "company",
+            id: sig.providerId,
+            companyId,
+            title: sig.title,
+            identifier: sig.packageName ?? sig.providerName,
+            status: sig.status,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              providerId: sig.providerId,
+              providerName: sig.providerName,
+              packageName: sig.packageName,
+              expiresAt: sig.expiresAt,
+            },
+          },
+          whyNow: sig.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and rotate/extend package." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this package alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: sig.status === "expired" ? "LLM provider package has expired" : "LLM provider package reached expiration warning threshold",
+          exitRule: "the key is rotated, package is renewed, or the alert is dismissed.",
+          dedupKey: sig.dedupKey,
+          severity: sig.severity,
+          activityAt: sig.observedAt,
+          createdAt: sig.observedAt,
+          updatedAt: sig.observedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(sig.whyNow),
             images: [],
           },
         }));
