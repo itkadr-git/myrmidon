@@ -3725,7 +3725,6 @@ export function issueThreadInteractionService(
             recipientCandidate = { userId: issueContextRow.conversationUserId };
           } else if (
             actor.agentId &&
-            policy.effectiveResolverPolicy !== "human_only" &&
             !("toolAction" in normalizedData.payload) &&
             !("secretProposal" in normalizedData.payload)
           ) {
