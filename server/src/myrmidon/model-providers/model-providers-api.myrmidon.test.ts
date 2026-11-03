@@ -200,6 +200,57 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    async addAccount(companyId, providerId, input) {
+      calls.push({ op: "addAccount", companyId, providerId, body: input });
+      return {
+        n: 1,
+        label: input.label,
+        email: input.email ?? null,
+        plan: input.plan ?? "plus",
+        state: "active",
+        stateRu: "Активен",
+        isBanned: false,
+        isExhausted: false,
+        limitedUntil: null,
+        lastOk: null,
+        windows: {
+          primary: { usedPct: 0, windowMin: 300, resetsAt: null, limitReached: false },
+          secondary: { usedPct: 0, windowMin: 10080, resetsAt: null, limitReached: false },
+        },
+      };
+    },
+    async deleteAccount(companyId, providerId, accountNumber) {
+      calls.push({ op: "deleteAccount", companyId, providerId, body: { accountNumber } });
+    },
+    async startOAuth(companyId, providerId, input) {
+      calls.push({ op: "startOAuth", companyId, providerId, body: input });
+      return {
+        authUrl: "https://auth0.openai.com/authorize?fake=1",
+        userCode: "TEST-1234",
+        verificationUri: "https://auth0.openai.com/activate",
+        state: "fake-state-123",
+        expiresIn: 900,
+      };
+    },
+    async completeOAuth(companyId, providerId, input) {
+      calls.push({ op: "completeOAuth", companyId, providerId, body: input });
+      return {
+        n: 2,
+        label: input.label ?? "oauth-acc",
+        email: input.email ?? null,
+        plan: (input.plan ?? "pro").toLowerCase() as any,
+        state: "active",
+        stateRu: "Активен",
+        isBanned: false,
+        isExhausted: false,
+        limitedUntil: null,
+        lastOk: null,
+        windows: {
+          primary: { usedPct: 0, windowMin: 300, resetsAt: null, limitReached: false },
+          secondary: { usedPct: 0, windowMin: 10080, resetsAt: null, limitReached: false },
+        },
+      };
+    },
   };
   return { service, calls };
 }
@@ -468,4 +519,51 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", 
     expect(getRes2.body.availableTypes).not.toContain("chatgpt-pool");
   });
 });
+
+describe("myrmidon(1.6.6 OPE-10775) routes: Codex pool accounts and OAuth", () => {
+  it("allows adding an account to the pool with Plus/Pro/K-12 plan", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server)
+      .post(`${base}/provider-1/channels`)
+      .send({ label: "test-plus", plan: "Plus", email: "test@example.com" })
+      .expect(201);
+
+    expect(res.body.ok).toBe(true);
+    expect(res.body.account.label).toBe("test-plus");
+    expect(calls.filter((c) => c.op === "addAccount")).toHaveLength(1);
+  });
+
+  it("allows deleting an account from the pool by account number", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server)
+      .delete(`${base}/provider-1/channels/1`)
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(calls.filter((c) => c.op === "deleteAccount")).toHaveLength(1);
+  });
+
+  it("handles OAuth start and complete endpoints", async () => {
+    const { server, calls } = app(member);
+
+    const startRes = await request(server)
+      .post(`${base}/provider-1/oauth/start`)
+      .send({ plan: "Pro", label: "my-pro-acc" })
+      .expect(200);
+
+    expect(startRes.body.state).toBe("fake-state-123");
+    expect(startRes.body.userCode).toBe("TEST-1234");
+    expect(calls.filter((c) => c.op === "startOAuth")).toHaveLength(1);
+
+    const completeRes = await request(server)
+      .post(`${base}/provider-1/oauth/complete`)
+      .send({ state: "fake-state-123", plan: "Pro", label: "my-pro-acc" })
+      .expect(201);
+
+    expect(completeRes.body.ok).toBe(true);
+    expect(completeRes.body.account.plan).toBe("pro");
+    expect(calls.filter((c) => c.op === "completeOAuth")).toHaveLength(1);
+  });
+});
+
 
