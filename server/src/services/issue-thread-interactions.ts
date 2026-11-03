@@ -3639,6 +3639,18 @@ export function issueThreadInteractionService(
         recipientCandidate = { serviceQueue: "default" };
       } else if (
         actor.agentId &&
+        !("toolAction" in normalizedData.payload) &&
+        !("secretProposal" in normalizedData.payload) &&
+        (normalizedData.kind === "suggest_tasks" ||
+          normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "request_confirmation")
+      ) {
+        // Legacy agent-created interactions historically route to the operator queue
+        // when no other addressee can be resolved. Keep action-bearing proposals
+        // subject to the stricter human-recipient path above.
+        recipientCandidate = { serviceQueue: "default" };
+      } else if (
+        actor.agentId &&
         actor.agentId === issueContextRow?.assigneeAgentId &&
         !("toolAction" in normalizedData.payload) &&
         !("secretProposal" in normalizedData.payload)
