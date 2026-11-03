@@ -22,6 +22,8 @@ export interface InteractionEscalationSweepDeps {
   enabled?: boolean;
   intervalSec?: number;
   batchSize?: number;
+  selectDueEscalations?: (db: Db, now: Date, batchSize: number) => Promise<DueEscalationItem[]>;
+  escalateInteractionStep?: (db: Db, interactionId: string, level: number) => Promise<EscalationStepResult>;
 }
 
 export interface InteractionEscalationSweepOptions {
@@ -101,6 +103,8 @@ export function createInteractionEscalationSweep(
 ): (options?: InteractionEscalationSweepOptions) => Promise<InteractionEscalationSweepResult> {
   let lastPassAt = 0;
   let inFlight: Promise<InteractionEscalationSweepResult> | null = null;
+  const selectDue = deps.selectDueEscalations ?? selectDueEscalations;
+  const step = deps.escalateInteractionStep ?? escalateInteractionStep;
 
   return async function interactionEscalationSweep(
     options: InteractionEscalationSweepOptions = {},
@@ -137,7 +141,7 @@ export function createInteractionEscalationSweep(
       let failed = 0;
 
       while (true) {
-        const batch = await selectDueEscalations(deps.db, now, batchSize);
+        const batch = await selectDue(deps.db, now, batchSize);
         if (!batch || batch.length === 0) {
           break;
         }
@@ -145,7 +149,7 @@ export function createInteractionEscalationSweep(
         due += batch.length;
         for (const item of batch) {
           try {
-            const stepResult = await escalateInteractionStep(deps.db, item.interactionId, item.nextLevel);
+            const stepResult = await step(deps.db, item.interactionId, item.nextLevel);
             if (stepResult === "escalated") {
               escalated += 1;
             } else {

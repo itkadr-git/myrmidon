@@ -1188,6 +1188,7 @@
     "server/src/services/instance-settings-swarm-cooling.myrmidon.test.ts": 1011,
     "server/src/services/interaction-router/build-chain.test.ts": 157,
     "server/src/services/interaction-router/dedupe-key.test.ts": 210,
+    "server/src/services/interaction-router/escalation-scheduler.test.ts": 250,
     "server/src/services/interaction-router/resolve-recipient.test.ts": 568,
     "server/src/services/issue-assignment-wakeup.myrmidon.test.ts": 1147,
     "server/src/services/issue-comment-wakeup.test.ts": 210,
