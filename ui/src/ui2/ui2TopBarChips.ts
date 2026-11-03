@@ -141,9 +141,10 @@ export function ui2WaitingBadge(
 
 /** Pending issue-thread interactions from the attention feed counts. */
 export function ui2InteractionsPendingFromAttention(feed: AttentionFeed | undefined | null): number | null {
-  if (!feed || typeof feed !== "object" || Array.isArray(feed) || !("countsBySourceKind" in feed)) return null;
-  const counts = (feed as Partial<AttentionFeed>).countsBySourceKind as Partial<Record<string, number>> | undefined;
-  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
+  if (!feed || typeof feed !== "object" || Array.isArray(feed)) return null;
+  const rawCounts = (feed as { countsBySourceKind?: unknown }).countsBySourceKind;
+  if (!rawCounts || typeof rawCounts !== "object" || Array.isArray(rawCounts)) return null;
+  const counts = rawCounts as Record<string, unknown>;
   return typeof counts.issue_thread_interaction === "number" ? counts.issue_thread_interaction : 0;
 }
 

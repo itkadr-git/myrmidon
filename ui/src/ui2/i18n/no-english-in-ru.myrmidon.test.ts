@@ -160,10 +160,14 @@ function scanFile(path: string): Array<Violation> {
     // A `>` that belongs to an arrow (`=>`) is code, not markup: with a
     // comparison `<` later on the same line the pair would otherwise read
     // as a JSX text node (useIsMobileViewport precedent).
-    for (const match of line.matchAll(/(?<!=)>([^<>{}]+)</g)) {
-      const text = match[1].trim();
-      if (looksLikeProse(text)) {
-        violations.push({ file: relative, line: lineNumber, kind: "jsx-text", excerpt: text });
+    // Pure TypeScript files (.ts) cannot contain JSX elements; JSX text
+    // is only parsed in markup files (.tsx).
+    if (path.endsWith(".tsx")) {
+      for (const match of line.matchAll(/(?<!=)>([^<>{}]+)</g)) {
+        const text = match[1].trim();
+        if (looksLikeProse(text)) {
+          violations.push({ file: relative, line: lineNumber, kind: "jsx-text", excerpt: text });
+        }
       }
     }
 
