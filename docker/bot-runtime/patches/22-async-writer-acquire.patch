@@ -279,13 +279,15 @@ diff --git a/gateway/run_startup.py b/gateway/run_startup.py
 index 743335d..11eac78 100644
 --- a/gateway/run_startup.py
 +++ b/gateway/run_startup.py
-@@ -1544,6 +1544,16 @@ class GatewayStartupMixin:
+@@ -1544,6 +1544,18 @@ class GatewayStartupMixin:
              # diagnostic snapshot once, instead of flushing at each return.
              await self._start_flush_runtime_status()
 
 +    def _init_session_store(self) -> None:
 +        """Reset storage state on explicit startup/retry without opening SQLite here."""
 +        from tools.process_registry import process_registry
++        from gateway.delivery import DeliveryRouter
++        from gateway.session import AsyncSessionStore, SessionStore
 +        self.session_store = SessionStore.create_deferred(
 +            self.config.sessions_dir, self.config,
 +            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key))
@@ -296,7 +298,7 @@ index 743335d..11eac78 100644
      async def _start_impl(self) -> bool:
          logger.info("Starting Hermes Gateway...")
          self._start_install_faulthandler()
-@@ -1552,6 +1562,8 @@ class GatewayStartupMixin:
+@@ -1552,6 +1564,8 @@ class GatewayStartupMixin:
              return True
          if self._start_check_access_policy():
              return True
