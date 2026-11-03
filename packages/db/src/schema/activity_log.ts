@@ -85,5 +85,10 @@ export const activityLog = pgTable(
       .where(
         sql`${table.entityType} = 'issue' and ${table.action} <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])`,
       ),
+    // myrmidon(1.6.6 OPE-10438): the activity anti-join previously had to scan
+    // rows because existing indexes began with unrelated company columns.
+    issueCreatedAtIdx: index("activity_log_issue_created_at_idx")
+      .on(table.companyId, table.entityType, table.entityId, table.createdAt)
+      .where(sql`${table.entityType} = 'issue' and ${table.actorType} <> 'system'`),
   }),
 );
