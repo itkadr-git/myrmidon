@@ -1364,6 +1364,26 @@ describe("myrmidon(G2) compileHermesProfile — instance defaults", () => {
     });
   });
 
+  // myrmidon(REASONING-OUTPUT-LIMIT): explicit/default model output ceiling.
+  describe("myrmidon(REASONING-OUTPUT-LIMIT) model.max_tokens", () => {
+    it("compiles the card value, defaults to 32000, and warns on invalid overrides", () => {
+      const configured = fileByPath(
+        compileHermesProfile(baseInput({ adapterConfig: { models: { maxTokens: 64_000 } } })).files,
+        "hermes/config.yaml",
+      ).content;
+      expect(configured).toContain("max_tokens: 64000");
+
+      const defaulted = fileByPath(compileHermesProfile(baseInput()).files, "hermes/config.yaml").content;
+      expect(defaulted).toContain("max_tokens: 32000");
+
+      const invalid = compileHermesProfileDetailed(
+        baseInput({ adapterConfig: { models: { maxTokens: 1 } } }),
+      );
+      expect(fileByPath(invalid.profile.files, "hermes/config.yaml").content).toContain("max_tokens: 32000");
+      expect(invalid.warnings.some((warning) => warning.includes("model.max_tokens") && warning.includes("outside the supported range"))).toBe(true);
+    });
+  });
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the model context window override.
   describe("myrmidon(BOT-RUNTIME-TUNING-B) model.context_length", () => {
     it("writes model.context_length from the card's models.contextLength", () => {
