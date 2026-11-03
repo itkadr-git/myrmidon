@@ -172,6 +172,10 @@ function fakeService() {
       calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
       return providerView(input.providerId);
     },
+    async checkPackageExpirations(companyId, options) {
+      calls.push({ op: "checkPackageExpirations", companyId, body: options });
+      return [];
+    },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });
       return {

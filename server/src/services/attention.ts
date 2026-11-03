@@ -3725,7 +3725,7 @@ async function buildAttentionFeedSnapshot(
       for (const sig of readPackageExpirySignals(companyId)) {
         add(createItem({
           companyId,
-          sourceKind: "model_provider_package_expiry",
+          sourceKind: "provider_usage_warning",
           subject: {
             kind: "company",
             id: sig.providerId,
