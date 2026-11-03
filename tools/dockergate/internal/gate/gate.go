@@ -131,6 +131,7 @@ type Gate struct {
 	resolveMu     sync.Mutex
 	resolveReason string
 	resolveLogAt  time.Time
+	configMu      sync.Mutex
 }
 
 type imageEntry struct {
@@ -266,9 +267,11 @@ func (g *Gate) onResolve(ev peer.ResolveEvent) {
 // allowed extra mount sources and the package cache root. The rest needs a
 // restart.
 func reloadable(old, cur *config.Config) bool {
+	platformLimitsSame := old.PlatformLimits == nil && cur.PlatformLimits == nil ||
+		old.PlatformLimits != nil && cur.PlatformLimits != nil && *old.PlatformLimits == *cur.PlatformLimits
 	return old.Listen == cur.Listen && old.Upstream == cur.Upstream &&
 		old.APIVersion == cur.APIVersion && old.StatsFile == cur.StatsFile &&
-		old.Limits == cur.Limits && reflect.DeepEqual(old.Caller, cur.Caller)
+		old.Limits == cur.Limits && reflect.DeepEqual(old.Caller, cur.Caller) && platformLimitsSame
 }
 
 // Reload re-reads the configuration file. An invalid file, or one that changes

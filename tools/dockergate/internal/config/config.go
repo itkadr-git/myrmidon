@@ -56,7 +56,18 @@ type Bot struct {
 	// at most one of them at a time and only one that is listed here: its own
 	// scope instance, never a sibling's. Empty (the default): the bot is never
 	// a member of a shared instance.
-	ScopeInstances []string `json:"scopeInstances"`
+	ScopeInstances []string `json:"scopeInstances,omitempty"`
+	// Ceiling fields if platform limits are configured explicitly per bot.
+	CeilingMemoryMB int64   `json:"ceilingMemoryMb,omitempty"`
+	CeilingCPUs     float64 `json:"ceilingCpus,omitempty"`
+	CeilingPids     int64   `json:"ceilingPids,omitempty"`
+}
+
+// PlatformLimits are optional hard limits across all bots on the platform.
+type PlatformLimits struct {
+	MaxMemoryMB int64   `json:"maxMemoryMb,omitempty"`
+	MaxCPUs     float64 `json:"maxCpus,omitempty"`
+	MaxPids     int64   `json:"maxPids,omitempty"`
 }
 
 // Limits are the limits and timeouts of section 11.1 and the rates of 9.2.
@@ -170,6 +181,7 @@ type Config struct {
 	Bots      []Bot  `json:"bots"`
 	Limits    Limits `json:"limits"`
 	StatsFile string `json:"statsFile"`
+	PlatformLimits *PlatformLimits `json:"platformLimits,omitempty"`
 }
 
 // ScopeInstanceRe is the name of a shared scope instance directory:
@@ -345,6 +357,14 @@ func (c *Config) Validate() error {
 			return errors.New("config: duplicate botKey in bots")
 		}
 		keys[b.BotKey] = true
+		if b.CeilingMemoryMB < 0 || b.CeilingCPUs < 0 || b.CeilingPids < 0 {
+			return errors.New("config: bot ceilings must not be negative")
+		}
+		if b.CeilingMemoryMB > 0 && b.MaxMemoryMB > b.CeilingMemoryMB ||
+			b.CeilingCPUs > 0 && b.MaxCPUs > b.CeilingCPUs ||
+			b.CeilingPids > 0 && b.MaxPids > b.CeilingPids {
+			return errors.New("config: bot limits exceed configured ceilings")
+		}
 		if b.MaxMemoryMB <= 0 || b.MaxPids <= 0 || !(b.MaxCPUs > 0) {
 			return errors.New("config: the ceilings of a bot must be greater than zero")
 		}
@@ -357,6 +377,18 @@ func (c *Config) Validate() error {
 				return errors.New("config: duplicate entry in bots[].scopeInstances")
 			}
 			seenInstances[inst] = true
+		}
+	}
+	if c.PlatformLimits != nil {
+		if c.PlatformLimits.MaxMemoryMB < 0 || c.PlatformLimits.MaxCPUs < 0 || c.PlatformLimits.MaxPids < 0 {
+			return errors.New("config: platform limits must not be negative")
+		}
+		for _, b := range c.Bots {
+			if c.PlatformLimits.MaxMemoryMB > 0 && b.MaxMemoryMB > c.PlatformLimits.MaxMemoryMB ||
+				c.PlatformLimits.MaxCPUs > 0 && b.MaxCPUs > c.PlatformLimits.MaxCPUs ||
+				c.PlatformLimits.MaxPids > 0 && b.MaxPids > c.PlatformLimits.MaxPids {
+				return errors.New("config: bot limits exceed platform limits")
+			}
 		}
 	}
 	return c.Limits.validate()
@@ -389,4 +421,83 @@ func (c *Config) Bot(botKey string) (Bot, bool) {
 		}
 	}
 	return Bot{}, false
+}
+
+// CeilingsFor returns the platform limits for a given bot.
+func (c *Config) CeilingsFor(botKey string) (maxMem int64, maxCPUs float64, maxPids int64, ok bool) {
+	b, found := c.Bot(botKey)
+	if !found {
+		return 0, 0, 0, false
+	}
+	if b.CeilingMemoryMB > 0 {
+		maxMem = b.CeilingMemoryMB
+	}
+	if b.CeilingCPUs > 0 {
+		maxCPUs = b.CeilingCPUs
+	}
+	if b.CeilingPids > 0 {
+		maxPids = b.CeilingPids
+	}
+	if c.PlatformLimits != nil {
+		if c.PlatformLimits.MaxMemoryMB > 0 && (maxMem <= 0 || c.PlatformLimits.MaxMemoryMB < maxMem) {
+			maxMem = c.PlatformLimits.MaxMemoryMB
+		}
+		if c.PlatformLimits.MaxCPUs > 0 && (maxCPUs <= 0 || c.PlatformLimits.MaxCPUs < maxCPUs) {
+			maxCPUs = c.PlatformLimits.MaxCPUs
+		}
+		if c.PlatformLimits.MaxPids > 0 && (maxPids <= 0 || c.PlatformLimits.MaxPids < maxPids) {
+			maxPids = c.PlatformLimits.MaxPids
+		}
+	}
+	if maxMem <= 0 {
+		maxMem = b.MaxMemoryMB
+	}
+	if maxCPUs <= 0 {
+		maxCPUs = b.MaxCPUs
+	}
+	if maxPids <= 0 {
+		maxPids = b.MaxPids
+	}
+	return maxMem, maxCPUs, maxPids, true
+}
+
+func CeilingsForTest(c *Config, botKey string) (int64, float64, int64, bool) { return c.CeilingsFor(botKey) }
+
+// Clone returns a deep copy of the configuration.
+func (c *Config) Clone() *Config {
+	cp := *c
+	if c.Caller != nil {
+		callerCopy := *c.Caller
+		if c.Caller.ContainerLabels != nil {
+			callerCopy.ContainerLabels = make(map[string]string, len(c.Caller.ContainerLabels))
+			for k, v := range c.Caller.ContainerLabels {
+				callerCopy.ContainerLabels[k] = v
+			}
+		}
+		if c.Caller.Argv != nil {
+			callerCopy.Argv = append([]string(nil), c.Caller.Argv...)
+		}
+		cp.Caller = &callerCopy
+	}
+	if c.Images != nil {
+		cp.Images = append([]string(nil), c.Images...)
+	}
+	if c.MountSources != nil {
+		cp.MountSources = append([]string(nil), c.MountSources...)
+	}
+	if c.Bots != nil {
+		cp.Bots = make([]Bot, len(c.Bots))
+		for i, b := range c.Bots {
+			bCopy := b
+			if b.ScopeInstances != nil {
+				bCopy.ScopeInstances = append([]string(nil), b.ScopeInstances...)
+			}
+			cp.Bots[i] = bCopy
+		}
+	}
+	if c.PlatformLimits != nil {
+		pl := *c.PlatformLimits
+		cp.PlatformLimits = &pl
+	}
+	return &cp
 }
