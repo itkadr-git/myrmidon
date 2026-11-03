@@ -266,13 +266,33 @@ board_configs() {
 list_bots() {
   local body
   body="$(board_configs)" || return 1
-  jq -r --arg site "${MYR_BOT_SITE:-}" '[.[]? | select(.adapterType == "hermes_gateway")
+  jq -r --arg site "${MYR_BOT_SITE:-}" '
+    def memory_mb:
+      if . == null then 1024
+      elif (type == "number" and isfinite and . > 0 and (floor == .)) then .
+      elif (type == "string" and test("^[0-9]+(m|g|MiB|GiB)$")) then
+        capture("^(?<n>[0-9]+)(?<u>m|g|MiB|GiB)$") as $v
+        | ($v.n | tonumber) * (if $v.u == "m" or $v.u == "MiB" then 1 else (if $v.u == "g" then 1000 else 1024 end) end)
+      else error("container.memoryMb must be a positive integer MB or a quantity ending in m, g, MiB, or GiB") end
+      | if . > 0 and . <= 9223372036854775807 then . else error("container.memoryMb is out of range") end;
+    def positive_number($name; $default):
+      if . == null then $default
+      elif (type == "number" and isfinite and . > 0) then .
+      else error(("container." + $name + " must be a positive number")) end;
+    def positive_integer($name; $default):
+      if . == null then $default
+      elif (type == "number" and isfinite and . > 0 and (floor == .)) then .
+      else error(("container." + $name + " must be a positive integer")) end;
+    [.[]? | select(.adapterType == "hermes_gateway")
       | select($site == "" or ((.adapterConfig.container.host // "local") == $site) or ($site == "local" and (.adapterConfig.container.host == null or .adapterConfig.container.host == "local")))
       | select((.adapterConfig.container // {}) | (.enabled == true))
-      | [.id,
-         ((.adapterConfig.container.memoryMb // 1024) | tostring),
-         ((.adapterConfig.container.cpus // 1) | tostring),
-         ((.adapterConfig.container.pidsLimit // 512) | tostring)] | join("|")] | join("\n")' <<<"$body" 2>/dev/null
+      | .adapterConfig.container as $c
+      | [ .id,
+          ($c.memoryMb | memory_mb | tostring),
+          ($c.cpus | positive_number("cpus"; 1) | tostring),
+          ($c.pidsLimit | positive_integer("pidsLimit"; 512) | tostring) ]
+      | join("|")]
+    | join("\n")' <<<"$body"
 }
 
 # The image a bot card pins right now ("" when the card names none).
@@ -302,7 +322,9 @@ bot_categories() {
       | (if $c.enabled != true then "adapterConfig.container.enabled is not true"
          elif ($c.group != null) then "container.group (a container shared by several agents) is not supported yet"
          elif (($c.image | type) != "string" or ($c.image | gsub("\\s"; "") | length) == 0) then "container.image must be a non-empty string"
-         elif (($c.memoryMb | type) != "number" or $c.memoryMb <= 0) then "container.memoryMb must be a positive number"
+         elif (($c.memoryMb | type) == "number" and ($c.memoryMb <= 0 or ($c.memoryMb | isfinite | not) or ($c.memoryMb | floor) != $c.memoryMb)) then "container.memoryMb must be a positive integer"
+         elif (($c.memoryMb | type) == "string" and (($c.memoryMb | test("^[0-9]+(m|g|MiB|GiB)$")) | not)) then "container.memoryMb must be a positive integer or a quantity ending in m, g, MiB, or GiB"
+         elif (($c.memoryMb | type) != "number" and ($c.memoryMb | type) != "string") then "container.memoryMb must be a positive integer or a quantity ending in m, g, MiB, or GiB"
          elif (($c.cpus | type) != "number" or $c.cpus <= 0) then "container.cpus must be a positive number"
          elif (($c.pidsLimit | type) != "number" or $c.pidsLimit <= 0 or ($c.pidsLimit | floor) != $c.pidsLimit) then "container.pidsLimit must be a positive integer"
          else null end) as $reason
