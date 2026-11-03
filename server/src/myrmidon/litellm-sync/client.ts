@@ -199,6 +199,10 @@ export function createLitellmSyncClient(deps: LitellmSyncClientDeps): LitellmSyn
       await callLiteLLM("/model/delete", { id: modelId });
     },
 
+    async invalidateCache() {
+      await callLiteLLM("/cache/delete", {});
+    },
+
     async unregisterModel(litellmModelName) {
       const payload = {
         model_names: [litellmModelName],
