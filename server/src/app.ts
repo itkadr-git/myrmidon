@@ -77,6 +77,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
+import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -107,13 +108,14 @@ import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
 import { instanceSecretSettingsRoutes } from "./myrmidon/secret-settings/routes.js"; // myrmidon(SETTINGS-UI E2.1)
 import { installInstanceSecretResolver } from "./myrmidon/secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.2)
 import { createInstanceSecretSettingService } from "./myrmidon/secret-settings/wiring.js"; // myrmidon(SETTINGS-UI E2.2)
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { boardJanitorRoutes } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
-import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
+import { myrmidonDeployJobsRoutes, myrmidonAutoUpdateRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A, 1.7-AUTO-UPDATE-B)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 import { myrmidonCorpusRoutes, resolveCorpusPorts } from "./myrmidon/corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)
@@ -1161,6 +1163,7 @@ export async function createApp(
   api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
+  api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
@@ -1196,12 +1199,14 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
+  api.use(updatesRoutes(db)); // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
   api.use(instanceSecretSettingsRoutes(db)); // myrmidon(SETTINGS-UI E2.1)
   installInstanceSecretResolver(createInstanceSecretSettingService(db)); // myrmidon(SETTINGS-UI E2.2)
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
+  api.use(myrmidonAutoUpdateRoutes(db)); // myrmidon(1.7-AUTO-UPDATE-B)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonPauseGuardRoutes(db)); // myrmidon(PAUSE-GUARD)
   api.use(myrmidonRunPriorityRoutes(db)); // myrmidon(1.6.5 RUN-PRIORITY A)

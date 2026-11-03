@@ -112,6 +112,8 @@ export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
+export { providerUsageService } from "./provider-usage.js";
+export type { ProviderUsageIngestResult } from "./provider-usage.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
@@ -238,3 +240,19 @@ export {
   setSessionDb,
   getSessionDb,
 } from "./session-service.js";
+export {
+  MockSshExecutor,
+  createMockSshExecutor,
+  SshAuthenticationError,
+  SshConnectionError,
+  SshTimeoutError,
+  type CommandHandler,
+  type LoggedCommand,
+  type MockServerInventory,
+  type MockSshConfig,
+  type SshAuthScenario,
+  type SshConnectionOptions,
+  type SshExecuteOptions,
+  type SshExecutionResult,
+  type SshExecutor,
+} from "./fleet/mock-ssh-executor.js";

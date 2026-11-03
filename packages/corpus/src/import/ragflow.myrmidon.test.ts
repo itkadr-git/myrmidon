@@ -238,7 +238,7 @@ describe("RAGFlow corpus import", () => {
       embed: embedFixture,
     });
     expect(result.embedded).toBe(5);
-    expect(memory.datasets.values().next().value?.embeddingModel).toBe("hindsight-embed-bge-m3");
+    expect(memory.datasets.values().next().value?.embeddingModel).toBe("corpus-embed-pplx-0.6b");
   });
 
   it("refuses source document and chunk count mismatches before embeddings or writes", async () => {

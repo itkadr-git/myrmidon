@@ -880,10 +880,12 @@ log "phase gateway_launch pid=${gateway_pid} running"
 run_live_session_maintenance() {
   local retention_days="${MYRMIDON_BOTD_SESSION_RETENTION_DAYS:-30}"
   local interval="${MYRMIDON_BOTD_SESSION_DELETE_PAUSE_SEC:-1}"
+  local max_mb="${MYRMIDON_BOTD_SESSION_MAX_MB:-500}"
   local base="http://127.0.0.1:${API_SERVER_PORT}"
   local key="${API_SERVER_KEY:-}"
   [[ "$retention_days" =~ ^[0-9]+$ ]] || retention_days=30
   [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || interval=1
+  [[ "$max_mb" =~ ^[0-9]+$ ]] || max_mb=500
   command -v curl >/dev/null 2>&1 || { log "WARNING: session retention skipped: curl is unavailable"; return 0; }
   command -v python3 >/dev/null 2>&1 || { log "WARNING: session retention skipped: python3 is unavailable"; return 0; }
 
@@ -904,6 +906,11 @@ run_live_session_maintenance() {
   local manifest="${archive_dir}/live-sessions-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
   local list_file="${archive_dir}/.sessions.$$"
   local auth=(-H "Authorization: Bearer ${key}")
+  local state_db="${HERMES_HOME}/state.db"
+  local bytes_before=0 bytes_after=0
+  if [ -f "$state_db" ]; then
+    bytes_before="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
   : >"$list_file"
   local offset=0 page_file page_count
   while :; do
@@ -919,7 +926,8 @@ run_live_session_maintenance() {
 import json, sys
 try:
     value=json.load(open(sys.argv[1]))
-    print(len(value.get("sessions", [])) if isinstance(value, dict) else 0)
+    sessions = value.get("data") if "data" in value else value.get("sessions", [])
+    print(len(sessions) if isinstance(sessions, list) else 0)
 except Exception:
     print(0)
 PYEOF
@@ -929,9 +937,37 @@ PYEOF
     offset=$((offset + 100))
   done
   local ids
-  ids="$(python3 - "$list_file" "$retention_days" <<'PYEOF'
-import json, sys, time
-cutoff = time.time() - int(sys.argv[2]) * 86400
+  ids="$(python3 - "$list_file" "$retention_days" "$max_mb" "${HERMES_HOME}/state.db" <<'PYEOF'
+import json, os, sqlite3, sys, time
+retention_days = int(sys.argv[2]) if sys.argv[2].isdigit() else 30
+max_mb = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 500
+db_path = sys.argv[4] if len(sys.argv) > 4 else ""
+
+cutoff = time.time() - retention_days * 86400
+
+used_bytes = 0
+if db_path and os.path.exists(db_path):
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = con.cursor()
+        page_count = cur.execute("PRAGMA page_count").fetchone()[0]
+        freelist_count = cur.execute("PRAGMA freelist_count").fetchone()[0]
+        page_size = cur.execute("PRAGMA page_size").fetchone()[0]
+        con.close()
+        used_bytes = max(0, (page_count - freelist_count) * page_size)
+    except Exception:
+        try:
+            used_bytes = os.path.getsize(db_path)
+        except OSError:
+            used_bytes = 0
+
+max_bytes = max_mb * 1024 * 1024 if max_mb > 0 else 0
+excess = max(0, used_bytes - max_bytes) if max_bytes > 0 else 0
+
+eligible_sessions = []
+total_session_count = 0
+total_message_count = 0
+
 try:
     # Each page is a JSON document concatenated by the shell. Parse pages
     # independently so a large fleet never becomes one in-memory response.
@@ -940,16 +976,50 @@ try:
             value = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        for row in value.get("sessions", []) if isinstance(value, dict) else []:
-            if not isinstance(row, dict) or row.get("pinned") or row.get("is_active"):
+        sessions = (value.get("data") if "data" in value else value.get("sessions", [])) if isinstance(value, dict) else []
+        for row in sessions if isinstance(sessions, list) else []:
+            if not isinstance(row, dict):
                 continue
-            last_active = row.get("last_active")
-            if isinstance(last_active, (int, float)) and last_active < cutoff:
-                sid = row.get("id")
-                if isinstance(sid, str) and sid:
-                    print(sid)
+            total_session_count += 1
+            msg_count = row.get("message_count")
+            if isinstance(msg_count, int) and msg_count > 0:
+                total_message_count += msg_count
+            if row.get("pinned") or row.get("is_active"):
+                continue
+            last_active = row.get("last_active") or row.get("ended_at") or row.get("started_at")
+            sid = row.get("id")
+            if isinstance(sid, str) and sid:
+                eligible_sessions.append((last_active if isinstance(last_active, (int, float)) else 0, sid, row))
 except OSError:
     pass
+
+# Sort eligible sessions oldest first
+eligible_sessions.sort(key=lambda x: x[0])
+
+avg_session_bytes = (used_bytes / max(1, total_session_count)) if total_session_count > 0 else 1
+
+to_delete = set()
+for last_active, sid, row in eligible_sessions:
+    if last_active < cutoff:
+        to_delete.add(sid)
+        msg_count = row.get("message_count")
+        est = (msg_count * (used_bytes / max(1, total_message_count))) if (isinstance(msg_count, int) and total_message_count > 0) else avg_session_bytes
+        excess -= est
+
+if excess > 0:
+    for last_active, sid, row in eligible_sessions:
+        if sid in to_delete:
+            continue
+        to_delete.add(sid)
+        msg_count = row.get("message_count")
+        est = (msg_count * (used_bytes / max(1, total_message_count))) if (isinstance(msg_count, int) and total_message_count > 0) else avg_session_bytes
+        excess -= est
+        if excess <= 0:
+            break
+
+for last_active, sid, row in eligible_sessions:
+    if sid in to_delete:
+        print(sid)
 PYEOF
 )"
   rm -f "$list_file"
@@ -971,8 +1041,13 @@ PYEOF
     sleep "$interval"
   done <<<"$ids"
   mv -f "${manifest}.tmp" "$manifest" 2>/dev/null || true
-  printf '{"downloaded":%s,"deleted":%s,"updatedAt":"%s"}\n' "$downloaded" "$deleted" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${HERMES_HOME}/.myrmidon/session-prune.json"
-  log "phase live_session_maintenance completed: downloaded ${downloaded}, deleted ${deleted}"
+  if [ -f "$state_db" ]; then
+    bytes_after="$(stat -c%s "$state_db" 2>/dev/null || stat -f%z "$state_db" 2>/dev/null || echo 0)"
+  fi
+  printf '{"stateDbBytesBefore":%s,"stateDbBytesAfter":%s,"deletedSessions":%s,"downloaded":%s,"deleted":%s,"updatedAt":"%s"}\n' \
+    "$bytes_before" "$bytes_after" "$deleted" "$downloaded" "$deleted" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"${HERMES_HOME}/.myrmidon/session-prune.json"
+  log "phase live_session_maintenance completed: downloaded ${downloaded}, deleted ${deleted}, state.db bytes: ${bytes_before} -> ${bytes_after}"
 }
 
 # Maintenance is intentionally detached from gateway startup. A failed pass is

@@ -79,6 +79,7 @@ RUN apt-get update \
     build-essential \
     ca-certificates \
     git \
+    pyflakes3 \
     python3-dev \
   && rm -rf /var/lib/apt/lists/*
 
@@ -288,6 +289,11 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools
+# myrmidon(OPE-10755): statically verify no undefined names (pyflakes F821 / NameError
+# on start) in any module touched by patches/*.patch (#1381 / rc.31 incident where
+# missing SessionStore in gateway/run_startup.py passed top-level import checks but
+# crashed fleet startup).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/undefined_names.py /opt/hermes-src
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and

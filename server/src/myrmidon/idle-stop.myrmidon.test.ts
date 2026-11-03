@@ -638,7 +638,7 @@ describe('IdleStopService', () => {
     it('is enabled by default', () => {
       const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
       service.start();
-      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000');
+      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=420000');
       service.stop();
     });
 

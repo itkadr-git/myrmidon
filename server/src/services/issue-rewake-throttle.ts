@@ -55,6 +55,8 @@ export const ISSUE_REWAKE_FREEZE_THRESHOLD = 6;
  */
 export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_continuation_needed",
+  "task_ticker",
+  "task-ticker",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",
   // myrmidon(OPE-10582 п.2): автоматические пробуждения, которые образуют

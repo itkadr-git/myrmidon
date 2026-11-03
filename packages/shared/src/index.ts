@@ -935,6 +935,8 @@ export type {
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
   InstanceExecutionMode,
+  InstanceNumberFormat,
+  InstanceDateFormat,
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
@@ -1792,6 +1794,9 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1830,6 +1835,10 @@ export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   boardProcessesSettingsSchema,
+  isValidIanaTimeZone,
+  instanceTimeZoneSchema,
+  instanceNumberFormatSchema,
+  instanceDateFormatSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -2561,6 +2570,9 @@ export {
   type BlockUserInput,
   auditQuerySchema,
   type AuditQueryInput,
+  sshDryRunInputSchema,
+  type SshDryRunInput,
+  type SshDryRunAuth,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
@@ -3081,6 +3093,8 @@ export * from "./locale-upload.js";
 
 // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): maintenance window cron schedule validator.
 export * from "./myrmidon-auto-update-window-cron.js";
+export * from "./validators/updates.js";
+export * from "./validators/auto-update-settings.js";
 
 // myrmidon(1.7-REBRAND-F): the vendor-name gate as an instance setting — the
 // mode (ratchet / strict), the baseline and the source of each value.

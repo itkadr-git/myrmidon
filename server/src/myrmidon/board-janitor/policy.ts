@@ -27,6 +27,9 @@ export interface IssueCandidate {
   lastActivityAt?: Date | null;
   labels?: Array<{ name: string; createdAt?: Date }>;
   metadata?: Record<string, unknown> | null;
+  blockerMetadata?: Record<string, unknown> | null;
+  unblockDescriptor?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
 }
 
 export interface WorkProductCandidate {
@@ -196,6 +199,51 @@ export function judgeStaleBlock(
   if (task.status !== "blocked") return null;
   if (openBlockerCount > 0 || openChildCount > 0) return null;
 
+  // myrmidon(BOARD-JANITOR OPE-10750): do not unblock typed blocker reasons:
+  // 1. blockerMetadata with typed blockReason in {external_wait, human_decision, resource, recovery}
+  //    and non-expired timeoutAt.
+  const blocker = (task.blockerMetadata ?? task.metadata) as Record<string, unknown> | null | undefined;
+  const blockReason = typeof blocker?.blockReason === "string" ? blocker.blockReason : null;
+  if (
+    blockReason &&
+    ["external_wait", "human_decision", "resource", "recovery"].includes(blockReason)
+  ) {
+    const timeoutAt = blocker?.timeoutAt;
+    if (!timeoutAt) {
+      return null;
+    }
+    const timeoutDate = new Date(timeoutAt as string | number | Date);
+    if (!Number.isNaN(timeoutDate.getTime()) && timeoutDate.getTime() > now.getTime()) {
+      return null;
+    }
+  }
+
+  // 2. unblock_descriptor.reasonRef.dueAt in the future
+  const unblockDesc = (task.unblockDescriptor ?? (blocker as any)?.unblockDescriptor) as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const reasonRef = (unblockDesc?.reasonRef ?? (blocker as any)?.reasonRef) as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const dueAt = reasonRef?.dueAt;
+  if (dueAt) {
+    const dueDate = new Date(dueAt as string | number | Date);
+    if (!Number.isNaN(dueDate.getTime()) && dueDate.getTime() > now.getTime()) {
+      return null;
+    }
+  }
+
+  // 3. active monitor (monitorNextCheckAt or nextCheckAt in future)
+  const monitorNextCheckAt = task.monitorNextCheckAt ?? (blocker as any)?.monitorNextCheckAt ?? blocker?.nextCheckAt;
+  if (monitorNextCheckAt) {
+    const monitorDate = new Date(monitorNextCheckAt as string | number | Date);
+    if (!Number.isNaN(monitorDate.getTime()) && monitorDate.getTime() > now.getTime()) {
+      return null;
+    }
+  }
+
   if (lastComment && hasQuestionPattern(lastComment.body)) {
     const commentTime = new Date(lastComment.createdAt).getTime();
     const daysWaiting = Math.max(0, Math.floor((now.getTime() - commentTime) / (86400 * 1000)));
@@ -214,15 +262,34 @@ export function judgeStaleBlock(
 }
 
 /**
- * Checks if a task belongs to a release version.
+ * Checks if a task, label, or string belongs to a release version.
+ * Rule of owner: release membership is determined strictly by label, never by title.
  */
-export function extractReleasePrefix(title: string): string | null {
-  const match = title.match(/^(\d+\.\d+(?:\.\d+)?)/);
-  return match ? match[1] : null;
+export function extractReleasePrefix(
+  input: string | Array<{ name: string; createdAt?: Date } | string> | { labels?: Array<{ name: string; createdAt?: Date } | string> } | null | undefined,
+): string | null {
+  if (!input) return null;
+
+  if (typeof input === "string") {
+    const match = input.trim().match(/^v?(\d+\.\d+(?:\.\d+)?)/i);
+    return match ? match[1] : null;
+  }
+
+  const labelList = Array.isArray(input) ? input : input.labels;
+  if (!labelList || !Array.isArray(labelList)) return null;
+
+  for (const item of labelList) {
+    const name = typeof item === "string" ? item : item?.name;
+    if (!name) continue;
+    const match = name.trim().match(/^v?(\d+\.\d+(?:\.\d+)?)/i);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 /**
  * Rule 3: Unassigned task in a release -> role distribution queue (DEVFLOW-9678).
+ * Rule of owner: release membership is determined strictly by label, never by title.
  */
 export function judgeUnassignedReleaseTask(
   task: IssueCandidate,
@@ -230,7 +297,7 @@ export function judgeUnassignedReleaseTask(
   if (!isOpenStatus(task.status)) return null;
   if (task.assigneeAgentId || task.assigneeUserId) return null;
 
-  const releasePrefix = extractReleasePrefix(task.title);
+  const releasePrefix = extractReleasePrefix(task.labels);
   if (!releasePrefix) return null;
 
   return {
