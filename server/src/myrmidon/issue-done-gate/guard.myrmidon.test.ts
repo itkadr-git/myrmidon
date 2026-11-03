@@ -105,7 +105,16 @@ describe("issue done pull-request gate", () => {
         .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
         .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{
           ...product({ id: "wp-merged-now", number: 95, status: "merged" }),
-          metadata: { repo: "acme/project", number: 95, state: "merged", draft: false },
+          metadata: {
+            repo: "acme/project",
+            number: 95,
+            state: "merged",
+            draft: false,
+            baseRef: "main",
+            defaultBranch: "main",
+            mergeCommitSha: "abc123",
+            mergeCommitReachable: true,
+          },
         }]) })) }),
     } as never;
     await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
