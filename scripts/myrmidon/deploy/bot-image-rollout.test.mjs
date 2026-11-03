@@ -486,6 +486,42 @@ function run(sb, script, args) {
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
 }
 
+function setAgents(sb, containers) {
+  const agents = containers.map((container, index) => ({
+    id: `bot-${index + 1}`,
+    adapterType: "hermes_gateway",
+    status: "idle",
+    adapterConfig: { container: { enabled: true, ...container } },
+  }));
+  fs.writeFileSync(path.join(sb.dir, "agents.json"), JSON.stringify(agents));
+}
+
+describe("bot-image-rollout.sh: memory limit validation", () => {
+  it("normalizes supported memory units and rejects malformed limits", () => {
+    const sb = sandbox({
+      agents: [
+        { id: "bot-1", image: `${BOT}@${OLD_DEV}`, memoryMb: "512m", cpus: 2, pidsLimit: 128 },
+        { id: "bot-2", image: `${BOT}@${OLD_DEV}`, memoryMb: "2GiB", cpus: 2, pidsLimit: 128 },
+        { id: "bot-3", image: `${BOT}@${OLD_DEV}`, adapterConfig: { container: { enabled: true, image: `${BOT}@${OLD_DEV}`, memoryMb: null, cpus: 2, pidsLimit: 128 } } },
+      ],
+    });
+    const cfg = dockergateConfig(sb);
+    cfg.bots = [];
+    fs.writeFileSync(sb.dgConfig, JSON.stringify(cfg));
+    const valid = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(valid.code, 0, valid.out);
+    const enrolled = dockergateConfig(sb).bots;
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-1").maxMemoryMb, 512);
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-2").maxMemoryMb, 2048);
+    assert.deepEqual(enrolled.find((bot) => bot.botKey === "bot-3").maxMemoryMb, 1024);
+
+    const invalidSb = sandbox({ agents: [{ id: "bot-invalid", image: `${BOT}@${OLD_DEV}`, memoryMb: "2G", cpus: 2, pidsLimit: 128 }] });
+    const invalid = run(invalidSb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.out, /memoryMb/);
+  });
+});
+
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 const sighups = (sb) => read(path.join(sb.dir, "sighup.log"));
