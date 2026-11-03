@@ -75,9 +75,10 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
       continue;
     }
     const outcome = await db.transaction(async (tx) => {
-      const [lockedSource] = await tx.select().from(issues).where(and(eq(issues.id, validRow.issueId), eq(issues.status, "blocked"), isNull(issues.blockerMetadata))).for("update");
-      if (!lockedSource) return { outcome: "skipped" as const, detail: "Source is missing, no longer blocked, or already has metadata." };
-      const source = lockedSource;
+      const [existingSource] = await tx.select().from(issues).where(eq(issues.id, validRow.issueId)).for("update");
+      if (!existingSource) return { outcome: "skipped" as const, detail: "Source issue not found." };
+      const source = existingSource;
+
       const [journal] = await tx.select().from(legacyBlockedImports).where(and(
         eq(legacyBlockedImports.companyId, source.companyId), eq(legacyBlockedImports.importKey, validRow.importKey),
       ));
@@ -85,6 +86,9 @@ export async function runLegacyBlockedApply(db: Db, options: LegacyBlockedApplyO
         return journal.resultIssueId
           ? { outcome: "already_applied" as const, detail: "Import journal already has a result.", resultIssueId: journal.resultIssueId }
           : { outcome: "skipped" as const, detail: "Journal indicates a partial prior apply; retained for reconciliation." };
+      }
+      if (source.status !== "blocked" || source.blockerMetadata !== null) {
+        return { outcome: "skipped" as const, detail: "Source is missing, no longer blocked, or already has metadata." };
       }
       if (validRow.class === "dependency") {
         if (validRow.oldBlockers.length === 0) return { outcome: "skipped" as const, detail: "No explicit old blockers; retained blocked." };
