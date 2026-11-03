@@ -1,0 +1,86 @@
+name: Main green gate
+
+# MERGE-ON-RED-MAIN (OPE-10789, 03.11):
+# Between a red Myrmidon CI on main and a green CI, merges into main must be blocked.
+# GitHub's native auto-merge only evaluates PR checks, so a broken main would keep
+# receiving merged PRs.
+#
+# This workflow runs the `main-green` check on pull requests targeting main.
+# Operator: add this check ("main-green" of "Main green gate") to the required status
+# checks of main; GitHub auto-merge will then refuse to merge whenever main is red.
+#
+# When "Myrmidon CI" completes on main, the second job re-runs failed gate checks
+# for open PRs once main is green again.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_run:
+    workflows: ["Myrmidon CI"]
+    types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  main-green:
+    name: main-green
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'pull_request' }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Fail while main CI is red or pending
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/ci/main-green-gate.sh --check
+
+  rerun-failed-main-green:
+    name: re-run failed main-green gates
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Re-run failed main-green checks of open pull requests once main is green
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/ci/main-green-rerun.sh
