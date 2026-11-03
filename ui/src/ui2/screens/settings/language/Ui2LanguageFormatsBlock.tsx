@@ -36,12 +36,12 @@ export function Ui2LanguageFormatsBlock() {
   const setValue = (key: keyof SettingsPatch, value: string) => setDraft((current) => ({ ...current, [key]: value } as SettingsPatch));
   const source = (key: keyof SettingsPatch) => draft[key] !== undefined ? t("ui2.settings.language.formats.source.pending") : settings?.[key] !== undefined ? t("ui2.settings.language.formats.source.settings") : t("ui2.settings.language.formats.source.default");
 
-  if (query.isLoading) return <Ui2Section title={t("ui2.settings.language.formats.title")}><p>{t("common.loading")}</p></Ui2Section>;
+  if (query.isLoading) return <Ui2Section title={t("ui2.settings.language.formats.title")}><p>{t("ui2.common.loading")}</p></Ui2Section>;
   return <Ui2Section title={t("ui2.settings.language.formats.title")}>
     <div className="space-y-4">
       <label className="block text-sm"><span>{t("ui2.settings.language.formats.timeZone")}</span> <span className="text-xs text-muted-foreground">({source("timeZone")})</span>
         <input className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={search} placeholder={t("ui2.settings.language.formats.timeZonePlaceholder")} onChange={(event) => setSearch(event.target.value)} onBlur={() => { if (search && timeZones.includes(search)) setValue("timeZone", search); }} />
-        <select className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={values.timeZone} onChange={(event) => setValue("timeZone", event.target.value)}>{filteredZones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select>
+        <select className="mt-1 block w-full rounded-md border border-border bg-background p-2" value={values.timeZone} onChange={(event) => { setValue("timeZone", event.target.value); setFieldError(null); }}>{filteredZones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select>
         {fieldError && <span className="text-sm text-destructive">{fieldError}</span>}
       </label>
       <label className="block text-sm"><span>{t("ui2.settings.language.formats.numberFormat")}</span> <span className="text-xs text-muted-foreground">({source("numberFormat")})</span>
@@ -51,7 +51,7 @@ export function Ui2LanguageFormatsBlock() {
         <select className="mt-1 block rounded-md border border-border bg-background p-2" value={values.dateFormat} onChange={(event) => setValue("dateFormat", event.target.value as InstanceDateFormat)}><option value="ymd">ymd</option><option value="dmy">dmy</option><option value="mdy">mdy</option></select>
       </label>
       <p className="rounded-md border border-border p-3 text-sm"><strong>{t("ui2.settings.language.formats.preview")}</strong>: {preview}</p>
-      <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" disabled={!Object.keys(draft).length || mutation.isPending} onClick={() => mutation.mutate(draft)}>{t("common.save")}</button>
+      <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" disabled={!Object.keys(draft).length || mutation.isPending} onClick={() => mutation.mutate(draft)}>{t("ui2.common.save")}</button>
     </div>
   </Ui2Section>;
 }

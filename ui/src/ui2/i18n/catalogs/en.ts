@@ -771,6 +771,15 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
+          formats: {
+            title: string;
+            timeZone: string;
+            timeZonePlaceholder: string;
+            numberFormat: string;
+            dateFormat: string;
+            preview: string;
+            source: { default: string; settings: string; pending: string };
+          };
         };
         runs: {
           drain: {
