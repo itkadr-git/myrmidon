@@ -199,6 +199,10 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  // Auto-update settings (OPE-10268)
+  putUpdateSettingsSchema,
+  patchUpdateSettingsSchema,
+  updateSettingsSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -6462,6 +6466,45 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268): routes/updates.ts serves one
+// settings document under /updates/settings, /updates and /myrmidon/updates/settings.
+for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/updates/settings"]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Get auto-update settings",
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  if (path !== "/api/myrmidon/updates/settings") {
+    registry.registerPath({
+      method: "patch",
+      path,
+      tags: ["instance"],
+      summary: "Update auto-update settings",
+      request: { body: jsonBody(patchUpdateSettingsSchema) },
+      responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+    });
+  }
+}
+
+registry.registerPath({
+  method: "post",
+  path: "/api/updates/validate",
+  tags: ["instance"],
+  summary: "Validate auto-update settings without saving them",
+  request: { body: jsonBody(updateSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
