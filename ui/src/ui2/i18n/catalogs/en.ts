@@ -781,7 +781,12 @@ export type Ui2Catalog = {
             timeZone: string;
             timeZonePlaceholder: string;
             numberFormat: string;
+            numberFormatEnUs: string;
+            numberFormatRuRu: string;
             dateFormat: string;
+            dateFormatYmd: string;
+            dateFormatDmy: string;
+            dateFormatMdy: string;
             preview: string;
             source: { default: string; settings: string; pending: string };
           };
