@@ -100,10 +100,9 @@ func TestAllow_A18_LimitsAtTheCap(t *testing.T) {
 }
 
 func TestDeny_A18_AuthenticationFailureDoesNotReachDaemon(t *testing.T) {
-	r := newRig(t)
+	r := newRig(t, withContainerCaller())
 	r.seedMain("running")
-	// In UID/GID mode, the admitted peer must match the configured caller.
-	// A sibling process with the same uid/gid is not the pinned caller.
+	// The rig pins the board's main process; this request comes from a sibling.
 	res := r.send("POST", r.target("", "/update"), map[string]string{
 		"Content-Type": "application/json",
 	}, updateBody(1*gib, 2*gib, 512))
