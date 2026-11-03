@@ -2634,6 +2634,13 @@
       "when": 1793570001000,
       "tag": "0445_corpus_embedding_model",
       "breakpoints": true
+    },
+    {
+      "idx": 446,
+      "version": "7",
+      "when": 1793570002000,
+      "tag": "0446_knowledge_suggestion_idempotency",
+      "breakpoints": true
     }
   ]
 }
