@@ -741,6 +741,7 @@ export function createPullRequestCiResolver(
 
       const cacheKey = `${companyId}:${repoKey}@${headSha}`;
       const cached = ciCache.get(cacheKey);
+      const commitCacheKey = `${repoKey}@${headSha}`;
       const rateLimited = isGitHubRateLimited();
       if (rateLimited) {
         const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
@@ -793,56 +794,6 @@ export function createPullRequestCiResolver(
       }
       if (cached && cached.expiresAt > Date.now()) {
         return cached.result;
-      }
-
-      const commitCacheKey = `${repoKey}@${headSha}`;
-      if (isGitHubRateLimited()) {
-        const resetStr = getGitHubRateLimitResetTime() ?? "unknown";
-        if (cached) {
-          return {
-            ...cached.result,
-            authoritative: false,
-            summary: `${cached.result.summary} (устарел; GitHub rate limit until ${resetStr})`,
-          };
-        }
-        const cachedRunsForHead = checkRunsCache.get(commitCacheKey);
-        if (cachedRunsForHead) {
-          const summarized = summarizeCheckRuns(cachedRunsForHead.runs, {
-            headSha,
-            repository: repoKey,
-            pullNumber: reference.number,
-          });
-          return {
-            repository: repoKey,
-            pullNumber: reference.number,
-            headSha,
-            headRef,
-            ...summarized,
-            status: summarized.status,
-            authoritative: false,
-            conclusion: "rate_limited",
-            summary: `${summarized.summary} (устарел; GitHub rate limit until ${resetStr})`,
-            checkedAt: new Date().toISOString(),
-            runs: cachedRunsForHead.runs,
-          };
-        }
-        return {
-          repository: repoKey,
-          pullNumber: reference.number,
-          headSha,
-          headRef,
-          status: "unavailable",
-          conclusion: "rate_limited",
-          summary: `checks unavailable (GitHub rate limit until ${resetStr})`,
-          authoritative: false,
-          checkedAt: new Date().toISOString(),
-          completedAt: null,
-          totalRuns: 0,
-          successfulRuns: 0,
-          failedRuns: 0,
-          failedJobs: [],
-          runs: [],
-        };
       }
 
       let token: string | null = null;
