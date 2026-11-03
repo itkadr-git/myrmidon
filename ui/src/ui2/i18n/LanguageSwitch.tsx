@@ -16,16 +16,22 @@ import { UI2_LOCALES, type Ui2Locale } from "./locales";
 import { useUi2I18n } from "./Ui2I18n";
 
 export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
-  const { t, locale, setLocale } = useUi2I18n();
+  const { t, locale, setLocale, availableLocales } = useUi2I18n();
 
   return (
     <div
-      className={clsx("ui2-language-switch flex gap-2", compact && "ui2-language-switch--compact")}
+      className={clsx("ui2-language-switch flex flex-wrap gap-2", compact && "ui2-language-switch--compact")}
       role="radiogroup"
       aria-label={t("ui2.settings.language.title")}
     >
-      {UI2_LOCALES.map((candidate) => {
+      {availableLocales.map((candidate) => {
         const selected = locale === candidate;
+        let label = candidate.toUpperCase();
+        if (candidate === "ru") {
+          label = t("ui2.settings.language.ru");
+        } else if (candidate === "en") {
+          label = t("ui2.settings.language.en");
+        }
         return (
           <button
             key={candidate}
@@ -42,7 +48,7 @@ export function LanguageSwitch({ compact = false }: { compact?: boolean }) {
               void setLocale(candidate);
             }}
           >
-            {candidate === "ru" ? t("ui2.settings.language.ru") : t("ui2.settings.language.en")}
+            {label}
             {compact ? null : <span className="sr-only">{t("ui2.settings.language.title")}</span>}
           </button>
         );
