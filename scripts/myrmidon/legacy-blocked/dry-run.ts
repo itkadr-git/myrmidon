@@ -161,7 +161,10 @@ export async function runLegacyBlockedDryRun(
       issueId: issue.id,
       class: classification.class,
       evidence: classification.evidence,
-      proposedOwner: classification.class === "unknown" ? undefined : proposedOwner,
+      proposedOwner:
+      classification.class === "unknown" || classification.class === "human_decision"
+        ? undefined
+        : proposedOwner,
       proposedSlaMinutes,
       oldBlockers: facts.blockerIds ?? [],
       importKey: createLegacyBlockedImportKey(issue.id),
