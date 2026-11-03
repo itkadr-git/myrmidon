@@ -229,6 +229,10 @@ export type CheckRunsFetchResult = PullRequestCiJob[] & {
   etag?: string;
 };
 
+function getResponseHeader(response: Response, name: string): string | null {
+  return response.headers?.get(name) ?? null;
+}
+
 export async function fetchCommitCheckRuns(
   owner: string,
   repo: string,
@@ -274,25 +278,25 @@ export async function fetchCommitCheckRuns(
       result.status = "unavailable";
       result.conclusion = "incomplete";
       result.summary = "checks unchanged (not modified)";
-      result.etag = res.headers.get("etag") ?? options.etag;
+      result.etag = getResponseHeader(res, "etag") ?? options.etag;
       return result;
     }
 
     if (!res.ok) {
       failStatus = res.status;
-      const remaining = res.headers.get("x-ratelimit-remaining");
+      const remaining = getResponseHeader(res, "x-ratelimit-remaining");
       const retryText = (await res.clone().text().catch(() => "")).toLowerCase();
       rateLimited = res.status === 429 ||
         (res.status === 403 && (remaining === "0" || retryText.includes("rate limit")));
       if (rateLimited) {
-        const reset = Number(res.headers.get("x-ratelimit-reset"));
+        const reset = Number(getResponseHeader(res, "x-ratelimit-reset"));
         if (Number.isFinite(reset) && reset > 0) rateLimitResetAt = reset * 1000;
       }
       fetchFailed = true;
       break;
     }
 
-    const responseEtag = res.headers.get("etag");
+    const responseEtag = getResponseHeader(res, "etag");
     const data = (await res.json().catch(() => null)) as {
       total_count?: number;
       check_runs?: Array<{
@@ -501,12 +505,12 @@ export function createPullRequestCiResolver(
       let headRef = cachedHead && cachedHead.expiresAt > Date.now() ? cachedHead.headRef : null;
 
       if (!headSha && isGitHubRateLimited()) {
-        for (const [key, entry] of ciCache.entries()) {
-          if (key.startsWith(`${companyId}:${repoKey}@`) && entry.result.pullNumber === reference.number) {
+        for (const [, entry] of ciCache.entries()) {
+          if (entry.result.repository.toLowerCase() === repoKey.toLowerCase() && entry.result.pullNumber === reference.number) {
             return {
               ...entry.result,
               authoritative: false,
-              summary: `${entry.result.summary} (устарел)`,
+              summary: `${entry.result.summary} (устарел; GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"})`,
             };
           }
         }
@@ -603,7 +607,7 @@ export function createPullRequestCiResolver(
             if (data.head?.ref) {
               headRef = data.head.ref;
             }
-            const etag = response.headers.get("etag");
+            const etag = getResponseHeader(response, "etag");
             prHeadCache.set(prKey, {
               headSha,
               headRef,
@@ -611,12 +615,12 @@ export function createPullRequestCiResolver(
               expiresAt: Date.now() + PR_HEAD_CACHE_TTL_MS,
             });
           } else if (response.status === 429 || response.status === 403) {
-            const remaining = response.headers.get("x-ratelimit-remaining");
+            const remaining = getResponseHeader(response, "x-ratelimit-remaining");
             const retryText = (await response.clone().text().catch(() => "")).toLowerCase();
             const rateLimited = response.status === 429 ||
               (response.status === 403 && (remaining === "0" || retryText.includes("rate limit")));
             if (rateLimited) {
-              const resetSec = Number(response.headers.get("x-ratelimit-reset"));
+              const resetSec = Number(getResponseHeader(response, "x-ratelimit-reset"));
               const resetStr = Number.isFinite(resetSec) && resetSec > 0
                 ? formatUtcTime(new Date(resetSec * 1000))
                 : getGitHubRateLimitResetTime() ?? "unknown";
@@ -710,7 +714,7 @@ export function createPullRequestCiResolver(
           return {
             ...cached.result,
             authoritative: false,
-            summary: `${cached.result.summary} (устарел)`,
+            summary: `${cached.result.summary} (устарел; GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"})`,
           };
         }
         return {

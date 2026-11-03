@@ -224,6 +224,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       json: async () => ({
         total_count: 1,
         check_runs: mockCheckRuns,
@@ -289,6 +290,7 @@ describe("fetchCommitCheckRuns", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 101,
             check_runs: page1Runs,
@@ -299,13 +301,14 @@ describe("fetchCommitCheckRuns", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 101,
             check_runs: page2Runs,
           }),
         };
       }
-      return { ok: false, status: 404 };
+      return { ok: false, status: 404, headers: new Headers() };
     });
 
     const result = await fetchCommitCheckRuns(
@@ -325,6 +328,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch404 = vi.fn().mockResolvedValue({
       ok: false,
       status: 404,
+      headers: new Headers(),
     });
 
     const result404 = await fetchCommitCheckRuns(
@@ -342,6 +346,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch403 = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
+      headers: new Headers(),
     });
 
     const result403 = await fetchCommitCheckRuns(
@@ -385,6 +390,7 @@ describe("createPullRequestCiResolver", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             state: "open",
             head: { sha: "head-sha-deploy-124", ref: "bot/OPE-9525" },
@@ -397,6 +403,7 @@ describe("createPullRequestCiResolver", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 2,
             check_runs: [
@@ -422,7 +429,7 @@ describe("createPullRequestCiResolver", () => {
           }),
         };
       }
-      return { ok: false, status: 404 };
+      return { ok: false, status: 404, headers: new Headers() };
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
@@ -550,6 +557,7 @@ describe("createPullRequestCiResolver", () => {
       fetch: vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: async () => ({
           total_count: 1,
           check_runs: [
@@ -890,7 +898,10 @@ describe("createPullRequestCiResolver", () => {
       }
       if (url.includes("/commits/head-sha-etag-304/check-runs")) {
         fetchRunsCalls++;
-        if (init?.headers?.["if-none-match"] === '"etag-checkruns-1"') {
+        if (
+          (init?.headers?.["If-None-Match"] === '"etag-checkruns-1"' ||
+            init?.headers?.["if-none-match"] === '"etag-checkruns-1"')
+        ) {
           return {
             ok: false,
             status: 304,
