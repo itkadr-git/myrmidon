@@ -717,7 +717,7 @@ export function retain(archiveRoot, opts = {}) {
               files,
               reason: err.message
             });
-            return;
+            return false;
           }
         } else if (opts.backupReceipts && opts.backupReceipts[entry.key]) {
           try {
@@ -725,11 +725,15 @@ export function retain(archiveRoot, opts = {}) {
             for (const f of files) verifyBackupReceipt(f, receipt);
           } catch (err) {
             retentionAudit(archiveRoot, { at: now.toISOString(), action: "receipt-mismatch", key: entry.key, files, reason: err.message });
-            return;
+            return false;
           }
         } else if (opts.requireVerifiedReceipt) {
-          retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
-          return;
+          const delivered = opts.isDelivered ? opts.isDelivered(entry) === true : false;
+          if (!delivered) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
+            return false;
+          }
+          receipt = { receiptId: `delivered:${entry.key}`, type: "merged-work" };
         }
 
         retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
@@ -743,6 +747,7 @@ export function retain(archiveRoot, opts = {}) {
         retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
       }
       removed.push({ key: entry.key, createdAt: entry.createdAt, sizeBytes: entry.sizeBytes, reason: why });
+      return true;
     };
     const withSize = (e) => ({ e, size: entryFiles(e).reduce((s, f) => s + sizeOf(f), 0) });
 
@@ -753,16 +758,22 @@ export function retain(archiveRoot, opts = {}) {
       // Quota maths covers every entry file, including the fallback `fullTar`.
       if (!entry || !entry.createdAt || entryFiles(entry).every((f) => !fs.existsSync(f))) continue; // nothing left on disk
       const age = now.getTime() - Date.parse(entry.createdAt);
-      if (age > maxAge && !keep.has(entry.createdAt)) drop(entry, "age");
-      else alive.push(withSize(entry));
+      if (age > maxAge && !keep.has(entry.createdAt)) {
+        if (!drop(entry, "age")) alive.push(withSize(entry));
+      } else {
+        alive.push(withSize(entry));
+      }
     }
     alive.sort((a, b) => Date.parse(a.e.createdAt) - Date.parse(b.e.createdAt));
     let total = alive.reduce((s, x) => s + x.size, 0);
     const rest = [];
     for (const x of alive) {
       if (total > capBytes && !keep.has(x.e.createdAt)) {
-        drop(x.e, "cap");
-        total -= x.size;
+        if (drop(x.e, "cap")) {
+          total -= x.size;
+        } else {
+          rest.push(x);
+        }
       } else rest.push(x);
     }
     alive = rest;
