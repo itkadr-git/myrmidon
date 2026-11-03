@@ -106,32 +106,33 @@ export function createInteractionEscalationSweep(
   const selectDue = deps.selectDueEscalations ?? selectDueEscalations;
   const step = deps.escalateInteractionStep ?? escalateInteractionStep;
 
-  return async function interactionEscalationSweep(
+  return function interactionEscalationSweep(
     options: InteractionEscalationSweepOptions = {},
   ): Promise<InteractionEscalationSweepResult> {
-    const settings = await readInteractionEscalationSettings({
-      ...deps,
-      enabled: options.enabled ?? deps.enabled,
-      intervalSec: options.intervalSec ?? deps.intervalSec,
-    });
-
-    if (!settings.enabled) {
-      return { due: 0, escalated: 0, unchanged: 0, failed: 0, skipped: true, reason: "disabled" };
-    }
-
-    const now = options.now ?? (deps.now ? deps.now() : new Date());
-    const intervalMs = settings.intervalSec * 1000;
-
-    if (!options.force && intervalMs > 0 && lastPassAt > 0 && now.getTime() - lastPassAt < intervalMs) {
-      return { due: 0, escalated: 0, unchanged: 0, failed: 0, skipped: true, reason: "interval_throttled" };
-    }
-
-    // Dedupe key: only one pass active at a time for this sweep instance
+    // Check and register the in-flight pass synchronously. An async wrapper that
+    // awaited settings first would allow two callers to pass the dedupe gate.
     if (inFlight) {
       return inFlight;
     }
 
     const runPass = async (): Promise<InteractionEscalationSweepResult> => {
+      const settings = await readInteractionEscalationSettings({
+        ...deps,
+        enabled: options.enabled ?? deps.enabled,
+        intervalSec: options.intervalSec ?? deps.intervalSec,
+      });
+
+      if (!settings.enabled) {
+        return { due: 0, escalated: 0, unchanged: 0, failed: 0, skipped: true, reason: "disabled" };
+      }
+
+      const now = options.now ?? (deps.now ? deps.now() : new Date());
+      const intervalMs = settings.intervalSec * 1000;
+
+      if (!options.force && intervalMs > 0 && lastPassAt > 0 && now.getTime() - lastPassAt < intervalMs) {
+        return { due: 0, escalated: 0, unchanged: 0, failed: 0, skipped: true, reason: "interval_throttled" };
+      }
+
       lastPassAt = now.getTime();
       const batchSize = deps.batchSize ?? DEFAULT_INTERACTION_ESCALATION_BATCH_SIZE;
 
@@ -174,11 +175,9 @@ export function createInteractionEscalationSweep(
       };
     };
 
-    inFlight = runPass();
-    try {
-      return await inFlight;
-    } finally {
+    inFlight = runPass().finally(() => {
       inFlight = null;
-    }
+    });
+    return inFlight;
   };
 }

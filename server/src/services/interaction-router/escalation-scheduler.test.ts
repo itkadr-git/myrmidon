@@ -274,7 +274,7 @@ describe("interaction-router escalation scheduler: sweep contracts", () => {
 
     // Call after 60s window: should run
     const afterWindow = await sweep({
-      now: new Date("2026-11-03T12:01:05Z"),
+      now: new Date("2026-11-03T12:01:15Z"),
     });
     expect(afterWindow.skipped).toBe(false);
     expect(selectDue).toHaveBeenCalledTimes(3);
