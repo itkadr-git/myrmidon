@@ -434,6 +434,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -622,6 +623,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -669,6 +671,7 @@ describeEmbeddedPostgres(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
           kind: "request_confirmation" as const,
+          addresseeUserId: fixture.boardUserId,
           continuationPolicy: "wake_assignee" as const,
           resolverPolicy: "human_only" as const,
           payload: {
@@ -888,7 +891,10 @@ describeEmbeddedPostgres(
       it("keeps an operational card (no human addressee) board-only", async () => {
         const fixture = await seedFixture();
         for (const resolverPolicy of ["anyone", "not_creator"] as const) {
-          const interaction = await createCard(fixture, { resolverPolicy });
+          const interaction = await createCard(fixture, {
+            resolverPolicy,
+            addresseeQueue: "default",
+          });
           const publications = await publicationsForInteraction(
             fixture.companyId,
             interaction.id,
