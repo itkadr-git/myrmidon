@@ -68,6 +68,13 @@ async function createRunFixture(db: ReturnType<typeof createDb>) {
     name: `Gateway ${randomUUID()}`,
     issuePrefix: `TG${randomUUID().slice(0, 6).toUpperCase()}`,
   }).returning().then((rows) => rows[0]!);
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: `owner-${randomUUID()}`,
+    status: "active",
+    membershipRole: "owner",
+  });
   const agent = await db.insert(agents).values({
     companyId: company.id,
     name: `Gateway Agent ${randomUUID()}`,
@@ -193,6 +200,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companySecrets);
+    await db.delete(companyMemberships);
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);

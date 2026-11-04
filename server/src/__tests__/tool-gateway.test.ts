@@ -72,7 +72,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -80,6 +80,14 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: `owner-${randomUUID()}`,
+    status: "active",
+    membershipRole: "owner",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {

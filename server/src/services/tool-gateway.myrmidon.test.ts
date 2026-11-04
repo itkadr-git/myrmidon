@@ -20,6 +20,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -171,6 +172,7 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -183,6 +185,13 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
         issuePrefix: `AG${randomUUID().slice(0, 6).toUpperCase()}`,
       })
       .returning();
+    await db.insert(companyMemberships).values({
+      companyId: row!.id,
+      principalType: "user",
+      principalId: `owner-${randomUUID()}`,
+      status: "active",
+      membershipRole: "owner",
+    });
     return row!;
   }
 
