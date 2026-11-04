@@ -358,7 +358,11 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	if r.proc != nil {
 		gopt.Proc = r.proc
 	}
-	if err := config.WriteAtomic(gopt.ConfigPath, cfg); err != nil {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(gopt.ConfigPath, data, 0600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)
