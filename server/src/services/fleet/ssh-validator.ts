@@ -3,7 +3,7 @@ import {
   serverOnboardSchema,
   validateSshPrivateKey as validateSharedSshPrivateKey,
   type ServerOnboardInput,
-} from "@myrmidon/shared";
+} from "@myrmidon/shared/validators/server-onboard";
 import { badRequest } from "../../errors.js";
 
 export type SshPrivateKeyAlgorithm = "rsa" | "ed25519";
