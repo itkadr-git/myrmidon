@@ -6236,6 +6236,10 @@ export function recoveryService(
           : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
+        executionRecoverySource.contextSnapshot &&
+        typeof executionRecoverySource.contextSnapshot === "object" &&
+        "requestedByActorId" in executionRecoverySource.contextSnapshot &&
+        executionRecoverySource.contextSnapshot.requestedByActorId &&
         (
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
