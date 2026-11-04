@@ -141,8 +141,8 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     });
 
     // Record some claim rejections
-    recordCapacityClaimRejection("capacity_limit", "attempt-1");
-    recordCapacityClaimRejection("project_scope");
+    recordCapacityClaimRejection("capacity_limit", "attempt-1", companyId);
+    recordCapacityClaimRejection("project_scope", undefined, companyId);
 
     // Mount real router with default production capacity provider (no capacityDashboard override)
     const app = express();
@@ -164,35 +164,35 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     // open = 3 (ready, blocked, in_progress), ready = 1 -> readiness_ratio = 1/3 ≈ 0.3333333333333333
     expect(text).toContain("# HELP myrmidon_readiness_ratio");
     expect(text).toContain("# TYPE myrmidon_readiness_ratio gauge");
-    expect(text).toMatch(/myrmidon_readiness_ratio 0\.3333/);
+    expect(text).toMatch(/myrmidon_readiness_ratio\{role="all"\} 0\.3333/);
 
     // readyIssue updatedAt is 120s before NOW -> queue_age_seconds = 120
     expect(text).toContain("# HELP myrmidon_queue_age_seconds");
     expect(text).toContain("# TYPE myrmidon_queue_age_seconds gauge");
-    expect(text).toContain("myrmidon_queue_age_seconds 120");
+    expect(text).toContain('myrmidon_queue_age_seconds{role="all"} 120');
 
     // project_share: 1 active slot in projectId -> share = 1
     expect(text).toContain("# HELP myrmidon_project_share");
     expect(text).toContain("# TYPE myrmidon_project_share gauge");
-    expect(text).toContain(`myrmidon_project_share{company="${companyId}",project="${projectId}"} 1`);
+    expect(text).toContain(`myrmidon_project_share{role="all",project="${projectId}"} 1`);
 
     // starvation_total: 0
     expect(text).toContain("# HELP myrmidon_starvation_total");
     expect(text).toContain("# TYPE myrmidon_starvation_total counter");
-    expect(text).toContain("myrmidon_starvation_total 0");
+    expect(text).toContain('myrmidon_starvation_total{role="all"} 0');
 
     // claim_rejection_total: capacity_limit=1, project_scope=1, others=0
     expect(text).toContain("# HELP myrmidon_claim_rejection_total");
     expect(text).toContain("# TYPE myrmidon_claim_rejection_total counter");
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="capacity_limit"} 1');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="project_scope"} 1');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="caste_scope"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="assignment_conflict"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="dependency_blocked"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="interaction_pending"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="already_claimed"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="not_ready"} 0');
-    expect(text).toContain('myrmidon_claim_rejection_total{reason="other"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="capacity_limit"} 1');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="project_scope"} 1');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="caste_scope"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="assignment_conflict"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="dependency_blocked"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="interaction_pending"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="already_claimed"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="not_ready"} 0');
+    expect(text).toContain('myrmidon_claim_rejection_total{role="all",reason="other"} 0');
   });
 
   it("suppresses capacity samples without emitting fake zeroes when provider returns null", async () => {
@@ -212,11 +212,16 @@ describeEmbeddedPostgres("capacity dashboard producer integration (db + routes)"
     expect(res.status).toBe(200);
     const text = res.text;
 
-    // Must NOT contain any capacity samples or fake zeroes
-    expect(text).not.toContain("myrmidon_readiness_ratio");
-    expect(text).not.toContain("myrmidon_queue_age_seconds");
-    expect(text).not.toContain("myrmidon_project_share");
-    expect(text).not.toContain("myrmidon_starvation_total");
-    expect(text).not.toContain("myrmidon_claim_rejection_total");
+    // HELP/TYPE remain registered; only samples must disappear when the source is unavailable.
+    for (const name of [
+      "myrmidon_readiness_ratio",
+      "myrmidon_queue_age_seconds",
+      "myrmidon_project_share",
+      "myrmidon_starvation_total",
+      "myrmidon_claim_rejection_total",
+    ]) {
+      expect(text).toContain(`# HELP ${name}`);
+      expect(text).not.toMatch(new RegExp(`^${name}(?:\\{|\\s)`, "m"));
+    }
   });
 });

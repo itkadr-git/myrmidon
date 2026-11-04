@@ -43,8 +43,9 @@ describe("capacity dashboard metrics producer (unit)", () => {
     });
 
     it("increments each bounded reason correctly", () => {
+      const companyId = "unit-test-company";
       for (const reason of CLAIM_REJECTION_REASONS) {
-        recordCapacityClaimRejection(reason);
+        recordCapacityClaimRejection(reason, undefined, companyId);
       }
       const counters = readCapacityCounters();
       for (const reason of CLAIM_REJECTION_REASONS) {
@@ -53,29 +54,29 @@ describe("capacity dashboard metrics producer (unit)", () => {
     });
 
     it("maps unknown reason strings to 'other'", () => {
-      recordCapacityClaimRejection("some_unregistered_reason" as ClaimRejectionReason);
-      recordCapacityClaimRejection("custom_error_message" as ClaimRejectionReason);
+      recordCapacityClaimRejection("some_unregistered_reason" as ClaimRejectionReason, undefined, "unit-test-company");
+      recordCapacityClaimRejection("custom_error_message" as ClaimRejectionReason, undefined, "unit-test-company");
       const counters = readCapacityCounters();
       expect(counters.claimRejectionTotal.other).toBe(2);
     });
 
     it("deduplicates claim rejection attempts with the same attemptId", () => {
       const attemptId = "agent-1:run-42:capacity_limit";
-      recordCapacityClaimRejection("capacity_limit", attemptId);
-      recordCapacityClaimRejection("capacity_limit", attemptId);
-      recordCapacityClaimRejection("capacity_limit", attemptId);
+      recordCapacityClaimRejection("capacity_limit", attemptId, "unit-test-company");
+      recordCapacityClaimRejection("capacity_limit", attemptId, "unit-test-company");
+      recordCapacityClaimRejection("capacity_limit", attemptId, "unit-test-company");
 
       const counters = readCapacityCounters();
       expect(counters.claimRejectionTotal.capacity_limit).toBe(1);
 
       // Different attemptId increments
-      recordCapacityClaimRejection("capacity_limit", "agent-1:run-43:capacity_limit");
+      recordCapacityClaimRejection("capacity_limit", "agent-1:run-43:capacity_limit", "unit-test-company");
       expect(readCapacityCounters().claimRejectionTotal.capacity_limit).toBe(2);
     });
 
     it("resets all counters and attempt history on resetCapacityMetrics", () => {
-      recordCapacityClaimRejection("capacity_limit", "att-1");
-      recordCapacityClaimRejection("caste_scope");
+      recordCapacityClaimRejection("capacity_limit", "att-1", "unit-test-company");
+      recordCapacityClaimRejection("caste_scope", undefined, "unit-test-company");
       expect(readCapacityCounters().claimRejectionTotal.capacity_limit).toBe(1);
 
       resetCapacityMetrics();
@@ -84,7 +85,7 @@ describe("capacity dashboard metrics producer (unit)", () => {
       expect(fresh.claimRejectionTotal.caste_scope).toBe(0);
 
       // Previous attemptId can now increment again after reset
-      recordCapacityClaimRejection("capacity_limit", "att-1");
+      recordCapacityClaimRejection("capacity_limit", "att-1", "unit-test-company");
       expect(readCapacityCounters().claimRejectionTotal.capacity_limit).toBe(1);
     });
   });

@@ -42,6 +42,7 @@ import {
 import { and, eq, gt, inArray, isNull, notInArray } from "drizzle-orm";
 import {
   DEFAULT_CAPACITY_POLICY,
+  capacityPolicySchema,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   type CapacityPolicy,
 } from "@myrmidon/shared";
@@ -186,13 +187,11 @@ export async function produceCapacityMetrics(
     if (!settings) return null;
     const general = (settings.general ?? {}) as Record<string, unknown>;
     const configuredPolicy = general.capacityPolicy;
-    if (configuredPolicy === undefined || configuredPolicy === null) {
-      policy = DEFAULT_CAPACITY_POLICY;
-    } else if (!isCapacityPolicy(configuredPolicy)) {
-      return null;
-    } else {
-      policy = configuredPolicy;
-    }
+    const parsedPolicy = capacityPolicySchema.safeParse(
+      configuredPolicy == null ? DEFAULT_CAPACITY_POLICY : configuredPolicy,
+    );
+    if (!parsedPolicy.success) return null;
+    policy = parsedPolicy.data;
   }
 
   // 1. Query open issues (all non-done, non-cancelled issues of this company)
