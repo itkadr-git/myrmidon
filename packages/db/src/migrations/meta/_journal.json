@@ -2669,6 +2669,13 @@
       "when": 1793570005000,
       "tag": "0454_llm_call_traces",
       "breakpoints": true
+    },
+    {
+      "idx": 455,
+      "version": "7",
+      "when": 1793570006000,
+      "tag": "0455_fleet_site_client_cert_fingerprint",
+      "breakpoints": true
     }
   ]
 }
