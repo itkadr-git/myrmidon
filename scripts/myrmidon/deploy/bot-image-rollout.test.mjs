@@ -581,6 +581,62 @@ describe("bot-image-rollout.sh", () => {
     assert.equal(cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777").length, 1);
   });
 
+  it("updates enrolled bot limits from card and eliminates duplicates (OPE-10761)", () => {
+    // Initial dockergate config has bot with old limits (1024/1/512) and a duplicate entry
+    const initialBots = [
+      { botKey: "77777777-7777-4777-8777-777777777777", maxMemoryMb: 1024, maxCpus: 1, maxPids: 512, scopeInstances: ["scope-a"] },
+      { botKey: "77777777-7777-4777-8777-777777777777", maxMemoryMb: 1024, maxCpus: 1, maxPids: 512 },
+    ];
+    // Card has updated limits 4096 / 2 / 1024
+    const agents = [
+      {
+        id: "77777777-7777-4777-8777-777777777777",
+        image: `${BOT_DEV}@${OLD_DEV}`,
+        memoryMb: 4096,
+        cpus: 2,
+        pidsLimit: 1024,
+      },
+    ];
+    const sb = sandbox({
+      agents,
+      dockergateConfig: JSON.stringify({
+        listen: "/run/myrmidon-dockergate/engine.sock",
+        upstream: "/var/run/docker.sock",
+        apiVersion: "1.45",
+        caller: { container: "paperclip-server-1", containerLabels: { "com.docker.compose.project": "paperclip" }, argv: ["node"], uid: 1000, gid: 1000, mode: "uid" },
+        volumeRoot: "/srv/test-bots",
+        network: "myrmidon-bots",
+        images: [`${BOT_DEV}@${OLD_DEV}`],
+        mountSources: [],
+        bots: initialBots,
+        limits: {},
+        statsFile: "/tmp/dockergate-stats.json",
+      }, null, 2),
+    });
+
+    // First run updates enrollment from card (4096 / 2) and collapses duplicates
+    const res1 = run(sb, "bot-image-rollout.sh", ["--phase", "config", "--resolution", "tag", "--ref", VERSION]);
+    assert.equal(res1.code, 0, res1.out);
+
+    let cfg = dockergateConfig(sb);
+    let botEntries = cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(botEntries.length, 1, "exactly one entry for the bot");
+    assert.equal(botEntries[0].maxMemoryMb, 4096, "memory updated to card 4096");
+    assert.equal(botEntries[0].maxCpus, 2, "cpus updated to card 2");
+    assert.equal(botEntries[0].maxPids, 1024, "pidsLimit updated to card 1024");
+    assert.deepEqual(botEntries[0].scopeInstances, ["scope-a"], "preserves scopeInstances");
+
+    // Second run (repeated generation) does not create duplicates
+    const res2 = run(sb, "bot-image-rollout.sh", ["--phase", "config", "--resolution", "tag", "--ref", VERSION]);
+    assert.equal(res2.code, 0, res2.out);
+
+    cfg = dockergateConfig(sb);
+    botEntries = cfg.bots.filter((b) => b.botKey === "77777777-7777-4777-8777-777777777777");
+    assert.equal(botEntries.length, 1, "repeated generation does not produce duplicates");
+    assert.equal(botEntries[0].maxMemoryMb, 4096);
+    assert.equal(botEntries[0].maxCpus, 2);
+  });
+
   it("switches every bot card to the release image of its variant, one at a time", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
