@@ -31817,6 +31817,7 @@ export function heartbeatService(
           // Claim continuation identity before active-run coalescing. A duplicate
           // wake must be rejected by the durable claim, not merged into the
           // already queued run (which would make every delivery look admitted).
+          console.log(`[DEBUG-PRE-ADMISSION] reason: ${reason}, issueId: ${issueId}, failedRunId: ${opts.failedRunId}, retryOfRunId: ${enrichedContextSnapshot.retryOfRunId}, payload.retryOfRunId: ${payload?.retryOfRunId}`);
           if (
             reason === "issue_continuation_needed" &&
             source === "automation" &&
