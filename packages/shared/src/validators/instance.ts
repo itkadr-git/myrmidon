@@ -16,7 +16,7 @@ import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { storedModelMenuSettingsSchema } from "../myrmidon-model-menu.js"; // myrmidon(1.6.6 MODEL-MENU B)
 import { modelApiPricingSettingsSchema } from "../myrmidon-model-api-pricing.js"; // OPE-9499: operator-maintained API-equivalent prices
-import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
+import { storedAlertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota stored in the same general settings row.
@@ -346,7 +346,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // of the same alert still belongs to the same task; changed from
   // /api/myrmidon/monitoring/alert-recovery; absent means "use the environment
   // variable, then the default (10 and 60 minutes)".
-  alertRecovery: alertRecoverySettingsSchema.optional(),
+  alertRecovery: storedAlertRecoverySettingsSchema.optional(),
   // myrmidon(1.6.6 MONITORING D): the runtime journal of alert -> task records
   // (the task of each alert identity, its runbook and how long the alert has
   // been resolved), kept by the alert-recovery service under

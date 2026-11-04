@@ -10,9 +10,12 @@ import {
 describe("instance settings service", () => {
   it("retains alert-recovery settings and journal through general normalization", () => {
     const journal = [{ identity: "monitoring:runs-reconnecting", firedCount: 2 }];
-    const normalized = normalizeGeneralSettings({ alertRecovery: { enabled: true },
-      alertRecoveryJournal: journal });
-    expect(normalized.alertRecovery).toEqual({ enabled: true });
+    const settings = { holdMinutes: 10, recurrenceWindowMinutes: 60 };
+    const normalized = normalizeGeneralSettings({
+      alertRecovery: settings,
+      alertRecoveryJournal: journal,
+    });
+    expect(normalized.alertRecovery).toEqual(settings);
     expect(normalized.alertRecoveryJournal).toEqual(journal);
   });
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
