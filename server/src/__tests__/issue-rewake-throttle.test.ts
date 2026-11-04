@@ -189,6 +189,34 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
   });
 
+  it("blocks repeated swarm and continuation loop wakes during the cooldown", () => {
+    const recentTerminalRuns = [
+      runSample({ id: "r2", finishedSecondsAgo: 10 }),
+      runSample({ id: "r1", finishedSecondsAgo: 40 }),
+    ];
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns,
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    expect(isThrottleCandidateIssueRewake({
+      reason: "swarm_matched",
+      wakeCommentId: null,
+      requestedByActorType: "system",
+      forceFreshSession: false,
+      hasExplicitResume: false,
+    })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({
+      reason: "issue_continuation_needed",
+      wakeCommentId: null,
+      requestedByActorType: "system",
+      forceFreshSession: false,
+      hasExplicitResume: false,
+    })).toBe(true);
+  });
+
   it("does not delay recovery after a failed run", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
