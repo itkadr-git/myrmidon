@@ -603,7 +603,12 @@ describeEmbeddedPostgres("metrics collector", () => {
     await seedRun(companyId, activeEngId, { status: "running", startedAt: new Date(NOW.getTime() - 10 * 60 * 1000) });
 
     const idleEngId = await seedAgent(companyId, "engineer");
-    await seedRun(companyId, idleEngId, { status: "completed", finishedAt: new Date(NOW.getTime() - 90 * 60 * 1000) });
+    await seedRun(companyId, idleEngId, {
+      status: "completed",
+      createdAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      startedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      finishedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+    });
 
     const termEngId = randomUUID();
     await db.insert(agents).values({
