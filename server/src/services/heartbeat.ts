@@ -31937,7 +31937,7 @@ export function heartbeatService(
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
                     eq(heartbeatRuns.agentId, agentId),
-                    sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+                    eq(heartbeatRuns.contextIssueId, issue.id),
                     sql`${heartbeatRuns.contextSnapshot}->>'continuationClaimKey' = ${continuationClaimKey}`,
                   ))
                   .limit(1)
