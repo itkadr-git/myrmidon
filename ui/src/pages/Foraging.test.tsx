@@ -15,6 +15,7 @@ import type {
 } from "@/api/foraging";
 
 const sourcesMock = vi.hoisted(() => vi.fn());
+const saveSourceMock = vi.hoisted(() => vi.fn());
 const findingsMock = vi.hoisted(() => vi.fn());
 const budgetMock = vi.hoisted(() => vi.fn());
 // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle gate and the history.
@@ -35,7 +36,7 @@ vi.mock("@/api/foraging", async () => {
       idleGate: (...args: unknown[]) => idleGateMock(...args),
       setIdleGate: (...args: unknown[]) => setIdleGateMock(...args),
       passes: (...args: unknown[]) => passesMock(...args),
-      saveSource: vi.fn(),
+      saveSource: (...args: unknown[]) => saveSourceMock(...args),
       removeSource: vi.fn(),
       sweep: vi.fn(),
     },
@@ -155,6 +156,7 @@ function text() {
 
 beforeEach(() => {
   sourcesMock.mockResolvedValue({ sources: [source()], enabled: true });
+  saveSourceMock.mockResolvedValue(source({ enabled: false }));
   findingsMock.mockResolvedValue({ findings: [finding()], enabled: true });
   budgetMock.mockResolvedValue(budget);
   idleGateMock.mockResolvedValue(idleGate());
@@ -178,6 +180,16 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("engineer");
     expect(rows[0].textContent).toContain("https://example.com/changelog");
+  });
+
+  it("saves a disabled source without losing its role, URL or kind", async () => {
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { toggle.click(); });
+    expect(saveSourceMock).toHaveBeenCalledWith("company-1", {
+      role: "engineer", url: "https://example.com/changelog", kind: "url", enabled: false,
+    });
   });
 
   it("shows the findings with their lifecycle state and diff size", async () => {
