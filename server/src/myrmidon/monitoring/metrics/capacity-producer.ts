@@ -51,7 +51,7 @@ import {
   type CapacityDashboardMetricsSnapshot,
 } from "./metrics.js";
 
-type ClaimRejectionReason = (typeof CLAIM_REJECTION_REASONS)[number];
+export type ClaimRejectionReason = (typeof CLAIM_REJECTION_REASONS)[number];
 
 interface ReadyEpisode {
   episodeId: string;
@@ -62,8 +62,12 @@ interface ReadyEpisode {
 // Process-local lifetime state for ready episodes and counters.
 const readyEpisodesByCompany = new Map<string, Map<string, ReadyEpisode>>();
 
-// Bounded LRU/history of attempt IDs to dedupe replayed claim attempts.
-const recentRejectionAttempts = new Set<string>();
+type ProductionRejectionState = {
+  counters: Record<ClaimRejectionReason, number>;
+  attemptIds: Set<string>;
+};
+const rejectionStateByCompany = new Map<string, ProductionRejectionState>();
+let activeRejectionCompanyId: string | null = null;
 const MAX_ATTEMPT_HISTORY = 5000;
 
 function createEmptyRejectionCounters(): Record<ClaimRejectionReason, number> {
@@ -74,31 +78,44 @@ function createEmptyRejectionCounters(): Record<ClaimRejectionReason, number> {
   return result;
 }
 
+function rejectionState(companyId: string): ProductionRejectionState {
+  let state = rejectionStateByCompany.get(companyId);
+  if (!state) {
+    state = { counters: createEmptyRejectionCounters(), attemptIds: new Set<string>() };
+    rejectionStateByCompany.set(companyId, state);
+  }
+  return state;
+}
+
 let starvationTotalCounter = 0;
 let claimRejectionCounters: Record<ClaimRejectionReason, number> = createEmptyRejectionCounters();
 
 /**
  * Record an authoritative final claim rejection event.
- * If attemptId is provided, subsequent calls with the same attemptId are deduped.
+ * Attempt IDs are deduplicated per company (or in the active company context).
  */
 export function recordCapacityClaimRejection(
   reason: ClaimRejectionReason | string,
   attemptId?: string | null,
+  companyId?: string,
 ): void {
+  const owner = companyId ?? activeRejectionCompanyId;
+  if (!owner) return;
+  const state = rejectionState(owner);
   if (attemptId) {
-    if (recentRejectionAttempts.has(attemptId)) return;
-    recentRejectionAttempts.add(attemptId);
-    if (recentRejectionAttempts.size > MAX_ATTEMPT_HISTORY) {
-      const first = recentRejectionAttempts.values().next().value;
-      if (first !== undefined) recentRejectionAttempts.delete(first);
+    if (state.attemptIds.has(attemptId)) return;
+    state.attemptIds.add(attemptId);
+    if (state.attemptIds.size > MAX_ATTEMPT_HISTORY) {
+      const first = state.attemptIds.values().next().value;
+      if (first !== undefined) state.attemptIds.delete(first);
     }
   }
 
-  const normalizedReason: ClaimRejectionReason = (CLAIM_REJECTION_REASONS as readonly string[]).includes(reason)
+  const normalizedReason = CLAIM_REJECTION_REASONS.includes(reason as ClaimRejectionReason)
     ? (reason as ClaimRejectionReason)
     : "other";
-
-  claimRejectionCounters[normalizedReason] = (claimRejectionCounters[normalizedReason] ?? 0) + 1;
+  state.counters[normalizedReason]++;
+  claimRejectionCounters = state.counters;
 }
 
 /**
@@ -108,7 +125,8 @@ export function resetCapacityMetrics(): void {
   starvationTotalCounter = 0;
   claimRejectionCounters = createEmptyRejectionCounters();
   readyEpisodesByCompany.clear();
-  recentRejectionAttempts.clear();
+  rejectionStateByCompany.clear();
+  activeRejectionCompanyId = null;
 }
 
 /**
@@ -143,30 +161,37 @@ export async function produceCapacityMetrics(
   }
 
   const now = deps.now ? deps.now() : new Date();
+  activeRejectionCompanyId = deps.companyId ?? activeRejectionCompanyId;
 
-  // Resolve target company ID
-  let targetCompanyId = deps.companyId;
-  if (!targetCompanyId) {
-    const companyRows = await deps.db.select({ id: companies.id }).from(companies).limit(1);
-    if (companyRows.length === 0 || !companyRows[0]?.id) {
-      return null;
-    }
-    targetCompanyId = companyRows[0].id;
-  }
+  const targetRows = deps.companyId
+    ? [{ id: deps.companyId }]
+    : await deps.db.select({ id: companies.id }).from(companies).limit(1);
+  if (targetRows.length === 0 || !targetRows[0]?.id) return null;
+  const targetCompanyId = targetRows[0].id;
+  activeRejectionCompanyId = targetCompanyId;
 
   // Resolve capacity policy
   let policy = deps.policy;
   if (!policy) {
+    let settings;
     try {
-      const [settings] = await deps.db
+      [settings] = await deps.db
         .select({ general: instanceSettings.general })
         .from(instanceSettings)
         .where(eq(instanceSettings.singletonKey, "default"))
         .limit(1);
-      const general = (settings?.general ?? {}) as Record<string, unknown>;
-      policy = (general.capacityPolicy as CapacityPolicy) ?? DEFAULT_CAPACITY_POLICY;
     } catch {
+      return null;
+    }
+    if (!settings) return null;
+    const general = (settings.general ?? {}) as Record<string, unknown>;
+    const configuredPolicy = general.capacityPolicy;
+    if (configuredPolicy === undefined || configuredPolicy === null) {
       policy = DEFAULT_CAPACITY_POLICY;
+    } else if (!isCapacityPolicy(configuredPolicy)) {
+      return null;
+    } else {
+      policy = configuredPolicy;
     }
   }
 
@@ -209,6 +234,7 @@ export async function produceCapacityMetrics(
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         issueId: heartbeatRuns.contextIssueId,
+        status: heartbeatRuns.status,
       })
       .from(heartbeatRuns)
       .where(

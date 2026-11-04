@@ -147,10 +147,10 @@ describe("capacity dashboard metrics producer (unit)", () => {
                     resolve([{ id: COMPANY_ID }]);
                   } else if ("projectId" in fields && "status" in fields) {
                     resolve(fixtures.openIssues);
-                  } else if ("releasedAt" in fields || ("issueId" in fields && !("status" in fields))) {
-                    resolve(fixtures.activeClaims);
                   } else if ("status" in fields && "agentId" in fields && "issueId" in fields) {
                     resolve(fixtures.activeRuns);
+                  } else if ("releasedAt" in fields || "issueId" in fields) {
+                    resolve(fixtures.activeClaims);
                   } else if ("role" in fields) {
                     resolve(fixtures.activeAgents);
                   } else {
@@ -347,11 +347,21 @@ describe("capacity dashboard metrics producer (unit)", () => {
 
       const makeDb = () =>
         ({
-          select: () => ({
+          select: (fields: Record<string, unknown>) => ({
             from: () => ({
               where: () => ({
                 limit: async () => [{ id: COMPANY_ID }],
-                then: (resolve: (v: unknown) => void) => resolve([issue]),
+                then: (resolve: (v: unknown) => void) => {
+                  if ("role" in fields) {
+                    resolve([{ id: "agent-1", role: "general", status: "idle" }]);
+                  } else if ("projectId" in fields && "status" in fields) {
+                    resolve([issue]);
+                  } else if ("issueId" in fields) {
+                    resolve([]);
+                  } else {
+                    resolve([{ id: COMPANY_ID }]);
+                  }
+                },
               }),
               limit: async () => [{ id: COMPANY_ID }],
             }),
@@ -403,11 +413,21 @@ describe("capacity dashboard metrics producer (unit)", () => {
 
       const makeDb = () =>
         ({
-          select: () => ({
+          select: (fields: Record<string, unknown>) => ({
             from: () => ({
               where: () => ({
                 limit: async () => [{ id: COMPANY_ID }],
-                then: (resolve: (v: unknown) => void) => resolve([issue]),
+                then: (resolve: (v: unknown) => void) => {
+                  if ("role" in fields) {
+                    resolve([{ id: "agent-1", role: "general", status: "idle" }]);
+                  } else if ("projectId" in fields && "status" in fields) {
+                    resolve([issue]);
+                  } else if ("issueId" in fields) {
+                    resolve([]);
+                  } else {
+                    resolve([{ id: COMPANY_ID }]);
+                  }
+                },
               }),
               limit: async () => [{ id: COMPANY_ID }],
             }),
