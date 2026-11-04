@@ -2225,17 +2225,13 @@ export function recoveryService(
           });
           return null;
         }
-        // For generic issue continuation recovery, bypass the bounded transient
-        // retry scheduler and directly enqueue a continuation wake. The bounded
-        // scheduler is designed for failure retries (transient errors), not for
-        // stranded-issue continuation recovery.
-        if (deps.scheduleRecoveryRetry && input.reason !== "issue_continuation_needed") {
+        if (deps.scheduleRecoveryRetry) {
           const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
           return scheduled && typeof scheduled === "object" && "id" in scheduled
             ? scheduled
             : null;
         }
-        // Fall through to direct enqueue for generic continuation recovery
+        return null;
       }
     }
     if (
