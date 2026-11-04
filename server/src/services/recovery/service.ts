@@ -20,6 +20,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   not,
   notInArray,
   or,

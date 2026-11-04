@@ -13417,6 +13417,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runStatus: "succeeded",
         runSource: "issue.assignment",
         livenessState: "advanced",
+        now: new Date(),
       });
     await db
       .update(agents)
