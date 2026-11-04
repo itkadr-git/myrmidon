@@ -15,8 +15,16 @@ func configUpdateBody(mem int64, cpus float64, pids int64) []byte {
 	return []byte(fmt.Sprintf(`{"memoryMb":%d,"cpus":%g,"pidsLimit":%d}`, mem, cpus, pids))
 }
 
+func newA20Rig(t *testing.T, opts ...rigOpt) *rig {
+	t.Helper()
+	combined := append([]rigOpt{withConfig(func(c *config.Config) {
+		c.VolumeRoot = "/srv/test-bots"
+	})}, opts...)
+	return newRig(t, combined...)
+}
+
 func TestAllow_A20_UpdatePersistsAndReloadsWithoutContainerRestart(t *testing.T) {
-	r := newRig(t)
+	r := newA20Rig(t)
 	r.seedMain("running")
 
 	body := configUpdateBody(1024, 1.5, 500)
@@ -46,7 +54,7 @@ func TestAllow_A20_UpdatePersistsAndReloadsWithoutContainerRestart(t *testing.T)
 }
 
 func TestDeny_A20_ExceedsPlatformCeiling(t *testing.T) {
-	r := newRig(t)
+	r := newA20Rig(t)
 	r.seedMain("running")
 
 	// The enrolled bot in the rig has MaxMemoryMB 2048, MaxCPUs 4, MaxPids 2048.
@@ -84,7 +92,7 @@ func TestDeny_A20_ExceedsPlatformCeiling(t *testing.T) {
 }
 
 func TestDeny_A20_CallerAuthentication(t *testing.T) {
-	r := newRig(t, withContainerCaller())
+	r := newA20Rig(t, withContainerCaller())
 	r.seedMain("running")
 
 	r.addSiblingProcess(102)
@@ -96,7 +104,7 @@ func TestDeny_A20_CallerAuthentication(t *testing.T) {
 }
 
 func TestAllow_A20_DockerPrefixRoute(t *testing.T) {
-	r := newRig(t)
+	r := newA20Rig(t)
 	r.seedMain("running")
 
 	body := configUpdateBody(512, 1.0, 200)
