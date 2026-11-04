@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
 )
 
