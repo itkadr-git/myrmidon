@@ -428,7 +428,7 @@ export function CompanyAccess() {
                       <div className="flex justify-end gap-2">
                         {access?.canManageMembers && member.status === "active" ? (
                           <Button size="sm" variant="outline" onClick={() => setPolicyMemberId(member.id)}>
-                            Inbox access
+                            {t("area.settings-company.company-access.inboxAccess")}
                           </Button>
                         ) : null}
                         <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
@@ -462,8 +462,8 @@ export function CompanyAccess() {
       <Dialog open={!!policyMemberId} onOpenChange={(open) => !open && setPolicyMemberId(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Member inbox agent access</DialogTitle>
-            <DialogDescription>Manage which agents may archive this member's inbox items. Requires permission to manage user access.</DialogDescription>
+            <DialogTitle>{t("area.settings-company.company-access.memberInboxAgentAccess")}</DialogTitle>
+            <DialogDescription>{t("area.settings-company.company-access.manageWhichAgentsMayArchive")}</DialogDescription>
           </DialogHeader>
           {policyMemberId && selectedCompanyId ? (
             <InboxAgentPolicyControl

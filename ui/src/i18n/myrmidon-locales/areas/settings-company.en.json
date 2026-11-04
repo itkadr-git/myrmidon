@@ -91,7 +91,10 @@
         "moreTasks_other": "{{count}} more tasks",
         "pendingCount": "{{count}} pending",
         "advancedPermissionsNeedExtension": "Core Myrmidon keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.",
-        "pluginExtensionsUnavailable": "Plugin extensions unavailable: {{message}}"
+        "pluginExtensionsUnavailable": "Plugin extensions unavailable: {{message}}",
+        "inboxAccess": "Inbox access",
+        "memberInboxAgentAccess": "Member inbox agent access",
+        "manageWhichAgentsMayArchive": "Manage which agents may archive this member's inbox items. Requires permission to manage user access."
       },
       "company-environments": {
         "browserTerminal": "Browser terminal",
