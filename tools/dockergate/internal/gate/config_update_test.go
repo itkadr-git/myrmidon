@@ -20,6 +20,9 @@ func newA20Rig(t *testing.T, opts ...rigOpt) *rig {
 	t.Helper()
 	combined := append([]rigOpt{withConfig(func(c *config.Config) {
 		c.VolumeRoot = "/srv/test-bots"
+		if c.PlatformLimits == nil {
+			c.PlatformLimits = &config.PlatformLimits{}
+		}
 	})}, opts...)
 	return newRig(t, combined...)
 }

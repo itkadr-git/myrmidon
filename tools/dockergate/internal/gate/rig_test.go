@@ -317,6 +317,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		Bots:             []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
 		Limits:           lim,
 		StatsFile:        filepath.Join(dir, "stats.json"),
+		PlatformLimits:   &config.PlatformLimits{},
 	}
 	r := &rig{
 		t: t, dir: dir, d: d, m: m, cfg: cfg, log: &syncBuf{}, sock: cfg.Listen,
