@@ -1,5 +1,11 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM token trace persistence
+import {
+  inferFromRunUsage,
+  llmCallTracesResultSchema,
+  persistLlmCallTraces,
+} from "../myrmidon/tokens-trace/index.js";
 // myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
 import {
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -68,6 +74,7 @@ import {
 } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
 import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
+import { WakeStormGuard, wakeStormSourceKey } from "../myrmidon/wake-storm-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -1106,6 +1113,9 @@ const GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS = 8;
 // retry goes out after at most this long so a stuck hint cannot park the
 // task forever.
 const GATEWAY_BUSY_TRANSIENT_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
+export const CONNECT_FAILED_TRANSIENT_RETRY_REASON = "container_not_started";
+export const CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS = 8;
+export const CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS = 60 * 60 * 1000;
 function isTransientWorkspaceGitScanCode(code: string | null | undefined): boolean {
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated;
 }
@@ -3745,12 +3755,21 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
+// adapterType belongs to the agent row, not heartbeat_runs. Keep this as a
+// scalar subquery so the run-list projection remains one row per run.
+const heartbeatRunAdapterTypeColumn = sql<string>`(
+  SELECT ${agents.adapterType}
+  FROM ${agents}
+  WHERE ${agents.id} = ${heartbeatRuns.agentId}
+)`.as("adapterType");
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
+  adapterType: heartbeatRunAdapterTypeColumn,
   status: heartbeatRuns.status,
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
@@ -12146,6 +12165,49 @@ export function heartbeatService(
             throw conflict(scheduled.reason);
         }
       } else {
+        // Review admission is gated by the exact PR-head CI, not by the stale
+        // activeCi projection used by ordinary monitors. Keep the reviewer
+        // asleep until the final check is terminal; the next monitor tick is
+        // the single transition wake.
+        if (isReviewCiWaitMonitor) {
+          const { createReviewPullRequestCiResolver } = await import(
+            "../myrmidon/review-stage-recovery/github-ci.js"
+          );
+          const ci = await createReviewPullRequestCiResolver({ db })({
+            companyId: claimed.companyId,
+            issueId: claimed.id,
+          });
+          if (ci.state === "pending" || ci.state === "unknown") {
+            const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
+            const nextCheckAt = new Date(input.now.getTime() + backoffMs);
+            await db.update(issues).set({
+              monitorNextCheckAt: nextCheckAt,
+              monitorAttemptCount: nextAttemptCount,
+              monitorWakeRequestedAt: null,
+              updatedAt: input.now,
+            }).where(eq(issues.id, claimed.id));
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_deferred",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                reason: "review_ci_pending",
+                ciState: ci.state,
+                ciReason: ci.reason ?? null,
+                headSha: ci.headSha,
+                nextCheckAt: nextCheckAt.toISOString(),
+                attemptCount: nextAttemptCount,
+              },
+            });
+            return { outcome: "skipped" as const, reason: "review_ci_pending" };
+          }
+        }
         const prProducts = await db.select().from(issueWorkProducts)
           .where(and(
             eq(issueWorkProducts.companyId, claimed.companyId),
@@ -16067,8 +16129,15 @@ export function heartbeatService(
     },
   ) {
     const now = opts?.now ?? new Date();
+    const isGatewayConnectFailed =
+      run.errorCode === "hermes_gateway_connect_failed" ||
+      opts?.retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON ||
+      run.scheduledRetryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON;
     const retryReason =
-      opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+      opts?.retryReason ??
+      (isGatewayConnectFailed
+        ? CONNECT_FAILED_TRANSIENT_RETRY_REASON
+        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     // myrmidon(HERMES-RUN-REATTACH): the gateway answered 429 "busy" with a
@@ -16086,9 +16155,11 @@ export function heartbeatService(
       0,
       Math.floor(
         opts?.maxAttempts ??
-          (transientRetryNotBeforeHint
-            ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
-            : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+          (isGatewayConnectFailed
+            ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
+            : transientRetryNotBeforeHint
+              ? GATEWAY_BUSY_TRANSIENT_RETRY_MAX_ATTEMPTS
+              : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const nextAttempt =
@@ -16096,7 +16167,8 @@ export function heartbeatService(
         ? 1
         : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
             retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+            retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
             ? (run.scheduledRetryAttempt ?? 0)
             : executionFailureRetryCount(run)) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
@@ -16114,8 +16186,24 @@ export function heartbeatService(
       runFinishedAt: run.finishedAt,
       runStartedAt: run.startedAt,
     });
+    const retryDelayMs = isGatewayConnectFailed
+      ? Math.min(
+          60_000 * 2 ** Math.max(0, nextAttempt - 1),
+          CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS,
+        )
+      : null;
     const computedBaseSchedule =
-      opts?.delayMs != null || hintDelayMs != null
+      retryDelayMs != null
+        ? nextAttempt <= maxAttempts
+          ? {
+              attempt: nextAttempt,
+              baseDelayMs: retryDelayMs,
+              delayMs: retryDelayMs,
+              dueAt: new Date(now.getTime() + retryDelayMs),
+              maxAttempts,
+            }
+          : null
+        : opts?.delayMs != null || hintDelayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -16157,6 +16245,12 @@ export function heartbeatService(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
+    if (isGatewayConnectFailed && !baseSchedule) {
+      await db
+        .update(agents)
+        .set({ status: "error", errorReason: "контейнер не поднят", updatedAt: now })
+        .where(eq(agents.id, agent.id));
+    }
     if (!baseSchedule) {
       const exhaustion = {
         retryReason,
@@ -16199,6 +16293,8 @@ export function heartbeatService(
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
+      retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
+      !isGatewayConnectFailed &&
       legacyExecutionNeedsReconciliation(run)
     ) {
       return {
@@ -18885,7 +18981,10 @@ export function heartbeatService(
       }
     }
 
-    // IDLE-STOP: wake the container before proceeding with run execution
+    // IDLE-STOP wake is also the claim-time recovery path: a stopped or
+    // created/exited container must be started before the gateway is contacted.
+    // Keep this before any adapter execution so a failed start is not reported
+    // as a gateway connection failure.
     const idleStopService = getIdleStopService();
     if (idleStopService) {
       try {
@@ -18895,10 +18994,29 @@ export function heartbeatService(
           { err, runId: claimed.id, agentId: claimed.agentId },
           "claimQueuedRun: container failed to start or become healthy, cannot proceed with run",
         );
-        await cancelRunInternal(
-          claimed.id,
-          `Cancelled because container failed to start: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const errMessage = `Container failed to start: ${err instanceof Error ? err.message : String(err)}`;
+        const failureWrite = await setRunStatusFromLive(claimed.id, "failed", ["running"], {
+          error: errMessage,
+          errorCode: "hermes_gateway_connect_failed",
+          finishedAt: claimedAt,
+        });
+        const finalizedRun = failureWrite.updated && failureWrite.run ? failureWrite.run : claimed;
+        await setWakeupStatus(claimed.wakeupRequestId, "failed", {
+          finishedAt: claimedAt,
+          error: errMessage,
+        });
+        const agent = (await getAgent(claimed.agentId)) ?? undefined;
+        if (agent) {
+          await scheduleBoundedRetryForRun(finalizedRun, agent, {
+            now: claimedAt,
+            retryReason: CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+          });
+          await finalizeAgentStatus(claimed.agentId, "failed", errMessage, {
+            wasFirstHeartbeat: timerClaimWasFirstHeartbeat(claimed),
+            errorCode: "hermes_gateway_connect_failed",
+            keepIdleOnFailure: true,
+          });
+        }
         return null;
       }
     }
@@ -19127,9 +19245,18 @@ export function heartbeatService(
         errorMessage: failureReason,
       };
       const isPermanent = isPermanentAgentFailure(failureInput);
+      const isGatewayConnectFailed =
+        options?.errorCode === "hermes_gateway_connect_failed" ||
+        (typeof failureReason === "string" &&
+          (failureReason.includes("hermes_gateway_connect_failed") ||
+            failureReason.includes("container failed to start")));
       const isTransient =
-        Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
-      const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
+        Boolean(options?.keepIdleOnFailure) ||
+        isTransientFailure(failureInput) ||
+        isGatewayConnectFailed;
+      const maxFailures = isGatewayConnectFailed
+        ? CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS
+        : DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
 
       if (isTransient) {
         // An explicit idle override means a bounded retry owns recovery. This
@@ -19137,7 +19264,9 @@ export function heartbeatService(
         // persistent, but the agent itself remains available for the retry.
         if (nextFailures >= maxFailures) {
           nextStatus = "error";
-          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
+          failureReason = isGatewayConnectFailed
+            ? "контейнер не поднят"
+            : `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
         } else {
           nextStatus = "idle";
         }
@@ -22742,6 +22871,28 @@ export function heartbeatService(
           return { created: false, skippedMissingAgent: true };
         }
         resolvedCompanyId = agent.companyId ?? resolvedCompanyId;
+      } catch {
+        // Query failed on mock tx
+      }
+    }
+    if (typeof tx.select === "function" && key) {
+      try {
+        const existing = await tx
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, resolvedCompanyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, key),
+              ne(agentWakeupRequests.status, "skipped"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          return { created: false, deduplicated: true };
+        }
       } catch {
         // Query failed on mock tx
       }
@@ -28166,6 +28317,59 @@ export function heartbeatService(
               persistedRun,
               persistedResultJson,
             )) ?? persistedRun;
+          // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): persist per-call LLM
+          // traces emitted by the adapter (or infer a coarse row from
+          // usageJson when the adapter image predates the emitter).
+          try {
+            const traceResult = parseObject(
+              (persistedResultJson as Record<string, unknown> | null)?.[
+                "llmCallTraces"
+              ],
+            );
+            const parsedTraces = llmCallTracesResultSchema.safeParse(
+              traceResult ?? { version: 1, calls: [] },
+            );
+            if (parsedTraces.success && parsedTraces.data.calls.length > 0) {
+              // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): populate compaction
+              // fields from the server-side session rotation evaluation. The
+              // adapter cannot observe compaction; the server sets these when
+              // persisting the trace.
+              const compactedCalls = parsedTraces.data.calls.map((call) => ({
+                ...call,
+                compacted: sessionCompaction.rotate,
+                preCompactChars: sessionCompaction.rotate
+                  ? (call.sections.totalChars ?? null)
+                  : null,
+                postCompactChars: sessionCompaction.rotate
+                  ? null
+                  : (call.sections.totalChars ?? null),
+              }));
+              await persistLlmCallTraces({
+                db,
+                companyId: agent.companyId,
+                agentId: agent.id,
+                heartbeatRunId: run.id,
+                issueId: issueId ?? null,
+                occurredAt: persistedRun.startedAt ?? new Date(),
+                calls: compactedCalls,
+              });
+            } else {
+              await inferFromRunUsage({
+                db,
+                companyId: agent.companyId,
+                agentId: agent.id,
+                heartbeatRunId: run.id,
+                issueId: issueId ?? null,
+                occurredAt: persistedRun.startedAt ?? new Date(),
+                usageJson: parseObject(usageJson),
+              });
+            }
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, agentId: agent.id },
+              "failed to persist llm call traces; continuing without blocking run finalization",
+            );
+          }
         }
 
         await setWakeupStatus(
@@ -29610,6 +29814,8 @@ export function heartbeatService(
     }
   }
 
+  const wakeStormGuard = new WakeStormGuard();
+
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -29677,6 +29883,41 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // myrmidon(1.6.7 WAKE-STORM-GUARD): bound repeated automatic wakes from
+    // one rule/watchdog/trigger before they create durable runs. Manual wakes
+    // remain an explicit operator override. A trip is recorded as an activity
+    // event so operators can see which source was paused.
+    if (!opts.manualUserWake && opts.requestedByActorType !== "user") {
+      const sourceKey = wakeStormSourceKey({
+        source,
+        reason,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+      });
+      const admission = wakeStormGuard.admit(agentId, sourceKey);
+      if (!admission.allowed) {
+        if (admission.tripped) {
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId,
+            action: "heartbeat.wake_storm_guard_tripped",
+            entityType: "agent",
+            entityId: agentId,
+            details: {
+              sourceKey,
+              count: admission.count,
+              limit: wakeStormGuard.settings?.limit,
+              windowMs: wakeStormGuard.settings?.windowMs,
+            },
+          });
+          logger.warn({ agentId, sourceKey, count: admission.count }, "wake storm guard tripped; source paused");
+        }
+        return null;
+      }
+    }
 
     // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
     // automatic wake of a swarm reason that names no existing task must never
@@ -32156,24 +32397,43 @@ export function heartbeatService(
             }
           }
 
-          const wakeupRequest = await tx
-            .insert(agentWakeupRequests)
-            .values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason,
-              payload,
-              status: "queued",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-            })
-            .onConflictDoNothing()
-            .returning()
-            .then((rows) => rows[0]);
+          const existingWakeupRequest = opts.idempotencyKey
+            ? await tx
+                .select()
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.agentId, agentId),
+                    eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                    eq(agentWakeupRequests.status, "queued"),
+                    isNull(agentWakeupRequests.runId),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
+
+          const wakeupRequest =
+            existingWakeupRequest ??
+            (await tx
+              .insert(agentWakeupRequests)
+              .values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "queued",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+              .onConflictDoNothing()
+              .returning()
+              .then((rows) => rows[0]));
 
           if (!wakeupRequest) {
             return { kind: "skipped" as const };

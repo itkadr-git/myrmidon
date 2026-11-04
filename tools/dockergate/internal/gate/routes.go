@@ -436,10 +436,19 @@ func (rs *reqState) a9(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return derr
 	}
 	rs.respond(ans)
+	if ans.status >= 200 && ans.status < 300 && rt.Suffix == route.SuffixMain {
+		cleanupCtx, cancel := context.WithTimeout(ctx, def)
+		err := rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
+		cancel()
+		if err != nil {
+			rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "delete"})
+		} else {
+			rs.g.log.Write(Line{Event: "disk_project_removed", BotKey: rt.BotKey})
+		}
+	}
 	return nil
 }
 
-// requireNextCreated checks that the .next container of the bot is ours and
 // has not been started.
 func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Error {
 	next, derr := rs.inspectOurs(ctx, key, route.SuffixNext)

@@ -162,6 +162,54 @@ describe("decideApproveLabel", () => {
     assert.equal(stale.reason, "migration-stale-number");
   });
 
+  // OPE-10815: stacked PR base check
+  it("holds auto-merge and retargets base when stacked PR base is merged (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, baseRef: "bot/OPE-9262", defaultBranch: "main", autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      basePr: { number: 1959, state: "closed", merged: true },
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "hold");
+    assert.equal(decision.reason, "base-retargeted-waiting-ci");
+    assert.equal(decision.retargetBase, "main");
+    assert.equal(decision.disableAutoMerge, true);
+  });
+
+  it("refuses stacked PR when retargeting to main fails (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, labels: [APPROVED_LABEL], baseRef: "bot/OPE-9262", defaultBranch: "main", autoMerge: true },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      basePr: { number: 1959, state: "closed", merged: true },
+      cannotRetarget: true,
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "refuse");
+    assert.equal(decision.reason, "cannot-retarget-base-to-main");
+    assert.equal(decision.disableAutoMerge, true);
+    assert.equal(decision.removeLabel, true);
+  });
+
+  it("allows normal labeling when base is rel/* branch (OPE-10815)", () => {
+    const decision = decideApproveLabel({
+      verdict: approve,
+      pr: { ...open, baseRef: "rel/1.6.6", defaultBranch: "main" },
+      headCommittedAt: null,
+      ci: "success",
+      mainCi: "success",
+      mainGreen: true,
+      autoMerge: true,
+    });
+    assert.equal(decision.action, "label");
+    assert.equal(decision.autoMerge, true);
+  });
+
   it("holds auto-merge for an already labeled PR when main CI is failure", () => {
     const decision = decideApproveLabel({
       verdict: approve,
@@ -294,20 +342,22 @@ describe("detectMigrationViolation", () => {
   });
 });
 
-function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastCompletedMain = null } = {}) {
+function fakeGitHub(prs, { mainCi = 'success', mainHeadSha = MAIN_HEAD, lastCompletedMain = null, basePrs = {} } = {}) {
   const labeled = [];
   const autoMerged = [];
   const autoDisabled = [];
   const removedLabels = [];
   const updatedBranches = [];
+  const retargetedBases = [];
   return {
     labeled,
     autoMerged,
     autoDisabled,
     removedLabels,
     updatedBranches,
+    retargetedBases,
     async pullRequest(n) {
-      if (!prs[n]) throw new Error("404");
+      if (!prs[n]) throw new Error('404');
       return prs[n].pr;
     },
     async pullRequestFiles(n) {
@@ -315,6 +365,12 @@ function fakeGitHub(prs, { mainCi = "success", mainHeadSha = MAIN_HEAD, lastComp
     },
     async mainMigrationFiles() {
       return MAIN_MIGRATIONS;
+    },
+    async updatePullRequestBase(n, base) {
+      retargetedBases.push({ prNumber: n, base });
+    },
+    async findPullRequestByHead(head) {
+      return basePrs[head] ?? null;
     },
     async updateBranch(n) {
       updatedBranches.push(n);
@@ -755,6 +811,35 @@ describe("runOnce with green main protection and auto-merge", () => {
     const r1 = results.find((r) => r.prNumber === 1);
     assert.equal(r1.action, "label");
     assert.equal(r1.autoMerge, false);
+  });
+
+  // OPE-10815 acceptance: stacked PR with merged base PR is retargeted to main and auto-merge is held
+  it("acceptance: stacked PR with merged base PR is retargeted to main and holds auto-merge", async () => {
+    const github = fakeGitHub({
+      1: {
+        pr: { ...open(HEAD), baseRef: "bot/OPE-9262", defaultBranch: "main" },
+        ci: "success",
+      },
+    }, {
+      mainCi: "success",
+      basePrs: {
+        "bot/OPE-9262": { number: 1959, state: "closed", merged: true },
+      },
+    });
+
+    const { results } = await runOnce({
+      comments: singleApproveComments,
+      repo: REPO,
+      github,
+      autoMerge: true,
+    });
+
+    assert.deepEqual(github.retargetedBases, [{ prNumber: 1, base: "main" }]);
+    assert.deepEqual(github.autoMerged, []);
+    assert.deepEqual(github.labeled, []);
+    const r1 = results.find((r) => r.prNumber === 1);
+    assert.equal(r1.action, "hold");
+    assert.equal(r1.reason, "base-retargeted-waiting-ci");
   });
 });
 

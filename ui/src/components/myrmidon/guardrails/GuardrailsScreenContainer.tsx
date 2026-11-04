@@ -139,6 +139,7 @@ export function GuardrailsScreen() {
       />
       <GuardrailsJournal
         companyId={companyId}
+        agents={agents}
         filters={journalFilters}
         onFiltersChange={setJournalFilters}
       />

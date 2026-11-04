@@ -1,3 +1,4 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
@@ -34,6 +35,52 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(async () => {
     await database?.cleanup();
   }, 60_000);
+
+  it("50 parallel calls with the same issue, agent, and revision create exactly one continuation", async () => {
+    const key = buildContinuationKey({
+      issueId,
+      event: "issue_continuation_needed",
+      head: "revision-1",
+    });
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        tryClaimContinuationKey(db, {
+          companyId,
+          key,
+          issueId,
+          ttl: 60_000,
+        }),
+      ),
+    );
+
+    expect(results.filter((result) => result === "created")).toHaveLength(1);
+    expect(results.filter((result) => result === "deduped")).toHaveLength(49);
+    expect(
+      await db
+        .select()
+        .from(issueContinuationKeys)
+        .where(and(eq(issueContinuationKeys.companyId, companyId), eq(issueContinuationKeys.key, key))),
+    ).toHaveLength(1);
+  }, 30_000);
+
+  it("parallel delivery of a new revision creates one additional continuation", async () => {
+    const revisionOne = buildContinuationKey({ issueId, event: "issue_continuation_needed", head: "revision-a" });
+    const revisionTwo = buildContinuationKey({ issueId, event: "issue_continuation_needed", head: "revision-b" });
+    expect(revisionTwo).not.toBe(revisionOne);
+
+    expect(await tryClaimContinuationKey(db, { companyId, issueId, key: revisionOne, ttl: 60_000 })).toBe("created");
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        tryClaimContinuationKey(db, { companyId, issueId, key: revisionTwo, ttl: 60_000 }),
+      ),
+    );
+
+    expect(results.filter((result) => result === "created")).toHaveLength(1);
+    expect(results.filter((result) => result === "deduped")).toHaveLength(49);
+    const rows = await db.select().from(issueContinuationKeys).where(eq(issueContinuationKeys.issueId, issueId));
+    expect(rows.filter((row) => row.key === revisionOne)).toHaveLength(1);
+    expect(rows.filter((row) => row.key === revisionTwo)).toHaveLength(1);
+  }, 30_000);
 
   it("50 parallel calls with the same key -> 1 created, 49 deduped", async () => {
     const key = `race-key-${randomUUID()}`;

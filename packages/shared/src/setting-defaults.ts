@@ -1,5 +1,11 @@
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
+import { objectWithoutDefaults } from "./validators/partial.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
+export {
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
+} from "./types/instance.js";
 
 /**
  * Operator-configurable setting defaults.
@@ -33,6 +39,9 @@ export const LEGACY_SETTING_DEFAULTS_ENV_KEY = "PAPERCLIP_SETTING_DEFAULTS";
 /** Instance → General fields whose schema default an operator may replace. */
 export const DEFAULTABLE_GENERAL_SETTINGS = [
   "feedbackDataSharingPreference",
+  "timeZone",
+  "numberFormat",
+  "dateFormat",
 ] as const;
 
 export type DefaultableGeneralSetting = (typeof DEFAULTABLE_GENERAL_SETTINGS)[number];
@@ -48,7 +57,7 @@ export interface ParsedSettingDefaults {
   unknown: string[];
 }
 
-const defaultableFieldsSchema = instanceGeneralSettingsSchema
+const defaultableFieldsSchema = objectWithoutDefaults(instanceGeneralSettingsSchema)
   .pick(
     Object.fromEntries(DEFAULTABLE_GENERAL_SETTINGS.map((key) => [key, true])) as {
       [K in DefaultableGeneralSetting]: true;
@@ -118,7 +127,7 @@ export function applyOperatorGeneralDefaults(
     if (value === undefined) continue;
     if (general[key] === schemaDefaults[key] && general[key] !== value) {
       next ??= { ...general };
-      next[key] = value;
+      (next as unknown as Record<string, unknown>)[key] = value;
     }
   }
   return next ?? general;
@@ -159,7 +168,7 @@ export function stripOperatorGeneralEchoes(
       next[key] !== schemaDefaults[key]
     ) {
       result ??= { ...next };
-      result[key] = schemaDefaults[key];
+      (result as unknown as Record<string, unknown>)[key] = schemaDefaults[key];
     }
   }
   return result ?? next;

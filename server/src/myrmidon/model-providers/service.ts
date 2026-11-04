@@ -53,6 +53,18 @@ import {
   type ModelProviderPackageSignal,
 } from "./signals.js";
 
+export interface ModelProviderKeyRotationSnapshot {
+  secretId: string;
+  secretValue: string | null;
+  models: Array<{
+    modelName: string;
+    litellmModelName: string;
+    enabled: boolean;
+    free: boolean;
+  }>;
+  keyValidatedAt: Date | null;
+}
+
 /** The provider surface this module needs from the secret store. */
 export interface ModelProviderSecretStoreDeps {
   /** Resolves a company secret value by name; null when absent. */
@@ -68,6 +80,8 @@ export interface ModelProviderSecretStoreDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Restores a previously stored company secret value after failed propagation. */
+  restoreSecret(secretId: string, value: string | null): Promise<void>;
   /** Removes (soft-deletes) a company secret. */
   deleteSecret(secretId: string): Promise<void>;
 }
@@ -163,11 +177,18 @@ export interface ModelProviderModelView {
   free: boolean;
 }
 
-/** Activity-log entry of add / rotate / remove. */
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
 export interface ModelProviderActivityEntry {
   companyId: string;
-  action: "model_provider_added" | "model_provider_key_rotated" | "model_provider_removed";
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
   providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
   details: Record<string, unknown>;
 }
 
@@ -452,6 +473,73 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
   }
 
+  /**
+   * Captures the snapshot of current key/secret and models cache before rotation,
+   * allowing rollback if live gateway synchronization fails.
+   */
+  async function captureKeyRotationSnapshot(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderKeyRotationSnapshot> {
+    const row = await loadProvider(companyId, providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+    const secretValue = await deps.secrets.readSecretValue(companyId, secretName);
+    const models = await deps.db
+      .select({
+        modelName: modelProviderModels.modelName,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+        free: modelProviderModels.free,
+      })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, row.id));
+
+    return {
+      secretId,
+      secretValue,
+      models,
+      keyValidatedAt: row.keyValidatedAt,
+    };
+  }
+
+  /**
+   * Rolls back a key rotation to the previously captured snapshot when
+   * downstream gateway propagation fails.
+   */
+  async function rollbackProviderKey(
+    companyId: string,
+    providerId: string,
+    snapshot: ModelProviderKeyRotationSnapshot,
+  ): Promise<void> {
+    const row = await loadProvider(companyId, providerId);
+    await deps.secrets.restoreSecret(snapshot.secretId, snapshot.secretValue);
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, row.id));
+    if (snapshot.models.length > 0) {
+      await deps.db.insert(modelProviderModels).values(
+        snapshot.models.map((m) => ({
+          providerId: row.id,
+          modelName: m.modelName,
+          litellmModelName: m.litellmModelName,
+          enabled: m.enabled,
+          free: m.free,
+        })),
+      );
+    }
+    await deps.db
+      .update(modelProviders)
+      .set({
+        keyValidatedAt: snapshot.keyValidatedAt,
+        updatedAt: now(),
+      })
+      .where(eq(modelProviders.id, row.id));
+  }
+
   /** Re-runs compatibility checks in the background for one company. */
   async function checkToolCallCompatibility(input: {
     companyId: string;
@@ -534,6 +622,30 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
     return view(updated, await hasKeyFor(updated));
   }
 
@@ -602,8 +714,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     providerId: string;
     models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
@@ -618,7 +732,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           ),
         );
     }
-    return listModels(input.companyId, input.providerId);
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
   }
 
   function mapStateToRu(state: string): string {
@@ -939,6 +1065,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   return {
     createProvider,
     rotateProviderKey,
+    captureKeyRotationSnapshot,
+    rollbackProviderKey,
     patchProvider,
     removeProvider,
     listProviders,

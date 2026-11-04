@@ -422,10 +422,6 @@ export class IdleStopService {
     try {
       const status = await this.driver.status(botKey);
 
-      // IDLE-STOP switched off: a no-op passthrough — except for a container it stopped earlier,
-      // which must still come back (the switch is live, bots may be stopped at that moment).
-      if (!config.enabled && !(status.idleStopped && status.state !== 'running')) return true;
-
       if (status.state === 'running') {
         this.logger.debug(`Bot ${botKey} is already running`);
         return true;
@@ -478,10 +474,7 @@ export class IdleStopService {
     try {
       const status = await this.driver.status(botKey);
 
-      // Switched off: only a container IDLE-STOP stopped earlier is brought back.
-      if (!config.enabled && !(status.idleStopped && status.state !== 'running')) return;
-
-      if (status.state === 'running') {
+      if (status.state === 'running' && !status.idleStopped) {
         return;
       }
 

@@ -1,9 +1,8 @@
 name: Main green gate
 
-# MERGE-ON-RED-MAIN (OPE-10789, 03.11):
-# Between a red Myrmidon CI on main and a green CI, merges into main must be blocked.
-# GitHub's native auto-merge only evaluates PR checks, so a broken main would keep
-# receiving merged PRs.
+# MERGE-ON-RED-MAIN (OPE-10789/OPE-10912):
+# The PR check is not sufficient: main can turn red after it passes. On every
+# completed Myrmidon CI run for main, disarm native auto-merge while main is red.
 #
 # This workflow runs the `main-green` check on pull requests targeting main.
 # Operator: add this check ("main-green" of "Main green gate") to the required status
@@ -25,6 +24,7 @@ on:
 permissions:
   contents: read
   issues: read
+  pull-requests: write
 
 jobs:
   main-green:
@@ -61,8 +61,31 @@ jobs:
           set -euo pipefail
           ./scripts/myrmidon/ci/main-green-gate.sh --check
 
+  disarm-on-red-main:
+    name: disarm auto-merge on red main
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Disable native auto-merge unless current main is green
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: ./scripts/myrmidon/ci/main-green-disarm.sh
+
   rerun-failed-main-green:
     name: re-run failed main-green gates
+    needs: disarm-on-red-main
     if: ${{ github.repository == 'itkadr-git/myrmidon' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

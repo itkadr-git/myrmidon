@@ -43,11 +43,18 @@ badge on the agent and raises a signal when an agent is over the limit.
 ## Review routing
 
 A task in `in_review` with no reviewer does not wait for someone to notice:
-the review-routing sweep picks the least-loaded eligible reviewer agent
-(never the task's author or its assignee), assigns the review and wakes it.
-A review that stays without a verdict past the configured hours is signalled
-and moved to another reviewer. With no eligible reviewer at all, the task is
-signalled on the attention desk.
+the review-routing sweep picks an eligible reviewer agent (prioritizing idle
+reviewers first, then least-loaded; never the task's author, its assignee, or a
+reviewer that already had the task), assigns the review and wakes it.
+
+When a task has green CI (`head.ci === "green"`) and no verdict after
+`reassignAfterMinutes` minutes (taking precedence over `reassignAfterHours` when
+set to > 0), the review stage is automatically reassigned to another available
+reviewer of the same role with a comment recorded on the issue. Value `0`
+disables minute-based reassignment. A review that stays without a verdict past
+the configured hours (`reassignAfterHours`) is signalled and moved to another
+reviewer. With no eligible reviewer at all, the task is signalled on the
+attention desk.
 
 When an issue enters `in_review` or its reviewer is reassigned, the issue update
 and the durable reviewer wake request are committed in one database transaction.
@@ -83,6 +90,20 @@ an optional finisher summarizes the outcome.
 - [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
+
+## Knowledge-note gate for system changes
+
+When a system-significant change reaches `done`, or when its review is
+approved, the board checks for a valid wiki reference in the form
+`Вики: slug@rev`. The referenced knowledge item and revision must exist; a
+missing or invalid reference is rejected after the rollout grace period. The
+same gate is applied to both the issue route and the issue service, so direct
+service updates cannot bypass it. During the first three days after
+`2026-10-31`, the default is warning-only; operators can explicitly select
+`warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
+rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
+are unaffected. See the [knowledge gate change record](../changes/knowledge-gate-system-changes.md)
+for the rollout and settings reference.
 
 ## Recovery and requeue holds
 

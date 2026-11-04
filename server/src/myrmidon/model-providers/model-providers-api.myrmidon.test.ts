@@ -134,6 +134,15 @@ function fakeService() {
       });
       return providerView(input.providerId);
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "secret-1",
+        secretValue: KEY_VALUE,
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    async rollbackProviderKey() {},
     async patchProvider(input) {
       calls.push({ op: "patch", companyId: input.companyId, providerId: input.providerId, body: input.body });
       return providerView(input.providerId);

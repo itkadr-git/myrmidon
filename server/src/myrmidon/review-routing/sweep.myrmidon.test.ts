@@ -52,9 +52,19 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
 interface Fixture {
   rows: Map<string, InReviewIssueRow>;
   managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
-  reviewers: Array<{ id: string; role: string; invokable?: boolean; model?: string | null }>;
+  reviewers: Array<{
+    id: string;
+    role: string;
+    metadata?: Record<string, unknown> | null;
+    status?: string | null;
+    invokable?: boolean;
+    model?: string | null;
+    isIdle?: boolean;
+    activeRuns?: number;
+  }>;
   load: Map<string, number>;
   history: Map<string, RoutingHistory>;
+  prWorkProducts?: Map<string, { repository: string; number: number }>;
   activities: Array<{ action: string; issueId: string; details: Record<string, unknown> }>;
   wakeStates?: Map<string, { activeRun: boolean; pendingWake: boolean; lastWakeAt: Date | null; attempts: number; lastCancelledRunAt?: Date | null }>;
   reviewerActiveRuns?: Map<string, number>;
@@ -67,7 +77,7 @@ function makeStore(fx: Fixture) {
     listActiveCompanyIds: async () => [COMPANY],
     listInReviewIssues: async () => [...fx.rows.values()],
     listInProgressPrIssues: async () => [...fx.rows.values()].filter((issue) => issue.status === "in_progress"),
-    findPrWorkProduct: async () => null,
+    findPrWorkProduct: async (_company: string, issueId: string) => fx.prWorkProducts?.get(issueId) ?? null,
     listManagerChainReviewerAgents: async (_company: string, engineerId: string, roles: readonly string[]) => {
       return (fx.managerChain?.get(engineerId) ?? []).filter((agent) => roles.includes(agent.role));
     },
@@ -121,12 +131,17 @@ type SettingsOverride = {
   reviewerRoles?: string[];
   maxLoadPerReviewer?: number;
   reassignAfterHours?: number;
+  reassignAfterMinutes?: number;
   prWatch?: Partial<ReviewRoutingSettings["prWatch"]> & {
     steward?: Partial<ReviewRoutingSettings["prWatch"]["steward"]>;
   };
 };
 
-function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
+function setup(
+  settings: SettingsOverride = {},
+  fx?: Partial<Fixture>,
+  prResolver?: PullRequestHeadResolver,
+) {
   const fixture: Fixture = {
     rows: new Map(),
     reviewers: [
@@ -149,6 +164,7 @@ function setup(settings: SettingsOverride = {}, fx?: Partial<Fixture>) {
   });
   const sweep = createReviewRoutingSweep({
     store: makeStore(fixture),
+    prResolver,
     readSettings: async () => current,
     addComment: async (issueId, body) => {
       comments.push({ issueId, body });
@@ -685,6 +701,17 @@ describe("no reviewer available", () => {
     expect(t.comments).toHaveLength(0);
   });
 
+  it("does not select agents explicitly excluded from reviewer routing", async () => {
+    const t = setup({}, { reviewers: [
+      { id: "bbq-video-director", role: "lead", metadata: { swarmQueueEligible: false } },
+    ] });
+    t.fixture.rows.set("1", row("1"));
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result.assigned).toBe(0);
+    expect(result.signaled).toBe(1);
+    expect(t.fixture.rows.get("1")?.executionPolicy).toBeNull();
+  });
+
   it("raises the signal when every reviewer is at the load ceiling", async () => {
     const t = setup({ maxLoadPerReviewer: 2 }, { load: new Map([[REV_A, 2], [REV_B, 5]]) });
     t.fixture.rows.set("1", row("1"));
@@ -786,6 +813,207 @@ describe("overdue review", () => {
     t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
     const result = await t.sweep.sweep(new Date(NOW.getTime() + 500 * 3_600_000), { force: true });
     expect(result).toMatchObject({ reassigned: 0, signaled: 0 });
+  });
+
+  describe("review reassign on green CI without verdict (OPE-10731)", () => {
+    it("reassigns review with green CI when no verdict after configured minutes", async () => {
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 42,
+          open: true,
+          draft: false,
+          headSha: "head123",
+          ci: "green" as const,
+          reviewDecision: null,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature",
+          url: "https://github.com/acme/repo/pull/42",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 15 },
+        {
+          prWorkProducts: new Map([["task-green", { repository: "acme/repo", number: 42 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-green", row("task-green", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      // Before 15 minutes: nothing reassigned
+      const before = await t.sweep.sweep(new Date(NOW.getTime() + 10 * 60_000), { force: true });
+      expect(before).toMatchObject({ reassigned: 0 });
+
+      // After 16 minutes: reassigned to REV_B, excluding lapsed REV_A
+      const after = await t.sweep.sweep(new Date(NOW.getTime() + 16 * 60_000), { force: true });
+      expect(after).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("task-green")!;
+      expect(updated.assigneeAgentId).toBe(REV_B);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_B);
+
+      // Comment posted to task
+      expect(t.comments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            issueId: "task-green",
+            body: expect.stringContaining("Automatic review routing: this review had no verdict for 16 min"),
+          }),
+        ]),
+      );
+      // Activity logged
+      expect(t.activities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: REVIEW_ROUTING_REASSIGNED_ACTION,
+            issueId: "task-green",
+            details: expect.objectContaining({
+              previousReviewerAgentId: REV_A,
+              reviewerAgentId: REV_B,
+              minutesInReview: 16,
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("excludes lapsed reviewer and prefers idle reviewer during reassignment", async () => {
+      const REV_C = "cccccccc-0000-4000-8000-000000000003";
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 55,
+          open: true,
+          draft: false,
+          headSha: "head55",
+          ci: "green" as const,
+          reviewDecision: null,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature 55",
+          url: "https://github.com/acme/repo/pull/55",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 10 },
+        {
+          reviewers: [
+            { id: REV_A, role: "reviewer", status: "active" },
+            { id: REV_B, role: "reviewer", status: "active", invokable: true },
+            { id: REV_C, role: "reviewer", status: "idle", invokable: true },
+          ],
+          load: new Map([
+            [REV_B, 1], // active with load 1
+            [REV_C, 2], // idle with load 2
+          ]),
+          prWorkProducts: new Map([["task-idle", { repository: "acme/repo", number: 55 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-idle", row("task-idle", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      const after = await t.sweep.sweep(new Date(NOW.getTime() + 15 * 60_000), { force: true });
+      expect(after).toMatchObject({ reassigned: 1 });
+      const updated = t.fixture.rows.get("task-idle")!;
+      // REV_A was excluded; REV_C is idle, so REV_C is preferred over active REV_B despite load 2 > 1
+      expect(updated.assigneeAgentId).toBe(REV_C);
+      expect((updated.executionState as any).currentParticipant.agentId).toBe(REV_C);
+    });
+
+    it("does not reassign when CI is pending or review decision is already present", async () => {
+      let ciStatus: "green" | "pending" | "failing" = "pending";
+      let decision: string | null = null;
+      const mockResolver = {
+        resolve: async () => ({
+          repository: "acme/repo",
+          number: 77,
+          open: true,
+          draft: false,
+          headSha: "head77",
+          ci: ciStatus,
+          reviewDecision: decision,
+          fetchFailed: false,
+          mergeable: true,
+          title: "Feature 77",
+          url: "https://github.com/acme/repo/pull/77",
+          authorLogin: "dev",
+          baseRef: "main",
+        }),
+        listOpenPullRequests: async () => [],
+        resetCache: () => undefined,
+      } as unknown as PullRequestHeadResolver;
+
+      const t = setup(
+        { reassignAfterMinutes: 10 },
+        {
+          prWorkProducts: new Map([["task-ci-test", { repository: "acme/repo", number: 77 }]]),
+        },
+        mockResolver,
+      );
+
+      const policy = { stages: [{ id: "s1", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+      const state = {
+        status: "pending",
+        currentStageId: "s1",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: REV_A },
+        returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      };
+      t.fixture.rows.set("task-ci-test", row("task-ci-test", {
+        assigneeAgentId: REV_A,
+        executionPolicy: policy,
+        executionState: state,
+        updatedAt: NOW,
+      }));
+
+      // When CI is pending, sweep should NOT reassign
+      const resPending = await t.sweep.sweep(new Date(NOW.getTime() + 20 * 60_000), { force: true });
+      expect(resPending).toMatchObject({ reassigned: 0 });
+
+      // When review decision is already APPROVED, sweep should NOT reassign
+      ciStatus = "green";
+      decision = "APPROVED";
+      const resApproved = await t.sweep.sweep(new Date(NOW.getTime() + 20 * 60_000), { force: true });
+      expect(resApproved).toMatchObject({ reassigned: 0 });
+    });
   });
 
   describe("overload rebalancing and escalation", () => {

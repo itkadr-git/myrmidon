@@ -1,0 +1,2 @@
+ALTER TABLE "knowledge_suggestions" ADD COLUMN "idempotency_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "knowledge_suggestions_idempotency_key_uq" ON "knowledge_suggestions" USING btree ("nest_id","idempotency_key") WHERE "knowledge_suggestions"."idempotency_key" is not null;

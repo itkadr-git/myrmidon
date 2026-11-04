@@ -233,6 +233,7 @@ export async function fetchCommitCheckRuns(
   let totalCount: number | null = null;
   let fetchFailed = false;
   let failStatus: number | null = null;
+  let tokenPermissionDenied = false;
 
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
@@ -254,6 +255,12 @@ export async function fetchCommitCheckRuns(
 
     if (!res.ok) {
       failStatus = res.status;
+      const errorBody = typeof (res as { json?: unknown }).json === "function"
+        ? (await (res as Response).json().catch(() => null)) as { message?: unknown } | null
+        : null;
+      tokenPermissionDenied = Boolean(token)
+        && res.status === 403
+        && errorBody?.message === "Resource not accessible by personal access token";
       fetchFailed = true;
       break;
     }
@@ -312,7 +319,9 @@ export async function fetchCommitCheckRuns(
     } else if (failStatus === 403 || failStatus === 401) {
       result.status = "unavailable";
       result.conclusion = "denied";
-      result.summary = "checks unavailable (access denied)";
+      result.summary = tokenPermissionDenied
+        ? "checks unavailable (token lacks checks/actions read)"
+        : "checks unavailable (access denied)";
     } else if (failStatus === 422) {
       result.status = "unavailable";
       result.conclusion = "unavailable";

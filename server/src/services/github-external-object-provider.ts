@@ -200,7 +200,12 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null, a
   };
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  extra?: { mergeCommitReachable?: boolean },
+): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -221,6 +226,12 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const additions = asNonNegativeInteger(body.additions);
   const deletions = asNonNegativeInteger(body.deletions);
   const changedFiles = asNonNegativeInteger(body.changed_files);
+  const mergeCommitSha = asString(body.merge_commit_sha);
+  const mergeCommitReachable = extra?.mergeCommitReachable !== undefined
+    ? extra.mergeCommitReachable
+    : merged
+      ? (!baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/"))
+      : undefined;
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -284,6 +295,8 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(additions !== null ? { additions } : {}),
       ...(deletions !== null ? { deletions } : {}),
       ...(changedFiles !== null ? { changedFiles } : {}),
+      ...(mergeCommitSha ? { mergeCommitSha } : {}),
+      ...(mergeCommitReachable !== undefined ? { mergeCommitReachable } : {}),
     },
   };
 }
@@ -402,37 +415,63 @@ export async function defaultTokenProvider(
   const settings = await readGitHubSharedIdentitySettings(db, companyId);
   if (!settings.enabled) return null;
   const apps = settings.apps.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
-  if (apps.length === 0) return null;
   if (apps.length > 1) throw new Error("Several GitHub Apps allow this repository");
-  const app = apps[0]!;
-  const [keySecret] = await db
-    .select({ id: companySecrets.id })
-    .from(companySecrets)
-    .where(and(
-      eq(companySecrets.id, app.privateKeySecretId),
-      eq(companySecrets.companyId, companyId),
-      eq(companySecrets.scope, "company"),
-      eq(companySecrets.status, "active"),
-      isNull(companySecrets.deletedAt),
-    ));
-  if (!keySecret) return null;
-  try {
-    const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
-      accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
-    });
-    const minted = await mintGitHubAppInstallationToken({
-      appId: app.appId,
-      privateKeyPem,
-      installationId: app.installationId,
-      repository: normalized,
-      permissions: READ_ONLY_APP_PERMISSIONS,
-      fetchImpl: fetchImpl as typeof fetch | undefined,
-    });
-    return minted.token;
-  } catch {
-    // App not installed on the repo / key unreadable / GitHub down: read anonymously, as before.
-    return null;
+  if (apps.length === 1) {
+    const app = apps[0]!;
+    const [keySecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, app.privateKeySecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!keySecret) return null;
+    try {
+      const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
+      });
+      const minted = await mintGitHubAppInstallationToken({
+        appId: app.appId,
+        privateKeyPem,
+        installationId: app.installationId,
+        repository: normalized,
+        permissions: READ_ONLY_APP_PERMISSIONS,
+        fetchImpl: fetchImpl as typeof fetch | undefined,
+      });
+      return minted.token;
+    } catch {
+      return null;
+    }
   }
+
+  const pats = settings.pats.filter((entry) => isRepositoryAllowed(entry.allowedRepos, normalized));
+  if (pats.length > 1) throw new Error("Several GitHub PATs allow this repository");
+  if (pats.length === 1) {
+    const pat = pats[0]!;
+    const [tokenSecret] = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.id, pat.tokenSecretId),
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.scope, "company"),
+        eq(companySecrets.status, "active"),
+        isNull(companySecrets.deletedAt),
+      ));
+    if (!tokenSecret) return null;
+    try {
+      const token = await secrets.resolveSecretValue(companyId, tokenSecret.id, "latest", {
+        accessContext: { ...accessContext, configPath: `github_pat:${normalized}` },
+      });
+      return token.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function createGitHubExternalObjectProvider(
@@ -546,11 +585,46 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
+        if (objectType === "pull_request") {
+          let mergeCommitReachable: boolean | undefined = undefined;
+          const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+          const baseRef = asNestedString(body, "base", "ref");
+          const baseRepo = asRecord(asRecord(body.base)?.repo);
+          const defaultBranch = asString(baseRepo?.default_branch) ?? "main";
+          const mergeCommitSha = asString(body.merge_commit_sha);
+
+          if (merged) {
+            if (!baseRef || baseRef === defaultBranch || baseRef.startsWith("rel/")) {
+              mergeCommitReachable = true;
+            } else if (mergeCommitSha) {
+              try {
+                const compareUrl = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/compare/${encodeURIComponent(defaultBranch)}...${encodeURIComponent(mergeCommitSha)}`;
+                const compareRes = await fetchImpl(compareUrl, { headers });
+                if (compareRes.ok) {
+                  const compareBody = await safeJson(compareRes);
+                  if (compareBody) {
+                    const aheadBy = asNonNegativeInteger(compareBody.ahead_by);
+                    const status = asString(compareBody.status);
+                    mergeCommitReachable = aheadBy === 0 || status === "identical" || status === "behind";
+                  }
+                }
+              } catch {
+                mergeCommitReachable = false;
+              }
+            } else {
+              mergeCommitReachable = false;
+            }
+          }
+
+          return {
+            ok: true,
+            snapshot: pullRequestSnapshot(identity, body, etag, { mergeCommitReachable }),
+          };
+        }
+
         return {
           ok: true,
-          snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
-            : issueSnapshot(identity, body, etag),
+          snapshot: issueSnapshot(identity, body, etag),
         };
       },
     };

@@ -4,7 +4,12 @@
 
 import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
-import { isDueForDailyRun, readBoardJanitorSettings } from "./settings.js";
+import {
+  isDueForDailyRun,
+  readBoardJanitorLastRunAt,
+  readBoardJanitorSettings,
+  writeBoardJanitorLastRunAt,
+} from "./settings.js";
 import { createBoardJanitorSweep, type BoardJanitorSweepResult } from "./sweep.js";
 
 export {
@@ -27,6 +32,7 @@ export {
 } from "./policy.js";
 export {
   BOARD_JANITOR_ENABLED_ENV,
+  BOARD_JANITOR_LAST_RUN_AT_KEY,
   BOARD_JANITOR_RUN_HOUR_IRKUTSK_ENV,
   BOARD_JANITOR_SERVICE_AGENT_ID_ENV,
   BOARD_JANITOR_SERVICE_TICKET_ID_ENV,
@@ -34,7 +40,10 @@ export {
   DEFAULT_BOARD_JANITOR_SERVICE_AGENT_ID,
   DEFAULT_BOARD_JANITOR_SERVICE_TICKET_ID,
   isDueForDailyRun,
+  preserveBoardJanitorGeneralKey,
+  readBoardJanitorLastRunAt,
   readBoardJanitorSettings,
+  writeBoardJanitorLastRunAt,
   type BoardJanitorSettings,
 } from "./settings.js";
 
@@ -47,6 +56,8 @@ export function createBoardJanitorScheduler(input: {
   track: (work: Promise<unknown>) => void;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  getLastRunAt?: () => Promise<Date | null>;
+  setLastRunAt?: (date: Date) => Promise<void>;
 }): () => void {
   const sweep = createBoardJanitorSweep({
     db: input.db,
@@ -54,8 +65,12 @@ export function createBoardJanitorScheduler(input: {
     now: input.now,
   });
 
+  const readLastRun = input.getLastRunAt ?? (() => readBoardJanitorLastRunAt(input.db));
+  const writeLastRun = input.setLastRunAt ?? ((d: Date) => writeBoardJanitorLastRunAt(input.db, d));
+
   let lastRunAt: Date | null = null;
   let running = false;
+  let initialized = false;
 
   return () => {
     if (running) return;
@@ -63,15 +78,38 @@ export function createBoardJanitorScheduler(input: {
     if (!settings.enabled) return;
 
     const now = input.now ? input.now() : new Date();
-    if (!isDueForDailyRun(now, lastRunAt, settings.runHourIrkutsk)) {
+    if (initialized && !isDueForDailyRun(now, lastRunAt, settings.runHourIrkutsk)) {
       return;
     }
 
     running = true;
-    lastRunAt = now;
 
     const work = (async () => {
       try {
+        if (!initialized) {
+          try {
+            const stored = await readLastRun();
+            if (stored) {
+              lastRunAt = stored;
+            }
+          } catch (err) {
+            logger.error({ err }, "Failed to read BOARD-JANITOR lastRunAt from db");
+          } finally {
+            initialized = true;
+          }
+        }
+
+        if (!isDueForDailyRun(now, lastRunAt, settings.runHourIrkutsk)) {
+          return;
+        }
+
+        lastRunAt = now;
+        try {
+          await writeLastRun(now);
+        } catch (err) {
+          logger.error({ err }, "Failed to persist BOARD-JANITOR lastRunAt to db");
+        }
+
         // Fetch all distinct active companies
         const { companies } = await import("@myrmidon/db");
         const allCompanies = await input.db.select({ id: companies.id }).from(companies);
