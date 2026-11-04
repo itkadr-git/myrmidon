@@ -34,6 +34,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { InvitesSection } from "@/components/access/InvitesSection";
+import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
 import { i18n, useTranslation } from "@/i18n";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
@@ -67,6 +68,7 @@ export function CompanyAccess() {
     );
   };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [policyMemberId, setPolicyMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
@@ -424,6 +426,11 @@ export function CompanyAccess() {
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex justify-end gap-2">
+                        {access?.canManageMembers && member.status === "active" ? (
+                          <Button size="sm" variant="outline" onClick={() => setPolicyMemberId(member.id)}>
+                            Inbox access
+                          </Button>
+                        ) : null}
                         <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
                           {t("area.settings-company.company-access.edit")}
                         </Button>
@@ -451,6 +458,22 @@ export function CompanyAccess() {
           </table>
         </div>
       </section>
+
+      <Dialog open={!!policyMemberId} onOpenChange={(open) => !open && setPolicyMemberId(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Member inbox agent access</DialogTitle>
+            <DialogDescription>Manage which agents may archive this member's inbox items. Requires permission to manage user access.</DialogDescription>
+          </DialogHeader>
+          {policyMemberId && selectedCompanyId ? (
+            <InboxAgentPolicyControl
+              key={policyMemberId}
+              companyId={selectedCompanyId}
+              userId={members.find((member) => member.id === policyMemberId)?.principalId}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editingMember} onOpenChange={(open) => !open && setEditingMemberId(null)}>
         <DialogContent className="max-w-2xl">
