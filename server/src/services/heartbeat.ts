@@ -29760,6 +29760,7 @@ export function heartbeatService(
   const wakeStormGuard = new WakeStormGuard();
 
   async function enqueueWakeupInner(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    console.log(`[DEBUG-WAKEUP-START] agentId: ${agentId}, opts.failedRunId: ${opts.failedRunId}, opts.reason: ${opts.reason}, opts.source: ${opts.source}`);
     const continuationEventId = opts.continuationEventId ??
       readNonEmptyString(opts.payload?.continuationEventId) ??
       readNonEmptyString(opts.contextSnapshot?.continuationEventId) ??
