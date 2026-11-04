@@ -31904,7 +31904,7 @@ export function heartbeatService(
                   .from(activityLog)
                   .where(and(...eventConditions))
                   .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
-            console.log(`[DEBUG-ADMISSION] isRecovery: ${isRecovery}, eventRows.length: ${eventRows.length}, lastFinishedAt: ${lastFinishedAt}, continuationEventId: ${continuationEventId}, revision: ${revision}, continuationClaimKey: ${continuationClaimKey}, recoveryParentRunId: ${recoveryParentRunId}, recoveryHead: ${recoveryHead}`);
+            console.log(`[DEBUG-ADMISSION] isRecovery: ${isRecovery}, eventRows.length: ${eventRows.length}, lastFinishedAt: ${lastFinishedAt}, continuationEventId: ${continuationEventId}, recoveryParentRunId: ${recoveryParentRunId}, recoveryHead: ${recoveryHead}`);
             if (!isRecovery && eventRows.length === 0) {
               console.log(`[DEBUG-ADMISSION] SKIP: no_new_issue_input`);
               await tx.insert(agentWakeupRequests).values({
