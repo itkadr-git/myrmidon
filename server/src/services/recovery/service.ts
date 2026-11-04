@@ -101,7 +101,6 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
-import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -2224,7 +2223,7 @@ export function recoveryService(
         // designed for failure retries (transient errors) and has many checks
         // that return "not_scheduled" for generic continuation recovery. Only
         // block recovery when the failure retry budget is actually exhausted.
-        if (executionFailureRetryCount(predecessor) >= 2) {
+        if (legacyExecutionNeedsReconciliation(predecessor)) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
