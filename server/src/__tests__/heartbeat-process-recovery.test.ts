@@ -5277,7 +5277,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toHaveLength(1);
     // Look the run up by id: the select has no ORDER BY, and the queued
     // continuation run can come back first once the failed row is rewritten.
-    expect(runs.find((run) => run.id === runId)).toMatchObject({
+    const failedRun = runs.find((run) => run.id === runId);
+    expect(failedRun).toMatchObject({
       id: runId,
       status: "failed",
       errorCode: "process_lost",
