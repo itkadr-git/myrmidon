@@ -59523,35 +59523,35 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "cached_prompt_tokens": {
           "name": "cached_prompt_tokens",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "completion_tokens": {
           "name": "completion_tokens",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "compacted": {
           "name": "compacted",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "inferred_from_run": {
           "name": "inferred_from_run",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": "0"
+          "default": 0
         },
         "occurred_at": {
           "name": "occurred_at",
