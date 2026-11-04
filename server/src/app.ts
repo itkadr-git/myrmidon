@@ -244,6 +244,7 @@ import {
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
+  buildTokensTraceRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -283,7 +284,6 @@ import { secretService } from "./services/secrets.js";
 
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
 // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace export
-import { buildTokensTraceRoutes } from "./myrmidon/tokens-trace/index.js";
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
 // myrmidon(1.6-CTO-CHAT-B): the board chat planner (owner text -> proposed epic).
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
