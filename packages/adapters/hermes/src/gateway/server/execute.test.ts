@@ -1919,7 +1919,16 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
 
-    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
     expect(traces).toHaveLength(1);
     expect(traces[0].callIndex).toBe(0);
     expect(traces[0].litellmRequestId).toBe("req-a");
@@ -1971,7 +1980,16 @@ describe("mapFinalResultForTest", () => {
       toolResultTokens,
     });
 
-    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
     expect(traces).toHaveLength(1);
     const sections = traces[0].sections;
     // system = instructionsBundle + cardInstructions
@@ -2028,7 +2046,16 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
 
-    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
     expect(traces).toHaveLength(3);
 
     // Each trace has its own callIndex and litellmRequestId
@@ -2049,7 +2076,7 @@ describe("mapFinalResultForTest", () => {
     expect(traces[2].usage.promptTokens).toBe(400);
 
     // Sum of per-call prompt tokens equals aggregate
-    const sumPrompt = traces.reduce((sum: number, t: any) => sum + t.usage.promptTokens, 0);
+    const sumPrompt = traces.reduce((sum: number, t) => sum + t.usage.promptTokens, 0);
     expect(sumPrompt).toBe(1500);
   });
 
@@ -2076,7 +2103,16 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
 
-    const traces = result.resultJson?.llmCallTraces?.calls ?? [];
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
     expect(traces).toHaveLength(1);
     expect(traces[0].callIndex).toBe(0);
     expect(traces[0].litellmRequestId).toBe("req-agg-1");
