@@ -1097,6 +1097,14 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const ownerUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
     let slow = true;
     let hits = 0;
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {

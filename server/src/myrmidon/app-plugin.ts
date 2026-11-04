@@ -137,4 +137,3 @@ export { createChatReconciliationWorkGates } from "./chat-reconciliation/work-ga
 export type { ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.6-GRD)
-export { buildTokensTraceRoutes } from "./tokens-trace/index.js";
