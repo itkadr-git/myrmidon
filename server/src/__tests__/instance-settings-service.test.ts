@@ -10,7 +10,7 @@ import {
 describe("instance settings service", () => {
   it("retains alert-recovery settings and journal through general normalization", () => {
     const journal = [{ identity: "monitoring:runs-reconnecting", firedCount: 2 }];
-    const settings = { holdMinutes: 10, recurrenceWindowMinutes: 60 };
+    const settings = { holdMinutes: 10, recurrenceWindowMinutes: 60, owners: {} };
     const normalized = normalizeGeneralSettings({
       alertRecovery: settings,
       alertRecoveryJournal: journal,
