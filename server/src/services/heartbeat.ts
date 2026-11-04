@@ -31865,7 +31865,12 @@ export function heartbeatService(
                   .where(and(
                     eq(heartbeatRuns.companyId, agent.companyId),
                     eq(heartbeatRuns.agentId, agentId),
-                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                    // Prefer the thin context column over jsonb extraction: the
+                    // jsonb ->> operator returns text, and comparing text to a
+                    // uuid parameter can fail to match depending on driver
+                    // parameter typing. The thin column is set on every new row
+                    // by runContextPersistenceFields.
+                    eq(heartbeatRuns.contextIssueId, issue.id),
                     sql`${heartbeatRuns.finishedAt} is not null`,
                   ))
                   .orderBy(desc(heartbeatRuns.finishedAt))
