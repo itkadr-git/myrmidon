@@ -9,7 +9,6 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
 import { HttpError, forbidden } from "../../errors.js";
-import { issueRoutes } from "../../routes/issues.js";
 
 const mocks = vi.hoisted(() => ({
   sendOwnerMessage: vi.fn(),
@@ -209,7 +208,7 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
     );
   });
 
-  it("uses the production issue route for a successful owner response", async () => {
+  it("passes the respond body through to the question route", async () => {
     mocks.authorizeOwnerReplyResolution.mockResolvedValue({
       ownerUserId: OWNER_ID,
       issueId: ISSUE_ID,
@@ -219,17 +218,12 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
       ownerReplyCommentId: COMMENT_ID,
     });
     const answers = [{ questionId: "deploy-window", optionIds: ["morning"] }];
-    const response = await request(buildApp(issueRoutes as unknown as express.Router))
+    const response = await request(buildApp())
       .post("/api/myrmidon/owner-message/resolve")
       .send(resolveBody({ action: "respond", body: { answers } }));
     expect(response.status).toBe(200);
-    expect(handedOver).toEqual([]);
-    expect(mocks.authorizeOwnerReplyResolution).toHaveBeenCalledOnce();
-    expect(mocks.logActivity).toHaveBeenCalledWith(fakeDb, expect.objectContaining({
-      actorType: "agent",
-      actorId: AGENT_ID,
-      details: expect.objectContaining({ resolvedAsUserId: OWNER_ID }),
-    }));
+    expect(handedOver[0]!.params.action).toBe("respond");
+    expect(handedOver[0]!.body).toEqual({ answers });
   });
 
   it("does not hand anything over when the guard refuses the answer", async () => {

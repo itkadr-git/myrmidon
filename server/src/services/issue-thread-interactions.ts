@@ -3738,7 +3738,6 @@ export function issueThreadInteractionService(
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
           }
-
         }
       }
 
