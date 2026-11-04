@@ -100,6 +100,7 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -2217,7 +2218,15 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        // myrmidon(WAKE-2): only block recovery when the failure retry budget
+        // is actually exhausted. The legacy reconciliation hold is meant for
+        // runs that need manual operator review after provider failures; a
+        // generic failed run with no provider evidence and remaining retry
+        // budget should still be recoverable through the stranded-issue sweep.
+        if (
+          legacyExecutionNeedsReconciliation(predecessor) &&
+          executionFailureRetryCount(predecessor) >= 2
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
