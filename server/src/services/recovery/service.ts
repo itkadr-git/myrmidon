@@ -6360,6 +6360,7 @@ export function recoveryService(
         const isContinuationRecovery =
           issue.status !== "in_review" &&
           issue.originKind !== "stranded_issue_recovery" &&
+          executionRecoverySource?.contextSnapshot?.retryReason === "issue_continuation_needed" &&
           executionFailureRetryCount(source ?? {}) < 2;
         if (
           source &&
