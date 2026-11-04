@@ -101,7 +101,7 @@ scripts/myrmidon/standby/standby-ctl.sh rehearse --target all
 # scripts/myrmidon/standby/standby-ctl.sh rehearse --target all --drill-dir=/var/lib/postgresql/drill-cluster --drill-port=5533
 ```
 
-**Primary endpoint resolution (ADM 04.11):** the real primary on myr-vm1 is `10.10.100.1:15432`,
+**Primary endpoint resolution (ADM 04.11):** the real primary on myr-vm1 is `192.0.2.1:15432` (TEST-NET-1 example; production value is in the standby's `primary_conninfo`),
 not the compile-time default `primary.internal:5432`. Priority order:
 1. Explicit `--primary-host` / `--primary-port` CLI flags
 2. Env vars `PRIMARY_PG_HOST` / `PRIMARY_PG_PORT`

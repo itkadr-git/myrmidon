@@ -1213,11 +1213,11 @@ test("executeRehearsal respects explicit --max-rate override", () => {
 test("resolvePrimaryEndpoint falls back to env PRIMARY_PG_HOST/PRIMARY_PG_PORT", () => {
   const oldHost = process.env.PRIMARY_PG_HOST;
   const oldPort = process.env.PRIMARY_PG_PORT;
-  process.env.PRIMARY_PG_HOST = "10.10.100.1";
+  process.env.PRIMARY_PG_HOST = "192.0.2.1";
   process.env.PRIMARY_PG_PORT = "15432";
   try {
     const ep = resolvePrimaryEndpoint({}, "board", {});
-    assert.equal(ep.host, "10.10.100.1");
+    assert.equal(ep.host, "192.0.2.1");
     assert.equal(ep.port, 15432);
   } finally {
     if (oldHost === undefined) delete process.env.PRIMARY_PG_HOST; else process.env.PRIMARY_PG_HOST = oldHost;
@@ -1235,13 +1235,13 @@ test("resolvePrimaryEndpoint auto-detects from standby primary_conninfo when env
       if (cmd === "psql") {
         const sql = args[args.indexOf("-c") + 1] || "";
         if (sql.includes("SHOW primary_conninfo")) {
-          return { exitCode: 0, stdout: "host=10.10.100.1 port=15432 user=myr_replicator\n", stderr: "" };
+          return { exitCode: 0, stdout: "host=192.0.2.1 port=15432 user=myr_replicator\n", stderr: "" };
         }
       }
       return { exitCode: 1, stdout: "", stderr: "" };
     };
     const ep = resolvePrimaryEndpoint({}, "board", { runner: mockRunner });
-    assert.equal(ep.host, "10.10.100.1");
+    assert.equal(ep.host, "192.0.2.1");
     assert.equal(ep.port, 15432);
   } finally {
     if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
