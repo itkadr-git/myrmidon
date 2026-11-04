@@ -989,16 +989,22 @@ describe("agent live run routes", () => {
 
   it("returns the durable skip reason and logs it when wakeup is rejected", async () => {
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    let selectCount = 0;
     const db = {
-      select: vi.fn(() => ({
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockReturnThis(),
-        orderBy: vi.fn().mockReturnThis(),
-        limit: vi.fn(async () => [{
-          reason: "heartbeat_daily_cap",
-          payload: { issueId: "issue-1", heartbeatSkip: { reason: "Per-agent heartbeat daily cap reached before adapter invocation.", observed: 150, limit: 150 } },
-        }]),
-      })),
+      select: vi.fn(() => {
+        selectCount += 1;
+        const query = {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn(async () => selectCount === 1 ? [{
+            reason: "heartbeat_daily_cap",
+            payload: { issueId: "issue-1", heartbeatSkip: { reason: "Per-agent heartbeat daily cap reached before adapter invocation.", observed: 150, limit: 150 } },
+          }] : []),
+          then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+        };
+        return query;
+      }),
     };
     const res = await requestApp(await createApp(db), (url) =>
       request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({ payload: { issueId: "issue-1" } }),
@@ -1017,16 +1023,22 @@ describe("agent live run routes", () => {
 
   it("returns dependency blocker ids in the skipped response", async () => {
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    let selectCount = 0;
     const db = {
-      select: vi.fn(() => ({
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockReturnThis(),
-        orderBy: vi.fn().mockReturnThis(),
-        limit: vi.fn(async () => [{
-          reason: "issue_dependencies_blocked",
-          payload: { issueId: "issue-1", unresolvedBlockerIssueIds: ["blocker-1"] },
-        }]),
-      })),
+      select: vi.fn(() => {
+        selectCount += 1;
+        const query = {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn(async () => selectCount === 1 ? [{
+            reason: "issue_dependencies_blocked",
+            payload: { issueId: "issue-1", unresolvedBlockerIssueIds: ["blocker-1"] },
+          }] : []),
+          then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+        };
+        return query;
+      }),
     };
     const res = await requestApp(await createApp(db), (url) =>
       request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({ payload: { issueId: "issue-1" } }),
