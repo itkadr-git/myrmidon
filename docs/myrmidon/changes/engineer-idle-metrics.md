@@ -16,7 +16,7 @@
 
 ## divergence-new
 
-<!-- after: 1.6.6 — MONITORING: метрики фаз прогонов и сторож reconnecting (OPE-10046) -->
+<!-- after: 1.6.6 — данные дашборда флота из VictoriaMetrics + Zabbix (MONITORING C) -->
 
 ### 1.6.6 — MONITORING: метрики простоя инженеров для Zabbix (OPE-9868 / OPE-10927)
 
