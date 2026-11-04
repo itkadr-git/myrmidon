@@ -1814,39 +1814,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   it("accepts request_confirmation interactions without creating child issues", async () => {
-    const companyId = randomUUID();
-    const goalId = randomUUID();
-    const issueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
-    await db.insert(goals).values({
-      id: goalId,
-      companyId,
-      title: "Confirm a request",
-      level: "task",
-      status: "active",
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      goalId,
-      title: "Parent issue",
-      status: "in_progress",
-      priority: "medium",
-    });
+    const { companyId, goalId, issueId, defaultAgentId } = await seedConfirmationIssue(
+      "Confirm a request",
+    );
 
     const created = await interactionsSvc.create({
       id: issueId,
       companyId,
     }, {
       kind: "request_confirmation",
-      addresseeUserId: "local-board",
+      addresseeAgentId: defaultAgentId,
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
@@ -1887,7 +1864,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
-      addresseeUserId: "local-board",
+      addresseeAgentId: defaultAgentId,
       payload: {
         version: 1,
         prompt: "Decline only with a reason?",
