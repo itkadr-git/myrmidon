@@ -305,7 +305,7 @@ export async function fetchCommitCheckRuns(
           ? (await res.text().catch(() => "")).toLowerCase()
           : "";
       rateLimited = res.status === 429 ||
-        (res.status === 403 && (remaining === "0" || retryText.includes("rate limit") || errorMessage?.toLowerCase().includes("rate limit")));
+        (res.status === 403 && (remaining === "0" || retryText.includes("rate limit") || errorMessage?.toLowerCase().includes("rate limit") === true));
       if (rateLimited) {
         const reset = Number(getResponseHeader(res, "x-ratelimit-reset"));
         if (Number.isFinite(reset) && reset > 0) rateLimitResetAt = reset * 1000;
