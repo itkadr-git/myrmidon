@@ -274,7 +274,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   }
 }
 
-function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
+export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
     return {
@@ -342,6 +342,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
+      ...(parsed.data.alertRecovery ? { alertRecovery: parsed.data.alertRecovery } : {}),
+      ...(parsed.data.alertRecoveryJournal ? { alertRecoveryJournal: parsed.data.alertRecoveryJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
       // every general write (they are edited on their own settings page).
       ...(parsed.data.reviewRework ? { reviewRework: parsed.data.reviewRework } : {}),

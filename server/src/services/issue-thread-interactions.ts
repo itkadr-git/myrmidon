@@ -17,6 +17,8 @@ import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
+  chatConversations,
+  companyMemberships,
   companySecretProposals,
   companies,
   documents,
@@ -27,6 +29,7 @@ import {
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
+  projects,
   toolActionRequests,
   toolOauthStates,
 } from "@myrmidon/db";
@@ -37,6 +40,7 @@ import {
   PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX,
   selectUndeliveredAddresseeInteractionIds,
 } from "../myrmidon/pending-interaction-wake-sweep.js";
+import { resolveOwnerDecisionRecipient } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import {
   trackInteractionCreated,
   trackInteractionResolved,
@@ -131,6 +135,16 @@ import {
   type GitHubPullRequestReference,
   type PullRequestMergeState,
 } from "./github-pull-request-merge.js";
+import {
+  resolveInteractionRecipient,
+  InteractionRecipientUnresolvedError,
+  type InteractionProjectRoles,
+} from "./interaction-router/resolve-recipient.js";
+import type {
+  InteractionRouteType,
+  InteractionRecipient,
+  InteractionEscalationStep,
+} from "@myrmidon/shared";
 
 export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.js";
 export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
@@ -589,18 +603,26 @@ function isEquivalentCreateRequest(
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
 ) {
+  const inferredAddresseeMatches =
+    input.addresseeAgentId == null &&
+    input.addresseeUserId == null &&
+    (input as any).addresseeQueue == null;
   const addresseeAgentMatches =
     (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) ||
-    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+    inferredAddresseeMatches;
   const addresseeUserMatches =
     (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null) ||
-    (input.addresseeAgentId == null && input.addresseeUserId == null && row.addresseeAgentId != null && row.addresseeUserId == null);
+    inferredAddresseeMatches;
+  const addresseeQueueMatches =
+    (row.addresseeQueue ?? null) === ((input as any).addresseeQueue ?? null) ||
+    inferredAddresseeMatches;
 
   return (
     row.kind === input.kind &&
     row.requestedResolverPolicy === input.resolverPolicy &&
     addresseeAgentMatches &&
     addresseeUserMatches &&
+    addresseeQueueMatches &&
     row.continuationPolicy === input.continuationPolicy &&
     (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
@@ -667,6 +689,12 @@ function hydrateInteraction(
     idempotencyKey: row.idempotencyKey ?? null,
     addresseeAgentId: row.addresseeAgentId ?? null,
     addresseeUserId: row.addresseeUserId ?? null,
+    addresseeQueue: row.addresseeQueue ?? null,
+    routeType: (row.routeType as InteractionRouteType) ?? null,
+    timeoutAt: row.timeoutAt ? new Date(row.timeoutAt).toISOString() : null,
+    escalationChain:
+      (row.escalationChain as InteractionEscalationStep[]) ?? null,
+    escalationLevel: row.escalationLevel ?? 0,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy:
       row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
@@ -3205,6 +3233,12 @@ export function issueThreadInteractionService(
             .update(issueThreadInteractions)
             .set({
               status: "cancelled",
+              addresseeAgentId: null,
+              routeType: null,
+              addresseeQueue: null,
+              timeoutAt: null,
+              escalationChain: null,
+              escalationLevel: 0,
               result: buildAdministrativeOutcomeResult(
                 row,
                 "addressee_deleted",
@@ -3394,6 +3428,14 @@ export function issueThreadInteractionService(
           "An issue-thread interaction cannot address both an agent and a user",
         );
       }
+      if (
+        (normalizedData as any).addresseeQueue &&
+        (normalizedData.addresseeAgentId || normalizedData.addresseeUserId)
+      ) {
+        throw unprocessable(
+          "An issue-thread interaction cannot address multiple recipients",
+        );
+      }
 
       if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
         const cannotTargetAgent =
@@ -3517,6 +3559,300 @@ export function issueThreadInteractionService(
         }
       }
 
+      const [issueContextRow] = await db
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          projectId: issues.projectId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          responsibleAgentId: issues.responsibleAgentId,
+          responsibleUserId: issues.responsibleUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          conversationUserId: issues.conversationUserId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        );
+
+      const isChatChannelIssue =
+        issueContextRow?.originKind === "chat_channel" ||
+        Boolean(
+          await db
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .where(
+              and(
+                eq(chatConversations.companyId, issue.companyId),
+                eq(chatConversations.issueId, issue.id),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0]),
+        );
+
+      let projectRoles: InteractionProjectRoles | null = null;
+      if (issueContextRow?.projectId) {
+        const [projectRow] = await db
+          .select({
+            id: projects.id,
+            leadAgentId: projects.leadAgentId,
+          })
+          .from(projects)
+          .where(
+            and(
+              eq(projects.id, issueContextRow.projectId),
+              eq(projects.companyId, issue.companyId),
+            ),
+          );
+        if (projectRow?.leadAgentId) {
+          projectRoles = {
+            lead: {
+              type: "agent",
+              agentId: projectRow.leadAgentId,
+              projectId: projectRow.id,
+            },
+          };
+        }
+      }
+
+      const creator: InteractionRecipient = actor.agentId
+        ? { agentId: actor.agentId }
+        : actor.userId
+          ? { userId: actor.userId }
+          : { serviceQueue: "system" };
+
+      let recipientCandidate: InteractionRecipient | null = null;
+      if (normalizedData.addresseeAgentId) {
+        recipientCandidate = { agentId: normalizedData.addresseeAgentId };
+      } else if (normalizedData.addresseeUserId) {
+        recipientCandidate = { userId: normalizedData.addresseeUserId };
+      } else if ((normalizedData as any).addresseeQueue) {
+        recipientCandidate = {
+          serviceQueue: (normalizedData as any).addresseeQueue,
+        };
+      } else if (isChatChannelIssue) {
+        recipientCandidate = { serviceQueue: "default" };
+      } else {
+        if (policy.effectiveResolverPolicy === "human_only") {
+          if (actor.agentId) {
+            const ownerRec = await resolveOwnerDecisionRecipient(db, {
+              companyId: issue.companyId,
+              agentId: actor.agentId,
+              addresseeUserId: normalizedData.addresseeUserId,
+              responsibleUserId: issueContextRow?.responsibleUserId,
+              createdByUserId: issueContextRow?.createdByUserId,
+            });
+            if (ownerRec?.ownerUserId) {
+              recipientCandidate = { userId: ownerRec.ownerUserId };
+            }
+          }
+          if (!recipientCandidate) {
+            if (
+              issueContextRow?.assigneeUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.assigneeUserId };
+            } else if (
+              issueContextRow?.responsibleUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.responsibleUserId };
+            } else if (
+              issueContextRow?.createdByUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.createdByUserId };
+            } else {
+              // 1.6.5-OWNER-FALLBACK: check company owners
+              const [ownerMembership] = await db
+                .select({ userId: companyMemberships.principalId })
+                .from(companyMemberships)
+                .where(
+                  and(
+                    eq(companyMemberships.companyId, issue.companyId),
+                    eq(companyMemberships.principalType, "user"),
+                    eq(companyMemberships.status, "active"),
+                    eq(companyMemberships.membershipRole, "owner"),
+                  ),
+                )
+                .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+                .limit(1);
+              if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
+                recipientCandidate = { userId: ownerMembership.userId };
+              } else if ((actor as any).systemId || (!actor.agentId && !actor.userId)) {
+                recipientCandidate = { serviceQueue: "default" };
+              }
+            }
+          }
+        } else {
+          if (
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "suggest_tasks")
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (
+            issueContextRow?.assigneeAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.assigneeAgentId };
+          } else if (
+            issueContextRow?.assigneeUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.assigneeUserId };
+          } else if (
+            issueContextRow?.responsibleAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.responsibleAgentId)
+          ) {
+            const [respAgent] = await db
+              .select({ status: agents.status })
+              .from(agents)
+              .where(and(eq(agents.id, issueContextRow.responsibleAgentId), eq(agents.companyId, issue.companyId)))
+              .limit(1);
+            if (respAgent && isAgentStatusInvokable(respAgent.status)) {
+              recipientCandidate = { agentId: issueContextRow.responsibleAgentId };
+            }
+          } else if (
+            issueContextRow?.responsibleUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.responsibleUserId };
+          } else if (
+            issueContextRow?.createdByAgentId &&
+            (!actor.agentId || actor.agentId !== issueContextRow.createdByAgentId)
+          ) {
+            recipientCandidate = { agentId: issueContextRow.createdByAgentId };
+          } else if (
+            issueContextRow?.createdByUserId &&
+            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+          ) {
+            recipientCandidate = { userId: issueContextRow.createdByUserId };
+          } else if ((actor as any).systemId) {
+            recipientCandidate = { serviceQueue: "default" };
+          }
+        }
+      }
+
+      let routeType: InteractionRouteType;
+      if (
+        !recipientCandidate &&
+        (normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "suggest_tasks")
+      ) {
+        // Operational interactions may be claimed from the default service
+        // queue when no concrete human or agent recipient is available.
+        recipientCandidate = { serviceQueue: "default" };
+      }
+      if ((normalizedData as any).routeType) {
+        routeType = (normalizedData as any).routeType;
+      } else if (
+        (recipientCandidate && "serviceQueue" in recipientCandidate) ||
+        (normalizedData as any).addresseeQueue
+      ) {
+        routeType = "operator_action";
+      } else if (
+        (recipientCandidate && "userId" in recipientCandidate) ||
+        policy.effectiveResolverPolicy === "human_only"
+      ) {
+        routeType = "human_input";
+      } else if (
+        normalizedData.kind === "request_checkbox_confirmation" ||
+        normalizedData.kind === "request_item_verdicts"
+      ) {
+        routeType = "approval";
+      } else {
+        routeType = "decision";
+      }
+
+      let resolvedRecipient: InteractionRecipient;
+      try {
+        resolvedRecipient = resolveInteractionRecipient({
+          routeType,
+          kind: normalizedData.kind,
+          projectId: issueContextRow?.projectId ?? null,
+          creator,
+          projectRoles,
+          recipient: recipientCandidate,
+          casteScope: (normalizedData as any).casteScope ?? null,
+          serviceQueue:
+            (recipientCandidate && "serviceQueue" in recipientCandidate
+              ? recipientCandidate.serviceQueue
+              : (normalizedData as any).addresseeQueue) ?? null,
+          allowLegacyAgentQueueFallback:
+            Boolean(actor.agentId) &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions" ||
+              Boolean(issueContextRow?.assigneeAgentId) ||
+              Boolean(issueContextRow?.createdByAgentId)),
+        });
+      } catch (err) {
+        if (err instanceof InteractionRecipientUnresolvedError) {
+          throw unprocessable(
+            `Cannot determine recipient for interaction: ${err.message}`,
+          );
+        }
+        throw err;
+      }
+
+      let finalAddresseeAgentId: string | null = null;
+      let finalAddresseeUserId: string | null = null;
+      let finalAddresseeQueue: string | null = null;
+
+      if ("agentId" in resolvedRecipient) {
+        finalAddresseeAgentId = resolvedRecipient.agentId;
+      } else if ("userId" in resolvedRecipient) {
+        finalAddresseeUserId = resolvedRecipient.userId;
+      } else if ("serviceQueue" in resolvedRecipient) {
+        finalAddresseeQueue = resolvedRecipient.serviceQueue;
+      }
+
+      if (finalAddresseeAgentId && !normalizedData.addresseeAgentId) {
+        if (finalAddresseeAgentId === actor.agentId) {
+          throw unprocessable(
+            "Agents cannot address issue-thread interactions to themselves",
+          );
+        }
+        const addressee = await db
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            reportsTo: agents.reportsTo,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.id, finalAddresseeAgentId))
+          .then((rows) => rows[0] ?? null);
+        if (!addressee || addressee.companyId !== issue.companyId) {
+          throw unprocessable(
+            "addresseeAgentId must belong to the same company",
+          );
+        }
+      }
+
+      const DEFAULT_INTERACTION_TIMEOUT_MINUTES = 30;
+      let timeoutAt: Date;
+      if ((normalizedData as any).timeoutAt) {
+        timeoutAt = new Date((normalizedData as any).timeoutAt);
+        if (isNaN(timeoutAt.getTime())) {
+          throw unprocessable("Invalid timeoutAt date");
+        }
+      } else {
+        timeoutAt = new Date(
+          Date.now() + DEFAULT_INTERACTION_TIMEOUT_MINUTES * 60_000,
+        );
+      }
+
       if (data.sourceCommentId) {
         const sourceComment = await db
           .select({
@@ -3629,8 +3965,11 @@ export function issueThreadInteractionService(
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId,
-              addresseeUserId,
+              addresseeAgentId: finalAddresseeAgentId,
+              addresseeUserId: finalAddresseeUserId,
+              addresseeQueue: finalAddresseeQueue,
+              routeType,
+              timeoutAt,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })

@@ -5,13 +5,14 @@
 
 import type { Db } from "@myrmidon/db";
 import { agents, heartbeatRuns, issueCreateIdempotencyKeys, issues } from "@myrmidon/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { ExecutionProjection } from "@myrmidon/shared";
 import {
   executionProjectionsForRuns,
   getExecutionLiveSignalWindowSec,
   projectExecution,
 } from "../../../services/execution-projection.js";
+import { heartbeatService } from "../../../services/heartbeat.js";
 import type { AlertRecoveryAlert } from "../alert-recovery/domain.js";
 import { alertRecoveryRuntime } from "../alert-recovery/index.js";
 
@@ -28,6 +29,10 @@ export interface LiveRunRecord {
   id: string;
   companyId: string;
   status: string;
+  adapterType?: string | null;
+  agentId?: string | null;
+  adapterConfig?: Record<string, unknown> | null;
+  externalRunId?: string | null;
   startedAt: Date | string | null;
   createdAt?: Date | string | null;
   lastConfirmedActivityAt?: Date | string | null;
@@ -287,6 +292,7 @@ export interface RunsReconnectingWatchdogDeps {
     runIds: string[],
     now: Date,
   ): Promise<Map<string, ExecutionProjection>>;
+  probeGatewayRun?(run: LiveRunRecord): Promise<"live" | "terminal" | "not_found" | "unreachable">;
   resolveAlertAssignee?(companyId: string): Promise<string | null>;
   createAlert?(
     companyId: string,
@@ -347,6 +353,18 @@ export function createRunsReconnectingWatchdog(
           runIds.length > 0
             ? await deps.getProjections(companyId, runIds, now)
             : new Map<string, ExecutionProjection>();
+        if (deps.probeGatewayRun) {
+          for (const run of companyRuns) {
+            if (run.adapterType !== "hermes_gateway" || !run.externalRunId ||
+                projections.get(run.id)?.phase !== "reconnecting") continue;
+            // Hermes does not stream intermediate events. Confirm remote liveness
+            // before treating the lack of local events as a stalled run.
+            const state = await deps.probeGatewayRun(run).catch(() => "unreachable" as const);
+            if (state === "live") {
+              projections.set(run.id, { ...projections.get(run.id)!, phase: "working" });
+            }
+          }
+        }
 
         const evaluation = computeRunsExecutionEvaluation(
           companyRuns,
@@ -411,11 +429,14 @@ export function createRunsReconnectingWatchdog(
 }
 
 export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog {
+  const gateway = heartbeatService(db);
   return createRunsReconnectingWatchdog({
     listLiveRuns: async () => {
-      return await db
+      const running = await db
         .select({
           id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          externalRunId: heartbeatRuns.externalRunId,
           companyId: heartbeatRuns.companyId,
           status: heartbeatRuns.status,
           startedAt: heartbeatRuns.startedAt,
@@ -426,6 +447,29 @@ export function buildRunsReconnectingWatchdog(db: Db): RunsReconnectingWatchdog 
         })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.status, "running"));
+      if (!running.length) return [];
+      const agentRows = await db.select({
+        id: agents.id,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      }).from(agents).where(inArray(agents.id, running.map((run) => run.agentId)));
+      const byAgent = new Map(agentRows.map((agent) => [agent.id, agent]));
+      return running.map((run) => ({
+        ...run,
+        adapterType: byAgent.get(run.agentId)?.adapterType,
+        adapterConfig: byAgent.get(run.agentId)?.adapterConfig,
+      }));
+    },
+    probeGatewayRun: async (run) => {
+      const probe = await gateway.probeGatewayRun({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        runId: run.id,
+        adapterConfig: run.adapterConfig,
+        gatewayRunId: run.externalRunId!,
+        timeoutMs: 2000,
+      });
+      return probe.state;
     },
     getProjections: async (companyId, runIds, now) => {
       return await executionProjectionsForRuns(db, companyId, runIds, now);

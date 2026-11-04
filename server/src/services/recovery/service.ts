@@ -20,6 +20,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   not,
   notInArray,
   or,
@@ -2467,7 +2468,56 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+    if (budgetBlock) return true;
+
+    try {
+      const [agent] = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, issue.companyId)))
+        .limit(1);
+      const runtimeConfig = agent?.runtimeConfig;
+      const heartbeat =
+        runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)
+          ? (runtimeConfig as Record<string, unknown>).heartbeat
+          : null;
+      const heartbeatConfig =
+        heartbeat && typeof heartbeat === "object" && !Array.isArray(heartbeat)
+          ? (heartbeat as Record<string, unknown>)
+          : null;
+      const configuredLimit =
+        heartbeatConfig?.maxDailyRuns ??
+        heartbeatConfig?.dailyRunLimit ??
+        heartbeatConfig?.dailyRunCap ??
+        heartbeatConfig?.maxRunsPerDay;
+      const dailyLimit =
+        configuredLimit === null || configuredLimit === undefined || configuredLimit === ""
+          ? null
+          : Math.floor(Number(configuredLimit));
+      if (dailyLimit !== null && Number.isFinite(dailyLimit) && dailyLimit >= 0) {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const [row] = await db
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              gte(heartbeatRuns.startedAt, start),
+              lt(heartbeatRuns.startedAt, end),
+              notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+            ),
+          );
+        if (Number(row?.total ?? 0) >= dailyLimit) return true;
+      }
+    } catch {
+      // If daily cap inspection fails, defer to downstream heartbeat admission
+    }
+
+    return false;
   }
 
   async function reconcileUnassignedBlockingIssues() {

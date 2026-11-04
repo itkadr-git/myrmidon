@@ -2676,6 +2676,13 @@
       "when": 1793570006000,
       "tag": "0455_fleet_site_client_cert_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 456,
+      "version": "5",
+      "when": 1727787600000,
+      "tag": "0456_user_ui_custom_catalogs",
+      "breakpoints": true
     }
   ]
 }

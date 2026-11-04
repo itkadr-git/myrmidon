@@ -339,6 +339,37 @@ describe("1.6.6 rc.19 MONITORING OPE-10046: runs execution phase metrics and wat
     );
   });
 
+  it("does not alert on a silent Hermes run confirmed live by the gateway", async () => {
+    const now = new Date("2026-10-30T12:00:00Z");
+    const run = makeRun({ id: "gateway-run", adapterType: "hermes_gateway",
+      externalRunId: "remote-run", startedAt: new Date(now.getTime() - 600_000) });
+    const sendAlertEvent = vi.fn();
+    const probeGatewayRun = vi.fn().mockResolvedValue("live");
+    const watchdog = createRunsReconnectingWatchdog({
+      listLiveRuns: async () => [run],
+      getProjections: async () => new Map([[run.id, makeProjection("reconnecting", run.startedAt!.toString())]]),
+      probeGatewayRun,
+      sendAlertEvent,
+    });
+    const result = await watchdog.sweep(now);
+    expect(probeGatewayRun).toHaveBeenCalledWith(run);
+    expect(result.firingCount).toBe(0);
+    expect(result.evaluations.get(run.companyId)?.phaseCounts.working).toBe(1);
+    expect(sendAlertEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unreachable gateway run in reconnecting", async () => {
+    const now = new Date("2026-10-30T12:00:00Z");
+    const run = makeRun({ adapterType: "hermes_gateway", externalRunId: "remote-run",
+      startedAt: new Date(now.getTime() - 600_000) });
+    const watchdog = createRunsReconnectingWatchdog({
+      listLiveRuns: async () => [run],
+      getProjections: async () => new Map([[run.id, makeProjection("reconnecting")]]),
+      probeGatewayRun: async () => "unreachable",
+    });
+    expect((await watchdog.sweep(now)).firingCount).toBe(1);
+  });
+
   it("watchdog sweep raises and resolves alert", async () => {
     const now = new Date("2026-10-30T12:00:00Z");
     const sendAlertEvent = vi.fn().mockResolvedValue(undefined);

@@ -9092,10 +9092,13 @@ export function buildPaperclipTaskMarkdown(input: {
 
       const allAuthoritative = prsCi.every((ci) => ci.authoritative);
       if (issue.status === "in_review") {
+        const anyRateLimited = prsCi.some((ci) => ci.conclusion === "rate_limited");
         lines.push(
           "",
           "Reviewer directive:",
-          allAuthoritative
+          anyRateLimited
+            ? "CI status is rate-limited by GitHub. Do not spend this run on a verdict or comment. Defer the CI verdict until the rate limit resets by setting executionPolicy.monitor.nextCheckAt."
+            : allAuthoritative
             ? "Base your review verdict strictly on this board-provided CI status for the exact head SHA. Do not call `gh pr checks`."
             : "Some or all PR check runs are non-authoritative (missing, denied, or incomplete). Do not assume unverified checks passed.",
         );
@@ -32282,12 +32285,14 @@ export function heartbeatService(
             }
           }
 
-          const dailyCapBlock = await getHeartbeatDailyCapBlock(
-            agent,
-            policy,
-            {},
-            tx,
-          );
+          const dailyCapBlock = opts.manualUserWake
+            ? null
+            : await getHeartbeatDailyCapBlock(
+              agent,
+              policy,
+              {},
+              tx,
+            );
           if (dailyCapBlock) {
             if (
               source === "assignment" &&
@@ -32774,12 +32779,14 @@ export function heartbeatService(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
 
-      const dailyCapBlock = await getHeartbeatDailyCapBlock(
-        agent,
-        policy,
-        {},
-        tx,
-      );
+      const dailyCapBlock = opts.manualUserWake
+        ? null
+        : await getHeartbeatDailyCapBlock(
+          agent,
+          policy,
+          {},
+          tx,
+        );
       if (dailyCapBlock) {
         if (
           source === "assignment" &&
