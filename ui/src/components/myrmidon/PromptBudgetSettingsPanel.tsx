@@ -23,6 +23,11 @@ import {
   parsePromptPct,
 } from "./prompt-budget/promptBudgetConfig";
 
+export function isValidOptimizerAgent(agentId: string, allowedAgents: Array<{ id: string }>): boolean {
+  if (!agentId) return true;
+  return allowedAgents.some((agent) => agent.id === agentId);
+}
+
 export function PromptBudgetSettingsPanel() {
   const { t } = useTranslation();
   // Non-throwing: the page's vendor test suite renders without a
@@ -71,7 +76,7 @@ export function PromptBudgetSettingsPanel() {
 
   const submit = () => {
     if (!stored || !admin) return;
-    if (optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId)) {
+    if (!isValidOptimizerAgent(optimizerAgentId, agents)) {
       setError("Select an agent from this company for deep analysis.");
       return;
     }
