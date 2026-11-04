@@ -101,6 +101,7 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -2234,7 +2235,15 @@ export function recoveryService(
         // For generic issue continuation recovery with remaining retry budget,
         // fall through to direct enqueueWakeup below. The bounded retry
         // scheduler is for transient failure retries, not stranded-issue recovery.
-        if (input.reason !== "issue_continuation_needed" && deps.scheduleRecoveryRetry) {
+        // However, respect the retry budget: when the predecessor's retry
+        // budget is exhausted (executionFailureRetryCount >= 2), do NOT
+        // create a new run — the incident budget must not be reset.
+        if (input.reason === "issue_continuation_needed") {
+          if (executionFailureRetryCount(predecessor) >= 2) {
+            return null;
+          }
+          // Fall through to direct enqueueWakeup below.
+        } else if (deps.scheduleRecoveryRetry) {
           const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
           return scheduled && typeof scheduled === "object" && "id" in scheduled
             ? scheduled
