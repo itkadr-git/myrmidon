@@ -1,7 +1,7 @@
 // myrmidon(SETTINGS-UI-REMAINDER): company-scoped LiteLLM projection switches, distinct from budget enforcement.
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCompany } from "@/context/CompanyContext";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import { useTranslation } from "@/i18n";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -49,7 +49,8 @@ export function LiteLlmBudgetSyncSettingsPanelView({ view, onSave, pending, erro
 }
 
 export function LiteLlmBudgetSyncSettingsPanel() {
-  const { selectedCompanyId } = useCompany();
+  const company = useOptionalCompany();
+  const selectedCompanyId = company?.selectedCompanyId;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
