@@ -87,7 +87,6 @@ export { licensingInstallIdRoutes } from "./licensing-install-id/routes.js";
 export { myrmidonLitellmBudgetSyncRoutes } from "./litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 export { myrmidonLitellmWorkersRoutes } from "./litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 export { myrmidonLitellmChannelsRoutes } from "./litellm-channels/index.js"; // myrmidon(1.6.7 OPE-9854)
-export { buildTokensTraceRoutes } from "./tokens-trace/index.js"; // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727)
 export { agentInstructionsRevisionsRoutes } from "./agent-instructions-revisions/index.js"; // myrmidon(H2)
 export { myrmidonFleetConsoleRoutes } from "./fleet-console/index.js"; // myrmidon(SC1)
 export { myrmidonFleetSiteRoutes } from "./bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
