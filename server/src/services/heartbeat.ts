@@ -31904,7 +31904,9 @@ export function heartbeatService(
                   .from(activityLog)
                   .where(and(...eventConditions))
                   .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+            console.log(`[DEBUG-ADMISSION] isRecovery: ${isRecovery}, eventRows.length: ${eventRows.length}, lastFinishedAt: ${lastFinishedAt}, continuationEventId: ${continuationEventId}, revision: ${revision}, continuationClaimKey: ${continuationClaimKey}, recoveryParentRunId: ${recoveryParentRunId}, recoveryHead: ${recoveryHead}`);
             if (!isRecovery && eventRows.length === 0) {
+              console.log(`[DEBUG-ADMISSION] SKIP: no_new_issue_input`);
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                 reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
@@ -31940,7 +31942,9 @@ export function heartbeatService(
                   ))
                   .limit(1)
               : [];
+            console.log(`[DEBUG-ADMISSION] existingClaimedRun.length: ${existingClaimedRun.length}, activeContinuationClaimKey: ${activeContinuationClaimKey}`);
             if (existingClaimedRun.length) {
+              console.log(`[DEBUG-ADMISSION] SKIP: existing_claimed_run`);
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                 reason,
@@ -31955,10 +31959,13 @@ export function heartbeatService(
             let activeContinuationClaimKey = continuationClaimKey;
             if (!activeContinuationClaimKey) {
               const dedupeKey = buildContinuationKey({ issueId: issue.id, event: `${reason}:${agentId}`, head: revision });
+              console.log(`[DEBUG-ADMISSION] dedupeKey: ${dedupeKey}, revision: ${revision}`);
               const claimOutcome = await tryClaimContinuationKeyInTransaction(tx as unknown as Db, {
                 companyId: agent.companyId, key: dedupeKey, issueId: issue.id, ttl: 365 * 24 * 60 * 60 * 1000,
               });
+              console.log(`[DEBUG-ADMISSION] claimOutcome: ${claimOutcome}`);
               if (claimOutcome === "deduped") {
+                console.log(`[DEBUG-ADMISSION] SKIP: deduped`);
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                   reason, payload: { ...(payload ?? {}), issueId, continuationEventRevision: revision, duplicateContinuation: true },
