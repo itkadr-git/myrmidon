@@ -101,6 +101,7 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
@@ -2224,7 +2225,13 @@ export function recoveryService(
         // designed for failure retries (transient errors) and has many checks
         // that return "not_scheduled" for generic continuation recovery. Only
         // block recovery when the failure retry budget is actually exhausted.
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        const isContinuationRecoveryWithBudget =
+          input.reason === "issue_continuation_needed" &&
+          executionFailureRetryCount(predecessor) < 2;
+        if (
+          legacyExecutionNeedsReconciliation(predecessor) &&
+          !isContinuationRecoveryWithBudget
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -2232,13 +2239,18 @@ export function recoveryService(
           });
           return null;
         }
-        // For generic issue continuation recovery with remaining retry budget,
+        // For conversation-continuation runs with remaining retry budget,
         // fall through to direct enqueueWakeup below. The bounded retry
-        // scheduler is for transient failure retries, not stranded-issue recovery.
+        // scheduler is for transient failure retries, not continuation recovery.
         // However, respect the retry budget: when the predecessor's retry
         // budget is exhausted (executionFailureRetryCount >= 2), do NOT
         // create a new run — the incident budget must not be reset.
-        if (input.reason === "issue_continuation_needed") {
+        const needsReconciliation = legacyExecutionNeedsReconciliation(predecessor);
+        if (
+          input.reason === "issue_continuation_needed" &&
+          (hasConversationContinuationPolicy(predecessor) ||
+            (needsReconciliation && isContinuationRecoveryWithBudget))
+        ) {
           if (executionFailureRetryCount(predecessor) >= 2) {
             return null;
           }
@@ -6339,7 +6351,18 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && legacyExecutionNeedsReconciliation(source)) {
+        // myrmidon(WAKE-2): for generic issue continuation recovery with
+        // remaining retry budget, do NOT terminalize — the recovery path
+        // below will create a new run via enqueueStrandedIssueRecovery.
+        // Only terminalize when the retry budget is exhausted.
+        const isContinuationRecovery =
+          issue.status !== "in_review" &&
+          executionFailureRetryCount(source ?? {}) < 2;
+        if (
+          source &&
+          legacyExecutionNeedsReconciliation(source) &&
+          !isContinuationRecovery
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,
