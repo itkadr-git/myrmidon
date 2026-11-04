@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOptionalCompany } from "@/context/CompanyContext";
+import { agentsApi } from "@/api/agents";
+import { useIsInstanceAdmin } from "./licensingApi";
 import {
   promptBudgetApi,
   promptBudgetSettingsQueryKey,
@@ -27,6 +29,12 @@ export function PromptBudgetSettingsPanel() {
   // CompanyProvider; outside a company context the panel has nothing to edit.
   const company = useOptionalCompany();
   const companyId = company?.selectedCompanyId ?? "";
+  const admin = useIsInstanceAdmin();
+  const { data: agents = [] } = useQuery({
+    queryKey: ["agents", companyId, "prompt-budget-optimizer"],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: companyId.length > 0 && admin === true,
+  });
   const queryClient = useQueryClient();
   const { data: stored } = useQuery({
     queryKey: promptBudgetSettingsQueryKey(companyId),
@@ -37,6 +45,7 @@ export function PromptBudgetSettingsPanel() {
   const [critDraft, setCritDraft] = useState<string>("");
   const [fallbackDraft, setFallbackDraft] = useState<string>("");
   const [enabled, setEnabled] = useState<boolean>(true);
+  const [optimizerAgentId, setOptimizerAgentId] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,6 +55,7 @@ export function PromptBudgetSettingsPanel() {
       setCritDraft(numberToText(stored.critPct));
       setFallbackDraft(numberToText(stored.fallbackWindowTokens));
       setEnabled(stored.enabled);
+      setOptimizerAgentId(stored.optimizerAgentId ?? "");
       setLoaded(true);
     }
   }, [stored, loaded]);
@@ -60,7 +70,11 @@ export function PromptBudgetSettingsPanel() {
   });
 
   const submit = () => {
-    if (!stored) return;
+    if (!stored || !admin) return;
+    if (optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId)) {
+      setError("Select an agent from this company for deep analysis.");
+      return;
+    }
     const warn = parsePromptPct(warnDraft);
     if (!warn.ok) {
       setError(t("area.costs-budgets-2.prompt-budget-settings-panel.warnInvalid", { message: warn.message }));
@@ -85,7 +99,7 @@ export function PromptBudgetSettingsPanel() {
       critPct: crit.value,
       enabled,
       fallbackWindowTokens: fallback.value,
-      optimizerAgentId: stored.optimizerAgentId,
+      optimizerAgentId: optimizerAgentId || null,
     });
   };
 
@@ -162,11 +176,19 @@ export function PromptBudgetSettingsPanel() {
         />
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="prompt-budget-optimizer">Deep analysis agent</Label>
+        <select id="prompt-budget-optimizer" className="w-full rounded-md border bg-background px-3 py-2 text-sm" value={optimizerAgentId} disabled={!admin} onChange={(event) => setOptimizerAgentId(event.target.value)}>
+          <option value="">None</option>
+          {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && <option value={optimizerAgentId} disabled>Saved agent unavailable</option>}
+          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+      </div>
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           onClick={submit}
-          disabled={save.isPending || !stored}
+          disabled={save.isPending || !stored || !admin}
           data-testid="prompt-budget-save"
         >
           {save.isPending ? t("area.costs-budgets-2.prompt-budget-settings-panel.saving") : t("common.save")}

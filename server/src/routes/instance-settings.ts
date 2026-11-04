@@ -215,6 +215,10 @@ export function instanceSettingsRoutes(
           });
         }
       }
+      if (Object.prototype.hasOwnProperty.call(req.body, "sharedMount")) {
+        // A board owner with other settings privileges cannot expose host paths.
+        assertInstanceAdmin(req);
+      }
       const hidden = getHiddenSettings();
       await assertNoHiddenSettingChanges(
         req.body,
