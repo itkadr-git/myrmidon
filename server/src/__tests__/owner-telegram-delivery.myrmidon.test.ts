@@ -774,6 +774,7 @@ describeEmbeddedPostgres(
           resolverPolicy?: "anyone" | "not_creator" | "human_only";
           addresseeAgentId?: string;
           addresseeUserId?: string;
+          addresseeQueue?: string;
         } = {},
       ) {
         return issueThreadInteractionService(db).create(
@@ -789,6 +790,9 @@ describeEmbeddedPostgres(
               : {}),
             ...(input.addresseeUserId
               ? { addresseeUserId: input.addresseeUserId }
+              : {}),
+            ...(input.addresseeQueue
+              ? { addresseeQueue: input.addresseeQueue }
               : {}),
             payload: {
               version: 1 as const,
