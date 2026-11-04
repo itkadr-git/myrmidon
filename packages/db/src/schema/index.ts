@@ -141,6 +141,8 @@ export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
 export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
 export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace.
+export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
