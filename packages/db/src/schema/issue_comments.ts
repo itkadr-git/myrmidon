@@ -70,5 +70,10 @@ export const issueComments = pgTable(
     bodyLowerTrgmIdx: index("issue_comments_body_lower_trgm_idx")
       .using("gin", sql`lower(${table.body}) gin_trgm_ops`)
       .where(sql`${table.deletedAt} is null`),
+    // myrmidon(1.6.6 OPE-10438): the issue comment anti-join previously had to
+    // scan rows because existing indexes began with unrelated company columns.
+    issueCreatedAtIdx: index("issue_comments_issue_created_at_idx")
+      .on(table.issueId, table.createdAt)
+      .where(sql`${table.deletedAt} is null`),
   }),
 );

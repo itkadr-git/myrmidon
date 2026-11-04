@@ -27,6 +27,8 @@ export type AgentCardModels = {
   fallbacks?: string[];
   /** myrmidon(BOT-TUNING-C): explicit context window (tokens) for the card's model. */
   contextLength?: number;
+  /** myrmidon(BOT-MAXTOKENS): explicit main-model output budget, emitted as `model.max_tokens`. */
+  maxOutputTokens?: number;
   /** myrmidon(REASONING-OUTPUT-LIMIT): output token budget for the card's model. */
   maxTokens?: number;
   /** myrmidon(BOT-RUNTIME-TUNING-A): absolute compression threshold in tokens. */
@@ -81,6 +83,7 @@ const SUPPORTED_FIELDS_BY_ADAPTER: Record<
     "tts",
     "fallbacks",
     "contextLength",
+    "maxOutputTokens",
     // myrmidon(BOT-RUNTIME-TUNING-A): the compression token cap.
     "compressionThresholdTokens",
     // myrmidon(REASONING-OUTPUT-LIMIT): Hermes supports model.max_tokens.
@@ -94,6 +97,7 @@ export type CardModelFieldKey =
   | SingleModelKey
   | "fallbacks"
   | "contextLength"
+  | "maxOutputTokens"
   | "compressionThresholdTokens"
   | "maxTokens"
   | "titleGeneration"
@@ -118,6 +122,9 @@ export function compactCardModels(models: AgentCardModels): AgentCardModels | un
   // Empty rows stay while being edited; the server and the run ignore them.
   const fallbacks = (models.fallbacks ?? []).map((item) => item.trim());
   if (fallbacks.length > 0) next.fallbacks = fallbacks;
+  if (typeof models.maxOutputTokens === "number" && Number.isFinite(models.maxOutputTokens)) {
+    next.maxOutputTokens = models.maxOutputTokens;
+  }
   // myrmidon(BOT-TUNING-C): the compiler part B fields compact the same way:
   // the context window only when a finite number, model names only when non-empty.
   if (typeof models.contextLength === "number" && Number.isFinite(models.contextLength)) {
@@ -426,6 +433,22 @@ export function AgentCardModelsFields({
           {!isCardModelFieldSupported(adapterType, field.key) && <UnsupportedNote />}
         </Field>
       ))}
+      {/* myrmidon(BOT-MAXTOKENS): output-token budget for Hermes. */}
+      <Field label={t("area.settings-agent-card.agent-card-models-fields.maxOutputTokensLabel")} hint={t("area.settings-agent-card.agent-card-models-fields.maxOutputTokensHint")}>
+        {isCardModelFieldSupported(adapterType, "maxOutputTokens") ? (
+          <TokenInputField
+            label={t("area.settings-agent-card.agent-card-models-fields.maxOutputTokensLabel")}
+            hint={t("area.settings-agent-card.agent-card-models-fields.maxOutputTokensHint")}
+            placeholder="32000"
+            testId="myrmidon-card-max-output-tokens"
+            value={models.maxOutputTokens}
+            min={1_000}
+            max={200_000}
+            labelForErrors={t("area.settings-agent-card.agent-card-models-fields.maxOutputTokensErrorLabel")}
+            onChange={(tokens) => update({ maxOutputTokens: tokens })}
+          />
+        ) : <UnsupportedNote />}
+      </Field>
       {/* myrmidon(BOT-TUNING-C): explicit context window for the card's model. */}
       <Field label={t("area.settings-agent-card.agent-card-models-fields.contextLengthLabel")} hint={t("area.settings-agent-card.agent-card-models-fields.contextLengthHint")}>
         {isCardModelFieldSupported(adapterType, "contextLength") ? (

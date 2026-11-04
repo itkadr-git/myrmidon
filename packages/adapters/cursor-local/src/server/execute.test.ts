@@ -352,5 +352,5 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       else process.env.HOME = previousHome;
       await fs.rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

@@ -111,6 +111,65 @@ beforeEach(() => {
 });
 
 describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
+  it("keeps valid owner-message and resolve addresses on registered routes instead of returning 404", async () => {
+    mocks.sendOwnerMessage.mockResolvedValue({
+      commentId: COMMENT_ID,
+      publicationId: "88888888-8888-4888-8888-888888888888",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      interactionIds: [INTERACTION_ID],
+    });
+
+    const app = buildApp();
+    const message = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [INTERACTION_ID], text: "Route regression check." });
+    expect(message.status).toBe(201);
+
+    const resolution = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody());
+    expect(resolution.status).toBe(200);
+    expect(handedOver).toHaveLength(1);
+    expect(handedOver[0]!.params).toMatchObject({
+      id: ISSUE_ID,
+      interactionId: INTERACTION_ID,
+      action: "accept",
+    });
+  });
+
+  it("rejects an addressless request before it can fall through as a 404", async () => {
+    const app = buildApp();
+    const response = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [], text: "No recipient" });
+
+    expect(response.status).toBe(400);
+    expect(response.status).not.toBe(404);
+    expect(mocks.sendOwnerMessage).not.toHaveBeenCalled();
+  });
+
+  it("propagates duplicate delivery rejection without creating another publication", async () => {
+    const delivery = { interactionIds: [INTERACTION_ID], text: "Retry-safe explanation." };
+    const publication = {
+      commentId: COMMENT_ID,
+      publicationId: "88888888-8888-4888-8888-888888888888",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      interactionIds: [INTERACTION_ID],
+    };
+    mocks.sendOwnerMessage
+      .mockResolvedValueOnce(publication)
+      .mockRejectedValueOnce(new HttpError(409, "The owner has already been notified"));
+    const app = buildApp();
+
+    const first = await request(app).post("/api/myrmidon/owner-message").send(delivery);
+    const retry = await request(app).post("/api/myrmidon/owner-message").send(delivery);
+
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(409);
+    expect(retry.body).toMatchObject({ error: "The owner has already been notified" });
+    expect(mocks.sendOwnerMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("sends the owner message for the calling agent and run", async () => {
     mocks.sendOwnerMessage.mockResolvedValue({
       commentId: COMMENT_ID,

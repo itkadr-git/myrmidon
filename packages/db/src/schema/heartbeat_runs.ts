@@ -269,5 +269,10 @@ export const heartbeatRuns = pgTable(
       .where(
         sql`jsonb_exists(${table.contextSnapshot}, 'executionContinuation') or jsonb_exists(${table.contextSnapshot}, 'paperclipWake') or jsonb_exists(${table.contextSnapshot}, 'paperclipWakeComment') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipTaskMarkdownCompact') or jsonb_exists(${table.contextSnapshot}, 'paperclipSessionHandoffMarkdown') or jsonb_exists(${table.contextSnapshot}, 'paperclipContinuationSummary') or jsonb_exists(${table.contextSnapshot}, 'externalChatContinuation')`,
       ),
+    // myrmidon(1.6.6 OPE-10438): the swarm queue probes recent terminal runs by
+    // company/status and then applies the finished_at window.
+    failedQueueIdx: index("heartbeat_runs_failed_queue_idx")
+      .on(table.companyId, table.status, table.updatedAt, table.finishedAt)
+      .where(sql`${table.status} in ('failed', 'timed_out') and ${table.finishedAt} is not null`),
   }),
 );
