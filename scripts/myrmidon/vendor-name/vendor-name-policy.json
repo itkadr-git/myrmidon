@@ -28,7 +28,7 @@
     },
     "snapshots": {
       "path": "scripts/myrmidon/vendor-name/snapshots",
-      "baseline": 17
+      "baseline": 0
     }
   },
   "exceptions": {

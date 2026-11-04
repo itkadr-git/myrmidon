@@ -13327,6 +13327,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) await waitForRunToSettle(heartbeat, retryRun.id);
   });
 
+  it("suppresses issue_continuation_needed recovery when agent has reached daily run cap", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        runSource: "issue.assignment",
+        livenessState: "advanced",
+        now: new Date(),
+      });
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: {
+            maxDailyRuns: 1,
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    const allRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(allRuns).toHaveLength(1);
+    expect(allRuns[0]!.id).toBe(runId);
+  });
+
   it("lets a child waiting for the shared workspace run before recovering its lead", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWorkspace: { mode: "shared_workspace" } } }).where(eq(heartbeatRuns.id, runId));
