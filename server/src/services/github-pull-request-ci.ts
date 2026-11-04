@@ -858,20 +858,21 @@ export function createPullRequestCiResolver(
           runs: [],
         };
       }
-      const summary = summarizeCheckRuns(runs, {
+      const summarized = summarizeCheckRuns(runs, {
         headSha,
         repository: repoKey,
         pullNumber: reference.number,
       });
 
+      const isRateLimited = runs.conclusion === "rate_limited" || isGitHubRateLimited();
       const result: PullRequestCiResult = {
         repository: repoKey,
         pullNumber: reference.number,
         headSha,
         headRef,
-        ...summary,
-        conclusion: runs.conclusion === "rate_limited" ? "rate_limited" : summary.conclusion,
-        summary: runs.conclusion === "rate_limited" && runs.summary ? runs.summary : summary.summary,
+        ...summarized,
+        conclusion: isRateLimited ? "rate_limited" : summarized.conclusion,
+        summary: runs.conclusion === "rate_limited" && runs.summary ? runs.summary : summarized.summary,
         checkedAt: new Date().toISOString(),
         runs,
       };
