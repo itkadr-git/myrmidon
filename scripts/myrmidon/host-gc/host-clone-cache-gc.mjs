@@ -305,13 +305,22 @@ function archiveClone(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
-  const archivePath = path.join(archiveRoot, `${name}-${ts}.tar.zst`);
-  // We use tar command for speed; zstd via pipe if available
-  const r = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
-  if (r.status !== 0) throw new Error(`archive failed for ${clonePath}: ${r.stderr}`);
-  // Verify archive
-  const v = spawnSync("bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`], { timeout: 60000 });
-  if (v.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
+  const extension = hasZstd ? "tar.zst" : "tar.gz";
+  const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  let result;
+  let verify;
+  if (hasZstd) {
+    // Prefer zstd, but do not make archival depend on an optional host binary.
+    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
+  } else {
+    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    verify = ["tar", ["-tzf", archivePath]];
+  }
+  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
+  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
   return archivePath;
 }
 
