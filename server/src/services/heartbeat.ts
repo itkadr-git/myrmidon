@@ -30086,8 +30086,10 @@ export function heartbeatService(
       }
     }
 
+    let failedRun: typeof heartbeatRuns.$inferSelect | null = null;
     if (opts.failedRunId && (reason === "retry_failed_run" || reason === "issue_continuation_needed")) {
       const failed = await getRun(opts.failedRunId);
+      failedRun = failed;
       if (reason === "retry_failed_run" && (
         opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
         source !== "on_demand" || triggerDetail !== "manual" ||
@@ -32740,7 +32742,7 @@ export function heartbeatService(
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
-                : failed
+                : failedRun
                   ? opts.failedRunId ?? automaticParentRunId
                   : automaticParentRunId,
               ...runContextPersistenceFields(
