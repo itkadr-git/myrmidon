@@ -59209,7 +59209,8 @@
           "name": "id",
           "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "company_id": {
           "name": "company_id",
@@ -59250,18 +59251,21 @@
         "section_reviewers": {
           "name": "section_reviewers",
           "type": "jsonb",
+          "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
           "notNull": true,
           "default": "now()"
         }
@@ -59270,9 +59274,17 @@
         "knowledge_settings_company_uq": {
           "name": "knowledge_settings_company_uq",
           "columns": [
-            "company_id"
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
           ],
-          "isUnique": true
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
