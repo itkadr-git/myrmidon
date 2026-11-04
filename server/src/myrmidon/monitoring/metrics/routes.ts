@@ -21,6 +21,7 @@ import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,
   clampLatencyWindowSec,
+  clampEngineerIdleWindowSec,
   collectMetricsSnapshot,
   METRICS_CONTENT_TYPE,
   renderMetricsText,
@@ -199,6 +200,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
       now: deps.now,
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+      engineerIdleWindowSec: clampEngineerIdleWindowSec(query.idle_window),
       role,
       ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
     });
@@ -258,6 +260,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
         now: deps.now,
         errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
         latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+        engineerIdleWindowSec: clampEngineerIdleWindowSec(query.idle_window),
         ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
       });
       res.status(result.ok ? 200 : 503).json(result);

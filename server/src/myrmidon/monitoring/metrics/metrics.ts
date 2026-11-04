@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, exists, gt, gte, inArray, isNotNull, isNull, lt, notExists, sql } from "drizzle-orm";
 import type { ExecutionProjection } from "@myrmidon/shared";
 import { executionProjectionsForRuns } from "../../../services/execution-projection.js";
 import {
@@ -35,6 +35,7 @@ import {
   issueWorkProducts,
   issueClaims,
   issues,
+  issueRelations,
   litellmCostEvents,
   type Db,
 } from "@myrmidon/db";
@@ -107,6 +108,7 @@ export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 
 /** The scraper may pass `?window=…` (seconds) for the error window; bounded. */
 export const DEFAULT_ERROR_WINDOW_SEC = 3600;
+export const DEFAULT_ENGINEER_IDLE_WINDOW_SEC = 3600;
 const MIN_ERROR_WINDOW_SEC = 60;
 const MAX_ERROR_WINDOW_SEC = 86400;
 
@@ -152,6 +154,9 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_execution_phase",
   "myrmidon_runs_reconnecting_oldest_seconds",
   "myrmidon_role_queue_tasks",
+  "myrmidon_engineers_live",
+  "myrmidon_engineers_idle",
+  "myrmidon_todo_unblocked_tasks",
   "myrmidon_review_tasks_without_reviewer",
   "myrmidon_blocked_tasks_without_assignee",
   "myrmidon_code_tasks_on_noncoding_roles",
@@ -305,6 +310,9 @@ export interface MetricsSnapshotFields {
   runDurationSecondsP95: number | null;
   /** Issue counts per assignee role and status. */
   roleQueueTasks: Array<{ role: string; status: string; count: number }>;
+  engineersLive?: number;
+  engineersIdle?: number;
+  todoUnblockedTasks?: number;
   reviewTasksWithoutReviewer: number;
   blockedTasksWithoutAssignee: number;
   codeTasksOnNoncodingRoles: number;
@@ -450,6 +458,7 @@ export interface MetricsCollectorDeps {
   errorWindowSec: number;
   /** Latency window in seconds. */
   latencyWindowSec: number;
+  engineerIdleWindowSec?: number;
   /**
    * myrmidon(1.6.6 OPE-6959): the process role stamped on every sample as the
    * `role` label. Absent → resolved from `PAPERCLIP_PROCESS_ROLE` (the same
@@ -985,6 +994,27 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readRoleQueues(deps.db),
     [] as Array<{ role: string; status: string; count: number }>,
   );
+  const engineerAndQueue = await guarded(
+    "myrmidon_engineers_live|myrmidon_engineers_idle|myrmidon_todo_unblocked_tasks",
+    async () => {
+      const idleSince = new Date(now.getTime() - (deps.engineerIdleWindowSec ?? DEFAULT_ENGINEER_IDLE_WINDOW_SEC) * 1000);
+      const isEngineer = sql`(${agents.role} = 'engineer' or ${agents.name} like 'adm-dev-eng-%')`;
+      const live = and(isEngineer, sql`${agents.status} <> 'terminated'`, isNull(agents.pausedAt));
+      const [liveCount] = await deps.db.select({ total: count() }).from(agents).where(live);
+      const [idleCount] = await deps.db.select({ total: count() }).from(agents).where(and(live,
+        notExists(deps.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agents.id), gte(heartbeatRuns.createdAt, idleSince)))),
+      ));
+      const [todoCount] = await deps.db.select({ total: count() }).from(issues).where(and(
+        eq(issues.status, "todo"), isNull(issues.assigneeUserId), isNull(issues.hiddenAt),
+        notExists(deps.db.select({ id: issueRelations.id }).from(issueRelations).where(and(
+          eq(issueRelations.relatedIssueId, issues.id), eq(issueRelations.type, "blocks"),
+          exists(deps.db.select({ id: issues.id }).from(issues).where(and(eq(issues.id, issueRelations.issueId), sql`${issues.status} not in ('done', 'cancelled')`))),
+        ))),
+      ));
+      return { live: Number(liveCount?.total ?? 0), idle: Number(idleCount?.total ?? 0), todo: Number(todoCount?.total ?? 0) };
+    },
+    { live: 0, idle: 0, todo: 0 },
+  );
   const issueStore = createPgReviewRoutingStore(deps.db);
   const reviewTasksWithoutReviewer = await guarded(
     "myrmidon_review_tasks_without_reviewer",
@@ -1171,6 +1201,9 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       knowledgeRevisionDelaySecondsP50: knowledgeMetrics.delayP50,
       knowledgeRevisionDelaySecondsP95: knowledgeMetrics.delayP95,
       roleQueueTasks: roleQueues,
+      engineersLive: engineerAndQueue.live,
+      engineersIdle: engineerAndQueue.idle,
+      todoUnblockedTasks: engineerAndQueue.todo,
       reviewTasksWithoutReviewer,
       blockedTasksWithoutAssignee,
       codeTasksOnNoncodingRoles,
@@ -1273,6 +1306,12 @@ export async function runMetricsSelfCheck(deps: MetricsCollectorDeps): Promise<M
 }
 
 /** Clamps the requested error window (seconds) to the documented bounds. */
+export function clampEngineerIdleWindowSec(raw: unknown): number {
+  const value = typeof raw === "string" ? Number(raw) : DEFAULT_ENGINEER_IDLE_WINDOW_SEC;
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_ENGINEER_IDLE_WINDOW_SEC;
+  return Math.min(86400, Math.max(60, Math.floor(value)));
+}
+
 export function clampErrorWindowSec(raw: unknown): number {
   const value = typeof raw === "string" ? Number(raw) : DEFAULT_ERROR_WINDOW_SEC;
   if (!Number.isFinite(value)) return DEFAULT_ERROR_WINDOW_SEC;
@@ -1527,6 +1566,9 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       ),
     ),
   );
+  blocks.push(familyBlock("myrmidon_engineers_live", "Live, unpaused engineers.", "gauge", [`myrmidon_engineers_live{${R}} ${formatSampleValue(snapshot.engineersLive ?? 0)}`]));
+  blocks.push(familyBlock("myrmidon_engineers_idle", "Live engineers without a run in the idle window.", "gauge", [`myrmidon_engineers_idle{${R}} ${formatSampleValue(snapshot.engineersIdle ?? 0)}`]));
+  blocks.push(familyBlock("myrmidon_todo_unblocked_tasks", "Unassigned todo issues without an open blocking relation.", "gauge", [`myrmidon_todo_unblocked_tasks{${R}} ${formatSampleValue(snapshot.todoUnblockedTasks ?? 0)}`]));
   blocks.push(
     familyBlock(
       "myrmidon_review_tasks_without_reviewer",

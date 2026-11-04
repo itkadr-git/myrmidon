@@ -42,6 +42,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
+  authUsers,
 } from "@myrmidon/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
@@ -72,7 +73,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -80,6 +81,25 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    membershipRole: "owner",
+    status: "active",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {
@@ -582,6 +602,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });

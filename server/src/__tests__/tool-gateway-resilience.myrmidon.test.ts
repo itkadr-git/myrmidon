@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  authUsers,
   connectionGrantMembers,
   connectionGrantDelegations,
   connectionGrants,
@@ -73,7 +74,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -81,6 +82,25 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    membershipRole: "owner",
+    status: "active",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {
@@ -602,6 +622,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
