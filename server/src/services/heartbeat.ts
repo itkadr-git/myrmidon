@@ -31942,7 +31942,7 @@ export function heartbeatService(
                   ))
                   .limit(1)
               : [];
-            console.log(`[DEBUG-ADMISSION] existingClaimedRun.length: ${existingClaimedRun.length}, activeContinuationClaimKey: ${activeContinuationClaimKey}`);
+            console.log(`[DEBUG-ADMISSION] existingClaimedRun.length: ${existingClaimedRun.length}`);
             if (existingClaimedRun.length) {
               console.log(`[DEBUG-ADMISSION] SKIP: existing_claimed_run`);
               await tx.insert(agentWakeupRequests).values({
