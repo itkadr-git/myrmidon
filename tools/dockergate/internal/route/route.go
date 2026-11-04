@@ -314,11 +314,11 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		return nil, notAllowed()
 	}
-	if strings.HasPrefix(target, "/myrmidon/") {
-		return nil, notAllowed()
-	}
 	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
 		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, "/myrmidon/") {
+		return nil, notAllowed()
 	}
 	if strings.HasPrefix(target, diskPrefix) {
 		return nil, notAllowed()

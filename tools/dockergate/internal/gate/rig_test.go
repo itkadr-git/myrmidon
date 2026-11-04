@@ -358,7 +358,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	if r.proc != nil {
 		gopt.Proc = r.proc
 	}
-	if err := os.WriteFile(gopt.ConfigPath, []byte("{}"), 0600); err != nil {
+	if err := config.WriteAtomic(gopt.ConfigPath, cfg); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)

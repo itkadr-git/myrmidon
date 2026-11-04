@@ -76,8 +76,8 @@ func TestDeny_A20_ExceedsPlatformCeiling(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res := r.send("PUT", "/myrmidon/bots/"+r.key()+"/limits", jsonHdr, tc.body)
 			wantDeny(t, res, deny.LimitExceedsCeiling)
-			if !strings.Contains(res.str(), tc.wantDetail) {
-				t.Errorf("expected error detail containing %q, got %q", tc.wantDetail, res.str())
+			if !strings.Contains(r.log.String(), tc.wantDetail) {
+				t.Errorf("expected audit detail containing %q, log: %s", tc.wantDetail, r.log.String())
 			}
 		})
 	}
