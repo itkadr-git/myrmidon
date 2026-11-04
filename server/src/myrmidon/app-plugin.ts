@@ -125,6 +125,7 @@ export { myrmidonEvalsRoutes } from "./evals/index.js"; // myrmidon(1.6-EVALS)
 export { myrmidonDebateRoutes } from "./debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
 export { myrmidonScentRoutes } from "./scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
 export { myrmidonTracingHealthRoutes } from "./tracing-health/index.js"; // myrmidon(TRACING-HEALTH)
+export { buildTokensTraceRoutes } from "./tokens-trace/index.js"; // myrmidon(OPE-10727)
 export { myrmidonWikiCortexRoutes } from "./wiki-cortex/wiring.js";
 export { myrmidonCtoChatRoutes } from "./cto-chat/index.js";
 export { myrmidonSwarmSupervisorRoutes } from "./swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
