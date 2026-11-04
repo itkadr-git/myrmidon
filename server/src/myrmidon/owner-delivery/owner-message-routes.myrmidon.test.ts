@@ -309,7 +309,7 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
     mocks.authorizeOwnerReplyResolution.mockResolvedValueOnce({
       ownerUserId: OWNER_ID,
       issueId: ISSUE_ID,
-      interactionId: "missing-interaction-id",
+      interactionId: "99999999-9999-4999-8999-999999999999",
       action: "accept",
       conversationIssueId: "77777777-7777-4777-8777-777777777777",
       ownerReplyCommentId: COMMENT_ID,
@@ -317,7 +317,7 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
 
     const missingInteractionResponse = await request(app)
       .post("/api/myrmidon/owner-message/resolve")
-      .send(resolveBody({ interactionId: "missing-interaction-id" }));
+      .send(resolveBody({ interactionId: "99999999-9999-4999-8999-999999999999" }));
 
     expect(missingInteractionResponse.status).toBe(404);
     expect(missingInteractionResponse.headers["content-type"]).toMatch(/application\/json/);

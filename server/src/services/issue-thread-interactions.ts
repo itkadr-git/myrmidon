@@ -3670,7 +3670,7 @@ export function issueThreadInteractionService(
               recipientCandidate = { userId: issueContextRow.createdByUserId };
             } else {
               // 1.6.5-OWNER-FALLBACK: check company owners
-              const [ownerMembership] = await db
+              let [ownerMembership] = await db
                 .select({ userId: companyMemberships.principalId })
                 .from(companyMemberships)
                 .where(
@@ -3683,9 +3683,27 @@ export function issueThreadInteractionService(
                 )
                 .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
                 .limit(1);
+              if (!ownerMembership) {
+                [ownerMembership] = await db
+                  .select({ userId: companyMemberships.principalId })
+                  .from(companyMemberships)
+                  .where(
+                    and(
+                      eq(companyMemberships.companyId, issue.companyId),
+                      eq(companyMemberships.principalType, "user"),
+                      eq(companyMemberships.status, "active"),
+                    ),
+                  )
+                  .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+                  .limit(1);
+              }
               if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
                 recipientCandidate = { userId: ownerMembership.userId };
-              } else if ((actor as any).systemId || (!actor.agentId && !actor.userId)) {
+              } else if (
+                (actor as any).systemId ||
+                (!actor.agentId && !actor.userId) ||
+                (actor.agentId && "toolAction" in normalizedData.payload)
+              ) {
                 recipientCandidate = { serviceQueue: "default" };
               }
             }
