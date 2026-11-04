@@ -266,13 +266,34 @@ board_configs() {
 list_bots() {
   local body
   body="$(board_configs)" || return 1
-  jq -r --arg site "${MYR_BOT_SITE:-}" '[.[]? | select(.adapterType == "hermes_gateway")
+  jq -r --arg site "${MYR_BOT_SITE:-}" '
+    def memory_mb:
+      if . == null then 1024
+      elif (type == "number" and isfinite and . > 0 and (floor == .)) then .
+      elif (type == "string" and test("^[0-9]+(m|g|MiB|GiB)$")) then
+        capture("^(?<n>[0-9]+)(?<u>m|g|MiB|GiB)$") as $v
+        | ($v.n | tonumber) * (if $v.u == "m" or $v.u == "MiB" then 1 else (if $v.u == "g" then 1000 else 1024 end) end)
+      else error("container.memoryMb must be a positive integer MB or a quantity ending in m, g, MiB, or GiB") end
+      | if . > 0 and . <= 9223372036854775807 then . else error("container.memoryMb is out of range") end;
+    def positive_number($name; $default):
+      if . == null then $default
+      elif (type == "number" and isfinite and . > 0) then .
+      else error(("container." + $name + " must be a positive number")) end;
+    def positive_integer($name; $default):
+      if . == null then $default
+      elif (type == "number" and isfinite and . > 0 and (floor == .)) then .
+      else error(("container." + $name + " must be a positive integer")) end;
+    ([.[]? | select(.adapterType == "hermes_gateway")
       | select($site == "" or ((.adapterConfig.container.host // "local") == $site) or ($site == "local" and (.adapterConfig.container.host == null or .adapterConfig.container.host == "local")))
-      | select((.adapterConfig.container // {}) | (.enabled == true))
-      | [.id,
-         ((.adapterConfig.container.memoryMb // 1024) | tostring),
-         ((.adapterConfig.container.cpus // 1) | tostring),
-         ((.adapterConfig.container.pidsLimit // 512) | tostring)] | join("|")] | join("\n")' <<<"$body" 2>/dev/null
+      | select((.adapterConfig.container // {}) | (.enabled == true))]
+      | unique_by(.id)
+      | map(. as $agent | $agent.adapterConfig.container as $c
+        | [ $agent.id,
+            ($c.memoryMb | memory_mb | tostring),
+            ($c.cpus | positive_number("cpus"; 1) | tostring),
+            ($c.pidsLimit | positive_integer("pidsLimit"; 512) | tostring) ]
+        | join("|")))
+    | join("\n")' <<<"$body"
 }
 
 # The image a bot card pins right now ("" when the card names none).
@@ -302,7 +323,9 @@ bot_categories() {
       | (if $c.enabled != true then "adapterConfig.container.enabled is not true"
          elif ($c.group != null) then "container.group (a container shared by several agents) is not supported yet"
          elif (($c.image | type) != "string" or ($c.image | gsub("\\s"; "") | length) == 0) then "container.image must be a non-empty string"
-         elif (($c.memoryMb | type) != "number" or $c.memoryMb <= 0) then "container.memoryMb must be a positive number"
+         elif (($c.memoryMb | type) == "number" and ($c.memoryMb <= 0 or ($c.memoryMb | isfinite | not) or ($c.memoryMb | floor) != $c.memoryMb)) then "container.memoryMb must be a positive integer"
+         elif (($c.memoryMb | type) == "string" and (($c.memoryMb | test("^[0-9]+(m|g|MiB|GiB)$")) | not)) then "container.memoryMb must be a positive integer or a quantity ending in m, g, MiB, or GiB"
+         elif (($c.memoryMb | type) != "number" and ($c.memoryMb | type) != "string") then "container.memoryMb must be a positive integer or a quantity ending in m, g, MiB, or GiB"
          elif (($c.cpus | type) != "number" or $c.cpus <= 0) then "container.cpus must be a positive number"
          elif (($c.pidsLimit | type) != "number" or $c.pidsLimit <= 0 or ($c.pidsLimit | floor) != $c.pidsLimit) then "container.pidsLimit must be a positive integer"
          else null end) as $reason
@@ -439,8 +462,8 @@ dockergate_remove_images() {
   dockergate_config_install "$tmp" "$cfg_file"
 }
 
-# Enroll the fleet in bots[]: "id|mem|cpus|pids" per line; a bot already
-# enrolled keeps its existing limits (an operator's enrollment wins).
+# Enroll the fleet in bots[]: "id|mem|cpus|pids" per line; limits are updated
+# from the card and duplicate entries are collapsed.
 dockergate_enroll_bots() {
   local cfg_file="$1" bots="$2"
   [[ -f "$cfg_file" ]] || die "dockergate config not found: $cfg_file"
@@ -449,9 +472,13 @@ dockergate_enroll_bots() {
   jq -Rn --rawfile cfg "$cfg_file" '
     $cfg | fromjson as $c
     | [inputs | split("|") | select(length == 4)
-        | {botKey: .[0], maxMemoryMb: (.[1] | tonumber), maxCpus: (.[2] | tonumber), maxPids: (.[3] | tonumber)}] as $want
-    | ($want | map(select(.botKey as $k | ($c.bots // [] | map(.botKey) | index($k)) == null))) as $add
-    | $c + {bots: (($c.bots // []) + $add)}
+        | {botKey: .[0], maxMemoryMb: (.[1] | tonumber), maxCpus: (.[2] | tonumber), maxPids: (.[3] | tonumber)}]
+        | unique_by(.botKey) as $want
+    | ($want | INDEX(.botKey)) as $wantMap
+    | (($c.bots // []) | group_by(.botKey) | map(add)) as $existing
+    | ($existing | map(if $wantMap[.botKey] then . + {maxMemoryMb: $wantMap[.botKey].maxMemoryMb, maxCpus: $wantMap[.botKey].maxCpus, maxPids: $wantMap[.botKey].maxPids} else . end)) as $updated
+    | ($want | map(select(.botKey as $k | ($updated | map(.botKey) | index($k)) == null))) as $add
+    | $c + {bots: ($updated + $add)}
   ' <<<"$bots" >"$tmp" 2>/dev/null \
     || { rm -f "$tmp"; die "cannot edit bots[] of $cfg_file with jq (is it valid JSON?)"; }
   dockergate_config_install "$tmp" "$cfg_file"
@@ -618,7 +645,7 @@ if [[ -n "$bots" ]]; then
   dockergate_check_config "$MYR_BOT_DOCKERGATE_CONFIG"
   dockergate_reload
   journal "enrolled $bot_count bot(s) in bots[] of $MYR_BOT_DOCKERGATE_CONFIG"
-  bot_log "enrolled $bot_count bot(s) in bots[] of $MYR_BOT_DOCKERGATE_CONFIG (already-enrolled bots keep their limits)"
+  bot_log "enrolled $bot_count bot(s) in bots[] of $MYR_BOT_DOCKERGATE_CONFIG (limits synced from card)"
   # Fleet hosts run fleetd with their own config.json; its bots[] must carry
   # the same fleet. Only a notice here: the config path is host-specific
   # (MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG names it, default
@@ -632,7 +659,7 @@ if [[ -n "$bots" ]]; then
         scp -q "${fleet_ssh_opts[@]}" "$MYR_BOT_DOCKERGATE_CONFIG" "$host:/tmp/.myrmidon-bot-enroll.$$" 2>/dev/null || true
         # shellcheck disable=SC2029  # the path is meant to expand on the client side
         ssh "${fleet_ssh_opts[@]}" "$host" \
-          "jq -c '. + {bots: ((.bots // []) + (input | .bots // []) | unique_by(.botKey))}' '$fleet_cfg' /tmp/.myrmidon-bot-enroll.$$ >'$fleet_cfg.new' && chmod --reference='$fleet_cfg' '$fleet_cfg.new' && chown --reference='$fleet_cfg' '$fleet_cfg.new' && mv '$fleet_cfg.new' '$fleet_cfg'; rc=\$?; rm -f '$fleet_cfg.new' /tmp/.myrmidon-bot-enroll.$$; exit \$rc" \
+          "jq -c '. + {bots: ((input | .bots // []) + (.bots // []) | unique_by(.botKey))}' '$fleet_cfg' /tmp/.myrmidon-bot-enroll.$$ >'$fleet_cfg.new' && chmod --reference='$fleet_cfg' '$fleet_cfg.new' && chown --reference='$fleet_cfg' '$fleet_cfg.new' && mv '$fleet_cfg.new' '$fleet_cfg'; rc=\$?; rm -f '$fleet_cfg.new' /tmp/.myrmidon-bot-enroll.$$; exit \$rc" \
           || bot_log "WARNING: could not enroll bots[] in the fleetd config of $host ($fleet_cfg); enroll it by hand or fix MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_CONFIG"
       else
         bot_log "NOTE: fleet host $host has no $fleet_cfg (fleetd reads its config from the host); nothing enrolled there"

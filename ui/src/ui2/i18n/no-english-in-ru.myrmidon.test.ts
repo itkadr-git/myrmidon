@@ -199,9 +199,22 @@ function scanKeyUsage(path: string): Array<string> {
   const source = readFileSync(path, "utf8");
   const result: Array<string> = [];
   const relative = path.slice(UI2_ROOT.length + 1);
+  const legacyCaller = relative === "shell/Ui2AccountMenu.tsx";
+  const topBarCaller = relative === "shell/Ui2TopBar.tsx";
+  const legacyAreaKeys = [catalogKeys, ruKeys];
+  for (const file of readdirSync(AREAS_DIR)) {
+    const match = /^(.+)\.(en|ru)\.json$/.exec(file);
+    if (!match || (topBarCaller && match[1] !== "ui2-shell")) continue;
+    const target = match[2] === "en" ? legacyAreaKeys[0] : legacyAreaKeys[1];
+    for (const key of flatten(JSON.parse(readFileSync(join(AREAS_DIR, file), "utf8")))) {
+      target.add(key);
+      target.add(key.replace(/_(zero|one|two|few|many|other)$/, ""));
+    }
+  }
+  const sourceKeys = topBarCaller ? legacyAreaKeys : [catalogKeys, ruKeys];
   for (const match of source.matchAll(/\bt\(\s*"([A-Za-z0-9_.-]+)"/g)) {
     const key = match[1];
-    if (!catalogKeys.has(key) || !ruKeys.has(key)) {
+    if (sourceKeys.some((keys) => !keys.has(key))) {
       result.push(`${relative}: t("${key}") — key missing from EN or RU catalog`);
     }
   }

@@ -13,6 +13,7 @@ import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerMyrmidonMigrateCommand } from "./commands/myrmidon-migrate.js";
+import { registerMyrmidonSchemaDiffCommand } from "./commands/myrmidon-schema-diff.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -287,6 +288,7 @@ registerSkillsCommands(program);
 registerTeamCommands(program);
 registerWorktreeCommands(program);
 registerMyrmidonMigrateCommand(program);
+registerMyrmidonSchemaDiffCommand(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
 

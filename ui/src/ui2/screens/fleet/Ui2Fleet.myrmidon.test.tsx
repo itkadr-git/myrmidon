@@ -273,8 +273,6 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
     await setValue(field("name"), "myr-vm1");
     await setValue(field("url"), "https://192.0.2.10:9100");
     await setValue(field("tokenSecret"), "fleetd-token");
-    await setValue(field("clientCertSecretKey"), "fleetd-client");
-    await setValue(container.querySelector("textarea")!, "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----");
     await setValue(field("maxCpus"), "8");
     await setValue(field("maxMemoryMb"), "32768");
     await click(buttonByText("Add site"));
@@ -282,8 +280,6 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
       name: "myr-vm1",
       url: "https://192.0.2.10:9100",
       tokenSecret: "fleetd-token",
-      caCert: "-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----",
-      clientCertSecretKey: "fleetd-client",
       capacity: { maxCpus: 8, maxMemoryMb: 32768 },
       gatewayPortStart: 18700,
       gatewayPortEnd: 18759,
