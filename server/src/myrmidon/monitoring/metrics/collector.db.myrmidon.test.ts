@@ -14,6 +14,7 @@ import {
   issueClaims,
   issueComments,
   issueRecoveryActions,
+  issueRelations,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
     await db.delete(issueComments);
     await db.delete(issues);
@@ -593,5 +595,68 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(result.families_ok).toBe(METRIC_FAMILIES.length);
     expect(result.scrape_ms).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(result)).not.toContain("company-a");
+  });
+
+  it("collects live engineers, idle engineers, and unblocked todo tasks", async () => {
+    const companyId = await seedCompany();
+    const activeEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, activeEngId, { status: "running", startedAt: new Date(NOW.getTime() - 10 * 60 * 1000) });
+
+    const idleEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, idleEngId, { status: "completed", finishedAt: new Date(NOW.getTime() - 90 * 60 * 1000) });
+
+    const termEngId = randomUUID();
+    await db.insert(agents).values({
+      id: termEngId,
+      companyId,
+      name: "agent-term",
+      role: "engineer",
+      status: "terminated",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue1Id = randomUUID();
+    await db.insert(issues).values({
+      id: issue1Id,
+      companyId,
+      title: "Task 1",
+      status: "todo",
+    });
+
+    const issue2Id = randomUUID();
+    await db.insert(issues).values({
+      id: issue2Id,
+      companyId,
+      title: "Task 2",
+      status: "todo",
+    });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Blocker",
+      status: "in_progress",
+    });
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issue2Id,
+      type: "blocks",
+    });
+
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+      engineerIdleWindowSec: 3600,
+    });
+    expect(snapshot.engineersLive).toBe(2);
+    expect(snapshot.engineersIdle).toBe(1);
+    expect(snapshot.todoUnblockedTasks).toBe(1);
   });
 });
