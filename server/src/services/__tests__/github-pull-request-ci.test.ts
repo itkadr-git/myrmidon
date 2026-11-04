@@ -748,6 +748,7 @@ describe("createPullRequestCiResolver", () => {
     const resolver = createPullRequestCiResolver(mockDb as never, {
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-rate-limit", headRef: "bot/rate-limit" }),
     });
 
     const res = await resolver.resolveForPullRequest("company-1", {
@@ -797,6 +798,7 @@ describe("createPullRequestCiResolver", () => {
     const resolver = createPullRequestCiResolver(mockDb as never, {
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-repeat-test", headRef: "bot/repeat" }),
     });
 
     const first = await resolver.resolveForPullRequest("company-1", {
@@ -874,6 +876,7 @@ describe("createPullRequestCiResolver", () => {
     const resolver = createPullRequestCiResolver(mockDb as never, {
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-stale-cached", headRef: "bot/stale" }),
     });
 
     const initial = await resolver.resolveForPullRequest("company-1", {
@@ -884,14 +887,19 @@ describe("createPullRequestCiResolver", () => {
     expect(initial.status).toBe("in_progress");
 
     failCheckRuns = true;
-    const second = await resolver.resolveForPullRequest("company-1", {
-      owner: "itkadr-git",
-      repo: "myrmidon",
-      number: 12,
-    });
-    expect(second.conclusion).toBe("rate_limited");
-    expect(second.summary).toContain("устарел");
-    expect(second.summary).toContain("GitHub rate limit until");
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    try {
+      const second = await resolver.resolveForPullRequest("company-1", {
+        owner: "itkadr-git",
+        repo: "myrmidon",
+        number: 12,
+      });
+      expect(second.conclusion).toBe("rate_limited");
+      expect(second.summary).toContain("устарел");
+      expect(second.summary).toContain("GitHub rate limit until");
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("acceptance: completed CI for same head is taken from cache", async () => {

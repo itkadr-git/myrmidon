@@ -289,11 +289,9 @@ export async function fetchCommitCheckRuns(
     if (!res.ok) {
       failStatus = res.status;
       let errorMessage: string | undefined;
-      if (typeof (res as { clone?: unknown }).clone === "function") {
-        const body = await (res as Response).clone().json().catch(() => null) as { message?: unknown } | null;
-        if (typeof body?.message === "string") errorMessage = body.message;
-      } else if (typeof (res as { json?: unknown }).json === "function") {
-        const body = await (res as Response).json().catch(() => null) as { message?: unknown } | null;
+      const bodyResponse = typeof res.clone === "function" ? res.clone() : res;
+      if (typeof bodyResponse.json === "function") {
+        const body = await bodyResponse.json().catch(() => null) as { message?: unknown } | null;
         if (typeof body?.message === "string") errorMessage = body.message;
       }
       tokenPermissionDenied = Boolean(token)
@@ -307,7 +305,7 @@ export async function fetchCommitCheckRuns(
           ? (await res.text().catch(() => "")).toLowerCase()
           : "";
       rateLimited = res.status === 429 ||
-        (res.status === 403 && (remaining === "0" || retryText.includes("rate limit")));
+        (res.status === 403 && (remaining === "0" || retryText.includes("rate limit") || errorMessage?.toLowerCase().includes("rate limit")));
       if (rateLimited) {
         const reset = Number(getResponseHeader(res, "x-ratelimit-reset"));
         if (Number.isFinite(reset) && reset > 0) rateLimitResetAt = reset * 1000;
