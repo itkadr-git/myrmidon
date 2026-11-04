@@ -3301,6 +3301,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3315,6 +3323,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.insert(documents).values({
       id: documentId,
@@ -3429,6 +3438,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3443,6 +3460,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
     // Document is already at revision 2 — revision 1 is stale.
@@ -3568,6 +3586,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    const defaultAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: defaultAgentId,
+      companyId,
+      name: "Default Agent",
+      role: "engineer",
+      status: "active",
+    });
     await db.insert(goals).values({
       id: goalId,
       companyId,
@@ -3582,6 +3608,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       title: "Parent issue",
       status: "in_progress",
       priority: "medium",
+      assigneeAgentId: defaultAgentId,
     });
     await db.insert(documents).values({
       id: documentId,
@@ -3807,6 +3834,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "in_progress",
         priority: "medium",
         executionWorkspaceId,
+        assigneeAgentId: agentId,
       });
 
       const payload = kind === "request_checkbox_confirmation"

@@ -86,7 +86,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       level: "task",
       status: "active",
     });
-    const defaultOwnerUserId = randomUUID();
+    const defaultOwnerUserId = "local-board";
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -327,7 +327,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, {
       kind: "request_confirmation",
-      addresseeUserId: defaultOwnerUserId,
+      addresseeAgentId: resolverAgentId,
       resolverPolicy: "board_or_agents",
       payload: {
         version: 1,
