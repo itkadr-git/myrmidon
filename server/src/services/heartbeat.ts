@@ -30697,7 +30697,7 @@ export function heartbeatService(
             const proof =
               nativeParent.kind === "unresolved"
                 ? { kind: "unresolved" as const }
-                : automaticParentRunId
+                : nativeParent.kind === "parent" && automaticParentRunId
                   ? await readChatControlRecoveryStop(
                       tx as unknown as Db,
                       {
