@@ -16292,16 +16292,12 @@ export function heartbeatService(
 
     // A maintenance interruption explicitly requests a retry; the bounded
     // retry scheduler, not failure-reconciliation, owns its attempt budget.
-    // myrmidon(WAKE-2): only hold the run for manual reconciliation when the
-    // failure retry budget is actually exhausted; generic failed runs with
-    // remaining budget should still be schedulable for automatic recovery.
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
       !isGatewayConnectFailed &&
-      legacyExecutionNeedsReconciliation(run) &&
-      executionFailureRetryCount(run) >= 2
+      legacyExecutionNeedsReconciliation(run)
     ) {
       return {
         outcome: "not_scheduled" as const,

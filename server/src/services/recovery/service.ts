@@ -2218,15 +2218,12 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        // myrmidon(WAKE-2): only block recovery when the failure retry budget
-        // is actually exhausted. The legacy reconciliation hold is meant for
-        // runs that need manual operator review after provider failures; a
-        // generic failed run with no provider evidence and remaining retry
-        // budget should still be recoverable through the stranded-issue sweep.
-        if (
-          legacyExecutionNeedsReconciliation(predecessor) &&
-          executionFailureRetryCount(predecessor) >= 2
-        ) {
+        // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
+        // be blocked by the bounded transient retry scheduler. The scheduler is
+        // designed for failure retries (transient errors) and has many checks
+        // that return "not_scheduled" for generic continuation recovery. Only
+        // block recovery when the failure retry budget is actually exhausted.
+        if (executionFailureRetryCount(predecessor) >= 2) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -2234,13 +2231,16 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry) {
+        // For generic issue continuation recovery with remaining retry budget,
+        // fall through to direct enqueueWakeup below. The bounded retry
+        // scheduler is for transient failure retries, not stranded-issue recovery.
+        if (input.reason !== "issue_continuation_needed" && deps.scheduleRecoveryRetry) {
           const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
           return scheduled && typeof scheduled === "object" && "id" in scheduled
             ? scheduled
             : null;
         }
-        return null;
+        // Fall through to direct enqueue for generic continuation recovery
       }
     }
     if (
