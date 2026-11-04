@@ -8,6 +8,7 @@ import { and, eq } from "drizzle-orm";
 import { issueWorkProducts, issues, type Db } from "@myrmidon/db";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { resolveGitHubAppCredential } from "../myrmidon/github-shared-identity/resolve.js";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { gitHubApiBase } from "./github-fetch.js";
 import { logger } from "../middleware/logger.js";
@@ -293,7 +294,36 @@ export async function resolveGitHubTokenForApproval(
   db: Db,
   companyId: string,
   repository?: string,
+  identity?: {
+    agentId?: string | null;
+    runId?: string | null;
+    issueId?: string | null;
+  },
 ): Promise<string | null> {
+  // Review approval is an operation on behalf of the reviewer run. Resolve the
+  // repository-scoped shared identity first so PAT rules (as well as Apps) are
+  // honored for repositories that are not covered by the board App.
+  if (repository && identity?.agentId && identity.runId) {
+    try {
+      const secrets = secretService(db);
+      const resolution = await resolveGitHubAppCredential(
+        db,
+        { resolveSecretValue: (companyId, secretId, version, options) => secrets.resolveSecretValue(companyId, secretId, version, options) },
+        {
+          companyId,
+          agentId: identity.agentId,
+          runId: identity.runId,
+          issueId: identity.issueId ?? null,
+          repository,
+        },
+      );
+      if (resolution.kind === "issued") return resolution.credential.token;
+      if (resolution.kind === "ambiguous" || resolution.kind === "error") return null;
+    } catch {
+      // Preserve the legacy secret fallback below for older installations.
+    }
+  }
+
   const secrets = secretService(db);
   for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
     try {
@@ -307,7 +337,6 @@ export async function resolveGitHubTokenForApproval(
     }
   }
 
-  // Attempt shared GitHub App identity token if repository is provided
   if (repository) {
     try {
       const { readGitHubSharedIdentitySettings } = await import("../myrmidon/github-shared-identity/index.js");
@@ -367,7 +396,7 @@ export interface PropagateReviewApprovalResult {
 export interface PropagateReviewApprovalDeps {
   db: Db;
   client?: GitHubApprovalClient;
-  tokenProvider?: (companyId: string, repository?: string) => Promise<string | null>;
+  tokenProvider?: (companyId: string, repository?: string, identity?: { agentId?: string | null; runId?: string | null; issueId?: string | null }) => Promise<string | null>;
   retryOptions?: RetryOptions;
 }
 
@@ -379,7 +408,7 @@ export async function propagateReviewApprovalToPullRequest(
   input: PropagateReviewApprovalInput,
 ): Promise<PropagateReviewApprovalResult> {
   const client = deps.client ?? createDefaultGitHubApprovalClient();
-  const tokenProvider = deps.tokenProvider ?? ((c, r) => resolveGitHubTokenForApproval(deps.db, c, r));
+  const tokenProvider = deps.tokenProvider ?? ((c, r, identity) => resolveGitHubTokenForApproval(deps.db, c, r, identity));
 
   // Requirement 3: Negative path verification
   const isNonApproval =
@@ -490,7 +519,11 @@ export async function propagateReviewApprovalToPullRequest(
   }
 
   // Requirement 5: Authorization check
-  const token = await tokenProvider(input.companyId, targetRepo);
+  const token = await tokenProvider(input.companyId, targetRepo, {
+    agentId: input.actor?.agentId ?? null,
+    runId: input.actor?.runId ?? null,
+    issueId: input.issueId ?? null,
+  });
   if (!token) {
     if (input.issueId) {
       await logActivity(deps.db, {

@@ -8,6 +8,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
+import { ZodError } from "zod";
 import { HttpError, forbidden } from "../../errors.js";
 
 const mocks = vi.hoisted(() => ({
@@ -58,8 +59,10 @@ function buildApp(issueRouter?: express.Router) {
   });
   const api = express.Router();
   api.use(ownerDeliveryRoutes(fakeDb));
-  if (issueRouter) api.use(issueRouter);
-  else {
+  if (issueRouter) {
+    api.use(issueRouter);
+  } else {
+    // The stand-in for the ordinary interaction routes of the issue router.
     api.post("/issues/:id/interactions/:interactionId/:action", (req, res) => {
       handedOver.push({ actor: req.actor, body: req.body, params: req.params as Record<string, string> });
       res.json({ handedOver: true });
@@ -68,6 +71,9 @@ function buildApp(issueRouter?: express.Router) {
   app.use("/api", api);
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      if (err instanceof ZodError) {
+        return res.status(400).json({ error: "Validation error", details: err.issues });
+      }
       const status = err instanceof HttpError ? err.status : 500;
       res.status(status).json({ error: err instanceof Error ? err.message : "error" });
     },
@@ -105,6 +111,65 @@ beforeEach(() => {
 });
 
 describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
+  it("keeps valid owner-message and resolve addresses on registered routes instead of returning 404", async () => {
+    mocks.sendOwnerMessage.mockResolvedValue({
+      commentId: COMMENT_ID,
+      publicationId: "88888888-8888-4888-8888-888888888888",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      interactionIds: [INTERACTION_ID],
+    });
+
+    const app = buildApp();
+    const message = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [INTERACTION_ID], text: "Route regression check." });
+    expect(message.status).toBe(201);
+
+    const resolution = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody());
+    expect(resolution.status).toBe(200);
+    expect(handedOver).toHaveLength(1);
+    expect(handedOver[0]!.params).toMatchObject({
+      id: ISSUE_ID,
+      interactionId: INTERACTION_ID,
+      action: "accept",
+    });
+  });
+
+  it("rejects an addressless request before it can fall through as a 404", async () => {
+    const app = buildApp();
+    const response = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [], text: "No recipient" });
+
+    expect(response.status).toBe(400);
+    expect(response.status).not.toBe(404);
+    expect(mocks.sendOwnerMessage).not.toHaveBeenCalled();
+  });
+
+  it("propagates duplicate delivery rejection without creating another publication", async () => {
+    const delivery = { interactionIds: [INTERACTION_ID], text: "Retry-safe explanation." };
+    const publication = {
+      commentId: COMMENT_ID,
+      publicationId: "88888888-8888-4888-8888-888888888888",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      interactionIds: [INTERACTION_ID],
+    };
+    mocks.sendOwnerMessage
+      .mockResolvedValueOnce(publication)
+      .mockRejectedValueOnce(new HttpError(409, "The owner has already been notified"));
+    const app = buildApp();
+
+    const first = await request(app).post("/api/myrmidon/owner-message").send(delivery);
+    const retry = await request(app).post("/api/myrmidon/owner-message").send(delivery);
+
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(409);
+    expect(retry.body).toMatchObject({ error: "The owner has already been notified" });
+    expect(mocks.sendOwnerMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("sends the owner message for the calling agent and run", async () => {
     mocks.sendOwnerMessage.mockResolvedValue({
       commentId: COMMENT_ID,
@@ -126,7 +191,92 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
     });
   });
 
-  it("returns 404 JSON when owner reply resolution targets a missing issue", async () => {
+  it("rejects invalid payload for owner message with 400 and does not 404", async () => {
+    const app = buildApp();
+
+    const emptyRes = await request(app).post("/api/myrmidon/owner-message").send({});
+    expect(emptyRes.status).toBe(400);
+
+    const emptyIdsRes = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [], text: "Hello" });
+    expect(emptyIdsRes.status).toBe(400);
+
+    const invalidIdRes = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: ["not-a-uuid"], text: "Hello" });
+    expect(invalidIdRes.status).toBe(400);
+
+    const emptyTextRes = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [INTERACTION_ID], text: "   " });
+    expect(emptyTextRes.status).toBe(400);
+
+    const extraFieldsRes = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [INTERACTION_ID], text: "Hello", unexpectedProp: "value" });
+    expect(extraFieldsRes.status).toBe(400);
+
+    expect(mocks.sendOwnerMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid payload for owner reply resolution with 400 and does not 404", async () => {
+    const app = buildApp();
+
+    const emptyRes = await request(app).post("/api/myrmidon/owner-message/resolve").send({});
+    expect(emptyRes.status).toBe(400);
+
+    const invalidIdRes = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody({ interactionId: "invalid-uuid" }));
+    expect(invalidIdRes.status).toBe(400);
+
+    const invalidActionRes = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody({ action: "escalate" }));
+    expect(invalidActionRes.status).toBe(400);
+
+    const extraFieldRes = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody({ extraProp: 123 }));
+    expect(extraFieldRes.status).toBe(400);
+
+    expect(mocks.authorizeOwnerReplyResolution).not.toHaveBeenCalled();
+  });
+
+  it("confirms route contract: registered owner message endpoint exists and does not 404, while unregistered path returns 404", async () => {
+    mocks.sendOwnerMessage.mockResolvedValue({
+      commentId: COMMENT_ID,
+      publicationId: "88888888-8888-4888-8888-888888888888",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      interactionIds: [INTERACTION_ID],
+    });
+    const app = buildApp();
+
+    // Registered owner-message route returns 201 (not 404)
+    const validMessageRes = await request(app)
+      .post("/api/myrmidon/owner-message")
+      .send({ interactionIds: [INTERACTION_ID], text: "Route regression check." });
+    expect(validMessageRes.status).toBe(201);
+
+    // Registered resolve route returns 200 (not 404)
+    const validResolveRes = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody());
+    expect(validResolveRes.status).toBe(200);
+
+    // Unregistered path returns 404
+    const unregisteredPathRes = await request(app)
+      .post("/api/myrmidon/owner-message/unregistered")
+      .send({ interactionIds: [INTERACTION_ID], text: "Hello" });
+    expect(unregisteredPathRes.status).toBe(404);
+
+    // Unsupported method on registered route returns 404
+    const unsupportedMethodRes = await request(app).get("/api/myrmidon/owner-message");
+    expect(unsupportedMethodRes.status).toBe(404);
+  });
+
+  it("returns 404 JSON when owner reply resolution targets a missing issue or interaction", async () => {
     mocks.authorizeOwnerReplyResolution.mockResolvedValue({
       ownerUserId: OWNER_ID,
       issueId: ISSUE_ID,

@@ -244,6 +244,7 @@ import {
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
+  buildTokensTraceRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -263,6 +264,7 @@ import { updatesRoutes } from "./routes/updates.js"; // myrmidon(1.7 AUTO-UPDATE
 // myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
 // myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
+import { myrmidonLitellmAuditRoutes } from "./myrmidon/litellm-audit/wiring.js"; // myrmidon(OPE-9857)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
 // the «to skill» action that registers a room outcome as a skill candidate.
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
@@ -281,6 +283,7 @@ import { secretService } from "./services/secrets.js";
 // myrmidon(1.6.6 ARCH-DATA): read-only architect operational data and MCP endpoint
 
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace export
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
 // myrmidon(1.6-CTO-CHAT-B): the board chat planner (owner text -> proposed epic).
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
@@ -1236,6 +1239,7 @@ export async function createApp(
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
   api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A+B): model-provider store, settings API and LiteLLM sync
+  api.use(myrmidonLitellmAuditRoutes(db)); // myrmidon(OPE-9857): LiteLLM settings audit log and safe rollback
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
@@ -1312,6 +1316,7 @@ export async function createApp(
   api.use(myrmidonEvalsRoutes(db)); // myrmidon(1.6-EVALS): reference-task evals (judge runs, scores, verdict)
   api.use(myrmidonDebateRoutes(db)); // myrmidon(1.7-DEBATE-ASYM-A): asymmetric debates (roles, rounds, token ceiling, cost, result document)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
+  api.use(buildTokensTraceRoutes({ db })); // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call trace export
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
   api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance
   api.use(myrmidonScentRoutes(db)); // myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent refresh + swarm scent status

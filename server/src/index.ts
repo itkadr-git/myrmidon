@@ -2280,6 +2280,9 @@ async function startServerWithDatabaseTeardown(
             result.skippedActiveRun
             + result.skippedNonTerminalTree
             + result.skippedUndelivered
+            + result.skippedInspectFailed
+            + result.skippedDirty
+            + result.skippedUnmerged
             + result.skippedRace
             + result.skippedCooldown;
           const nowMs = Date.now();

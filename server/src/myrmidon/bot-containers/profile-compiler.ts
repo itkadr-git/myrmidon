@@ -61,7 +61,12 @@ export interface HermesProfileAdapterConfig {
   provider?: string;
   /** adapterConfig.effort — the vendor "Thinking effort" field (reasoning level). */
   effort?: string;
-  /** adapterConfig.models.{vision,video,stt,tts,fallbacks} — the M1 "Additional models" block. */
+  /**
+   * `adapterConfig.maxOutputTokens` — output budget for the main model, written to
+   * `model.max_tokens` in Hermes config.yaml. An unset value keeps Hermes defaults.
+   */
+  maxOutputTokens?: number;
+  /** `adapterConfig.models.{vision,video,stt,tts,fallbacks}` — the M1 "Additional models" block. */
   models?: {
     vision?: string;
     video?: string;
@@ -75,9 +80,9 @@ export interface HermesProfileAdapterConfig {
      */
     contextLength?: number;
     /**
-     * myrmidon(REASONING-OUTPUT-LIMIT): explicit output token budget for the
-     * card's model, written to `model.max_tokens`.
-     */
+    /** myrmidon(BOT-MAXTOKENS): explicit output budget from card models block. */
+    maxOutputTokens?: number;
+    /** myrmidon(REASONING-OUTPUT-LIMIT): canonical Hermes output budget. */
     maxTokens?: number;
     /**
      * myrmidon(BOT-RUNTIME-TUNING-A): the card's own absolute compression
@@ -610,9 +615,17 @@ const COMPRESSION_THRESHOLD_TOKENS_MAX = 2_000_000;
 // myrmidon(BOT-RUNTIME-TUNING-B): validation range for model.context_length.
 const MODEL_CONTEXT_LENGTH_MIN = 8_000;
 const MODEL_CONTEXT_LENGTH_MAX = 10_000_000;
-// myrmidon(REASONING-OUTPUT-LIMIT): a reasoning-capable model needs enough
-// output room for hidden reasoning plus a visible answer. This is deliberately
-// conservative; callers may override it per card.
+const MODEL_MAX_OUTPUT_TOKENS_MIN = 1_000;
+const MODEL_MAX_OUTPUT_TOKENS_MAX = 200_000;
+
+function buildMaxOutputTokens(value: number | undefined, warnings: string[]): number | undefined {
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && value >= MODEL_MAX_OUTPUT_TOKENS_MIN && value <= MODEL_MAX_OUTPUT_TOKENS_MAX) return value;
+  warnings.push(`model.max_tokens: ${value} from the card is outside the supported range ${MODEL_MAX_OUTPUT_TOKENS_MIN}..${MODEL_MAX_OUTPUT_TOKENS_MAX}; dropped`);
+  return undefined;
+}
+
+// myrmidon(REASONING-OUTPUT-LIMIT): default output room for reasoning models.
 const MODEL_MAX_TOKENS_DEFAULT = 32_000;
 const MODEL_MAX_TOKENS_MIN = 256;
 const MODEL_MAX_TOKENS_MAX = 10_000_000;
@@ -893,6 +906,11 @@ function buildCompression(
  * 8_000..10_000_000; out of range — dropped with a warning, never thrown.
  */
 function buildMaxTokens(input: HermesProfileInput, warnings: string[]): number | undefined {
+  const cardOutput = buildMaxOutputTokens(
+    input.adapterConfig.maxOutputTokens ?? input.adapterConfig.models?.maxOutputTokens,
+    warnings,
+  );
+  if (cardOutput !== undefined) return cardOutput;
   const explicit = input.adapterConfig.models?.maxTokens;
   if (explicit !== undefined) {
     if (Number.isInteger(explicit) && explicit >= MODEL_MAX_TOKENS_MIN && explicit <= MODEL_MAX_TOKENS_MAX) {

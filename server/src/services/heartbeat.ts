@@ -1,5 +1,11 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM token trace persistence
+import {
+  inferFromRunUsage,
+  llmCallTracesResultSchema,
+  persistLlmCallTraces,
+} from "../myrmidon/tokens-trace/index.js";
 // myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
 import {
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -28311,6 +28317,59 @@ export function heartbeatService(
               persistedRun,
               persistedResultJson,
             )) ?? persistedRun;
+          // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): persist per-call LLM
+          // traces emitted by the adapter (or infer a coarse row from
+          // usageJson when the adapter image predates the emitter).
+          try {
+            const traceResult = parseObject(
+              (persistedResultJson as Record<string, unknown> | null)?.[
+                "llmCallTraces"
+              ],
+            );
+            const parsedTraces = llmCallTracesResultSchema.safeParse(
+              traceResult ?? { version: 1, calls: [] },
+            );
+            if (parsedTraces.success && parsedTraces.data.calls.length > 0) {
+              // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): populate compaction
+              // fields from the server-side session rotation evaluation. The
+              // adapter cannot observe compaction; the server sets these when
+              // persisting the trace.
+              const compactedCalls = parsedTraces.data.calls.map((call) => ({
+                ...call,
+                compacted: sessionCompaction.rotate,
+                preCompactChars: sessionCompaction.rotate
+                  ? (call.sections.totalChars ?? null)
+                  : null,
+                postCompactChars: sessionCompaction.rotate
+                  ? null
+                  : (call.sections.totalChars ?? null),
+              }));
+              await persistLlmCallTraces({
+                db,
+                companyId: agent.companyId,
+                agentId: agent.id,
+                heartbeatRunId: run.id,
+                issueId: issueId ?? null,
+                occurredAt: persistedRun.startedAt ?? new Date(),
+                calls: compactedCalls,
+              });
+            } else {
+              await inferFromRunUsage({
+                db,
+                companyId: agent.companyId,
+                agentId: agent.id,
+                heartbeatRunId: run.id,
+                issueId: issueId ?? null,
+                occurredAt: persistedRun.startedAt ?? new Date(),
+                usageJson: parseObject(usageJson),
+              });
+            }
+          } catch (err) {
+            logger.warn(
+              { err, runId: run.id, agentId: agent.id },
+              "failed to persist llm call traces; continuing without blocking run finalization",
+            );
+          }
         }
 
         await setWakeupStatus(
@@ -32223,12 +32282,14 @@ export function heartbeatService(
             }
           }
 
-          const dailyCapBlock = await getHeartbeatDailyCapBlock(
-            agent,
-            policy,
-            {},
-            tx,
-          );
+          const dailyCapBlock = opts.manualUserWake
+            ? null
+            : await getHeartbeatDailyCapBlock(
+              agent,
+              policy,
+              {},
+              tx,
+            );
           if (dailyCapBlock) {
             if (
               source === "assignment" &&
@@ -32715,12 +32776,14 @@ export function heartbeatService(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
 
-      const dailyCapBlock = await getHeartbeatDailyCapBlock(
-        agent,
-        policy,
-        {},
-        tx,
-      );
+      const dailyCapBlock = opts.manualUserWake
+        ? null
+        : await getHeartbeatDailyCapBlock(
+          agent,
+          policy,
+          {},
+          tx,
+        );
       if (dailyCapBlock) {
         if (
           source === "assignment" &&

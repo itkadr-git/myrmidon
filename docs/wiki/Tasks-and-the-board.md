@@ -91,6 +91,20 @@ an optional finisher summarizes the outcome.
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
+## Knowledge-note gate for system changes
+
+When a system-significant change reaches `done`, or when its review is
+approved, the board checks for a valid wiki reference in the form
+`Вики: slug@rev`. The referenced knowledge item and revision must exist; a
+missing or invalid reference is rejected after the rollout grace period. The
+same gate is applied to both the issue route and the issue service, so direct
+service updates cannot bypass it. During the first three days after
+`2026-10-31`, the default is warning-only; operators can explicitly select
+`warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
+rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
+are unaffected. See the [knowledge gate change record](../changes/knowledge-gate-system-changes.md)
+for the rollout and settings reference.
+
 ## Recovery and requeue holds
 
 If a failed run is reconciled after an operator has already returned its task

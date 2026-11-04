@@ -64,6 +64,8 @@ const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
 const STATUS_CARDS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle status cards experimental setting"]';
+const PIPELINES_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle pipelines experimental setting"]';
 const PAPERCLIP_RUNNER_TOGGLE_SELECTOR =
   'button[aria-label="Toggle Myrmidon Runner experimental setting"]';
 
@@ -230,14 +232,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
     expect(headings).not.toContain("Conference Room Chat");
     expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
-  });
-
-  it("does not render the Pipelines experimental setting for now", async () => {
-    await renderPage();
-
-    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
-    expect(headings).not.toContain("Pipelines");
-    expect(container.querySelector('button[aria-label="Toggle pipelines experimental setting"]')).toBeNull();
   });
 
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
@@ -773,6 +767,30 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     queryClient?.clear();
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("patches pipelines through the experimental endpoint and locks a managed value", async () => {
+    await renderPage(defaultExperimentalSettings());
+    const toggle = container.querySelector<HTMLButtonElement>(PIPELINES_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enablePipelines: true });
+
+    flushSync(() => root?.unmount());
+    root = null;
+    queryClient.clear();
+    mockInstanceSettingsApi.updateExperimental.mockClear();
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enablePipelines: true,
+      managedKeys: { enablePipelines: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    const managedToggle = container.querySelector<HTMLButtonElement>(PIPELINES_TOGGLE_SELECTOR);
+    expect(managedToggle?.getAttribute("aria-checked")).toBe("true");
+    expect(managedToggle?.disabled).toBe(true);
+    await act(() => managedToggle?.click());
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("renders a managed key locked with the badge while unmanaged keys stay editable", async () => {
