@@ -32740,7 +32740,9 @@ export function heartbeatService(
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
-                : opts.failedRunId ?? automaticParentRunId,
+                : failed
+                  ? opts.failedRunId ?? automaticParentRunId
+                  : automaticParentRunId,
               ...runContextPersistenceFields(
                 adoptedComments.length
                   ? withQueuedCommentIdsInRunContext(
