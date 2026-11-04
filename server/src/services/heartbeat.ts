@@ -31852,8 +31852,6 @@ export function heartbeatService(
                 enrichedContextSnapshot.source.includes("stranded")
               ))
             );
-            console.log("[DEBUG-ADMISSION] isRecovery:", isRecovery, "recoveryParentRunId:", recoveryParentRunId, "retryOfRunId in enriched:", enrichedContextSnapshot.retryOfRunId, "retryOfRunId in payload:", payload?.retryOfRunId);
-
             const recoveryToken =
               recoveryParentRunId ??
               recoveryHead ??
@@ -31901,9 +31899,7 @@ export function heartbeatService(
                   .from(activityLog)
                   .where(and(...eventConditions))
                   .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
-            console.log("[DEBUG-ADMISSION] eventRows.length:", eventRows.length, "lastFinishedAt:", lastFinishedAt, "continuationEventId:", continuationEventId);
             if (!isRecovery && eventRows.length === 0) {
-              console.log("[DEBUG-ADMISSION] SKIPPING: no new events and not recovery");
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
                 reason, payload: { ...(payload ?? {}), issueId, continuationSkipped: "no_new_issue_input" },
@@ -32289,7 +32285,6 @@ export function heartbeatService(
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
-              console.log("[DEBUG-THROTTLE] throttleDecision.blocked:", throttleDecision.blocked, "explicitRewake:", explicitRewake, "enrichedContextSnapshot.retryOfRunId:", enrichedContextSnapshot.retryOfRunId, "payload?.retryOfRunId:", payload?.retryOfRunId);
               if (
                 throttleDecision.blocked &&
                 !explicitRewake &&
@@ -32300,7 +32295,6 @@ export function heartbeatService(
                 !enrichedContextSnapshot.retryOfRunId &&
                 !payload?.retryOfRunId
               ) {
-                console.log("[DEBUG-THROTTLE] BLOCKED by throttle");
                 if (throttleDecision.frozen) {
                   await tx
                     .select({ id: issues.id })
