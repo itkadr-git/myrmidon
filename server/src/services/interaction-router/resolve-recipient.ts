@@ -40,6 +40,7 @@ export interface ResolveInteractionRecipientInput {
   projectRoles?: InteractionProjectRoles | null;
   recipient?: InteractionRecipient | null;
   serviceQueue?: string | null;
+  allowLegacyAgentQueueFallback?: boolean;
 }
 
 export class InteractionRecipientUnresolvedError extends Error {
@@ -110,6 +111,9 @@ export function resolveInteractionRecipient(
         input.kind,
         input.creator,
       );
+    }
+    if (!recipient && input.allowLegacyAgentQueueFallback && "agentId" in input.creator) {
+      recipient = { serviceQueue: "default" };
     }
     if (!recipient) {
       throw new InteractionRecipientUnresolvedError(

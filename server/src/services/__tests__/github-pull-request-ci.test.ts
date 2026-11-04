@@ -354,6 +354,20 @@ describe("fetchCommitCheckRuns", () => {
 
     expect(result403.authoritative).toBe(false);
     expect(result403.conclusion).toBe("denied");
+
+    const mockFetch403Pat = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ message: "Resource not accessible by personal access token" }),
+    });
+    const result403WithToken = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon-deploy",
+      "denied-sha",
+      "pat-token",
+      mockFetch403Pat as never,
+    );
+    expect(result403WithToken.summary).toBe("checks unavailable (token lacks checks/actions read)");
   });
 });
 

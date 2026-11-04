@@ -24,6 +24,7 @@ import {
   type Ui2Locale,
   type Ui2MessageKey,
 } from "./locales";
+import { setAppLanguage } from "@/i18n/myrmidon-i18n";
 
 const STORAGE_KEY = "myrmidon.ui2.locale";
 
@@ -60,6 +61,8 @@ export function readStoredLocale(): Ui2Locale | null {
 function persistLocale(locale: Ui2Locale): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, locale);
+    window.localStorage.setItem(APP_LANGUAGE_STORAGE_KEY, locale);
+    window.localStorage.setItem("myrmidon:ui2:language", locale);
   } catch {
     // The choice still applies for this session.
   }
@@ -97,6 +100,7 @@ export function Ui2I18nProvider({
   const setLocale = useCallback((next: Ui2Locale) => {
     persistLocale(next);
     setLocaleState(next);
+    void setAppLanguage(next);
   }, []);
 
   const value = useMemo<Ui2I18nContextValue>(

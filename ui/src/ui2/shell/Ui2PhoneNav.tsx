@@ -34,6 +34,7 @@ function PhoneTab({
   return (
     <Link
       to={to}
+      aria-current={active ? "page" : undefined}
       style={{
         display: "flex",
         flexDirection: "column",

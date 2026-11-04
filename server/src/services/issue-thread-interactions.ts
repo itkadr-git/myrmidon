@@ -40,6 +40,7 @@ import {
   PENDING_INTERACTION_WAKE_IDEMPOTENCY_PREFIX,
   selectUndeliveredAddresseeInteractionIds,
 } from "../myrmidon/pending-interaction-wake-sweep.js";
+import { resolveOwnerDecisionRecipient } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import {
   trackInteractionCreated,
   trackInteractionResolved,
@@ -3639,49 +3640,65 @@ export function issueThreadInteractionService(
         recipientCandidate = { serviceQueue: "default" };
       } else {
         if (policy.effectiveResolverPolicy === "human_only") {
-          if (
-            issueContextRow?.assigneeUserId &&
-            (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
-          ) {
-            recipientCandidate = { userId: issueContextRow.assigneeUserId };
-          } else if (
-            issueContextRow?.responsibleUserId &&
-            (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
-          ) {
-            recipientCandidate = { userId: issueContextRow.responsibleUserId };
-          } else if (
-            issueContextRow?.createdByUserId &&
-            (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
-          ) {
-            recipientCandidate = { userId: issueContextRow.createdByUserId };
-          } else if (
-            issueContextRow?.conversationUserId &&
-            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
-          ) {
-            recipientCandidate = { userId: issueContextRow.conversationUserId };
-          } else {
-            // 1.6.5-OWNER-FALLBACK: check company owners
-            const [ownerMembership] = await db
-              .select({ userId: companyMemberships.principalId })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.companyId, issue.companyId),
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.status, "active"),
-                  eq(companyMemberships.membershipRole, "owner"),
-                ),
-              )
-              .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
-              .limit(1);
-            if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
-              recipientCandidate = { userId: ownerMembership.userId };
-            } else if ((actor as any).systemId || (!actor.agentId && !actor.userId)) {
-              recipientCandidate = { serviceQueue: "default" };
+          if (actor.agentId) {
+            const ownerRec = await resolveOwnerDecisionRecipient(db, {
+              companyId: issue.companyId,
+              agentId: actor.agentId,
+              addresseeUserId: normalizedData.addresseeUserId,
+              responsibleUserId: issueContextRow?.responsibleUserId,
+              createdByUserId: issueContextRow?.createdByUserId,
+            });
+            if (ownerRec?.ownerUserId) {
+              recipientCandidate = { userId: ownerRec.ownerUserId };
+            }
+          }
+          if (!recipientCandidate) {
+            if (
+              issueContextRow?.assigneeUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.assigneeUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.assigneeUserId };
+            } else if (
+              issueContextRow?.responsibleUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.responsibleUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.responsibleUserId };
+            } else if (
+              issueContextRow?.createdByUserId &&
+              (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
+            ) {
+              recipientCandidate = { userId: issueContextRow.createdByUserId };
+            } else {
+              // 1.6.5-OWNER-FALLBACK: check company owners
+              const [ownerMembership] = await db
+                .select({ userId: companyMemberships.principalId })
+                .from(companyMemberships)
+                .where(
+                  and(
+                    eq(companyMemberships.companyId, issue.companyId),
+                    eq(companyMemberships.principalType, "user"),
+                    eq(companyMemberships.status, "active"),
+                    eq(companyMemberships.membershipRole, "owner"),
+                  ),
+                )
+                .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+                .limit(1);
+              if (ownerMembership && (!actor.userId || actor.userId !== ownerMembership.userId)) {
+                recipientCandidate = { userId: ownerMembership.userId };
+              } else if ((actor as any).systemId || (!actor.agentId && !actor.userId)) {
+                recipientCandidate = { serviceQueue: "default" };
+              }
             }
           }
         } else {
           if (
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "ask_user_questions" ||
+              normalizedData.kind === "suggest_tasks")
+          ) {
+            recipientCandidate = { serviceQueue: "default" };
+          } else if (
             issueContextRow?.assigneeAgentId &&
             (!actor.agentId || actor.agentId !== issueContextRow.assigneeAgentId)
           ) {
@@ -3718,25 +3735,6 @@ export function issueThreadInteractionService(
             (!actor.userId || actor.userId !== issueContextRow.createdByUserId)
           ) {
             recipientCandidate = { userId: issueContextRow.createdByUserId };
-          } else if (
-            issueContextRow?.conversationUserId &&
-            (!actor.userId || actor.userId !== issueContextRow.conversationUserId)
-          ) {
-            recipientCandidate = { userId: issueContextRow.conversationUserId };
-          } else if (
-            actor.agentId &&
-            !("toolAction" in normalizedData.payload) &&
-            !("secretProposal" in normalizedData.payload)
-          ) {
-            // Legacy agent-created interactions without an explicit typed
-            // recipient remain operational queue work. Do not infer a human
-            // addressee from issue metadata for non-human policies: that
-            // creates an audience the creator cannot resolve as.
-            recipientCandidate = { serviceQueue: "default" };
-          } else if (actor.userId) {
-            recipientCandidate = { serviceQueue: "default" };
-          } else if (!actor.agentId && !actor.userId) {
-            recipientCandidate = { serviceQueue: "default" };
           } else if ((actor as any).systemId) {
             recipientCandidate = { serviceQueue: "default" };
           }
@@ -3745,6 +3743,15 @@ export function issueThreadInteractionService(
       }
 
       let routeType: InteractionRouteType;
+      if (
+        !recipientCandidate &&
+        (normalizedData.kind === "ask_user_questions" ||
+          normalizedData.kind === "suggest_tasks")
+      ) {
+        // Operational interactions may be claimed from the default service
+        // queue when no concrete human or agent recipient is available.
+        recipientCandidate = { serviceQueue: "default" };
+      }
       if ((normalizedData as any).routeType) {
         routeType = (normalizedData as any).routeType;
       } else if (
@@ -3780,6 +3787,14 @@ export function issueThreadInteractionService(
             (recipientCandidate && "serviceQueue" in recipientCandidate
               ? recipientCandidate.serviceQueue
               : (normalizedData as any).addresseeQueue) ?? null,
+          allowLegacyAgentQueueFallback:
+            Boolean(actor.agentId) &&
+            !("toolAction" in normalizedData.payload) &&
+            !("secretProposal" in normalizedData.payload) &&
+            (normalizedData.kind === "suggest_tasks" ||
+              normalizedData.kind === "ask_user_questions" ||
+              Boolean(issueContextRow?.assigneeAgentId) ||
+              Boolean(issueContextRow?.createdByAgentId)),
         });
       } catch (err) {
         if (err instanceof InteractionRecipientUnresolvedError) {

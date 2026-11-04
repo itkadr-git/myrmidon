@@ -144,6 +144,10 @@ describe("decideAutoResume policy", () => {
     expect(decide({ agent: { status: "idle", updatedAt: ENTRY } })).toMatchObject({ action: "skip", reason: "not_error" });
     expect(decide({ invokable: false })).toMatchObject({ action: "skip", reason: "not_invokable" });
     expect(decide({ underMaintenance: true })).toMatchObject({ action: "skip", reason: "maintenance" });
+    expect(decide({ agent: { status: "error", errorReason: "контейнер не поднят", updatedAt: ENTRY } })).toMatchObject({
+      action: "skip",
+      reason: "container_not_started",
+    });
   });
 
   it("waits one minute after the error entry, then resumes on the 1/5/15 steps", () => {

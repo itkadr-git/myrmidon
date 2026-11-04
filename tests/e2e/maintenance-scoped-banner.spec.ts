@@ -152,4 +152,247 @@ test.describe("Maintenance Banner Scope (OPE-9742)", () => {
     const link = scopedBanner.getByRole("link");
     await expect(link).toBeVisible();
   });
+
+  test("mocked agent maintenance window displays Russian discrete scoped row with Russian locale", async ({
+    page,
+  }) => {
+    const agentId = "adm-dev-eng-17";
+    const agentName = "adm-dev-eng-17";
+    const companyId = "company-mock-ru";
+    const prefix = "e2e-scoped-ru";
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem("myrmidon:ui-language", "ru");
+      window.localStorage.setItem("myrmidon.ui2.locale", "ru");
+    });
+
+    await page.route("**/api/companies/current", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: companyId,
+          name: "E2E Scoped Company RU",
+          issuePrefix: prefix,
+        }),
+      });
+    });
+
+    await page.route("**/api/companies", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: companyId, name: "E2E Scoped Company RU", issuePrefix: prefix },
+        ]),
+      });
+    });
+
+    await page.route(`**/api/companies/${companyId}/agents`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: agentId, name: agentName, role: "engineer", status: "active" },
+        ]),
+      });
+    });
+
+    await page.route("**/api/myrmidon/maintenance", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          active: true,
+          instance: null,
+          windows: [
+            {
+              id: "w-eng-17",
+              scope: { type: "agent", id: agentId },
+              companyId,
+              state: "on",
+              reason: "bot container profile update (adm-dev-eng-17)",
+              drainTimeoutSec: 60,
+              onTimeout: "wait",
+              startedAt: new Date().toISOString(),
+              onAt: new Date().toISOString(),
+              drainDeadlineAt: new Date().toISOString(),
+              drainTimedOut: false,
+              exitRequestedAt: null,
+              runningRuns: 0,
+              queuedRuns: 0,
+              queuedWakeups: 0,
+              interruptedRuns: 0,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto(`/${prefix}/issues`);
+
+    await expect(page.getByTestId("myrmidon-maintenance-banner")).toHaveCount(0);
+
+    const scopedBanner = page.getByTestId("myrmidon-maintenance-scoped-banner");
+    await expect(scopedBanner).toBeVisible();
+    await expect(scopedBanner).toContainText("Обновляется контейнер бота");
+    await expect(scopedBanner).toContainText(agentName);
+    await expect(scopedBanner).toContainText("(~1 мин), остальная доска работает");
+    const link = scopedBanner.getByRole("link");
+    await expect(link).toBeVisible();
+  });
+
+  test("mocked multiple bot containers display Russian plural scoped banner with count 7", async ({
+    page,
+  }) => {
+    const companyId = "company-mock-plural-ru";
+    const prefix = "e2e-plural-ru";
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem("myrmidon:ui-language", "ru");
+      window.localStorage.setItem("myrmidon.ui2.locale", "ru");
+    });
+
+    await page.route("**/api/companies/current", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: companyId,
+          name: "E2E Scoped Company Plural RU",
+          issuePrefix: prefix,
+        }),
+      });
+    });
+
+    await page.route("**/api/companies", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: companyId, name: "E2E Scoped Company Plural RU", issuePrefix: prefix },
+        ]),
+      });
+    });
+
+    await page.route(`**/api/companies/${companyId}/agents`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+
+    const windows = Array.from({ length: 7 }, (_, i) => ({
+      id: `w-eng-${i + 1}`,
+      scope: { type: "agent", id: `adm-dev-eng-${i + 1}` },
+      companyId,
+      state: "on",
+      reason: `bot container profile update (adm-dev-eng-${i + 1})`,
+      drainTimeoutSec: 60,
+      onTimeout: "wait",
+      startedAt: new Date().toISOString(),
+      onAt: new Date().toISOString(),
+      drainDeadlineAt: new Date().toISOString(),
+      drainTimedOut: false,
+      exitRequestedAt: null,
+      runningRuns: 0,
+      queuedRuns: 0,
+      queuedWakeups: 0,
+      interruptedRuns: 0,
+    }));
+
+    await page.route("**/api/myrmidon/maintenance", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          active: true,
+          instance: null,
+          windows,
+        }),
+      });
+    });
+
+    await page.goto(`/${prefix}/issues`);
+
+    await expect(page.getByTestId("myrmidon-maintenance-banner")).toHaveCount(0);
+
+    const scopedBanner = page.getByTestId("myrmidon-maintenance-scoped-banner");
+    await expect(scopedBanner).toBeVisible();
+    await expect(scopedBanner).toHaveText("Обновляются контейнеры ботов (7) (~1 мин), остальная доска работает");
+  });
+
+  test("mocked department maintenance window displays Russian discrete scoped row", async ({
+    page,
+  }) => {
+    const companyId = "company-mock-dept-ru";
+    const prefix = "e2e-dept-ru";
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem("myrmidon:ui-language", "ru");
+      window.localStorage.setItem("myrmidon.ui2.locale", "ru");
+    });
+
+    await page.route("**/api/companies/current", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: companyId,
+          name: "E2E Scoped Company Dept RU",
+          issuePrefix: prefix,
+        }),
+      });
+    });
+
+    await page.route("**/api/companies", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: companyId, name: "E2E Scoped Company Dept RU", issuePrefix: prefix },
+        ]),
+      });
+    });
+
+    await page.route("**/api/myrmidon/maintenance", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          active: true,
+          instance: null,
+          windows: [
+            {
+              id: "w-dept-1",
+              scope: { type: "department", id: "dept-engineering" },
+              companyId,
+              state: "on",
+              reason: "department routine upgrade",
+              drainTimeoutSec: 60,
+              onTimeout: "wait",
+              startedAt: new Date().toISOString(),
+              onAt: new Date().toISOString(),
+              drainDeadlineAt: new Date().toISOString(),
+              drainTimedOut: false,
+              exitRequestedAt: null,
+              runningRuns: 0,
+              queuedRuns: 0,
+              queuedWakeups: 0,
+              interruptedRuns: 0,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto(`/${prefix}/issues`);
+
+    await expect(page.getByTestId("myrmidon-maintenance-banner")).toHaveCount(0);
+
+    const scopedBanner = page.getByTestId("myrmidon-maintenance-scoped-banner");
+    await expect(scopedBanner).toBeVisible();
+    await expect(scopedBanner).toHaveText("Обслуживается проект (~1 мин), остальная доска работает");
+  });
 });

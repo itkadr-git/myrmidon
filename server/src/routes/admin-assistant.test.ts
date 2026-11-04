@@ -10,6 +10,7 @@ import {
   measureDiskSpaceSafe,
 } from "./admin-assistant.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { detectStuckRuns } from "../services/heartbeat-recovery.js";
 
 /**
  * Builds a mock drizzle query result that supports both
@@ -449,6 +450,45 @@ describe("admin assistant routes and health collection", () => {
       // Non-sensitive fields survive redaction.
       const leaky = redacted.probes.find((p) => p.name === "leaky_probe");
       expect((leaky?.detail as Record<string, unknown>).note).toBe("ok");
+    });
+  });
+
+  describe("GET /admin-assistant/stuck-runs", () => {
+    it("returns stuck runs list with recovery recommendations", async () => {
+      const db = mockDb({
+        issues: [
+          {
+            id: "task-stuck-1",
+            identifier: "OPE-101",
+            title: "Stuck task",
+            status: "in_progress",
+            assigneeAgentId: "agent-1",
+            executionRunId: "run-stuck-1",
+            companyId: "company-1",
+            executionLockedAt: null,
+            updatedAt: new Date(Date.now() - 600_000),
+          },
+        ],
+        heartbeats: [
+          {
+            id: "run-stuck-1",
+            agentId: "agent-1",
+            status: "running",
+            lastOutputAt: new Date(Date.now() - 600_000),
+            updatedAt: new Date(Date.now() - 600_000),
+          },
+        ],
+      });
+
+      const app = buildApp(instanceAdminActor, db);
+      const res = await request(app).get("/admin-assistant/stuck-runs?timeoutMs=300000");
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].issueId).toBe("task-stuck-1");
+      expect(res.body[0].agentId).toBe("agent-1");
+      expect(res.body[0].suggestedAction).toBeDefined();
     });
   });
 });

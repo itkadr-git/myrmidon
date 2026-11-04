@@ -62,6 +62,9 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS,
+  CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -501,6 +504,78 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
     expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("uses exponential capped backoff for hermes_gateway_connect_failed retries", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      resultJson: {
+        error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+        errorCode: "hermes_gateway_connect_failed",
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    // Attempt 1: 60s (1 min)
+    const scheduled1 = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled1.outcome).toBe("scheduled");
+    if (scheduled1.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled1.run.scheduledRetryAttempt).toBe(1);
+    expect(new Date(scheduled1.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(60_000);
+
+    // Attempt 2: 120s (2 min)
+    const runId2 = scheduled1.run.id;
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId2));
+
+    const scheduled2 = await heartbeat.scheduleBoundedRetry(runId2, { now, random: () => 0 });
+    expect(scheduled2.outcome).toBe("scheduled");
+    if (scheduled2.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled2.run.scheduledRetryAttempt).toBe(2);
+    expect(new Date(scheduled2.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(120_000);
+  });
+
+  it("caps exponential delay at 1 hour and sets agent errorReason when retries exhaust", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      scheduledRetryAttempt: CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS - 1,
+      scheduledRetryReason: CONNECT_FAILED_TRANSIENT_RETRY_REASON,
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId));
+
+    // Attempt 8 (max attempt): capped at 1 hour (3_600_000 ms)
+    const scheduled8 = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled8.outcome).toBe("scheduled");
+    if (scheduled8.outcome !== "scheduled") throw new Error("Expected scheduled retry");
+    expect(scheduled8.run.scheduledRetryAttempt).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_ATTEMPTS);
+    expect(new Date(scheduled8.run.scheduledRetryAt!).getTime() - now.getTime()).toBe(CONNECT_FAILED_TRANSIENT_RETRY_MAX_DELAY_MS);
+
+    // After attempt 8: exhausted
+    const runId8 = scheduled8.run.id;
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "hermes_gateway_connect_failed",
+      error: "Hermes gateway request failed: fetch failed (ECONNREFUSED)",
+      finishedAt: now,
+    }).where(eq(heartbeatRuns.id, runId8));
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(runId8, { now, random: () => 0 });
+    expect(exhausted.outcome).toBe("retry_exhausted");
+
+    const updatedAgent = await db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+    });
+    expect(updatedAgent?.status).toBe("error");
+    expect(updatedAgent?.errorReason).toBe("контейнер не поднят");
   });
 
   it.each([

@@ -81,6 +81,9 @@ export function createDefaultModelProviderService(db: Db): ReturnType<typeof cre
       rotateSecret: async (secretId, value) => {
         await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
       },
+      restoreSecret: async (secretId, value) => {
+        await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
+      },
       deleteSecret: async (secretId) => {
         await secrets.remove(secretId);
       },
