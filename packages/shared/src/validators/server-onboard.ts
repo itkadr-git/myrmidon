@@ -45,7 +45,7 @@ export function decodeBase64(input: string): Uint8Array | null {
 }
 
 /**
- * Validates whether a string is a standard IPv4 address (e.g. 192.168.1.1).
+ * Validates whether a string is a standard IPv4 address (e.g. 198.51.100.1).
  */
 export function isIpv4Address(ip: string): boolean {
   if (typeof ip !== "string") return false;
@@ -71,7 +71,7 @@ export function isIpv6Address(ip: string): boolean {
   if (!cleaned) return false;
   if ((cleaned.match(/::/g) || []).length > 1) return false;
 
-  // Support IPv4-mapped IPv6 like ::ffff:192.168.1.1
+  // Support IPv4-mapped IPv6 like ::ffff:198.51.100.1
   const lastColon = cleaned.lastIndexOf(":");
   if (lastColon !== -1) {
     const afterLastColon = cleaned.slice(lastColon + 1);
