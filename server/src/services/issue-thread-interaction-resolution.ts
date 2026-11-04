@@ -182,7 +182,8 @@ export function evaluateIssueThreadInteractionResolverAudience(
 
   if (input.actor.type === "user") {
     if (
-      input.interaction.addresseeUserId
+      !input.governedAction
+      && input.interaction.addresseeUserId
       && input.interaction.addresseeUserId !== input.actor.userId
     ) {
       return {
