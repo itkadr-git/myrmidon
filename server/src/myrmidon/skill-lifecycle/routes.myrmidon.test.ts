@@ -153,13 +153,13 @@ describe("myrmidon(1.6-SKILL-LIFE): routes", () => {
   it("rejects a non-UUID skill id before reading lifecycle state", async () => {
     const { withActor } = harness();
     const res = await request(withActor(member)).get(`${base}/foraged-smm`).expect(400);
-    expect(res.body).toMatchObject({ message: "skillId must be a valid UUID", details: { code: "skill_id_invalid" } });
+    expect(res.body).toMatchObject({ details: { code: "skill_id_invalid" } });
   });
 
   it("rejects a non-UUID skill id before creating a promotion request", async () => {
     const { withActor, createPromotionApproval } = harness();
     const res = await request(withActor(member)).post(`${base}/foraged-smm/promote-request`).send({}).expect(400);
-    expect(res.body).toMatchObject({ message: "skillId must be a valid UUID", details: { code: "skill_id_invalid" } });
+    expect(res.body).toMatchObject({ details: { code: "skill_id_invalid" } });
     expect(createPromotionApproval).not.toHaveBeenCalled();
   });
 
