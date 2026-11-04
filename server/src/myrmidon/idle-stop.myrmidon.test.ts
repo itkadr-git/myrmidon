@@ -521,6 +521,18 @@ describe('IdleStopService', () => {
   });
 
   describe('ensureStartedAndHealthy', () => {
+    it('restarts a running container marked idle-stopped before allowing the queued run to contact gateway', async () => {
+      const botKey = 'idle-stopped-running-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: true })
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: false });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.status).toHaveBeenCalledTimes(2);
+    });
+
     it('should return immediately if container is running', async () => {
       const botKey = 'running-bot';
 

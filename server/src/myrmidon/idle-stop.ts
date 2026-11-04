@@ -474,7 +474,7 @@ export class IdleStopService {
     try {
       const status = await this.driver.status(botKey);
 
-      if (status.state === 'running') {
+      if (status.state === 'running' && !status.idleStopped) {
         return;
       }
 
