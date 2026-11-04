@@ -6357,10 +6357,12 @@ export function recoveryService(
         // Only terminalize when the retry budget is exhausted.
         // Recovery issues (stranded_issue_recovery) always use the
         // terminalization path to avoid duplicate comments.
+        // Cancelled runs (system/operator cancellation) also use the
+        // terminalization path — they are not continuation recoveries.
         const isContinuationRecovery =
           issue.status !== "in_review" &&
           issue.originKind !== "stranded_issue_recovery" &&
-          executionRecoverySource?.contextSnapshot?.retryReason === "issue_continuation_needed" &&
+          source?.status === "failed" &&
           executionFailureRetryCount(source ?? {}) < 2;
         if (
           source &&
