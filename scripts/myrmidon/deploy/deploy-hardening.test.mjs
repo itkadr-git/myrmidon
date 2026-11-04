@@ -359,6 +359,7 @@ function sandbox({
   // its own tests (predeploy-board-check.test.mjs, deploy.test.mjs); this file is
   // about the preflight, the images and the rollback, so it is switched off here.
   lines.push("MYRMIDON_PREDEPLOY_CHECK=0");
+  lines.push("MYRMIDON_DEPLOY_MIN_FREE_GB=0");
   lines.push("MYRMIDON_DEPLOY_SMOKE=0", ...extraConfig, "");
   const config = path.join(dir, "deploy.env");
   fs.writeFileSync(config, lines.join("\n"));
