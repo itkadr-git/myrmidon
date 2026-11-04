@@ -206,6 +206,7 @@ export function InstanceExperimentalSettings() {
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableChatConnectors = experimentalQuery.data?.enableChatConnectors === true;
+  const enablePipelines = experimentalQuery.data?.enablePipelines === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableIsolatedWorkspacesByDefault =
@@ -283,6 +284,17 @@ export function InstanceExperimentalSettings() {
             {t("area.settings-company.instance-experimental-settings.optionalProductFeaturesThatAre")}
           </p>
         </div>
+
+        <ExperimentalToggleCard
+          title={t("area.settings-company.instance-experimental-settings.pipelines")}
+          description={t("area.settings-company.instance-experimental-settings.pipelinesDescription")}
+          checked={enablePipelines}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enablePipelines: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enablePipelines"
+          managed={managedKeys.enablePipelines}
+          ariaLabel={t("area.settings-company.instance-experimental-settings.togglePipelines")}
+        />
 
         <ExperimentalToggleCard
           title={t("area.settings-company.instance-experimental-settings.betaSkills")}

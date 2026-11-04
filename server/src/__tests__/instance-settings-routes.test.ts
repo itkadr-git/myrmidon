@@ -293,6 +293,19 @@ describe("instance settings routes", () => {
     }
   });
 
+  it.each([true, false])("allows only instance admins to change pipeline visibility (%s)", async (isInstanceAdmin) => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin, companyIds: ["company-1"] });
+    const getRes = await request(app).get("/api/instance/settings/experimental");
+    expect(getRes.status).toBe(200);
+    const response = await request(app).patch("/api/instance/settings/experimental").send({ enablePipelines: true });
+    expect(response.status).toBe(isInstanceAdmin ? 200 : 403);
+    if (isInstanceAdmin) {
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enablePipelines: true });
+    } else {
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    }
+  });
+
   it("accepts the instance-wide Streamlined UI preference", async () => {
     const app = await createApp({
       type: "board",
