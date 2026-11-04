@@ -1022,5 +1022,6 @@ export * from "./guardrails.js";
 export * from "./user-block.js";
 export * from "./audit.js";
 export * from "./server-onboarding.js";
+export * from "./server-onboard.js";
 export * from "./updates.js";
 export * from "./auto-update-settings.js";
