@@ -30747,8 +30747,12 @@ export function heartbeatService(
                   ),
                 )
                 .limit(1);
-              if (
-                parent &&
+              // myrmidon(WAKE-2): a generic parent run id from context may reference
+              // a run that does not exist (e.g. recovery from an external snapshot).
+              // Only keep the parent linkage when the run is actually present.
+              if (!parent) {
+                automaticParentRunId = null;
+              } else if (
                 (parseObject(parent.context).issueId ??
                   parseObject(parent.context).taskId) === issueId &&
                 parent.agentId !== agentId
