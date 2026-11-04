@@ -75,13 +75,20 @@ export const ui2Catalogs = { en, ru } as const;
  */
 export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<string, unknown>>> = {}): void {
   for (const [locale, baseCatalog] of Object.entries(ui2Catalogs)) {
-    const catalog = custom[locale as Ui2Language]
-      ? mergeCatalog(baseCatalog as unknown as CatalogObject, custom[locale as Ui2Language] as CatalogObject)
-      : baseCatalog;
-    if (i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      i18n.removeResourceBundle(locale, UI2_NAMESPACE);
+    const customBundle = custom[locale as Ui2Language];
+    if (!customBundle && i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      continue;
     }
-    i18n.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+    const catalog = customBundle
+      ? mergeCatalog(baseCatalog as unknown as CatalogObject, customBundle as CatalogObject)
+      : baseCatalog;
+    const client = i18n as any;
+    if (typeof client?.removeResourceBundle === "function" && client.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      client.removeResourceBundle(locale, UI2_NAMESPACE);
+    }
+    if (typeof client?.addResourceBundle === "function") {
+      client.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+    }
   }
 }
 
