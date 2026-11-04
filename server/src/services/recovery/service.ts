@@ -6355,8 +6355,11 @@ export function recoveryService(
         // remaining retry budget, do NOT terminalize — the recovery path
         // below will create a new run via enqueueStrandedIssueRecovery.
         // Only terminalize when the retry budget is exhausted.
+        // Recovery issues (stranded_issue_recovery) always use the
+        // terminalization path to avoid duplicate comments.
         const isContinuationRecovery =
           issue.status !== "in_review" &&
+          issue.originKind !== "stranded_issue_recovery" &&
           executionFailureRetryCount(source ?? {}) < 2;
         if (
           source &&
