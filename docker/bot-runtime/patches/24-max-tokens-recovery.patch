@@ -1,0 +1,128 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 9b18a3d..4f4f5ae 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1347,6 +1347,18 @@ def _apply_agent_section(agent, _agent_cfg):
+     agent.budget_warning_ratio = normalize_budget_warning_ratio(
+         _agent_section.get("budget_warning_ratio")
+     )
++
++    # myrmidon(G1): max output token limit from config
++    if getattr(agent, "max_tokens", None) is None:
++        _model_section = _cfg_dict(_agent_cfg, "model")
++        _cfg_max = _model_section.get("max_tokens")
++        if _cfg_max is None:
++            _cfg_max = _model_section.get("max_output_tokens")
++        if _cfg_max is None:
++            _cfg_max = _agent_section.get("max_tokens")
++        if _cfg_max is not None:
++            with suppress(Exception):
++                agent.max_tokens = int(_cfg_max)
+     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
+     # of each other (gates in agent/system_prompt.py).
+     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+diff --git a/agent/turn_iteration_prep.py b/agent/turn_iteration_prep.py
+index 8786dc7..40861fa 100644
+--- a/agent/turn_iteration_prep.py
++++ b/agent/turn_iteration_prep.py
+@@ -529,14 +529,14 @@ def apply_retry_restarts(
+         return _verdict("continue")
+ 
+     if _retry.restart_with_length_continuation:
+-        # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
+-        # _ephemeral_max_output_tokens. Keep a larger original provider/model
+-        # default as the floor so retries never downshift.
+-        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
++        # Boost output budget per retry: 2×, 4×, 8×, 16× base via _ephemeral_max_output_tokens.
++        # Keep a larger original provider/model default as the floor so retries never downshift.
++        _base = agent.max_tokens or 4096
+         _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+         if _requested_cap is not None:
+-            _boost = max(_boost, _requested_cap)
+-        _boost_cap = max(32768, _requested_cap or 0)
++            _base = max(_base, _requested_cap)
++        _boost = _base * (2 ** max(1, length_continue_retries))
++        _boost_cap = max(65536, _base * 4)
+         agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
+         return _verdict("continue")
+ 
+diff --git a/agent/turn_tool_round.py b/agent/turn_tool_round.py
+index 10211a8..3634cdc 100644
+--- a/agent/turn_tool_round.py
++++ b/agent/turn_tool_round.py
+@@ -40,6 +40,7 @@ class ToolRoundVerdict:
+     _turn_exit_reason: Any
+     truncated_tool_call_retries: Any
+     current_turn_user_idx: Any
++    length_continue_retries: Any = 0
+     result: Optional[Dict[str, Any]] = None
+ 
+ 
+@@ -49,6 +50,7 @@ def run_tool_round(
+     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
+     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
+     truncated_tool_call_retries: Any, current_turn_user_idx: Any,
++    length_continue_retries: Any = 0,
+ ) -> ToolRoundVerdict:
+     """Execute one tool round in the exact original order. Persist-before-execute is a
+     durability invariant: resume must see the executed block if a destructive tool restarts
+@@ -62,7 +64,8 @@ def run_tool_round(
+             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
+             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
+             truncated_tool_call_retries=truncated_tool_call_retries,
+-            current_turn_user_idx=current_turn_user_idx, result=result,
++            current_turn_user_idx=current_turn_user_idx,
++            length_continue_retries=length_continue_retries, result=result,
+         )
+ 
+     if not agent.quiet_mode:
+@@ -179,6 +182,7 @@ def run_tool_round(
+ 
+     # Reset per-turn retry counters so one truncation can't poison the turn.
+     truncated_tool_call_retries = 0
++    length_continue_retries = 0
+     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
+     # text arrives, so tool iterations don't stack blank lines.
+     agent._stream_needs_break = True
+diff --git a/agent/turn_truncation.py b/agent/turn_truncation.py
+index 4ed96d7..871fd8c 100644
+--- a/agent/turn_truncation.py
++++ b/agent/turn_truncation.py
+@@ -253,6 +253,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
+     if not _interim_content and not st.is_stub:
+         # Thinking-only truncation: continuing with thinking ON re-burns the budget.
+         agent._ephemeral_reasoning_off = True
++    # Boost output tokens on retry so thinking models or long continuations have budget
++    _base = agent.max_tokens or 4096
++    _req = agent._requested_output_cap_from_api_kwargs(st.api_kwargs) if hasattr(agent, "_requested_output_cap_from_api_kwargs") and hasattr(st, "api_kwargs") else None
++    if _req is not None:
++        _base = max(_base, _req)
++    agent._ephemeral_max_output_tokens = min(_base * (2 ** n), max(65536, _base * 4))
+     if _interim_content:
+         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
+         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
+@@ -328,11 +334,12 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
+             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
+         else:
+             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
+-        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
++        _tc_base = (agent.max_tokens if agent.max_tokens else 4096)
+         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+         if _tc_requested_cap is not None:
+-            _tc_boost = max(_tc_boost, _tc_requested_cap)
+-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
++            _tc_base = max(_tc_base, _tc_requested_cap)
++        _tc_boost = _tc_base * (2 ** n)
++        agent._ephemeral_max_output_tokens = min(_tc_boost, max(65536, _tc_base * 4))
+         return st.done("continue")  # don't append the broken response
+     agent._flush_status_buffer()
+     if st.is_stub:
+@@ -570,7 +577,7 @@ def continue_codex_incomplete(
+             usage = getattr(response, "usage", None)
+             observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+             base = agent.max_tokens or int(observed or 0) or 4096
+-            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
++            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(65536, base * 4))
+         if not agent.quiet_mode:
+             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)
+         # Spinner/heartbeat notice: these retries can take minutes and otherwise look

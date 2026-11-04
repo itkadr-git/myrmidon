@@ -285,6 +285,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # the X-Paperclip-Run-Id header's UUID does, and a run's child env sees exactly its own
 # board run id.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_id_context_scope.py /opt/hermes-src
+# myrmidon(OPE-10858): behaviour regression for 24-max-tokens-recovery.patch:
+# Hermes custom OpenAI-compatible provider forwards configured max_tokens, resets
+# length_continue_retries after successful tool step, and boosts output tokens on retry.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/max_tokens_recovery.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
