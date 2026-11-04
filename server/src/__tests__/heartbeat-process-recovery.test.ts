@@ -5275,7 +5275,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(
       runs.filter((run) => run.contextSnapshot?.wakeReason === "interaction_pending"),
     ).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
+    // Look the run up by id: the select has no ORDER BY, and the queued
+    // continuation run can come back first once the failed row is rewritten.
+    expect(runs.find((run) => run.id === runId)).toMatchObject({
       id: runId,
       status: "failed",
       errorCode: "process_lost",
@@ -8687,6 +8689,89 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("queued wake with no fresh event does not create duplicate work and preserves issue state (OPE-10805)", async () => {
+    // No-op branch: queued wake already exists and no fresh event arrives:
+    // must not create duplicate work and must preserve issue state
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "assigned_todo_liveness_dispatch" },
+      status: "queued",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const noopResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(noopResult.assignmentDispatched).toBe(0);
+    expect(noopResult.dispatchRequeued).toBe(0);
+    expect(noopResult.continuationRequeued).toBe(0);
+    expect(noopResult.escalated).toBe(0);
+    expect(noopResult.skipped).toBe(1);
+    expect(noopResult.issueIds).toEqual([]);
+
+    const noopIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(noopIssue?.status).toBe("todo");
+    expect(noopIssue?.executionRunId).toBeNull();
+    expect(noopIssue?.checkoutRunId).toBeNull();
+
+    const noopWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(noopWakeups).toHaveLength(1);
+    expect(noopWakeups[0]?.status).toBe("queued");
+
+    const noopRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(noopRuns).toHaveLength(0);
+  });
+
+  it("assigned todo issue without queued wake dispatches fresh work (OPE-10805)", async () => {
+    // Fresh-event branch: assigned todo issue with no queued wake dispatches work
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    const freshResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(freshResult.assignmentDispatched).toBe(1);
+    expect(freshResult.skipped).toBe(0);
+    expect(freshResult.issueIds).toEqual([issueId]);
+
+    const freshIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(freshIssue?.status).toBe("todo");
+
+    const freshWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(freshWakeups).toHaveLength(1);
+    expect(freshWakeups[0]?.status).toBe("claimed");
+
+    const freshRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(freshRuns).toHaveLength(1);
+
+    if (freshRuns[0]?.id) {
+      await waitForRunToSettle(heartbeat, freshRuns[0].id);
+    }
+  });
+
   it.each(["preparing", "issued", "processing", "failed"])(
     "does not bypass a %s durable inbound-chat wake intent with generic assignment recovery",
     async (status) => {
@@ -8766,7 +8851,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(
         await db.select().from(chatActions).where(eq(chatActions.id, actionId)),
       ).toEqual([originalAction]);
-      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(status === "preparing" ? 1 : 0);
     },
   );
 

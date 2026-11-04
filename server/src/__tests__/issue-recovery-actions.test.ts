@@ -3210,6 +3210,52 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     };
   }
 
+  it("preserves recovery reason and parent-run linkage on delivery", async () => {
+    const { action, heartbeat, previousRunId } = await seedReconciledDelivery();
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    const [wake] = await db.select().from(agentWakeupRequests).where(
+      eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${action.id}`),
+    );
+    expect(wake).toMatchObject({ reason: "issue_recovery_action_restored", status: "queued" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.runId));
+    expect(run).toMatchObject({
+      retryOfRunId: previousRunId,
+      contextSnapshot: {
+        recoveryActionId: action.id,
+        previousRunId,
+        retryOfRunId: previousRunId,
+        wakeReason: "issue_recovery_action_restored",
+      },
+    });
+    const [receipt] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(receipt!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: run!.id });
+  });
+
+  it("retries pending recovery delivery only once and never wakes after delivery", async () => {
+    const { action, heartbeat } = await seedReconciledDelivery();
+    let wakeCount = 0;
+    await deliverReconciledExecutions(db, async (...args) => {
+      wakeCount += 1;
+      throw new Error("simulated interruption before wake admission");
+    });
+    const [pending] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(pending!.evidence.continuationDelivery).toBe("pending");
+    await deliverReconciledExecutions(db, async (...args) => {
+      wakeCount += 1;
+      return heartbeat.wakeup(...args);
+    });
+    const [delivered] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(delivered!.evidence.continuationDelivery).toBe("delivered");
+    await deliverReconciledExecutions(db, async (...args) => {
+      wakeCount += 1;
+      return heartbeat.wakeup(...args);
+    });
+    expect(wakeCount).toBe(2);
+    expect(await db.select().from(agentWakeupRequests).where(
+      eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${action.id}`),
+    )).toHaveLength(1);
+  });
+
   it("delivers a reconciled execution once across concurrent sweeps without a deferred duplicate", async () => {
     const { action, heartbeat } = await seedReconciledDelivery();
     let entered = 0;

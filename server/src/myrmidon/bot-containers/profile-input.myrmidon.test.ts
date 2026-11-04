@@ -321,6 +321,14 @@ describe("myrmidon(BOT-RUNTIME-TUNING-B) instance settings", () => {
     expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("context_length: 262144");
   });
 
+  it("the card's models.maxOutputTokens reaches model.max_tokens in compiled config", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { model: "model-a", models: { maxOutputTokens: 16_384 } } }),
+      settings(),
+    );
+    expect(fileContent(compileHermesProfile(input), "hermes/config.yaml")).toContain("max_tokens: 16384");
+  });
+
   it("the card's models.titleGeneration and models.compressionSummary reach the compiled auxiliary block", () => {
     const { input } = buildHermesProfileInput(
       source({
