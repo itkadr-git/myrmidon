@@ -58,6 +58,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { TrustPresetSection } from "../components/TrustPresetSection";
+import { AgentAccessPolicySection } from "../components/AgentAccessPolicySection";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
@@ -2156,6 +2157,14 @@ export function ConfigurationTab({
           })
         }
       /> : null}
+
+      {content === "permissions" && operatorCanManageBoardAdmins ? (
+        <AgentAccessPolicySection
+          permissions={agent.permissions}
+          disabled={updatePermissions.isPending}
+          onChange={(next) => updatePermissions.mutate(next)}
+        />
+      ) : null}
 
       {content === "permissions" ? <div>
         <h3 className="text-sm font-medium mb-3">{t("area.agents-3.agent-detail.configurationTab.permissions")}</h3>

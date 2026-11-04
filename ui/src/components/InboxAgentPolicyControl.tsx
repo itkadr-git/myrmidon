@@ -47,15 +47,20 @@ interface Draft {
  * of their agents may archive. The one-click Undo/Unarchive affordance and the
  * "Archived by …" attribution live elsewhere (inbox rows / properties pane).
  */
-export function InboxAgentPolicyControl({ companyId }: { companyId: string | null | undefined }) {
+export function InboxAgentPolicyControl({ companyId, userId }: { companyId: string | null | undefined; userId?: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Draft | null>(null);
   const lastServerKeyRef = useRef<string | null>(null);
 
+  const policyCacheKey = companyId
+    ? userId ? [...queryKeys.inboxAgentPolicy.mine(companyId), userId] : queryKeys.inboxAgentPolicy.mine(companyId)
+    : ["inbox-agent-policy", "none"];
   const policyQuery = useQuery({
-    queryKey: companyId ? queryKeys.inboxAgentPolicy.mine(companyId) : ["inbox-agent-policy", "none"],
-    queryFn: () => inboxAgentPolicyApi.getMine(companyId!),
+    queryKey: policyCacheKey,
+    queryFn: () => userId
+      ? inboxAgentPolicyApi.getForUser(companyId!, userId)
+      : inboxAgentPolicyApi.getMine(companyId!),
     enabled: !!companyId,
   });
   const policy = policyQuery.data;
@@ -100,12 +105,15 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
 
   const updateMutation = useMutation({
     mutationFn: (next: Draft) =>
-      inboxAgentPolicyApi.updateMine(companyId!, {
+      (userId ? inboxAgentPolicyApi.updateForUser(companyId!, userId, {
         mode: next.mode,
         allowedAgentIds: next.mode === "allowlist" ? next.allowedAgentIds : [],
-      }),
+      }) : inboxAgentPolicyApi.updateMine(companyId!, {
+        mode: next.mode,
+        allowedAgentIds: next.mode === "allowlist" ? next.allowedAgentIds : [],
+      })),
     onSuccess: (saved) => {
-      queryClient.setQueryData<InboxAgentPolicy>(queryKeys.inboxAgentPolicy.mine(companyId!), saved);
+      queryClient.setQueryData<InboxAgentPolicy>(policyCacheKey, saved);
     },
   });
 
