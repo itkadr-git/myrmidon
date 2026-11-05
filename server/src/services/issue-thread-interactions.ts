@@ -3593,7 +3593,14 @@ export function issueThreadInteractionService(
         : actor.userId
           ? { userId: actor.userId }
           : { serviceQueue: "system" };
-      const isAgentQuestion = Boolean(actor.agentId && normalizedData.kind === "ask_user_questions");
+      const isAgentQuestion = Boolean(
+        actor.agentId
+        && normalizedData.kind === "ask_user_questions"
+        // Human-only questions are owner decisions and must retain the
+        // configured owner delivery path. Manager routing is for operational
+        // agent questions, not for interactions explicitly reserved for humans.
+        && policy.effectiveResolverPolicy !== "human_only",
+      );
       const managerChain: string[] = [];
       if (isAgentQuestion && actor.agentId) {
         let currentId: string = actor.agentId;
