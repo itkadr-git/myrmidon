@@ -81,10 +81,8 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(Math.min(requestTimeoutMs, remaining)),
           headers: {
             authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BROKER_TOKEN || env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY),
-            ...(env.PAPERCLIP_GITHUB_BROKER_TOKEN ? {
-              'x-myrmidon-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
-              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
-            } : {}),
+            'x-myrmidon-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
+            'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
             ...(env.PAPERCLIP_RUN_ID ? {
               'x-paperclip-run-id': env.PAPERCLIP_RUN_ID,
               'x-myrmidon-run-id': env.PAPERCLIP_RUN_ID,
