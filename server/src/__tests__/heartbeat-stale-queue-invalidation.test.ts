@@ -1103,40 +1103,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
-  it("defers queued issue execution until the next UTC day after daily cap", async () => {
-    const { companyId, agentId } = await seedCompanyAndAgent({
-      heartbeatConfig: { maxDailyRuns: 0 },
-    });
-    const issueId = randomUUID();
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Daily cap continuation",
-      status: "in_progress",
-      priority: "high",
-      assigneeAgentId: agentId,
-    });
-
-    const run = await heartbeat.wakeup(agentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      issueId,
-    });
-
-    expect(run).not.toBeNull();
-    const deferred = await db
-      .select({
-        status: heartbeatRuns.status,
-        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
-        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, run!.id))
-      .then((rows) => rows[0] ?? null);
-    expect(deferred?.status).toBe("scheduled_retry");
-    expect(deferred?.scheduledRetryReason).toBe("heartbeat.daily_run_limit");
-    expect(deferred?.scheduledRetryAt?.getTime()).toBeGreaterThan(Date.now());
-  });
   it("allows manual user wake to bypass per-agent daily run cap", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
@@ -1525,7 +1491,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
-  it("skips already queued issue runs at the daily run cap and releases the execution lock", async () => {
+  it("defers already queued issue runs until the daily cap resets", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         maxDailyRuns: 1,
@@ -1587,7 +1553,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const [run] = await db
       .select({
         status: heartbeatRuns.status,
-        errorCode: heartbeatRuns.errorCode,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, queuedRunId));
@@ -1601,10 +1568,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(issues.id, issueId));
 
     expect(run).toMatchObject({
-      status: "cancelled",
-      errorCode: "heartbeat.daily_run_limit",
+      status: "scheduled_retry",
+      scheduledRetryReason: "heartbeat.daily_run_limit",
     });
-    expect(wakeup).toMatchObject({ status: "skipped" });
+    const expectedResetAt = new Date(Date.UTC(
+      new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() + 1,
+    ));
+    expect(run?.scheduledRetryAt).toEqual(expectedResetAt);
+    expect(wakeup).toMatchObject({ status: "queued" });
     expect(issue?.executionRunId).toBeNull();
   });
 
