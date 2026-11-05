@@ -224,7 +224,7 @@ export function HermesGatewayConfigFields({
       <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutHint")}>
         <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v)} immediate className={inputClass} />
       </Field>
-      <ToggleField configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryHint")} checked={centralHistory} onChange={(v) => writeValue("centralHistory", v ? "1" : "0")} />
       {centralHistory && <>
