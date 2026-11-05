@@ -207,7 +207,7 @@ describe("execute", () => {
       expect((await execute(otherBot)).exitCode).toBe(0);
     }
 
-    const keys = fetchMock.mock.calls
+    const keys = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
       .filter(([input]) => String(input).endsWith("/v1/runs"))
       .map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
     expect(keys).toEqual([
