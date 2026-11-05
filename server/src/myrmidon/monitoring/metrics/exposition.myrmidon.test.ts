@@ -219,7 +219,9 @@ describe("prometheus exposition format", () => {
   });
 
   it("renders exactly one HELP and one TYPE line per family", () => {
-    const text = renderMetricsText(snapshot());
+    const text = renderMetricsText(snapshot({
+      noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
+    }));
     const lines = text.split("\n");
     for (const family of METRIC_FAMILIES) {
       const helpLines = lines.filter((line) => line.startsWith(`# HELP ${family} `));
@@ -563,7 +565,9 @@ describe("prometheus exposition format", () => {
   });
 
   it("ends with a newline and separates families with blank lines", () => {
-    const text = renderMetricsText(snapshot());
+    const text = renderMetricsText(snapshot({
+      noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
+    }));
     expect(text.endsWith("\n")).toBe(true);
     const body = text.slice(0, -1);
     const blocks = body.split("\n\n");

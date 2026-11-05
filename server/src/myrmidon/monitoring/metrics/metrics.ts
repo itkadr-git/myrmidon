@@ -1502,17 +1502,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
     ),
   );
-  if (snapshot.noResultRunsByPair24h?.length) {
-    blocks.push(
-      familyBlock(
-        "myrmidon_no_result_runs_24h",
-        "No-result runs per agent and issue in the rolling 24-hour window.",
-        "gauge",
-        snapshot.noResultRunsByPair24h.map(({ agentId, issueId, count: total }) =>
-          `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(agentId)}",issue_id="${escapeLabelValue(issueId)}"} ${formatSampleValue(total)}`),
-      ),
-    );
-  }
+  blocks.push(
+    familyBlock(
+      "myrmidon_no_result_runs_24h",
+      "No-result runs per agent and issue in the rolling 24-hour window.",
+      "gauge",
+      snapshot.noResultRunsByPair24h?.map(({ agentId, issueId, count: total }) =>
+        `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(agentId)}",issue_id="${escapeLabelValue(issueId)}"} ${formatSampleValue(total)}`) ?? [],
+    ),
+  );
   blocks.push(
     familyBlock(
       "myrmidon_run_duration_seconds",
