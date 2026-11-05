@@ -3214,7 +3214,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (
         isRetryableConnect &&
         !ctx.signal?.aborted &&
-        !createTimedOut &&
+        !createSignal.aborted &&
         elapsed + GATEWAY_CONNECT_RETRY_INTERVAL_MS < gatewayReadyTimeoutMs
       ) {
         await ctx.onLog("stdout", `[hermes-gateway] waiting for gateway readiness (${code}, elapsed ${elapsed}ms / timeout ${gatewayReadyTimeoutMs}ms)...\\n`);
