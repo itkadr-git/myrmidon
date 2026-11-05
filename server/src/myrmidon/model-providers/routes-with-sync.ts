@@ -34,6 +34,9 @@ import {
   createModelProviderSchema,
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
+  poolAccountOAuthBeginSchema,
+  poolAccountOAuthCompleteSchema,
+  poolAccountOAuthRefreshSchema,
   setModelProviderModelsSchema,
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
@@ -341,6 +344,53 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
     });
     res.json({ ok: true, signal });
   });
+
+  const oauthBeginHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthBeginSchema, bodyOf(req));
+    const result = await deps.service.oauthBegin(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/begin", oauthBeginHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/begin", oauthBeginHandler);
+
+  const oauthStatusHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const accountNumber = Number(req.query.accountNumber);
+    if (!Number.isInteger(accountNumber) || accountNumber <= 0) {
+      throw badRequest("accountNumber query parameter must be a positive integer");
+    }
+    const result = await deps.service.oauthStatus(companyId, id, accountNumber);
+    res.status(200).json(result);
+  };
+  router.get("/myrmidon/companies/:companyId/model-providers/:id/oauth/status", oauthStatusHandler);
+  router.get("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/status", oauthStatusHandler);
+
+  const oauthCompleteHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthCompleteSchema, bodyOf(req));
+    const result = await deps.service.oauthComplete(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);
+
+  const oauthRefreshHandler = async (req: Request, res: any) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthRefreshSchema, bodyOf(req));
+    const result = await deps.service.oauthRefresh(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/refresh", oauthRefreshHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/refresh", oauthRefreshHandler);
 
   return router;
 }
