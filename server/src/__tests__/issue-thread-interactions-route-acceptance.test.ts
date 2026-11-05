@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, issues, issueThreadInteractions } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, issues, issueThreadInteractions } from "@myrmidon/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
   describeEmbeddedPostgres,
@@ -17,6 +17,7 @@ describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)"
     resetEach: async (db) => {
       await db.delete(issueThreadInteractions);
       await db.delete(activityLog);
+      await db.delete(agentWakeupRequests);
       await db.delete(agents);
       await resetCompanyIssueFixtures(db);
     },
@@ -44,22 +45,41 @@ describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)"
 
   it("rejects interaction creation without addressee via HTTP route with 422 and writes no row to DB", async () => {
     const seeded = await seed();
+    const callingApp = appFor(seeded);
+    const body = {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Confirm without addressee" },
+    };
 
-    const res = await request(appFor(seeded))
+    const first = await request(callingApp)
       .post(`/api/issues/${seeded.issueId}/interactions`)
-      .send({
-        kind: "request_confirmation",
-        payload: { version: 1, prompt: "Confirm without addressee" },
-      });
+      .send(body);
+    const second = await request(callingApp)
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send(body);
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("Cannot determine recipient for interaction");
+    expect(first.status).toBe(422);
+    expect(second.status).toBe(422);
+    expect(first.body.error).toContain("Cannot determine recipient for interaction");
+    expect(second.body.error).toBe(first.body.error);
 
     const rows = await ctx.db
       .select()
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, seeded.issueId));
     expect(rows).toHaveLength(0);
+
+    const publications = await ctx.db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, seeded.issueId));
+    expect(publications).toHaveLength(0);
+
+    const wakeups = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, seeded.companyId));
+    expect(wakeups).toHaveLength(0);
   });
 
   it("creates interaction with explicit agent addressee via HTTP route and persists route_type and timeout_at in DB", async () => {

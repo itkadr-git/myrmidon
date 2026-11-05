@@ -86,6 +86,34 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("Inspect the failed run, fix the cause");
   });
 
+  it("keeps in-progress issues runnable even if the previous summary parked for review", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-9494",
+        title: "Continuation",
+        description: null,
+        status: "in_progress",
+        priority: "critical",
+      },
+      run: {
+        id: "run-2",
+        status: "succeeded",
+        error: null,
+        errorCode: null,
+        resultJson: null,
+        stdoutExcerpt: null,
+        stderrExcerpt: null,
+        finishedAt: new Date("2026-11-02T00:00:00Z"),
+      },
+      agent: { id: "agent-1", name: "engineer", adapterType: "hermes_gateway" },
+      previousSummaryBody: "## Next Action\n\n- Wait for reviewer feedback or approval before continuing executor work.",
+    });
+    const nextAction = extractContinuationSummaryNextAction(body);
+    expect(nextAction).toContain("Continue implementation");
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
   it("detects continuation summaries that explicitly park executor work for review", () => {
     const body = [
       "# Continuation Summary",
