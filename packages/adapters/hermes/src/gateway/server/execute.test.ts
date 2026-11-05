@@ -918,6 +918,42 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
+  it("does not compact a developer's new task using a prior agent session", async () => {
+    const description = "Task B must not inherit Task A context.";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      sessionKeyStrategy: "agent",
+      developerOnlyTaskSession: true,
+    });
+    ctx.context = {
+      ...ctx.context,
+      issueId: "task-B",
+      paperclipTaskMarkdown: description,
+      paperclipTaskMarkdownCompact: "Task B (compact)",
+    };
+    ctx.runtime = {
+      ...ctx.runtime,
+      sessionId: "paperclip:company:company-1:agent:agent-1",
+    };
+    expect((await execute(ctx)).exitCode).toBe(0);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([url]) => String(url).endsWith("/v1/runs"));
+    const body = JSON.parse(String(createCall?.[1]?.body)) as { input: string; session_id: string };
+    expect(body.input).toContain(description);
+    expect(body.input).not.toContain("Task B (compact)");
+    expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
+    expect((createCall?.[1]?.headers as Record<string, string>)["X-Hermes-Session-Key"])
+      .toBe(body.session_id);
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
