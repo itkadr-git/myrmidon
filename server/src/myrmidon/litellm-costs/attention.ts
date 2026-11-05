@@ -199,7 +199,12 @@ export function readEmptyCatalogSignal(companyId: string): EmptyCatalogAttention
   return signalByCompany.get(companyId) ?? null;
 }
 
+export function resetLitellmBudgetSignals(): void {
+  budgetSignalsByCompany.clear();
+}
+
 /** Forget every recorded signal: tests, and a disabled sweep clears its cards. */
 export function resetEmptyCatalogSignals(): void {
   signalByCompany.clear();
+  resetLitellmBudgetSignals();
 }
