@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi, afterEach } from \"vitest\";
+import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
 import {
   recordGitHubRequest,
   isGitHubRateLimited,
@@ -8,9 +8,9 @@ import {
   resetGitHubRateLimitForTests,
   setGitHubRateLimitForTests,
   formatUtcTime,
-} from \"../github-rate-limit.js\";
+} from "../github-rate-limit.js";
 
-describe(\"github-rate-limit service\", () => {
+describe("github-rate-limit service", () => {
   beforeEach(() => {
     resetGitHubRateLimitForTests();
     vi.useRealTimers();
@@ -20,13 +20,14 @@ describe(\"github-rate-limit service\", () => {
     vi.useRealTimers();
   });
 
-  it(\"response 200 with remaining=935 and reset in future does not rate limit\", () => {
+  it("response 200 with remaining=935 and reset in future does not rate limit", () => {
     const futureResetEpoch = Math.floor(Date.now() / 1000) + 1800; // +30 mins
-    recordGitHubRequest(\"ci-resolver\", {
+    recordGitHubRequest("ci-resolver", {
       status: 200,
       headers: {
-        \"x-ratelimit-remaining\": \"935\",
-        \"x-ratelimit-limit\": \"5000\",\n        \"x-ratelimit-reset\": String(futureResetEpoch),
+        "x-ratelimit-remaining": "935",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-reset": String(futureResetEpoch),
       },
     });
 
@@ -42,21 +43,21 @@ describe(\"github-rate-limit service\", () => {
     expect(metrics.resetTimeUtc).toBeNull();
     expect(metrics.windowResetEpochSeconds).toBe(futureResetEpoch);
     expect(metrics.windowResetUtc).toBe(formatUtcTime(new Date(futureResetEpoch * 1000)));
-    expect(metrics.sources[\"ci-resolver\"]).toBe(1);
+    expect(metrics.sources["ci-resolver"]).toBe(1);
   });
 
-  it(\"response 403 with remaining=0 sets rate limit until reset, and clears after reset\", () => {
+  it("response 403 with remaining=0 sets rate limit until reset, and clears after reset", () => {
     const now = 1730000000000;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(now));
 
     const resetEpoch = Math.floor(now / 1000) + 600; // +10 minutes
-    recordGitHubRequest(\"ci-resolver\", {
+    recordGitHubRequest("ci-resolver", {
       status: 403,
       headers: {
-        \"x-ratelimit-remaining\": \"0\",
-        \"x-ratelimit-limit\": \"5000\",
-        \"x-ratelimit-reset\": String(resetEpoch),
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-reset": String(resetEpoch),
       },
     });
 
@@ -84,12 +85,12 @@ describe(\"github-rate-limit service\", () => {
     expect(metricsAfter.resetTimeUtc).toBeNull();
   });
 
-  it(\"explicit rate limit without reset header defaults to +3600 seconds\", () => {
+  it("explicit rate limit without reset header defaults to +3600 seconds", () => {
     const now = 1730000000000;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(now));
 
-    recordGitHubRequest(\"broker\", {
+    recordGitHubRequest("broker", {
       status: 429,
       headers: {},
     });
@@ -107,15 +108,15 @@ describe(\"github-rate-limit service\", () => {
     expect(isGitHubRateLimited()).toBe(false);
   });
 
-  it(\"secondary rate limit with retry-after header uses retry-after seconds\", () => {
+  it("secondary rate limit with retry-after header uses retry-after seconds", () => {
     const now = 1730000000000;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(now));
 
-    recordGitHubRequest(\"review-recovery\", {
+    recordGitHubRequest("review-recovery", {
       status: 403,
       headers: {
-        \"retry-after\": \"120\",
+        "retry-after": "120",
       },
     });
 
@@ -130,14 +131,14 @@ describe(\"github-rate-limit service\", () => {
     expect(isGitHubRateLimited()).toBe(false);
   });
 
-  it(\"response 403 with non-zero remaining (e.g. permission error) does not rate limit\", () => {
+  it("response 403 with non-zero remaining (e.g. permission error) does not rate limit", () => {
     const futureResetEpoch = Math.floor(Date.now() / 1000) + 1800;
-    recordGitHubRequest(\"task-pr-sync\", {
+    recordGitHubRequest("task-pr-sync", {
       status: 403,
       headers: {
-        \"x-ratelimit-remaining\": \"4990\",
-        \"x-ratelimit-limit\": \"5000\",
-        \"x-ratelimit-reset\": String(futureResetEpoch),
+        "x-ratelimit-remaining": "4990",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-reset": String(futureResetEpoch),
       },
     });
 
@@ -145,16 +146,16 @@ describe(\"github-rate-limit service\", () => {
     expect(getGitHubRateLimitResetEpochSeconds()).toBeNull();
   });
 
-  it(\"successful response with remaining quota clears an earlier rate limit\", () => {
+  it("successful response with remaining quota clears an earlier rate limit", () => {
     const futureResetEpoch = Math.floor(Date.now() / 1000) + 3600;
     setGitHubRateLimitForTests(futureResetEpoch, 0);
     expect(isGitHubRateLimited()).toBe(true);
 
-    recordGitHubRequest(\"ci-resolver\", {
+    recordGitHubRequest("ci-resolver", {
       status: 200,
       headers: {
-        \"x-ratelimit-remaining\": \"500\",
-        \"x-ratelimit-reset\": String(futureResetEpoch),
+        "x-ratelimit-remaining": "500",
+        "x-ratelimit-reset": String(futureResetEpoch),
       },
     });
 

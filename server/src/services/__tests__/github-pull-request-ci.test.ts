@@ -830,7 +830,7 @@ describe("createPullRequestCiResolver", () => {
     expect(res.status).toBe("completed");
     expect(res.conclusion).toBe("success");
     expect(res.authoritative).toBe(true);
-    expect(res.summary).toContain("1/1 checks passed");
+    expect(res.summary).toContain("success (1/1 passed)");
   });
 
   it("acceptance: repeated call before reset does not call GitHub", async () => {
