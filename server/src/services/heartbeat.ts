@@ -73,6 +73,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
+import { createPullRequestMergeDetailsResolver } from "./github-pull-request-merge.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -82,6 +83,7 @@ import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
   buildContinuationKey,
+  buildReviewerInputFixture,
   isDeveloperRole,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
@@ -8283,6 +8285,7 @@ export async function buildPaperclipWakePayload(input: {
     : [];
   let ciResult: PullRequestCiResult | null = null;
   let pullRequestsCi: PullRequestCiResult[] = [];
+  let reviewerInput: ReturnType<typeof buildReviewerInputFromTaskData> | null = null;
   if (issueId) {
     try {
       const ciResolver = createPullRequestCiResolver(input.db);
@@ -8294,9 +8297,80 @@ export async function buildPaperclipWakePayload(input: {
     } catch {
       // Non-blocking fallback
     }
+    const executionStage = parseObject(input.contextSnapshot.executionStage);
+    if (
+      executionStage.wakeRole === "reviewer" &&
+      issueSummary &&
+      ciResult?.headSha &&
+      ciResult.repository &&
+      ciResult.pullNumber > 0
+    ) {
+      try {
+        const prDetails = await createPullRequestMergeDetailsResolver(input.db)(
+          input.companyId,
+          {
+            host: "github.com",
+            owner: ciResult.repository.split("/")[0] ?? "",
+            repo: ciResult.repository.split("/")[1] ?? "",
+            number: ciResult.pullNumber,
+          },
+        );
+        const metadata = await input.db
+          .select({ metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, input.companyId),
+              eq(issueWorkProducts.issueId, issueId),
+              eq(issueWorkProducts.type, "pull_request"),
+              eq(issueWorkProducts.provider, "github"),
+            ),
+          )
+          .then((rows) => rows[0]?.metadata ?? null);
+        const metadataRecord = parseObject(metadata);
+        const headBranch =
+          typeof metadataRecord.headRef === "string"
+            ? metadataRecord.headRef
+            : prDetails.headRef ?? "";
+        const baseBranch =
+          typeof metadataRecord.baseRef === "string"
+            ? metadataRecord.baseRef
+            : prDetails.baseRef ?? "main";
+        const authorLogin =
+          typeof metadataRecord.authorLogin === "string"
+            ? metadataRecord.authorLogin
+            : "unknown";
+        const diffUrl = `https://github.com/${ciResult.repository}/pull/${ciResult.pullNumber}.diff`;
+        const diffResponse = await fetch(diffUrl, {
+          headers: { Accept: "text/plain" },
+        });
+        const diff = diffResponse.ok ? await diffResponse.text() : "";
+        reviewerInput = buildReviewerInputFromTaskData({
+          issue: {
+            id: issueSummary.id,
+            identifier: issueSummary.identifier,
+            title: issueSummary.title,
+            description: issueSummary.description ?? null,
+          },
+          executionState: executionStage,
+          pullRequest: {
+            number: ciResult.pullNumber,
+            repository: ciResult.repository,
+            baseBranch,
+            headBranch,
+            headSha: ciResult.headSha,
+            authorLogin,
+          },
+          diff,
+        });
+      } catch {
+        reviewerInput = null;
+      }
+    }
   }
 
   const payload = {
+    reviewerInput,
     ciResult,
     pullRequestsCi,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
@@ -8484,6 +8558,54 @@ export async function buildPaperclipWakePayload(input: {
         payload,
       )
     : payload;
+}
+
+export function buildReviewerInputFromTaskData(input: {
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    description: string | null;
+  };
+  executionState: Record<string, unknown> | null;
+  pullRequest: {
+    number: number;
+    repository: string;
+    baseBranch: string;
+    headBranch: string;
+    headSha: string;
+    authorLogin: string;
+  };
+  diff: string;
+}) {
+  const reviewRequest = parseObject(input.executionState?.reviewRequest);
+  const requestedCriteria = reviewRequest.acceptanceCriteria;
+  const acceptanceCriteria = Array.isArray(requestedCriteria)
+    ? requestedCriteria.filter((value): value is string => typeof value === "string")
+    : typeof requestedCriteria === "string"
+      ? requestedCriteria
+      : null;
+  const reviewerInput = buildReviewerInputFixture({
+    issue: {
+      id: input.issue.id,
+      identifier: input.issue.identifier ?? input.issue.id,
+      title: input.issue.title,
+      description: input.issue.description,
+      acceptanceCriteria,
+      comments: [],
+      coderSessionHistory: undefined,
+      coderInternalThoughts: undefined,
+      scratchpadPaths: [],
+      environmentSecrets: {},
+      foreignTaskContext: undefined,
+    },
+    pr: input.pullRequest,
+    reviewInstructions:
+      typeof reviewRequest.instructions === "string"
+        ? reviewRequest.instructions
+        : undefined,
+  });
+  return reviewerInput;
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -8833,6 +8955,7 @@ export function buildPaperclipTaskMarkdown(input: {
     revisionId?: string | null;
     revisionNumber?: number | null;
   } | null;
+  reviewerInput?: ReturnType<typeof buildReviewerInputFromTaskData> | null;
   acceptedPlanContinuation?: boolean;
   taskPlan?: {
     documentId: string;
@@ -23694,6 +23817,7 @@ export function heartbeatService(
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
         wakePayload: paperclipWakePayload,
+        reviewerInput: paperclipWakePayload?.reviewerInput ?? null,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
