@@ -16171,12 +16171,12 @@ export function heartbeatService(
       retryReason === MAINTENANCE_RETRY_REASON ||
       retryReason === "model_call_limit_continuation"
         ? 1
-        : retryReason === WORKSPACE_BUSY_RETRY_REASON ||
-          retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-          retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
-          retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
-          ? (run.scheduledRetryAttempt ?? 0)
-          : executionFailureRetryCount(run) + 1;
+        : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+              retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
+              retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+              retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
+            ? (run.scheduledRetryAttempt ?? 0)
+            : executionFailureRetryCount(run)) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
