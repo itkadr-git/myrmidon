@@ -700,7 +700,9 @@ describe('IdleStopService', () => {
       const call2 = idleStopService.ensureStartedAndHealthy(botKey);
       const call3 = idleStopService.ensureStartedAndHealthy(botKey);
 
-      expect(mockDriver.start).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(mockDriver.start).toHaveBeenCalledTimes(1);
+      });
 
       startResolve!();
       await Promise.all([call1, call2, call3]);
