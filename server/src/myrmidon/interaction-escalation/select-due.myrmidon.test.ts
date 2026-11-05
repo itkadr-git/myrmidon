@@ -107,6 +107,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       timeoutAt: new Date(now.getTime() - 60_000), // 1 minute overdue
       escalationLevel: 0,
       escalationChain: [
+        { recipient: { agentId }, afterMinutes: 0 },
         { recipient: { userId: "user-manager" }, afterMinutes: 10 },
       ],
       payload: { version: 1, prompt: "Confirm changes" },
@@ -143,6 +144,25 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       .from(interactionEscalations)
       .where(eq(interactionEscalations.interactionId, interactionId));
     expect(journalAfterRepeat).toHaveLength(1);
+  });
+
+  it("не записывает эскалацию с пустым следующим адресатом", async () => {
+    await seedCompanyAndIssue();
+    const now = new Date("2026-10-30T12:00:00Z");
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      routeType: "decision",
+      addresseeAgentId: agentId,
+      timeoutAt: new Date(now.getTime() - 60_000),
+      escalationChain: [{ recipient: { agentId }, afterMinutes: 0 }],
+      payload: { version: 1, questions: [] },
+    });
+
+    expect(await selectDueEscalations(db, now, 10)).toEqual([]);
+    expect(await db.select().from(interactionEscalations)).toEqual([]);
   });
 
   it("resolved и ещё не просроченные не выбираются", async () => {
@@ -226,6 +246,10 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
         // Разный timeoutAt для проверки детерминированного порядка
         timeoutAt: new Date(now.getTime() - (10 - i) * 60_000),
         escalationLevel: 0,
+        escalationChain: [
+          { recipient: { agentId }, afterMinutes: 0 },
+          { recipient: { serviceQueue: "ops-lead" }, afterMinutes: 10 },
+        ],
         payload: { version: 1, prompt: "Confirm changes" },
       });
     }
@@ -280,6 +304,7 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
       timeoutAt: new Date(now.getTime() - 30_000),
       escalationLevel: 1,
       escalationChain: [
+        { recipient: { agentId }, afterMinutes: 0 },
         { recipient: { userId: "user-step-1" }, afterMinutes: 5 },
         { recipient: { serviceQueue: "ops-lead" }, afterMinutes: 15 },
       ],
