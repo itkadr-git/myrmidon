@@ -12,7 +12,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import i18n from "../../../i18n";
+import { i18n } from "@/i18n";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 import { formatUi2Message } from "../../../i18n/locales";
