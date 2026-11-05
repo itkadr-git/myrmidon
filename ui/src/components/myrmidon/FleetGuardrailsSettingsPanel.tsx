@@ -20,6 +20,7 @@ const numbers = () => [
   { key: "browser_idle_timeout_min", label: i18n.t("area.settings-guardrails.fleet-guardrails-settings-panel.browserIdleTimeoutMin") },
   { key: "browser_max_duration_min", label: i18n.t("area.settings-guardrails.fleet-guardrails-settings-panel.browserMaxDurationMin") },
   { key: "stack_check_interval_sec", label: i18n.t("area.settings-guardrails.fleet-guardrails-settings-panel.stackCheckIntervalSec") },
+  { key: "baseline_interval_sec", label: i18n.t("area.settings-guardrails.fleet-guardrails-settings-panel.baselineIntervalSec") },
 ];
 const flags = () => [
   { key: "bot_containers", label: i18n.t("area.settings-guardrails.fleet-guardrails-settings-panel.botContainers") },

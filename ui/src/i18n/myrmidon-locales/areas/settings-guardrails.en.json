@@ -53,6 +53,7 @@
         "browserIdleTimeoutMin": "Browser idle timeout (minutes)",
         "browserMaxDurationMin": "Browser maximum duration (minutes)",
         "stackCheckIntervalSec": "Stack check interval (seconds; 0 disables)",
+        "baselineIntervalSec": "Baseline snapshot interval (seconds, 60-604800; 0 disables)",
         "botContainers": "Enable bot container reconciliation",
         "botYolo": "Enable YOLO mode"
       }

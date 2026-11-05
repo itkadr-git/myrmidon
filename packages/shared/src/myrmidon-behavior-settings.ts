@@ -255,6 +255,7 @@ for (const [key, envName, fallback, validate] of [
   ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveIntegerValue],
   ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120, positiveIntegerValue],
   ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
+  ["baseline_interval_sec", "MYRMIDON_BASELINE_INTERVAL_SEC", 0, (value: unknown) => value === 0 ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604800 ? value : null],
 ] as const) {
   behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
 }

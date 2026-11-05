@@ -113,6 +113,14 @@ describe("myrmidon(1.7) behavior settings: guardrail and fleet keys (SETTINGS-TO
     expect(blank.settings.bot_image_allowlist).toEqual([]);
   });
 
+  it("validates the baseline interval and lets saved disable an env interval", () => {
+    const env = { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" };
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 0 }, env }).settings.baseline_interval_sec).toBe(0);
+    expect(resolveBehaviorSettings({ stored: {}, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 59 }, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 604801 }, env }).settings.baseline_interval_sec).toBe(3600);
+  });
+
   it("keeps the shared precedence: a saved value wins, the environment is the default", () => {
     const env = { MYRMIDON_TOOL_BREAKER_FAILURES: "3" };
     const saved = resolveBehaviorSettings({ stored: { tool_breaker_failures: 0 }, env });
