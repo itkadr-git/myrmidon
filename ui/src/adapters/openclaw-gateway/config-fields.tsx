@@ -314,7 +314,7 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       {/* Device identity is a company secret reference; never show or accept token text here. */}
-      <Field label="Device token (secret reference)" configSection="advanced">
+      <Field label={t("area.adapters-plugins-1.openclaw-gateway.fields.deviceTokenLabel")} configSection="advanced">
         <SecretPicker
           secretId={deviceTokenSecretId}
           secrets={secrets}
@@ -327,7 +327,7 @@ export function OpenClawGatewayConfigFields({
             }
           }}
         />
-        <p className="mt-1 text-xs text-muted-foreground">Create the secret in Company Settings before binding it. The token value is never displayed here.</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("area.adapters-plugins-1.openclaw-gateway.fields.deviceTokenHint")}</p>
       </Field>
 
       <RuntimeServicesJsonField

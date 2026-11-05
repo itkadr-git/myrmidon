@@ -266,7 +266,11 @@ export function HermesGatewayConfigFields({
           minRows={3}
         />
       </Field>
-      <Field configSection="advanced" label="Hindsight bank ID" hint="Agent-specific memory bank. Leave empty only when the plugin maps this agent or the bot fleet has an explicit bank fallback.">
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightBankIdHint")}
+      >
         <DraftInput
           value={String(hindsight.bankId ?? "")}
           onCommit={(v) => updateHindsight("bankId", v.trim())}
@@ -274,31 +278,35 @@ export function HermesGatewayConfigFields({
           className={inputClass}
         />
       </Field>
-      <Field configSection="advanced" label="Hindsight retain tags" hint="Comma-separated tags added to retained memories.">
+      <Field
+        configSection="advanced"
+        label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsLabel")}
+        hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightTagsHint")}
+      >
         <DraftInput value={hindsightTags} onCommit={(v) => updateHindsight("tags", v.split(",").map((tag) => tag.trim()).filter(Boolean))} immediate className={inputClass} />
       </Field>
-      <Field configSection="advanced" label="Hindsight bank mission">
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMissionLabel")}>
         <DraftTextarea value={String(hindsight.mission ?? "")} onCommit={(v) => updateHindsight("mission", v.trim())} immediate minRows={2} />
       </Field>
-      <Field configSection="advanced" label="Hindsight recall budget">
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightRecallBudgetLabel")}>
         <select className={inputClass} value={String(hindsight.recallBudget ?? "")} onChange={(event) => updateHindsight("recallBudget", event.target.value)}>
-          <option value="">Use runtime default</option>
-          <option value="low">Low</option><option value="mid">Mid</option><option value="high">High</option>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="low">{t("area.adapters-plugins-1.hermes-gateway.fields.low")}</option><option value="mid">{t("area.adapters-plugins-1.hermes-gateway.fields.mid")}</option><option value="high">{t("area.adapters-plugins-1.hermes-gateway.fields.high")}</option>
         </select>
       </Field>
-      <Field configSection="advanced" label="Hindsight memory mode">
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeLabel")}>
         <select className={inputClass} value={String(hindsight.memoryMode ?? "")} onChange={(event) => updateHindsight("memoryMode", event.target.value)}>
-          <option value="">Use runtime default</option>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
           <option value="hybrid">Hybrid</option><option value="context">Context</option><option value="tools">Tools</option>
         </select>
       </Field>
-      <Field configSection="advanced" label="Hindsight auto-retain">
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightAutoRetainLabel")}>
         <select className={inputClass} value={typeof hindsight.autoRetain === "boolean" ? String(hindsight.autoRetain) : ""} onChange={(event) => updateHindsight("autoRetain", event.target.value === "" ? undefined : event.target.value === "true")}>
-          <option value="">Use runtime default</option>
-          <option value="true">Enabled</option><option value="false">Disabled</option>
+          <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
+          <option value="true">{t("area.adapters-plugins-1.hermes-gateway.fields.enabled")}</option><option value="false">{t("area.adapters-plugins-1.hermes-gateway.fields.disabled")}</option>
         </select>
       </Field>
-      <Field configSection="advanced" label="Hindsight observation scopes" hint="One tag conjunction per line. Separate tags with commas.">
+      <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightObservationScopesHint")}>
         <DraftTextarea
           value={observationScopes}
           onCommit={(v) => updateHindsight("observationScopes", v.split("\n").map((line) => line.split(",").map((tag) => tag.trim()).filter(Boolean)).filter((scope) => scope.length > 0))}

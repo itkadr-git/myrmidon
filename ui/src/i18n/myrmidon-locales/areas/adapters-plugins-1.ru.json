@@ -182,7 +182,23 @@
           "extraHeadersHint": "Необязательный JSON-объект с дополнительными несекретными заголовками. Заголовки, важные для безопасности, формирует сам адаптер.",
           "headersPlaceholder": "{\"x-custom-header\": \"value\"}",
           "instructionsLabel": "Инструкции",
-          "instructionsHint": "Необязательные постоянные инструкции для Hermes, которые передаются отдельно от входных данных побудки."
+          "instructionsHint": "Необязательные постоянные инструкции для Hermes, которые передаются отдельно от входных данных побудки.",
+          "hindsightBankIdLabel": "ID банка Hindsight",
+          "hindsightBankIdHint": "Банк памяти конкретного агента. Оставляйте пустым только при явном сопоставлении агента плагином или резервном банке флота.",
+          "hindsightTagsLabel": "Теги сохранения Hindsight",
+          "hindsightTagsHint": "Теги через запятую, добавляемые к сохраняемым воспоминаниям.",
+          "hindsightMissionLabel": "Миссия банка Hindsight",
+          "hindsightRecallBudgetLabel": "Бюджет извлечения Hindsight",
+          "hindsightMemoryModeLabel": "Режим памяти Hindsight",
+          "hindsightAutoRetainLabel": "Автосохранение Hindsight",
+          "hindsightObservationScopesLabel": "Области наблюдения Hindsight",
+          "hindsightObservationScopesHint": "Одна конъюнкция тегов на строку. Разделяйте теги запятыми.",
+          "useRuntimeDefault": "Использовать значение рантайма",
+          "low": "Низкий",
+          "mid": "Средний",
+          "high": "Высокий",
+          "enabled": "Включено",
+          "disabled": "Отключено"
         }
       },
       "openclaw-gateway": {
@@ -219,7 +235,9 @@
           "autoPairLabel": "Автосопряжение при первом подключении",
           "autoPairText": "Автоматически подтверждать сопряжение устройства",
           "deviceAuthLabel": "Авторизация устройства",
-          "deviceAuthDescription": "Если включено, Myrmidon сохраняет ключ устройства при подключении, чтобы подтверждения сопряжения оставались стабильными между прогонами."
+          "deviceAuthDescription": "Если включено, Myrmidon сохраняет ключ устройства при подключении, чтобы подтверждения сопряжения оставались стабильными между прогонами.",
+          "deviceTokenLabel": "Токен устройства (ссылка на секрет)",
+          "deviceTokenHint": "Создайте секрет в настройках компании перед привязкой. Значение токена здесь не отображается."
         },
         "headersJsonTextarea": {
           "headersPlaceholder": "{\"x-custom-header\": \"value\"}"
