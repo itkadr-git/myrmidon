@@ -89,55 +89,13 @@ if [[ -n "$open_red_issues" ]]; then
   die "MAIN BRANCH IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
 fi
 
-# 2. Check the required check run `CI result` on the HEAD commit of base branch
+# 2. Inspect the latest Myrmidon CI workflow run on base branch (event=push, branch=$base_branch)
+# OPE-11694: Query workflow runs directly by branch and event=push, NOT check-runs on head commit SHA.
+# Check-runs by commit SHA mix runs from release tags, other branches, or PRs sharing that SHA.
+# Release tags run "Myrmidon CI (tag)" on the same SHA as main HEAD; a failure in tag CI must
+# not block PR merges when main branch CI is green.
 head_sha="$(gh api "repos/$repo/commits/$base_branch" --jq '.sha' 2>/dev/null || true)"
 
-if [[ -n "$head_sha" ]]; then
-  check_run_json="$(gh api "repos/$repo/commits/$head_sha/check-runs?check_name=CI%20result&per_page=10" \
-    --jq '[.check_runs[]? | select(.name == "CI result")] | sort_by(.started_at) | reverse | .[0] // empty' 2>/dev/null || true)"
-
-  if [[ -n "$check_run_json" && "$check_run_json" != "null" ]]; then
-    check_status="$(jq -r '.status // empty' <<<"$check_run_json")"
-    check_conclusion="$(jq -r '.conclusion // empty' <<<"$check_run_json")"
-
-    if [[ "$check_status" == "completed" ]]; then
-      case "$check_conclusion" in
-        success)
-          log "main branch CI is GREEN (check 'CI result' succeeded on head commit $head_sha). Merges permitted."
-          if [[ "$mode" == "status" ]]; then
-            printf 'green\n'
-          fi
-          exit 0
-          ;;
-        failure|cancelled|timed_out|startup_failure|action_required)
-          reason="check 'CI result' on head $head_sha concluded with $check_conclusion"
-          if [[ "$mode" == "status" ]]; then
-            printf 'red:%s\n' "$reason"
-            exit 0
-          fi
-          die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
-          ;;
-        *)
-          reason="check 'CI result' on head $head_sha has conclusion: $check_conclusion"
-          if [[ "$mode" == "status" ]]; then
-            printf 'pending:%s\n' "$reason"
-            exit 0
-          fi
-          die "MAIN BRANCH CI IS NOT GREEN ($reason)"
-          ;;
-      esac
-    else
-      reason="check 'CI result' on head $head_sha is $check_status"
-      if [[ "$mode" == "status" ]]; then
-        printf 'pending:%s\n' "$reason"
-        exit 0
-      fi
-      die "MAIN BRANCH CI IS NOT COMPLETED ($reason) — PR merges are blocked until main CI completes successfully"
-    fi
-  fi
-fi
-
-# 3. Fallback: inspect the latest Myrmidon CI workflow run on base branch
 runs_json="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=5" 2>/dev/null || true)"
 
 if [[ -z "$runs_json" || "$(jq -r '.workflow_runs // empty' <<<"$runs_json")" == "[]" ]]; then
@@ -145,8 +103,15 @@ if [[ -z "$runs_json" || "$(jq -r '.workflow_runs // empty' <<<"$runs_json")" ==
 fi
 
 latest_run="$(jq -r '
-  [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'")]
-  | sort_by(.created_at) | reverse | .[0] // empty
+  def match_workflow:
+    (.path == null or .path == ".github/workflows/myrmidon-ci.yml" or .name == null or .name == "Myrmidon CI");
+  (
+    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and match_workflow)]
+    | sort_by(.created_at) | reverse | .[0]
+  ) // (
+    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push"))]
+    | sort_by(.created_at) | reverse | .[0]
+  ) // empty
 ' <<<"$runs_json")"
 
 if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
@@ -181,6 +146,14 @@ if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
         fi
         die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
         ;;
+      *)
+        reason="run #$run_id has conclusion: $run_conclusion on commit $run_sha"
+        if [[ "$mode" == "status" ]]; then
+          printf 'pending:%s\n' "$reason"
+          exit 0
+        fi
+        die "MAIN BRANCH CI IS NOT GREEN ($reason)"
+        ;;
     esac
   else
     reason="run #$run_id is $run_status (head $run_sha)"
@@ -193,7 +166,7 @@ if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
 fi
 
 # Default: could not verify green status
-reason="no completed green Myrmidon CI check or run found for $base_branch"
+reason="no completed green Myrmidon CI run found for $base_branch"
 if [[ "$mode" == "status" ]]; then
   printf 'pending:%s\n' "$reason"
   exit 0
