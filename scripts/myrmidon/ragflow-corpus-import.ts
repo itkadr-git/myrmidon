@@ -14,6 +14,7 @@ import {
   DEFAULT_EMBEDDING_DIMENSIONS,
   DEFAULT_EMBEDDING_MODEL,
   dryRunRagflowImport,
+  getRagflowImportExitCode,
   importRagflowCorpus,
   type CorpusImportTarget,
 } from "@myrmidon/corpus";
@@ -273,6 +274,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       depth += 1;
     }
     process.stderr.write(`${lines.join("\n")}\n`);
-    process.exitCode = 1;
+    process.exitCode = getRagflowImportExitCode(error);
   });
 }

@@ -162,6 +162,53 @@ export class RagflowApiError extends Error {
   }
 }
 
+/** A source read stopped before the dataset was fully inspected or imported. */
+export class RagflowDatasetReadError extends RagflowApiError {
+  readonly exitCode = 2;
+
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "RagflowDatasetReadError";
+  }
+}
+
+export function getRagflowImportExitCode(error: unknown): number {
+  if (error instanceof RagflowDatasetReadError) return error.exitCode;
+  return 1;
+}
+
+function toDatasetReadError(error: unknown): RagflowDatasetReadError {
+  if (error instanceof RagflowDatasetReadError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new RagflowDatasetReadError(`RAGFlow dataset could not be read: ${message}`, error);
+}
+
+async function readSource<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    throw toDatasetReadError(error);
+  }
+}
+
+async function* readSourceItems<T>(items: AsyncIterable<T>): AsyncIterable<T> {
+  try {
+    for await (const item of items) yield item;
+  } catch (error) {
+    throw toDatasetReadError(error);
+  }
+}
+
+async function collectSource<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const values: T[] = [];
+  try {
+    for await (const item of items) values.push(item);
+  } catch (error) {
+    throw toDatasetReadError(error);
+  }
+  return values;
+}
+
 /**
  * myrmidon(OPE-10668): RAGFlow document metadata and chunk text can carry raw
  * NUL characters (U+0000). PostgreSQL rejects them in text/jsonb values with
@@ -334,7 +381,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
   const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0, reused: 0, notParsed: [] };
   const partialDocuments: string[] = [];
   const report = () => options.onProgress?.({ ...progress });
-  const datasets = (await options.source.listDatasets()).filter((dataset) => {
+  const datasets = (await readSource(() => options.source.listDatasets())).filter((dataset) => {
     if (!options.datasetNames || options.datasetNames.length === 0) return true;
     return options.datasetNames.includes(dataset.name ?? "");
   });
@@ -352,8 +399,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
   let sourceChunkCount = 0;
   for (const dataset of datasets) {
     if (!dataset.id || !dataset.name) throw new RagflowApiError("RAGFlow dataset is missing id or name");
-    const documents: RagflowDocument[] = [];
-    for await (const document of options.source.listDocuments(dataset.id)) documents.push(document);
+    const documents = await collectSource(options.source.listDocuments(dataset.id));
     documentsByDataset.set(dataset.id, documents);
     sourceDocumentCount += documents.length;
     const declaredDocuments = sourceCount(dataset.document_count, dataset.doc_num);
@@ -365,7 +411,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       if (!document.id) throw new RagflowApiError(`RAGFlow document in dataset ${dataset.id} is missing an id`);
       const declaredChunks = sourceCount(document.chunk_count, document.chunk_num);
       const sourceChunkCount = options.source.countChunks
-        ? sourceCount(await options.source.countChunks(dataset.id, document.id))
+        ? sourceCount(await readSource(() => options.source.countChunks!(dataset.id, document.id)))
         : undefined;
       // myrmidon(OPE-10668): a live RAGFlow instance can report a per-document
       // chunk total one off from what the endpoint enumerates (1020 declared
@@ -537,7 +583,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
         report();
       };
 
-      for await (const chunk of options.source.listChunks(dataset.id, document.id)) {
+      for await (const chunk of readSourceItems(options.source.listChunks(dataset.id, document.id))) {
         if (typeof chunk.content !== "string") throw new RagflowApiError(`RAGFlow chunk ${chunk.id} has no text`);
         batch.push({ source: chunk, index: nextChunkIndex++ });
         if (batch.length >= importBatchSize) await flush();

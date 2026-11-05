@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_RAGFLOW_PAGE_SIZE,
   createRagflowSource,
+  getRagflowImportExitCode,
   importRagflowCorpus,
+  RagflowDatasetReadError,
   sanitizeNulJson,
   sanitizeNulText,
   type CorpusImportChunk,
@@ -481,6 +483,29 @@ describe("RAGFlow corpus import", () => {
     expect(summary.chunks).toBe(2);
     expect([...memory.documents.values()].map((doc) => doc.title)).not.toContain("cancel.pdf");
     expect(uploaded).toEqual(["cancel.pdf"]);
+  });
+
+  it("reports partial progress and uses exit code 2 when dataset reading stops", async () => {
+    const memory = memoryTarget();
+    const progress: Array<{ partial?: boolean; documentId?: string }> = [];
+    const source: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [{ id: "ds", name: "KB", document_count: 1, chunk_count: 1 }]; },
+      async *listDocuments() { yield { id: "partial", name: "partial.pdf", run: "FAIL", chunk_count: 1 }; },
+      async *listChunks() { yield { id: "partial-c", content: "partial" }; throw new Error("connection reset"); },
+      async countChunks() { return 1; },
+    };
+    await expect(importRagflowCorpus({
+      source,
+      target: memory.target,
+      companyId: "company",
+      embeddingDimensions: 4,
+      embed: embedFixture,
+      onProgress(value) { progress.push(value); },
+    })).rejects.toBeInstanceOf(RagflowDatasetReadError);
+    expect(progress.some((value) => value.partial === true && value.documentId === "partial")).toBe(true);
+    expect(getRagflowImportExitCode(new RagflowDatasetReadError("incomplete"))).toBe(2);
+    expect(getRagflowImportExitCode(new Error("document failed"))).toBe(1);
   });
 
   it("imports only datasets whose names are allowlisted", async () => {
