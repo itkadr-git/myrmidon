@@ -98,6 +98,7 @@ export function PluginEntitlementSettings() {
       </div>
       <p className="text-xs text-muted-foreground">{t("pluginEntitlement.description")}</p>
 
+      <p className="text-xs text-muted-foreground">{t("pluginEntitlement.expirySignedHint")}</p>
       {entries.length === 0 && !isLoading && (
         <p className="text-sm text-muted-foreground" data-testid="plugin-entitlement-empty">
           {t("pluginEntitlement.noKeysMessage")}

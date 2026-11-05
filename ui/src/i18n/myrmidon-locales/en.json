@@ -688,6 +688,8 @@
       "add": "Add source",
       "source": "Source",
       "kind": "Kind",
+      "enabled": "Enabled",
+      "toggleEnabled": "Enable {{url}}",
       "lastSnapshot": "Last snapshot",
       "lastCheck": "Last check",
       "remove": "Remove {{url}}",
@@ -719,6 +721,13 @@
     }
   },
   "skillLifecycle": {
+    "pilot": {
+      "title": "Pilot agents",
+      "description": "Agent IDs allowed to use candidate skills. Source: {{source}}. Save an empty list to disable the pilot.",
+      "agentIds": "Agent IDs (comma-separated)",
+      "save": "Save pilot agents",
+      "saveFailed": "Could not save pilot agents"
+    },
     "title": "Skill lifecycle",
     "subtitle": "candidate → verified → deprecated, with rollback to the previous verified revision.",
     "intro": "Candidates reach only the pilot agents; verified skills reach everyone; deprecated reach nobody.",
@@ -980,6 +989,17 @@
       "installFailed": "Could not get the install page of the App."
     }
   },
+  "liteLlmBudgetSync": {
+    "title": "LiteLLM budget projection",
+    "description": "Configure gateway projection separately from budget enforcement. Changes apply on the next sweep; an environment override remains effective.",
+    "enabled": "Enable projection",
+    "signalOnly": "Signal only (do not block in gateway)",
+    "interval": "Sweep interval (seconds; blank uses default)",
+    "source": "Effective interval: {{value}} s ({{source}})",
+    "envOverride": "Effective interval: {{value}} s (forced by {{name}})",
+    "save": "Save projection settings",
+    "saveFailed": "Could not save projection settings"
+  },
   "pluginEntitlement": {
     "title": "Plugin Entitlement Keys",
     "description": "Manage plugin entitlement keys that control which plugins are enabled on this instance",
@@ -988,6 +1008,7 @@
     "keyLabel": "Entitlement key",
     "keyPlaceholder": "PEK1.<payload>.<signature>",
     "expiresAtLabel": "Expires",
+    "expirySignedHint": "Expiry is signed into the entitlement key by the issuer. To change it, obtain a replacement key; it cannot be edited here.",
     "noKeysMessage": "No plugin entitlement keys registered yet",
     "statusActive": "Active",
     "statusExpired": "Expired",
