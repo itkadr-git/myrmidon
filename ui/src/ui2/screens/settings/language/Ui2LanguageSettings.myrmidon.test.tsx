@@ -122,6 +122,18 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     selects[1].dispatchEvent(new Event("change", { bubbles: true }));
     await flushReact();
     expect(container.textContent).toContain("1 234,56 · 2026-10-31 09:00");
+
+    // Changing timezone updates the live preview date/time according to the selected zone
+    (selects[0] as HTMLSelectElement).value = "Europe/Moscow";
+    selects[0].dispatchEvent(new Event("change", { bubbles: true }));
+    await flushReact();
+    expect(container.textContent).toContain("1 234,56 · 2026-10-31 04:00");
+
+    // Changing date format updates the date pattern in the preview
+    (selects[2] as HTMLSelectElement).value = "dmy";
+    selects[2].dispatchEvent(new Event("change", { bubbles: true }));
+    await flushReact();
+    expect(container.textContent).toContain("1 234,56 · 31.10.2026 04:00");
   });
 
   it("patches only changed format fields", async () => {

@@ -11,10 +11,34 @@ type SettingsPatch = Partial<Pick<InstanceGeneralSettings, "timeZone" | "numberF
 
 const timeZones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : ["UTC"];
 const FALLBACKS = { timeZone: "Asia/Irkutsk", numberFormat: "en-US" as InstanceNumberFormat, dateFormat: "ymd" as InstanceDateFormat };
+const PREVIEW_INSTANT = new Date("2026-10-31T01:00:00.000Z");
 
-function dateParts(format: InstanceDateFormat) {
-  const parts: Record<InstanceDateFormat, string> = { ymd: "2026-10-31", dmy: "31.10.2026", mdy: "10/31/2026" };
-  return parts[format];
+function formatPreviewDateTime(timeZone: string, dateFormat: InstanceDateFormat) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(PREVIEW_INSTANT);
+    const map: Record<string, string> = {};
+    for (const part of parts) {
+      map[part.type] = part.value;
+    }
+    const { year = "2026", month = "10", day = "31", hour = "09", minute = "00" } = map;
+    const dateStr = dateFormat === "dmy"
+      ? `${day}.${month}.${year}`
+      : dateFormat === "mdy"
+      ? `${month}/${day}/${year}`
+      : `${year}-${month}-${day}`;
+    return `${dateStr} ${hour}:${minute}`;
+  } catch {
+    const fallbackDate = dateFormat === "dmy" ? "31.10.2026" : dateFormat === "mdy" ? "10/31/2026" : "2026-10-31";
+    return `${fallbackDate} 09:00`;
+  }
 }
 
 export function Ui2LanguageFormatsBlock() {
@@ -32,7 +56,7 @@ export function Ui2LanguageFormatsBlock() {
   });
   const values = { ...FALLBACKS, ...settings, ...draft };
   const filteredZones = useMemo(() => timeZones.filter((zone) => zone.toLowerCase().includes(search.toLowerCase())), [search]);
-  const preview = new Intl.NumberFormat(values.numberFormat).format(1234.56) + " · " + dateParts(values.dateFormat) + " 09:00";
+  const preview = new Intl.NumberFormat(values.numberFormat).format(1234.56) + " · " + formatPreviewDateTime(values.timeZone, values.dateFormat);
   const setValue = (key: keyof SettingsPatch, value: string) => setDraft((current) => ({ ...current, [key]: value } as SettingsPatch));
   const source = (key: keyof SettingsPatch) => draft[key] !== undefined ? t("ui2.settings.language.formats.source.pending") : settings?.[key] !== undefined ? t("ui2.settings.language.formats.source.settings") : t("ui2.settings.language.formats.source.default");
 
