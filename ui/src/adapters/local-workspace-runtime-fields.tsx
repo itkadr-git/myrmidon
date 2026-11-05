@@ -38,9 +38,13 @@ export function LocalWorkspaceRuntimeFields({ section, isCreate, values, set, co
       {network === "allowlist" && <Field configSection="configuration" label={t("area.adapters-plugins-1.localSandbox.allowlistLabel")} hint={t("area.adapters-plugins-1.localSandbox.allowlistHint")}>
         <DraftInput className={inputClass} value={asList(allowlist)} onCommit={(v) => write("networkAllowlist", v ? v.split(",").map((p) => p.trim()).filter(Boolean) : undefined)} immediate placeholder="api.example.com" />
       </Field>}
-      <Field configSection="runPolicy" label={t("area.adapters-plugins-1.localSandbox.probeLabel")} hint={t("area.adapters-plugins-1.localSandbox.probeHint")}>
-        <ToggleField checked={read("probe", false) === true || read("probe") === "true"} onChange={(v) => write("probe", v)} />
-      </Field>
+      <ToggleField
+        configSection="runPolicy"
+        label={t("area.adapters-plugins-1.localSandbox.probeLabel")}
+        hint={t("area.adapters-plugins-1.localSandbox.probeHint")}
+        checked={read("probe", false) === true || read("probe") === "true"}
+        onChange={(v) => write("probe", v)}
+      />
     </>
   ));
 }
