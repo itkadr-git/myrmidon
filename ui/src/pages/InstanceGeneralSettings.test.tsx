@@ -422,4 +422,22 @@ describe("InstanceGeneralSettings backup retention keep-last-only", () => {
       expect.anything(),
     );
   });
+
+  it("renders read-only execution policy badge from general settings", async () => {
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      executionMode: "kubernetes",
+    });
+
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const badge = container.querySelector('[data-testid="execution-mode-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("kubernetes");
+    expect(container.textContent).toContain("Execution policy");
+    expect(container.textContent).toContain("forces all agent execution into the managed Kubernetes sandbox");
+  });
 });
