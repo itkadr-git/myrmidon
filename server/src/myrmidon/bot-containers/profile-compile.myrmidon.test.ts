@@ -128,6 +128,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
         tokenSecret: "site-token",
         hindsightUrl: "https://site.example.com/hindsight",
         llmBaseUrl: "https://site.example.com/llm/v1",
+        boardAddress: "site-board.example.com:3100",
         boardExtraHost: "board.example.com",
         volumeRoot: "/srv/site-bots",
         network: "site-network",
@@ -138,6 +139,7 @@ describe("myrmidon(W2a) createBotProfileCompile", () => {
     const profile = await compile("agent-a", "agent-a");
     expect(fileContent(profile, "hermes/hindsight/config.json")).toContain("https://site.example.com/hindsight");
     expect(fileContent(profile, "hermes/config.yaml")).toContain("https://site.example.com/llm/v1");
+    expect(fileContent(profile, "hermes/.env")).toContain("http://site-board.example.com:3100");
   });
 
   it("rejects a card pinned to an unregistered fleet host before creating secrets", async () => {
