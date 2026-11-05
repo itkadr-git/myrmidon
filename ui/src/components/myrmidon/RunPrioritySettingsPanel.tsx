@@ -36,6 +36,7 @@ export function RunPrioritySettingsPanel() {
     if (!admin || !settings || !draft) return;
     const patch: RunPriorityPatch = {};
     for (const [key, raw] of Object.entries(draft)) {
+      if (typeof raw !== "string") continue;
       if (key === "currentRelease") {
         patch.currentRelease = raw.trim() || null;
         if (raw.length > 64) { setError("Release must be at most 64 characters."); return; }
