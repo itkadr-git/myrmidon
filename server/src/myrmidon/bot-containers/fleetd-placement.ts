@@ -22,6 +22,8 @@ export interface InstanceBotSettings {
   hindsightUrl: string;
   /** Base URL bots use to reach the LLM gateway. */
   llmBaseUrl: string;
+  /** Board address bots use to reach the control plane from this site. */
+  boardAddress?: string;
   /** Directory bot volumes live under ON THE MACHINE THE BOT RUNS ON. */
   volumeRoot: string;
   /** Docker network the bot's container joins on its own machine. */
@@ -53,6 +55,7 @@ export function effectiveBotSettings(
   return {
     hindsightUrl: host.hindsightUrl ?? instanceWide.hindsightUrl,
     llmBaseUrl: host.llmBaseUrl ?? instanceWide.llmBaseUrl,
+    boardAddress: host.boardAddress ?? instanceWide.boardAddress,
     volumeRoot: host.volumeRoot ?? instanceWide.volumeRoot,
     network: host.network ?? instanceWide.network,
     imageAllowlist: host.imageAllowlist ?? instanceWide.imageAllowlist,
