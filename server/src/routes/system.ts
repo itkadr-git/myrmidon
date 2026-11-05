@@ -4,9 +4,8 @@ import { Router } from "express";
 import { projects } from "@myrmidon/db";
 import type { Db } from "@myrmidon/db";
 import { autoUpdateSettingsSchema } from "@myrmidon/shared";
-import { notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { assertCompanyAccess } from "./authz.js";
+import { getAccessibleResource } from "./authz.js";
 
 const DEFAULT_SETTINGS = { enabled: false, cron: "0 2 * * 0", durationMinutes: 120, timezone: "UTC" };
 
@@ -31,9 +30,8 @@ export function systemRoutes(db: Db) {
 
   router.get("/projects/:projectId/system/auto-update-settings", async (req, res) => {
     const projectId = req.params.projectId as string;
-    const row = await readProject(projectId);
-    if (!row) throw notFound("Project not found");
-    assertCompanyAccess(req, row.companyId);
+    const row = await getAccessibleResource(req, res, readProject(projectId), "Project not found");
+    if (!row) return;
     const raw = (row.env as Record<string, unknown> | null)?.autoUpdateSettings;
     const parsed = autoUpdateSettingsSchema.safeParse(raw);
     res.json({ projectId: row.id, settings: parsed.success ? parsed.data : DEFAULT_SETTINGS });
@@ -41,9 +39,8 @@ export function systemRoutes(db: Db) {
 
   router.put("/projects/:projectId/system/auto-update-settings", validate(autoUpdateSettingsSchema), async (req, res) => {
     const projectId = req.params.projectId as string;
-    const row = await readProject(projectId);
-    if (!row) throw notFound("Project not found");
-    assertCompanyAccess(req, row.companyId);
+    const row = await getAccessibleResource(req, res, readProject(projectId), "Project not found");
+    if (!row) return;
     await updateProjectSettings(projectId, row.companyId, row.env as Record<string, unknown> | null, req.body);
     res.json({ projectId, settings: req.body });
   });
