@@ -4394,6 +4394,38 @@ export function recoveryService(
     });
   }
 
+  async function deferReviewParticipantReleaseForCi(input: {
+    companyId: string;
+    runId: string;
+  }): Promise<boolean> {
+    const run = await db.query.heartbeatRuns.findFirst({
+      where: and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)),
+    });
+    const issueId = parseObject(run?.contextSnapshot).issueId;
+    if (!run || run.status !== "succeeded" || typeof issueId !== "string" || !issueId) return false;
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = context.wakeReason;
+    const retryReason = context.retryReason;
+    if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
+        wakeReason !== "execution_review_requested" &&
+        wakeReason !== "execution_approval_requested") return false;
+    const issue = await db.query.issues.findFirst({
+      where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
+    });
+    if (!issue || issue.status !== "in_review" || issue.monitorNextCheckAt || issue.assigneeUserId) return false;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (state?.status !== "pending" || state.currentStageType !== "review" ||
+        state.currentParticipant?.type !== "agent" || state.currentParticipant.agentId !== run.agentId) return false;
+    const ci = await resolveReviewPullRequestCi({ companyId: input.companyId, issueId });
+    if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    const nextCheckAt = new Date(Math.max(
+      Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
+      (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
+    ));
+    await scheduleReviewCiWaitMonitor({ issue, latestRun: run, ci, nextCheckAt });
+    return true;
+  }
+
   /**
    * myrmidon(OPE-10045): true when the escalation of a stalled execution
    * review is deferred (a CI wait was scheduled or the reviewer was woken
@@ -8054,6 +8086,7 @@ export function recoveryService(
 
   return {
     buildRunOutputSilence,
+    deferReviewParticipantReleaseForCi,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,

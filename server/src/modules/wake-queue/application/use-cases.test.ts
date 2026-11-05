@@ -147,12 +147,58 @@ function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransact
 
 function createFakeRecovery(): RecoveryEscalationPort {
   return {
+    deferReviewParticipantReleaseForCi: vi.fn(async () => false),
     escalateStrandedAssignedIssue: vi.fn(async () => {}),
     escalateStrandedRecoveryIssueInPlace: vi.fn(async () => {}),
   };
 }
 
 describe("releaseIssueExecution", () => {
+  it("defers review recovery before the release tail can wake or block it", async () => {
+    const issue: IssueSnapshot = {
+      ...ISSUE,
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: RUN.agentId },
+      },
+    };
+    const deferReviewParticipantReleaseForCi = vi.fn(async () => {
+      issue.monitorNextCheckAt = new Date("2030-01-01T00:00:00.000Z");
+      return true;
+    });
+    const recovery = { ...createFakeRecovery(), deferReviewParticipantReleaseForCi };
+    const transaction = createFakeTransaction({ findIssue: vi.fn(async () => issue) });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, {
+        ...RUN, status: "succeeded", contextSnapshot: { issueId: issue.id, wakeReason: "execution_review_requested" },
+      }), recovery,
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(deferReviewParticipantReleaseForCi).toHaveBeenCalledWith({ companyId: RUN.companyId, runId: RUN.id });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
+  it("queues a single review recovery when no CI wait is needed", async () => {
+    const issue: IssueSnapshot = {
+      ...ISSUE, status: "in_review",
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId: RUN.agentId } },
+    };
+    const transaction = createFakeTransaction({ findIssue: vi.fn(async () => issue) });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, {
+        ...RUN, status: "succeeded", contextSnapshot: { issueId: issue.id, wakeReason: "execution_review_requested" },
+      }), recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_review_participant_recovery");
+    expect(transaction.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["closing", "mixed_comments", "explicit_resume", "interaction", "other_source_task", "parent_open"])(
     "checks late completed-delegation mentions without dropping independent input (%s)", async (scenario) => {
       const originalCommentIds = ["closing-comment", "second-comment"];
