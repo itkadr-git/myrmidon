@@ -2690,6 +2690,13 @@
       "when": 1762248000000,
       "tag": "0457_company_secret_github_app_installations",
       "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1762248001000,
+      "tag": "0458_close_pending_issue_interactions",
+      "breakpoints": true
     }
   ]
 }
