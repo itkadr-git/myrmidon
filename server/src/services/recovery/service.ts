@@ -2499,6 +2499,25 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
+
+    // A queued continuation already deferred until the next UTC reset is a
+    // deliberate wait, not a stranded execution. Recovery must not convert it
+    // into a blocked issue while the daily cap is still in force.
+    const deferredDailyLimit = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, "heartbeat.daily_run_limit"),
+          sql`${heartbeatRuns.scheduledRetryAt} > now()`,
+        ),
+      )
+      .limit(1);
+    if (deferredDailyLimit.length > 0) return false;
     if (budgetBlock) return true;
 
     try {

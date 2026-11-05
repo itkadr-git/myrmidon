@@ -16168,14 +16168,15 @@ export function heartbeatService(
       ),
     );
     const nextAttempt =
-      retryReason === MAINTENANCE_RETRY_REASON
+      retryReason === MAINTENANCE_RETRY_REASON ||
+      retryReason === "model_call_limit_continuation"
         ? 1
-        : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
-            retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
-            retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
-            ? (run.scheduledRetryAttempt ?? 0)
-            : executionFailureRetryCount(run)) + 1;
+        : retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+          retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
+          retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+          retryReason === CONNECT_FAILED_TRANSIENT_RETRY_REASON
+          ? (run.scheduledRetryAttempt ?? 0)
+          : executionFailureRetryCount(run) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
@@ -16297,6 +16298,7 @@ export function heartbeatService(
     // retry scheduler, not failure-reconciliation, owns its attempt budget.
     if (
       run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
+      retryReason !== "model_call_limit_continuation" &&
       retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON &&
       retryReason !== CONNECT_FAILED_TRANSIENT_RETRY_REASON &&
       !isGatewayConnectFailed &&
@@ -16310,7 +16312,10 @@ export function heartbeatService(
         issueId: readNonEmptyString(run.contextSnapshot?.issueId),
       };
     }
-    if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
+    if (
+      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON &&
+      retryReason !== "model_call_limit_continuation"
+    ) {
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         await appendRunEvent(run, {
@@ -16356,6 +16361,7 @@ export function heartbeatService(
       hasConversationContinuationPolicy(run.resultJson) ||
       retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === "model_call_limit_continuation" ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
       const gate = await runDispatch.evaluateScheduledRetryGate({
@@ -16491,6 +16497,7 @@ export function heartbeatService(
     );
     const isContinuationRetry =
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+      retryReason === "model_call_limit_continuation" ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
 
     // A continuation summary that explicitly parks the executor is an event-shaped
@@ -16548,6 +16555,7 @@ export function heartbeatService(
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
           retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON &&
+          retryReason !== "model_call_limit_continuation" &&
           retryReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON &&
           retryReason !== PENDING_INTERACTION_PROCESS_LOSS_RETRY_REASON
         ) {
@@ -16715,7 +16723,10 @@ export function heartbeatService(
           }
         }
 
-        if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+        if (
+          retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+          retryReason === "model_call_limit_continuation"
+        ) {
           if (issueId) {
             await tx.execute(
               sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
@@ -17948,6 +17959,50 @@ export function heartbeatService(
     >,
   ) {
     const now = new Date();
+    if (dailyCapBlock.reason === "heartbeat.daily_run_limit") {
+      const resetAt = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+      );
+      const deferred = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "scheduled_retry",
+          scheduledRetryAt: resetAt,
+          scheduledRetryReason: dailyCapBlock.reason,
+          scheduledRetryAttempt: 1,
+          ...runContextPersistenceFields({
+            ...parseObject(run.contextSnapshot),
+            retryReason: dailyCapBlock.reason,
+            scheduledRetryAt: resetAt.toISOString(),
+          }),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "queued"),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (deferred) {
+        await appendRunEvent(deferred, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Daily run limit reached; execution deferred until the next UTC day",
+          payload: {
+            resetAt: resetAt.toISOString(),
+            observed: dailyCapBlock.observed,
+            limit: dailyCapBlock.limit,
+          },
+        });
+        await releaseIssueExecutionAndPromote(deferred, {
+          suppressImmediateRecovery: true,
+        });
+      }
+      return deferred;
+    }
     const reason =
       "Cancelled because the agent reached a per-day heartbeat budget cap before adapter invocation";
     const cancelled = await setRunStatus(run.id, "cancelled", {
@@ -28510,7 +28565,25 @@ export function heartbeatService(
               );
             });
           }
-          if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+          if (
+            outcome === "failed" &&
+            runGuardStopReason === "model_call_limit" &&
+            issueId
+          ) {
+            const scheduled = await scheduleBoundedRetryForRun(livenessRun, agent, {
+              retryReason: "model_call_limit_continuation",
+              wakeReason: "issue_continuation_needed",
+              maxAttempts: 1,
+              delayMs: 1_000,
+            });
+            if (scheduled.outcome === "scheduled") {
+              await issuesSvc.addComment(
+                issueId,
+                "Прогон остановлен по лимиту вызовов модели. Сессия продолжится следующим прогоном по этой задаче; не начинайте работу заново.",
+                { agentId: agent.id, runId: livenessRun.id },
+              );
+            }
+          } else if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
             if (policy.enabled && policy.maxAttempts > 0) {
               await scheduleBoundedRetryForRun(livenessRun, agent, {
@@ -28560,7 +28633,8 @@ export function heartbeatService(
           );
           const conversationSettled = await settleConversationTurn(db, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
-            suppressImmediateRecovery: conversationSettled ||
+            suppressImmediateRecovery:
+              conversationSettled ||
               runGuardStopReason !== null ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
@@ -28569,18 +28643,18 @@ export function heartbeatService(
                 .resumeSessionGoalHeartbeat === true,
           });
           if (!conversationSettled && runGuardStopReason === null) {
-          await handleRunLivenessContinuation(livenessRun);
-          await handleIssueReviewPathDisposition(livenessRun);
-          await handleSuccessfulRunHandoff(
-            issueCommentPolicyResult.outcome === "retry_queued" ||
-              issueCommentPolicyResult.outcome === "retry_exhausted"
-              ? {
-                  ...livenessRun,
-                  issueCommentStatus: issueCommentPolicyResult.outcome,
-                }
-              : livenessRun,
-            agent,
-          );
+            await handleRunLivenessContinuation(livenessRun);
+            await handleIssueReviewPathDisposition(livenessRun);
+            await handleSuccessfulRunHandoff(
+              issueCommentPolicyResult.outcome === "retry_queued" ||
+                issueCommentPolicyResult.outcome === "retry_exhausted"
+                ? {
+                    ...livenessRun,
+                    issueCommentStatus: issueCommentPolicyResult.outcome,
+                  }
+                : livenessRun,
+              agent,
+            );
           }
           if (
             outcome === "succeeded" &&
