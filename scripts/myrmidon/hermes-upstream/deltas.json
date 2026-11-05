@@ -416,6 +416,28 @@
         "path": "gateway/lifecycle_ledger.py",
         "upstreamMarker": "startup-progress-lease|check_state_db_integrity"
       }
+    },
+    {
+      "id": "24-max-tokens-recovery",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/24-max-tokens-recovery.patch",
+      "files": [
+        "agent/agent_init.py",
+        "agent/chat_completion_helpers.py",
+        "agent/transports/chat_completions.py",
+        "agent/turn_iteration_prep.py",
+        "agent/turn_tool_round.py",
+        "agent/turn_truncation.py"
+      ],
+      "reason": "Propagates configured max_tokens / max_output_tokens from config.yaml into agent and custom OpenAI-compatible provider request kwargs; resets length_continue_retries to 0 after a successful tool round; and escalates ephemeral max output tokens on truncation retry without relying solely on reasoning_effort=none for persistent thinking models.",
+      "dropCondition": "Upstream Hermes reads configured max_tokens for custom providers, resets length retry counters after tool steps, and scales output budget on truncation retries.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_tool_round.py",
+        "upstreamMarker": "length_continue_retries = 0"
+      }
     }
   ]
 }
