@@ -207,6 +207,21 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
+      {(["clientId", "clientMode", "clientVersion"] as const).map((field) => (
+        <Field key={field} label={t(`area.adapters-plugins-1.openclaw-gateway.fields.${field}Label`)}>
+          <DraftInput
+            value={isCreate
+              ? values![field] ?? ""
+              : eff("adapterConfig", field, String(config[field] ?? ""))}
+            onCommit={(value) => isCreate
+              ? set!({ [field]: value })
+              : mark("adapterConfig", field, value || undefined)}
+            immediate
+            className={inputClass}
+          />
+        </Field>
+      ))}
+
       <Field label={t("area.adapters-plugins-1.openclaw-gateway.fields.sessionStrategyLabel")}>
         <select
           value={
