@@ -288,7 +288,7 @@ export class FleetMoveService {
     const driver = await this.deps.getDriverForSite(site, companyId);
     const status = await driver.status(botKey);
     // A missing port throws inside fleetGatewayApiBaseUrl: never a guessed default.
-    return fleetGatewayApiBaseUrl(await this.deps.getSiteUrl(site, companyId), status.gatewayPort);
+    return fleetGatewayApiBaseUrl(await this.deps.getSiteUrl(site, companyId), status.gatewayPort, { source: "registry" });
   }
 
   /** Advances the move state machine until completion or error. */

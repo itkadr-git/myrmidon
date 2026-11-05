@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOptionalCompany } from "@/context/CompanyContext";
 import { agentsApi } from "@/api/agents";
+import { useIsInstanceAdmin } from "./licensingApi";
 import {
   promptBudgetApi,
   promptBudgetSettingsQueryKey,
@@ -22,12 +23,23 @@ import {
   parsePromptPct,
 } from "./prompt-budget/promptBudgetConfig";
 
+export function isValidOptimizerAgent(agentId: string, allowedAgents: Array<{ id: string }>): boolean {
+  if (!agentId) return true;
+  return allowedAgents.some((agent) => agent.id === agentId);
+}
+
 export function PromptBudgetSettingsPanel() {
   const { t } = useTranslation();
   // Non-throwing: the page's vendor test suite renders without a
   // CompanyProvider; outside a company context the panel has nothing to edit.
   const company = useOptionalCompany();
   const companyId = company?.selectedCompanyId ?? "";
+  const admin = useIsInstanceAdmin();
+  const { data: agents = [] } = useQuery({
+    queryKey: ["agents", companyId, "prompt-budget-optimizer"],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: companyId.length > 0 && admin === true,
+  });
   const queryClient = useQueryClient();
   const { data: stored } = useQuery({
     queryKey: promptBudgetSettingsQueryKey(companyId),
@@ -37,13 +49,8 @@ export function PromptBudgetSettingsPanel() {
   const [warnDraft, setWarnDraft] = useState<string>("");
   const [critDraft, setCritDraft] = useState<string>("");
   const [fallbackDraft, setFallbackDraft] = useState<string>("");
-  const [optimizerAgentId, setOptimizerAgentId] = useState<string>("");
-  const { data: agents = [], isPending: agentsPending, isError: agentsError } = useQuery({
-    queryKey: ["agents", companyId],
-    queryFn: () => agentsApi.list(companyId),
-    enabled: companyId.length > 0,
-  });
   const [enabled, setEnabled] = useState<boolean>(true);
+  const [optimizerAgentId, setOptimizerAgentId] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,8 +59,8 @@ export function PromptBudgetSettingsPanel() {
       setWarnDraft(numberToText(stored.warnPct));
       setCritDraft(numberToText(stored.critPct));
       setFallbackDraft(numberToText(stored.fallbackWindowTokens));
-      setOptimizerAgentId(stored.optimizerAgentId ?? "");
       setEnabled(stored.enabled);
+      setOptimizerAgentId(stored.optimizerAgentId ?? "");
       setLoaded(true);
     }
   }, [stored, loaded]);
@@ -68,7 +75,11 @@ export function PromptBudgetSettingsPanel() {
   });
 
   const submit = () => {
-    if (!stored) return;
+    if (!stored || !admin) return;
+    if (!isValidOptimizerAgent(optimizerAgentId, agents)) {
+      setError("Select an agent from this company for deep analysis.");
+      return;
+    }
     const warn = parsePromptPct(warnDraft);
     if (!warn.ok) {
       setError(t("area.costs-budgets-2.prompt-budget-settings-panel.warnInvalid", { message: warn.message }));
@@ -86,10 +97,6 @@ export function PromptBudgetSettingsPanel() {
     const fallback = parseFallbackWindow(fallbackDraft);
     if (!fallback.ok) {
       setError(t("area.costs-budgets-2.prompt-budget-settings-panel.fallbackInvalid", { message: fallback.message }));
-      return;
-    }
-    if (agentsPending || agentsError || (optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId))) {
-      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerInvalid"));
       return;
     }
     save.mutate({
@@ -176,27 +183,17 @@ export function PromptBudgetSettingsPanel() {
 
       <div className="space-y-2">
         <Label htmlFor="prompt-budget-optimizer">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerLabel")}</Label>
-        <select
-          id="prompt-budget-optimizer"
-          className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-          disabled={agentsPending || agentsError}
-          value={optimizerAgentId}
-          onChange={(event) => { setOptimizerAgentId(event.target.value); setError(null); }}
-          data-testid="prompt-budget-optimizer-input"
-        >
-          <option value="">{t("area.costs-budgets-2.prompt-budget-settings-panel.noOptimizer")}</option>
-          {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && (
-            <option value={optimizerAgentId} disabled>{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerUnavailable")}</option>
-          )}
+        <select id="prompt-budget-optimizer" className="w-full rounded-md border bg-background px-3 py-2 text-sm" value={optimizerAgentId} disabled={!admin} onChange={(event) => setOptimizerAgentId(event.target.value)}>
+          <option value="">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerNone")}</option>
+          {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && <option value={optimizerAgentId} disabled>{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerUnavailable")}</option>}
           {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
         </select>
       </div>
-
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           onClick={submit}
-          disabled={save.isPending || !stored}
+          disabled={save.isPending || !stored || !admin}
           data-testid="prompt-budget-save"
         >
           {save.isPending ? t("area.costs-budgets-2.prompt-budget-settings-panel.saving") : t("common.save")}

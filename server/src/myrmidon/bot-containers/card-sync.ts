@@ -177,7 +177,7 @@ export function createBotCardSync(
     if (!fleetGatewayUrl && host && ports.fleetSiteUrl) {
       const siteUrl = await ports.fleetSiteUrl(agent.companyId, host);
       if (siteUrl && gatewayPort) {
-        fleetGatewayUrl = fleetGatewayApiBaseUrl(siteUrl, gatewayPort);
+        fleetGatewayUrl = fleetGatewayApiBaseUrl(siteUrl, gatewayPort, { source: "registry" });
       }
     }
     const plan = planGatewayCardSync(agent.adapterConfig ?? {}, {
