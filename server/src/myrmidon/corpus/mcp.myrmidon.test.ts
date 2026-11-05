@@ -9,6 +9,7 @@
 // the module off, the tool list is empty and a call that names a tool anyway is
 // a tool result carrying `corpus_disabled`.
 
+import Ajv from "ajv";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
@@ -124,6 +125,31 @@ describe("company corpus MCP endpoint", () => {
       expect(tool.outputSchema.type).toBe("object");
     }
   });
+  it("validates every tool result against its output schema and MCP CallToolResult shape", async () => {
+    const memory = corpus();
+    const app = harness({ settings: () => ENABLED, port: () => memory.port });
+    const tools = (await request(app).post(URL).send({ id: 15, method: "tools/list" }).expect(200)).body.result.tools;
+    const ajv = new Ajv();
+    const argumentsByName: Record<string, Record<string, string>> = {
+      corpus_search: { query: "товар" },
+      corpus_get_document: { document_id: "doc-1" },
+      corpus_list_datasets: {},
+      corpus_list_documents: { dataset: "ds-contracts" },
+    };
+    for (const tool of tools) {
+      const res = await request(app)
+        .post(URL)
+        .send({ id: 16, method: "tools/call", params: { name: tool.name, arguments: argumentsByName[tool.name] } })
+        .expect(200);
+      const result = res.body.result;
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toBeTruthy();
+      expect(Array.isArray(result.structuredContent)).toBe(false);
+      expect(ajv.validate(tool.outputSchema, result.structuredContent), `${tool.name}: ${ajv.errorsText()}`).toBe(true);
+      expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+    }
+  });
+
   it("lists no tools at all when the module is off", async () => {
     const app = harness({
       settings: () => DEFAULT_CORPUS_MODULE_SETTINGS,
