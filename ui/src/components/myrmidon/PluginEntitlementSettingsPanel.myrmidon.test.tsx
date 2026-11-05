@@ -145,8 +145,14 @@ describe("PluginEntitlementSettingsPanel", () => {
     const container = renderPanel();
     await waitFor(() => Boolean(container.querySelector('[data-testid="plugin-entitlement-empty"]')));
     const keyInput = container.querySelector<HTMLInputElement>('[data-testid="plugin-entitlement-key-input"]')!;
-    // Craft a token with payload {"exp": 1750000000} -> base64url eyJleHAiOjE3NTAwMDAwMDB9
-    const dummyToken = "PEK1." + btoa(JSON.stringify({ exp: 1750000000 })).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_") + ".dummy-sig";
+    // Craft a valid PEK1 token with payload { pluginId, instanceId, expiresAt }
+    const payload = {
+      pluginId: "example.premium-feature",
+      instanceId: "inst-1",
+      expiresAt: "2025-12-31T23:59:59.000Z",
+    };
+    const b64Payload = btoa(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const dummyToken = `PEK1.${b64Payload}.dummy-sig`;
     await act(async () => {
       setInputValue(keyInput, dummyToken);
     });

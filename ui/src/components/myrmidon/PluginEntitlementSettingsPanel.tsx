@@ -181,7 +181,7 @@ export function PluginEntitlementSettings() {
           data-testid="plugin-entitlement-key-input"
         />
         {signedExpiry && (
-          <p className="text-xs text-muted-foreground" data-testid="plugin-entitlement-signed-expiry">
+          <p className="text-xs text-muted-foreground" data-testid="plugin-entitlement-signed-expiry-preview">
             {t("pluginEntitlement.signedExpiryPreview", { date: formatExpiry(signedExpiry) })}
           </p>
         )}
