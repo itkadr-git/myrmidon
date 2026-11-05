@@ -9,6 +9,7 @@ This page describes the memory path from an agent run to the Hindsight bank. It 
 
 - The local `hindsight-paperclip` plugin owns recall and retention tools and talks to the configured Hindsight API.
 - The bank resolver first reads `adapterConfig.hindsight.bankId` from the agent card, then `bankByAgentId` from the plugin configuration. If neither exists, the agent has no memory bank.
+- Agent Details > Settings > Advanced exposes the agent-scoped Hindsight settings (`bankId`, `tags`, `mission`, `recallBudget`, `memoryMode`, `autoRetain`, and `observationScopes`). The bank ID is consumed by the plugin bank resolver. The other fields are stored on the agent card; do not assume that they override plugin-wide settings without runtime wiring.
 - The server memory service uses the same resolution rule for the Runtime > Memory card, so operators inspect the bank the agent actually uses rather than an arbitrary bank.
 - The Hindsight client is the network boundary. The API URL is required by the plugin; the API key is optional and is resolved through the configured company secret reference.
 
