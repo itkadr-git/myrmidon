@@ -117,8 +117,8 @@ describe("hybrid search index", () => {
 
   it("merges the rankings with RRF and returns score, chunk and document", async () => {
     const { sql } = createRecordingSql({
-      vector: [chunkRow("a", 0, 0.9), chunkRow("b", 1, 0.8)],
-      fullText: [chunkRow("b", 1, 0.5), chunkRow("a", 0, 0.4)],
+      vector: [chunkRow("a", 0, 0.9), chunkRow("b", 1, 0.8, secondDocumentId)],
+      fullText: [chunkRow("b", 1, 0.5, secondDocumentId), chunkRow("a", 0, 0.4)],
       documents,
     });
     const index = createPostgresSearchIndex({ sql });
