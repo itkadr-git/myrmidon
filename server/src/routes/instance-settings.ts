@@ -215,6 +215,13 @@ export function instanceSettingsRoutes(
           });
         }
       }
+      // The UI uses the bot volume root's dedicated shared directory. Do not
+      // let a settings PATCH turn an arbitrary host directory into a bot bind.
+      if (req.body.sharedMount?.hostPath !== undefined) {
+        throw forbidden("sharedMount.hostPath is operator-managed; use the default shared directory", {
+          code: "shared_mount_host_path_forbidden",
+        });
+      }
       const hidden = getHiddenSettings();
       await assertNoHiddenSettingChanges(
         req.body,

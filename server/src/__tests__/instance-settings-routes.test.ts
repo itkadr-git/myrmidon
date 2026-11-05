@@ -708,6 +708,23 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
+  it("rejects arbitrary shared mount host paths but accepts default-directory settings", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", companyIds: ["company-1"] });
+    const unsafe = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({ sharedMount: { enabled: true, hostPath: "/etc", writable: true, allowedBots: [] } });
+    expect(unsafe.status).toBe(403);
+    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+
+    const safe = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({ sharedMount: { enabled: true, writable: false, allowedBots: [] } });
+    expect(safe.status).toBe(200);
+    expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+      sharedMount: { enabled: true, writable: false, allowedBots: [] },
+    });
+  });
+
   it("rejects agent callers", async () => {
     const app = await createApp({
       type: "agent",

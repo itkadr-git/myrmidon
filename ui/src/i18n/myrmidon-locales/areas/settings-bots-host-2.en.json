@@ -1,6 +1,18 @@
 {
   "area": {
     "settings-bots-host-2": {
+      "shared-mount-settings-panel": {
+        "title": "Shared Mount / Bot Disk",
+        "warning": "Security warning: enabling this mount gives selected bots access to a host filesystem directory. Only instance administrators can change this setting. Enable write access only when necessary.",
+        "path": "Host directory: {{path}} (operator-managed; the default is a dedicated shared directory). Arbitrary paths cannot be selected here.",
+        "enabled": "Enable shared mount",
+        "writable": "Allow bots to write",
+        "allowedBots": "Allowed bot IDs (comma-separated)",
+        "emptyBots": "An empty list means all bots are allowed when the mount is enabled; disable the mount to deny all bots.",
+        "invalidBots": "Use unique bot IDs containing only letters, numbers, hyphens or underscores.",
+        "saveFailed": "Could not save shared mount settings.",
+        "save": "Save shared mount"
+      },
       "fleet-console-panel": {
         "title": "Server console",
         "description": "Open a terminal to a fleet node in the browser. The panel signs a short-lived Guacamole token for the node; the node password stays on the server inside that token. Only a company owner can open a console.",
