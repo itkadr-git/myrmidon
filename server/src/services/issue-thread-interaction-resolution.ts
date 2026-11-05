@@ -246,7 +246,10 @@ export function evaluateIssueThreadInteractionResolverAudience(
     };
   }
 
-  if (effectiveResolverPolicy === "human_only") {
+  if (
+    effectiveResolverPolicy === "human_only"
+    && input.interaction.addresseeAgentId !== input.actor.agentId
+  ) {
     return {
       allowed: false,
       effectiveResolverPolicy,

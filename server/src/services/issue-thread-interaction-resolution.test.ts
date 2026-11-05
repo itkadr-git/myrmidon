@@ -63,6 +63,21 @@ describe("issue-thread interaction resolver audience", () => {
     })).toMatchObject({ allowed: false, code: "interaction_addressee_mismatch" });
   });
 
+  it("allows an explicitly addressed agent to resolve a human-only card", () => {
+    const decision = evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: interaction({
+        addresseeAgentId: "agent-1",
+        effectiveResolverPolicy: "human_only",
+      }),
+    });
+    expect(decision).toMatchObject({
+      allowed: true,
+      effectiveResolverPolicy: "human_only",
+      reason: "allow_addressee",
+    });
+  });
+
   it("requires run attribution for agents", () => {
     const decision = evaluateIssueThreadInteractionResolverAudience({
       actor: { type: "agent", agentId: "agent-1", runId: null },
