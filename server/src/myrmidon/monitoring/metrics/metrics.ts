@@ -1508,7 +1508,7 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "No-result runs per agent and issue in the rolling 24-hour window.",
       "gauge",
       snapshot.noResultRunsByPair24h?.map(({ agentId, issueId, count: total }) =>
-        `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(agentId)}",issue_id="${escapeLabelValue(issueId)}"} ${formatSampleValue(total)}`) ?? [],
+        `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(String(agentId))}",issue_id="${escapeLabelValue(String(issueId))}"} ${formatSampleValue(total)}`) ?? [],
     ),
   );
   blocks.push(
