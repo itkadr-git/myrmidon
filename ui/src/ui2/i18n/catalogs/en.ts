@@ -308,6 +308,20 @@ export const en = {
           },
           subtitle: "Interface language",
           title: "Language and formats",
+          formats: {
+            title: "Time zone and formats",
+            timeZone: "Time zone",
+            timeZonePlaceholder: "Search time zones",
+            numberFormat: "Number format",
+            numberFormatEnUs: "English (United States)",
+            numberFormatRuRu: "Russian (Russia)",
+            dateFormat: "Date format",
+            dateFormatYmd: "Year-month-day",
+            dateFormatDmy: "Day-month-year",
+            dateFormatMdy: "Month-day-year",
+            preview: "Preview",
+            source: { default: "Default", settings: "Settings", pending: "Unsaved changes" },
+          },
         },
         runs: {
           drain: {
@@ -788,6 +802,20 @@ export type Ui2Catalog = {
           },
           subtitle: string;
           title: string;
+          formats: {
+            title: string;
+            timeZone: string;
+            timeZonePlaceholder: string;
+            numberFormat: string;
+            numberFormatEnUs: string;
+            numberFormatRuRu: string;
+            dateFormat: string;
+            dateFormatYmd: string;
+            dateFormatDmy: string;
+            dateFormatMdy: string;
+            preview: string;
+            source: { default: string; settings: string; pending: string };
+          };
         };
         runs: {
           drain: {

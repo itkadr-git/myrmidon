@@ -302,6 +302,20 @@ export const ru: Ui2Catalog = {
           },
           subtitle: "Язык интерфейса",
           title: "Язык и форматы",
+          formats: {
+            title: "Часовой пояс и форматы",
+            timeZone: "Часовой пояс",
+            timeZonePlaceholder: "Поиск часовых поясов",
+            numberFormat: "Формат чисел",
+            numberFormatEnUs: "Английский (США)",
+            numberFormatRuRu: "Русский (Россия)",
+            dateFormat: "Формат дат",
+            dateFormatYmd: "Год-месяц-день",
+            dateFormatDmy: "День-месяц-год",
+            dateFormatMdy: "Месяц-день-год",
+            preview: "Предпросмотр",
+            source: { default: "По умолчанию", settings: "Настройки", pending: "Несохранённые изменения" },
+          },
         },
         runs: {
           drain: {
