@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeReviewerDiffThreats,
   buildReviewerInputFixture,
+  buildReviewerTaskMarkdown,
   buildTaskScopedScratchPath,
   buildTaskSessionKey,
   isDeveloperRole,
@@ -281,6 +282,32 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
       expect(sanitized.PUBLIC_URL).toBe("https://example.com");
       expect(sanitized[["TEST", "SECRET", "KEY"].join("_")]).toBe("<redacted>");
       expect(sanitized[["SERVICE", "AUTH", "TOKEN"].join("_")]).toBe("<redacted>");
+    });
+
+    it("formats isolated reviewer markdown only with task data and diff", () => {
+      const markdown = buildReviewerTaskMarkdown({
+        taskIdentifier: "OPE-10333",
+        taskTitle: "Implement WAKE-9A",
+        taskDescription: "Isolate developer sessions",
+        acceptanceCriteria: ["Criteria 1", "Criteria 2"],
+        diff: "diff --git a/file.ts b/file.ts\n+test",
+        prMetadata: {
+          number: 2469,
+          repository: "itkadr-git/myrmidon",
+          baseBranch: "main",
+          headBranch: "bot/OPE-10333",
+          headSha: "938af6f3244f38897f977b835898672c954c264e",
+          authorLogin: "adm-dev-eng-18",
+        },
+        reviewInstructions: "Check criteria carefully",
+      });
+
+      expect(markdown).toContain("Reviewer input (isolated; quoted task data):");
+      expect(markdown).toContain("Task: OPE-10333 — Implement WAKE-9A");
+      expect(markdown).toContain("- Criteria 1");
+      expect(markdown).toContain("- Criteria 2");
+      expect(markdown).toContain("#2469 itkadr-git/myrmidon");
+      expect(markdown).toContain("diff --git a/file.ts b/file.ts");
     });
   });
 });

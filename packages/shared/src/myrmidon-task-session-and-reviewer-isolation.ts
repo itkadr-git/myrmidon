@@ -229,6 +229,47 @@ export function buildReviewerInputFixture(input: {
   };
 }
 
+export function buildReviewerTaskMarkdown(input: {
+  taskIdentifier: string;
+  taskTitle: string;
+  taskDescription: string;
+  acceptanceCriteria: string[];
+  diff: string;
+  prMetadata: {
+    number: number;
+    repository: string;
+    baseBranch: string;
+    headBranch: string;
+    headSha: string;
+    authorLogin: string;
+  };
+  reviewInstructions: string;
+}): string {
+  return [
+    "Reviewer input (isolated; quoted task data):",
+    `Task: ${input.taskIdentifier} — ${input.taskTitle}`,
+    "",
+    "Task description:",
+    input.taskDescription,
+    "",
+    "Acceptance criteria:",
+    ...(input.acceptanceCriteria.length > 0
+      ? input.acceptanceCriteria.map((criterion) => `- ${criterion}`)
+      : ["- No separate acceptance criteria supplied."]),
+    "",
+    "Pull request:",
+    `#${input.prMetadata.number} ${input.prMetadata.repository}`,
+    `base=${input.prMetadata.baseBranch} head=${input.prMetadata.headBranch} sha=${input.prMetadata.headSha}`,
+    `author=${input.prMetadata.authorLogin}`,
+    "",
+    "Review instructions:",
+    input.reviewInstructions,
+    "",
+    "Diff:",
+    input.diff,
+  ].join("\n");
+}
+
 // --- 3. Review Verdict Contract ---
 
 export const REVIEW_DECISIONS = ["approve", "request_changes"] as const;
