@@ -52,6 +52,7 @@ export interface GatewayKeyRow {
   /** Projected key budget limit (OPE-9859), when the company has one. */
   budget?: KeyBudgetLimitView | null;
   maxBudgetUsd?: number | null;
+  gatewaySpendUsd?: number | null;
   usage?: AgentGatewayKeyView["usage"];
 }
 
@@ -67,6 +68,7 @@ export function keyRows(keys: AgentGatewayKeyView[], agentNames: Map<string, str
       models: entry.models ?? [],
       budget: entry.budget ?? null,
       maxBudgetUsd: entry.maxBudgetUsd ?? null,
+      gatewaySpendUsd: entry.gatewaySpendUsd ?? null,
       usage: entry.usage ?? null,
     }))
     .sort((a, b) => (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId));
@@ -254,6 +256,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                   {row.usage && (
                     <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
                       <span>LiteLLM cap: {row.maxBudgetUsd == null ? "unavailable" : `$${row.maxBudgetUsd.toFixed(2)}`}</span>
+                      {row.gatewaySpendUsd != null && <span>Gateway total: ${row.gatewaySpendUsd.toFixed(2)}</span>}
                       <span data-testid={`key-usage-${row.agentId}`} className={row.usage.status === "exhausted" ? "text-destructive" : row.usage.status === "near_cap" ? "text-amber-600" : "text-foreground"}>
                         24h {formatCents(row.usage.spentCents)}{row.usage.utilizationPercent == null ? "" : ` (${row.usage.utilizationPercent.toFixed(1)}%)`}
                       </span>

@@ -80,7 +80,7 @@ export interface GatewayKeyAdminPort {
    */
   setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
   /** Reads key metadata from the gateway (such as model allowlist). */
-  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null } | null>;
+  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null; spendUsd?: number | null } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -104,6 +104,8 @@ export interface AgentGatewayKeyView {
   budget?: KeyBudgetLimitView | null;
   /** LiteLLM /key/info cap in USD; null when unavailable or uncapped. */
   maxBudgetUsd?: number | null;
+  /** Gateway's cumulative spend in USD for this key, for cap comparison. */
+  gatewaySpendUsd?: number | null;
   /** Spend facts from the board ledger (OPE-11776). */
   usage?: KeyBudgetUsageView | null;
 }
@@ -374,12 +376,14 @@ export async function listAgentGatewayKeys(
     const value = await deps.readSecretValue(companyId, secretName);
     let models: string[] | undefined;
     let maxBudgetUsd: number | null = null;
+    let gatewaySpendUsd: number | null = null;
     if (value && gw?.getKeyInfo) {
       try {
         const info = await gw.getKeyInfo({ alias: secretName });
         if (info) {
           models = info.models ?? [];
           maxBudgetUsd = info.maxBudgetUsd ?? null;
+          gatewaySpendUsd = info.spendUsd ?? null;
         }
       } catch {
         // non-fatal
@@ -432,6 +436,7 @@ export async function listAgentGatewayKeys(
       ...(models !== undefined ? { models } : {}),
       budget,
       maxBudgetUsd,
+      gatewaySpendUsd,
       usage,
     });
   }
@@ -625,12 +630,15 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     async getKeyInfo({ alias }) {
       const response = await post("/key/info", { key_alias: alias }, { okStatuses: [200, 404] });
       if (response.status === 404 || !response.body) return null;
-      const body = response.body as { info?: { models?: string[]; max_budget?: number | null }; models?: string[]; max_budget?: number | null };
+      const body = response.body as { info?: { models?: string[]; max_budget?: number | null; spend?: number | null }; models?: string[]; max_budget?: number | null; spend?: number | null };
       const rawBudget = body.info?.max_budget ?? body.max_budget;
+      const rawSpend = body.info?.spend ?? body.spend;
       return {
         models: body.info?.models ?? body.models ?? [],
         maxBudgetUsd: typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
           ? rawBudget : null,
+        spendUsd: typeof rawSpend === "number" && Number.isFinite(rawSpend) && rawSpend >= 0
+          ? rawSpend : null,
       };
     },
   };

@@ -65,11 +65,12 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
     };
     const usage = { spentCents: 800, weeklySpentCents: 1200, zeroCostEvents: 2, windowStart: "2026-11-04T00:00:00.000Z", utilizationPercent: 84.21, status: "near_cap" as const };
     const [row] = keyRows(
-      [view({ agentId: "agent-a", budget, maxBudgetUsd: 10, usage, role: "engineer" })],
+      [view({ agentId: "agent-a", budget, maxBudgetUsd: 10, gatewaySpendUsd: 8, usage, role: "engineer" })],
       new Map([["agent-a", "alpha"]]),
     );
     expect(row?.budget).toEqual(budget);
     expect(row?.maxBudgetUsd).toBe(10);
+    expect(row?.gatewaySpendUsd).toBe(8);
     expect(row?.usage).toEqual(usage);
   });
 

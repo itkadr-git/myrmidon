@@ -25,6 +25,7 @@ export interface AgentGatewayKeyView {
   role?: string | null;
   budget?: KeyBudgetLimitView | null;
   maxBudgetUsd?: number | null;
+  gatewaySpendUsd?: number | null;
   usage?: {
     spentCents: number;
     weeklySpentCents: number;
