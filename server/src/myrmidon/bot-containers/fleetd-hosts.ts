@@ -57,6 +57,16 @@ const NAME_PATTERN = FLEET_HOST_NAME_PATTERN;
 /** A DNS name a container may resolve: labels of the same shape, dot-separated. */
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
+export function parseBoardAddress(value: string, context = "boardAddress"): string {
+  const trimmed = value.trim();
+  const match = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*):(\d{1,5})$/.exec(trimmed);
+  const port = match ? Number(match[2]) : 0;
+  if (!match || port < 1 || port > 65535) {
+    throw new Error(`${context} must be a hostname or IP address with a port (host:port)`);
+  }
+  return trimmed;
+}
+
 const ALLOWED_KEYS = new Set([
   "name",
   "url",
@@ -128,9 +138,14 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
     if (hosts.has(name)) throw new Error(`${FLEET_HOSTS_ENV}: duplicate host name "${name}"`);
 
-    const boardAddress = optionalString(entry, "boardAddress", name);
-    if (boardAddress !== undefined && !/^\S+:\d{1,5}$/.test(boardAddress)) {
-      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress" must be host:port`);
+    const boardAddressRaw = optionalString(entry, "boardAddress", name);
+    let boardAddress: string | undefined;
+    if (boardAddressRaw !== undefined) {
+      try {
+        boardAddress = parseBoardAddress(boardAddressRaw, `${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress"`);
+      } catch (e) {
+        throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress" must be host:port`);
+      }
     }
     const boardExtraHost = optionalString(entry, "boardExtraHost", name);
     if (boardExtraHost !== undefined && !HOSTNAME_PATTERN.test(boardExtraHost)) {
