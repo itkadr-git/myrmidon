@@ -421,6 +421,7 @@ export async function listAgentGatewayKeys(
           gte(litellmCostEvents.occurredAt, weeklyStart),
         ));
       usage = keyBudgetUsage(Number(spent?.dailyCents ?? 0), maxBudgetUsd ?? 0, windowStart, {
+        capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
         weeklySpentCents: Number(spent?.weeklyCents ?? 0),
         zeroCostEvents: Number(spent?.zeroCostEvents ?? 0),
       });

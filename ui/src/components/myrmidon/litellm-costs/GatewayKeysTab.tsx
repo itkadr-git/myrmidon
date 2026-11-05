@@ -258,7 +258,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                       <span>LiteLLM cap: {row.maxBudgetUsd == null ? "unavailable" : `$${row.maxBudgetUsd.toFixed(2)}`}</span>
                       {row.gatewaySpendUsd != null && <span>Gateway total: ${row.gatewaySpendUsd.toFixed(2)}</span>}
                       <span data-testid={`key-usage-${row.agentId}`} className={row.usage.status === "exhausted" ? "text-destructive" : row.usage.status === "near_cap" ? "text-amber-600" : "text-foreground"}>
-                        24h {formatCents(row.usage.spentCents)}{row.usage.utilizationPercent == null ? "" : ` (${row.usage.utilizationPercent.toFixed(1)}%)`}
+                        24h {formatCents(row.usage.spentCents)}{row.usage.utilizationPercent == null ? "" : ` (cap ${row.usage.utilizationPercent.toFixed(1)}%)`}
                       </span>
                       <span>7d {formatCents(row.usage.weeklySpentCents)}</span>
                       {row.usage.zeroCostEvents > 0 && <span className="text-amber-600">{row.usage.zeroCostEvents} zero-cost events: check model pricing</span>}

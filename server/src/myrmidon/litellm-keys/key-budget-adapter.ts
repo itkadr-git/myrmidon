@@ -35,26 +35,27 @@ export interface KeyBudgetUsageView {
   zeroCostEvents: number;
   windowStart: string;
   utilizationPercent: number | null;
-  status: "ok" | "near_cap" | "exhausted";
+  status: "ok" | "near_cap" | "exhausted" | "unknown";
 }
 
 export function keyBudgetUsage(
   spentCents: number,
   amountUsd: number,
   windowStart: Date,
-  extras: { weeklySpentCents?: number; zeroCostEvents?: number } = {},
+  extras: { weeklySpentCents?: number; zeroCostEvents?: number; capSpentCents?: number } = {},
 ): KeyBudgetUsageView {
   const capCents = amountUsd * 100;
-  const utilizationPercent = capCents > 0 ? (spentCents / capCents) * 100 : null;
+  const utilizationPercent = capCents > 0 && extras.capSpentCents != null
+    ? (extras.capSpentCents / capCents) * 100 : null;
   return {
     spentCents,
     weeklySpentCents: extras.weeklySpentCents ?? spentCents,
     zeroCostEvents: extras.zeroCostEvents ?? 0,
     windowStart: windowStart.toISOString(),
     utilizationPercent,
-    status: utilizationPercent != null && utilizationPercent >= 100
-      ? "exhausted"
-      : utilizationPercent != null && utilizationPercent >= 80 ? "near_cap" : "ok",
+    status: utilizationPercent == null ? "unknown"
+      : utilizationPercent >= 100 ? "exhausted"
+      : utilizationPercent >= 80 ? "near_cap" : "ok",
   };
 }
 

@@ -32,7 +32,7 @@ export interface AgentGatewayKeyView {
     zeroCostEvents: number;
     windowStart: string;
     utilizationPercent: number | null;
-    status: "ok" | "near_cap" | "exhausted";
+    status: "ok" | "near_cap" | "exhausted" | "unknown";
   } | null;
 }
 
