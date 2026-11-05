@@ -199,4 +199,39 @@ describe("board driver <-> dockergate route table", () => {
   it("the table carries the API prefix the driver sends", () => {
     expect(table.apiPrefix).toBe(`/${/const DOCKER_API_VERSION = "([^"]+)"/.exec(driverSource)![1]}`);
   });
+
+  it("driver updateResources satisfies route A20 contract (dockergate runtime limits update)", () => {
+    const a20Route = table.routes.find((r) => r.id === "A20");
+    expect(a20Route).toBeDefined();
+    expect(a20Route?.method).toBe("PUT");
+    expect(a20Route?.template).toBe("containers/{name}/config/update");
+
+    // Verify driver call site for A20
+    const a20Call = calls.find((c) => c.method === "PUT" && c.expression.includes("/config/update"));
+    expect(a20Call).toBeDefined();
+    expect(callAllowedBy(a20Call!)).toContain("A20");
+
+    // Verify driver serializes expected fields in request body
+    expect(driverSource).toMatch(/path:\s*`\/containers\/\$\{nameSegment\(containerNameFor\(spec\.botKey\)\)\}\/config\/update`/);
+    expect(driverSource).toMatch(/botKey:\s*spec\.botKey/);
+    expect(driverSource).toMatch(/memoryMb:\s*spec\.memoryMb/);
+    expect(driverSource).toMatch(/cpus:\s*spec\.cpus/);
+    expect(driverSource).toMatch(/pidsLimit:\s*spec\.pidsLimit/);
+  });
+
+  it("driver updateResources satisfies route A18 contract (live container resource apply)", () => {
+    const a18Route = table.routes.find((r) => r.id === "A18");
+    expect(a18Route).toBeDefined();
+    expect(a18Route?.method).toBe("POST");
+    expect(a18Route?.template).toBe("containers/{name}/update");
+
+    const a18Call = calls.find((c) => c.method === "POST" && c.expression.endsWith("/update"));
+    expect(a18Call).toBeDefined();
+    expect(callAllowedBy(a18Call!)).toContain("A18");
+
+    // Verify driver sends Memory, MemorySwap, and PidsLimit per A18 specification
+    expect(driverSource).toMatch(/Memory:\s*Math\.round\(spec\.memoryMb/);
+    expect(driverSource).toMatch(/MemorySwap:\s*Math\.round\(spec\.memoryMb \* 2/);
+    expect(driverSource).toMatch(/PidsLimit:\s*spec\.pidsLimit/);
+  });
 });

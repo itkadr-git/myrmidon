@@ -86,6 +86,7 @@ Extra read-only bot mounts (shared directories) are described in
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A18 | `POST .../myrmidon-bot-<K>/update` | update memory, memory-swap and pids without restart; the body is exactly `Memory`, `MemorySwap`, `PidsLimit` (integers, any other key is `json_unknown_key`), `MemorySwap` is from `Memory` to twice `Memory`, and the daemon gets a body that the gate rewrote from the checked numbers |
+| A20 | `PUT .../myrmidon-bot-<K>/config/update` | update enrolled bot's resource limits (`memoryMb`, `cpus`, `pidsLimit`) in dockergate `bots[]` config and in-memory runtime ceilings with platform ceiling validation and atomic reload without container restart (or `/myrmidon/bots/<K>/limits`) |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | finish the recreate |
 | A13 | `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>` | read the bot's clone-hygiene report (one fixed file, like A3) |
 
@@ -146,7 +147,7 @@ Reason codes: `caller_resolve_failed`, `caller_not_board_main`, `caller_pin_stal
 `json_unknown_key`, `json_type`, `json_value`, `json_not_canonical`, `bot_not_enrolled`,
 `image_not_allowed`, `image_contract`, `image_user`, `helper_image_mismatch`,
 `name_label_mismatch`, `binds_mismatch`, `mount_source_not_allowed`, `network_mismatch`,
-`limit_exceeds_enrollment`,
+`limit_exceeds_enrollment`, `limit_exceeds_ceiling`,
 `script_mismatch`, `nonce_invalid`, `tar_syntax`, `tar_type`, `tar_owner`, `tar_mode`,
 `tar_path`, `tar_nonce`, `tar_order`, `tar_content`, `tar_too_large`, `tar_not_canonical`,
 `foreign_container`, `state_precondition`, `volume_root_invariant`, `rate_limited`,
