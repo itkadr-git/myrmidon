@@ -687,13 +687,18 @@ describe('IdleStopService', () => {
       const startPromise = new Promise<void>((resolve) => {
         startResolve = resolve;
       });
+      let isStarted = false;
 
       vi.mocked(mockDriver.status).mockImplementation(async (key: string) => {
+        if (isStarted) {
+          return { botKey: key, state: 'running', idleStopped: false };
+        }
         return { botKey: key, state: 'stopped', idleStopped: true };
       });
 
       vi.mocked(mockDriver.start).mockImplementation(async () => {
         await startPromise;
+        isStarted = true;
       });
 
       const call1 = idleStopService.ensureStartedAndHealthy(botKey);
