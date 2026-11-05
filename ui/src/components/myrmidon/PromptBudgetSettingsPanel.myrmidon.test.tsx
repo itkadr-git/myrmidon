@@ -85,6 +85,7 @@ describe("PromptBudgetSettingsPanel", () => {
 
     await waitFor(() => putSpy.mock.calls.length > 0);
     expect(putSpy).toHaveBeenCalledWith("company-test", {
+      enabled: true,
       warnPct: 80,
       critPct: 90,
       fallbackWindowTokens: 128000,
@@ -122,6 +123,7 @@ describe("PromptBudgetSettingsPanel", () => {
 
     await waitFor(() => putSpy.mock.calls.length > 0);
     expect(putSpy).toHaveBeenCalledWith("company-test", {
+      enabled: true,
       warnPct: 80,
       critPct: 90,
       fallbackWindowTokens: 128000,
