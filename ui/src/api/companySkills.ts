@@ -261,4 +261,42 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/install-catalog`,
       payload,
     ),
+  getPolicy: (companyId: string) =>
+    api.get<Record<string, unknown>>(`/companies/${encodeURIComponent(companyId)}/skill-policy`),
+  replacePolicy: (
+    companyId: string,
+    payload: {
+      policy: {
+        defaultEffect: "allow" | "deny";
+        rules?: Array<{
+          id: string;
+          effect: "allow" | "deny";
+          description?: string;
+          subjects?: Array<{ type: "all" } | { type: "agent"; agentId: string }>;
+          actions?: Array<"read" | "use" | "modify" | "install">;
+          resources?: Array<{ type: "all" } | { type: "catalog"; catalogRef?: string } | { type: "skill"; skillId?: string }>;
+        }>;
+      };
+      expectedRevision?: number;
+    },
+  ) =>
+    api.put<Record<string, unknown>>(`/companies/${encodeURIComponent(companyId)}/skill-policy`, payload),
+  resetPolicy: (companyId: string, expectedRevision?: number) =>
+    api.delete<Record<string, unknown>>(
+      `/companies/${encodeURIComponent(companyId)}/skill-policy${
+        expectedRevision !== undefined ? `?expectedRevision=${expectedRevision}` : ""
+      }`,
+    ),
+  evaluatePolicy: (
+    companyId: string,
+    payload: {
+      action: "read" | "use" | "modify" | "install";
+      subject: { type: "agent"; agentId: string };
+      resource: { type: "catalog"; catalogRef?: string } | { type: "skill"; skillId?: string };
+    },
+  ) =>
+    api.post<Record<string, unknown>>(
+      `/companies/${encodeURIComponent(companyId)}/skill-policy/evaluate`,
+      payload,
+    ),
 };

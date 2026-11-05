@@ -2581,6 +2581,50 @@ describe.sequential("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
+  it("enforces authorizationPolicy mutation RBAC (rejects unauthorized agent and board actor)", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAgentService.updatePermissions.mockClear();
+
+    // Board actor without users:manage_permissions cannot update authorizationPolicy
+    const boardApp = createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    const resBoard = await requestApp(boardApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+    expect(resBoard.status).toBe(403);
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+
+    // Agent actor cannot update its own authorizationPolicy
+    const selfAgentApp = createApp({
+      type: "agent",
+      agentId,
+      companyIds: [companyId],
+    });
+    const resSelf = await requestApp(selfAgentApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+    expect(resSelf.status).toBe(403);
+    expect(resSelf.body.error).toBe("An agent cannot modify its own authorization policy");
+
+    // Agent actor without users:manage_permissions cannot update another agent's authorizationPolicy
+    const otherAgentApp = createApp({
+      type: "agent",
+      agentId: "other-agent-id",
+      companyIds: [companyId],
+    });
+    const resOther = await requestApp(otherAgentApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+    expect(resOther.status).toBe(403);
+    expect(resOther.body.error).toBe("Missing users:manage_permissions grant");
+  });
+
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
