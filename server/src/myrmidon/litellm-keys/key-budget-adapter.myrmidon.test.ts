@@ -31,8 +31,8 @@ describe("myrmidon(OPE-11776) key budget usage", () => {
   const start = new Date("2026-11-04T00:00:00.000Z");
   it("marks 80% near-cap and 100% exhausted, with cents-to-USD conversion", () => {
     expect(keyBudgetUsage(799, 10, start).status).toBe("ok");
-    expect(keyBudgetUsage(800, 10, start)).toMatchObject({
-      spentCents: 800, utilizationPercent: 80, status: "near_cap",
+    expect(keyBudgetUsage(800, 10, start, { weeklySpentCents: 1200, zeroCostEvents: 2 })).toMatchObject({
+      spentCents: 800, weeklySpentCents: 1200, zeroCostEvents: 2, utilizationPercent: 80, status: "near_cap",
     });
     expect(keyBudgetUsage(1000, 10, start)).toMatchObject({
       windowStart: start.toISOString(), utilizationPercent: 100, status: "exhausted",

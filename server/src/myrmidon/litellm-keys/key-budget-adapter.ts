@@ -31,16 +31,25 @@ export interface KeyBudgetLimitView {
 /** Spend and cap facts for a managed key, sourced from the board ledger. */
 export interface KeyBudgetUsageView {
   spentCents: number;
+  weeklySpentCents: number;
+  zeroCostEvents: number;
   windowStart: string;
   utilizationPercent: number | null;
   status: "ok" | "near_cap" | "exhausted";
 }
 
-export function keyBudgetUsage(spentCents: number, amountUsd: number, windowStart: Date): KeyBudgetUsageView {
+export function keyBudgetUsage(
+  spentCents: number,
+  amountUsd: number,
+  windowStart: Date,
+  extras: { weeklySpentCents?: number; zeroCostEvents?: number } = {},
+): KeyBudgetUsageView {
   const capCents = amountUsd * 100;
   const utilizationPercent = capCents > 0 ? (spentCents / capCents) * 100 : null;
   return {
     spentCents,
+    weeklySpentCents: extras.weeklySpentCents ?? spentCents,
+    zeroCostEvents: extras.zeroCostEvents ?? 0,
     windowStart: windowStart.toISOString(),
     utilizationPercent,
     status: utilizationPercent != null && utilizationPercent >= 100

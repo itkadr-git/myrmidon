@@ -401,17 +401,25 @@ export async function listAgentGatewayKeys(
         };
       }
     }
-    if (maxBudgetUsd != null && maxBudgetUsd > 0) {
+    if (value) {
       const windowStart = new Date(Date.now() - 24 * 3_600_000);
+      const weeklyStart = new Date(windowStart.getTime() - 6 * 24 * 3_600_000);
       const [spent] = await deps.db
-        .select({ cents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)` })
+        .select({
+          dailyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}) filter (where ${litellmCostEvents.occurredAt} >= ${windowStart}), 0)`,
+          weeklyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)`,
+          zeroCostEvents: sql<number>`count(*) filter (where ${litellmCostEvents.costCents} = 0)`,
+        })
         .from(litellmCostEvents)
         .where(and(
           eq(litellmCostEvents.companyId, companyId),
           eq(litellmCostEvents.agentId, row.id),
-          gte(litellmCostEvents.occurredAt, windowStart),
+          gte(litellmCostEvents.occurredAt, weeklyStart),
         ));
-      usage = keyBudgetUsage(Number(spent?.cents ?? 0), maxBudgetUsd, windowStart);
+      usage = keyBudgetUsage(Number(spent?.dailyCents ?? 0), maxBudgetUsd ?? 0, windowStart, {
+        weeklySpentCents: Number(spent?.weeklyCents ?? 0),
+        zeroCostEvents: Number(spent?.zeroCostEvents ?? 0),
+      });
     }
     views.push({
       agentId: row.id,

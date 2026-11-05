@@ -27,6 +27,8 @@ export interface AgentGatewayKeyView {
   maxBudgetUsd?: number | null;
   usage?: {
     spentCents: number;
+    weeklySpentCents: number;
+    zeroCostEvents: number;
     windowStart: string;
     utilizationPercent: number | null;
     status: "ok" | "near_cap" | "exhausted";
