@@ -12767,6 +12767,8 @@ export function heartbeatService(
 
     const resumeContext = parseObject(resumeRun.contextSnapshot);
     const resumeTaskKey = deriveTaskKey(resumeContext, null) ?? taskKey;
+    // A developer's explicit resume must never import a different task's context.
+    if (isDeveloperRole(agent) && taskKey && resumeTaskKey !== taskKey) return null;
     const resumeTaskSession = resumeTaskKey
       ? await getTaskSession(
           agent.companyId,

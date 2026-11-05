@@ -187,6 +187,37 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("isolates developer tasks A/B while retaining non-developer agent context", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const config = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, sessionKeyStrategy: "agent" };
+    for (const issueId of ["task-A", "task-B"]) {
+      const developer = makeCtx({ ...config, developerOnlyTaskSession: true });
+      developer.context = { ...developer.context, issueId };
+      expect((await execute(developer)).exitCode).toBe(0);
+    }
+    for (const issueId of ["task-A", "task-B"]) {
+      const otherBot = makeCtx(config);
+      otherBot.context = { ...otherBot.context, issueId };
+      expect((await execute(otherBot)).exitCode).toBe(0);
+    }
+
+    const keys = fetchMock.mock.calls
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
+    expect(keys).toEqual([
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
+      "paperclip:company:company-1:agent:agent-1",
+      "paperclip:company:company-1:agent:agent-1",
+    ]);
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
