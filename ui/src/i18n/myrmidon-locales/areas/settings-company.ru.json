@@ -101,7 +101,10 @@
         "moreTasks_other": "ещё {{count}} задачи",
         "pendingCount": "ожидают: {{count}}",
         "advancedPermissionsNeedExtension": "Ядро Myrmidon продолжает соблюдать границы организации и все действующие ограничительные политики, но для изменения расширенных прав нужно установленное расширение.",
-        "pluginExtensionsUnavailable": "Расширения плагинов недоступны: {{message}}"
+        "pluginExtensionsUnavailable": "Расширения плагинов недоступны: {{message}}",
+        "inboxAccess": "Доступ к входящим",
+        "memberInboxAgentAccess": "Доступ агентов к входящим участника",
+        "manageWhichAgentsMayArchive": "Настройте, каким агентам разрешено архивировать входящие этого участника. Требуется право управления доступом пользователей."
       },
       "company-environments": {
         "browserTerminal": "Терминал в браузере",
