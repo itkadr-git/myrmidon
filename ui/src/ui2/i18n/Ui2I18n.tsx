@@ -191,10 +191,11 @@ export function Ui2I18nProvider({
     return () => window.removeEventListener("myrmidon:locale-applied", onLocaleApplied);
   }, []);
 
-  const setLocale = useCallback((next: Ui2Locale) => {
-    persistLocale(next);
-    setLocaleState(next);
-    return setAppLanguage(next);
+  const setLocale = useCallback((next: Ui2Locale | string) => {
+    const normalized = next as Ui2Locale;
+    persistLocale(normalized);
+    setLocaleState(normalized);
+    return setAppLanguage(normalized);
   }, []);
 
   const availableLocales = useMemo(() => {
