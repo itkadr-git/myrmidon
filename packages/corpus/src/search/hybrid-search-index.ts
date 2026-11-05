@@ -276,7 +276,7 @@ export function createPostgresSearchIndex(options: PostgresSearchIndexOptions): 
         if (!chunksById.has(row.id)) chunksById.set(row.id, row);
       }
 
-      const documentIds = [...new Set([...chunksById.values()].map((row) => row.document_id))];
+      const documentIds = [...new Set(fused.map((candidate) => chunksById.get(candidate.id)?.document_id).filter((id): id is string => !!id))];
       const documentRows = documentIds.length
         ? await options.sql.query<DocumentRow>(documentsSql, [query.companyId, documentIds])
         : [];

@@ -60,6 +60,9 @@ export function createSqlExecutor(db: DbOrTx): SqlExecutor {
   return over(db);
 }
 
+// Port objects are created per request; keep the bounded query cache across requests.
+const queryVectors = new Map<string, { expiresAt: number; value: Promise<number[]> }>();
+
 export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Config): CorpusPorts {
   const { settings } = context;
   const store = new PostgresCorpusStore(db as never);
@@ -107,6 +110,21 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     return embedInBatches({ input, batchSize: CORPUS_EMBED_BATCH_SIZE, embedBatch });
   };
   const searchIndex = createPostgresSearchIndex({ sql: createSqlExecutor(db) });
+  // Share identical in-flight queries and retain only a small, short-lived set of vectors.
+  const queryVector = (input: { companyId: string; query: string; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }): Promise<number[]> => {
+    const key = JSON.stringify([input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, input.query]);
+    const now = Date.now();
+    const cached = queryVectors.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    if (cached) queryVectors.delete(key);
+    const value = embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]).then((vectors) => vectors[0]!);
+    queryVectors.set(key, { value, expiresAt: now + 60_000 });
+    void value.catch(() => {
+      if (queryVectors.get(key)?.value === value) queryVectors.delete(key);
+    });
+    while (queryVectors.size > 128) queryVectors.delete(queryVectors.keys().next().value!);
+    return value;
+  };
   const index = {
     assertEmbedderConfigured: checkEmbedderConfigured,
     async indexDocument(input: { companyId: string; datasetId: string; documentId: string; chunks: Array<{ text: string; index: number; metadata?: Record<string, unknown> }>; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
@@ -116,7 +134,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     },
     async deleteDocument(companyId: string, documentId: string) { await store.replaceDocumentChunks({ companyId, documentId, chunks: [] }); },
     async search(input: { companyId: string; datasetId: string; query: string; limit: number; mode: "hybrid" | "vector" | "fulltext"; embedderModel: string; embedderDimensions: number; embedderBaseUrl: string | null }) {
-      const vector = input.mode === "fulltext" ? undefined : (await embedder(input.companyId, input.embedderBaseUrl, input.embedderModel, input.embedderDimensions, [input.query]))[0];
+      const vector = input.mode === "fulltext" ? undefined : await queryVector(input);
       const hits = await searchIndex.search({ companyId: input.companyId, datasetId: input.datasetId, text: input.mode === "vector" ? "" : input.query, embedding: vector, limit: input.limit });
       return hits.map((hit) => ({ chunkId: hit.chunkId, documentId: hit.documentId, datasetId: hit.datasetId, score: hit.score, text: hit.content, metadata: hit.metadata }));
     },
