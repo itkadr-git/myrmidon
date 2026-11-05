@@ -217,7 +217,7 @@ jobs:
           ! grep -Fq 'ci_raw_database_password' <<<"$wrapper_output"
           ! grep -Fq 'ci_raw_postgres_password' <<<"$wrapper_output"
           grep -Eq '^DATABASE_URL=postgres://paperclip_app:\*{3}@db\.prod\.internal:5432/paperclip$' <<<"$wrapper_output"
-          grep -Fq 'POSTGRES_PASSWORD=ci_raw_database_password' <<<"$wrapper_output"
+          grep -Fq 'POSTGRES_PASSWORD=***' <<<"$wrapper_output"
 
           # 2. Test diagnostic env command with sed pipeline as specified in OPE-3100
           diag_output="$(docker exec paperclip-server-1 env | grep -iE 'DATABASE|PG|POSTGRES' | sed -E 's/(_URL=).*/\1***/')"

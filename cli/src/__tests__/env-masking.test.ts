@@ -7,7 +7,7 @@ describe("maskEnvValue", () => {
   it("masks password in postgres database URL while preserving username, host, and port", () => {
     const raw = "postgres://myuser:ci_raw_database_password@db.internal.example.com:5432/paperclip_prod";
     const masked = maskEnvValue("DATABASE_URL", raw);
-    expect(masked).toBe("postgres://myuser:ci_raw_database_password@db.internal.example.com:5432/paperclip_prod");
+    expect(masked).toBe("postgres://myuser:***@db.internal.example.com:5432/paperclip_prod");
     expect(masked).not.toContain("ci_raw_database_password");
   });
 
