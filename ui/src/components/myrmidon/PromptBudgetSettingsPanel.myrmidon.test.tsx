@@ -62,7 +62,10 @@ describe("PromptBudgetSettingsPanel", () => {
     });
 
     const container = renderPanel();
-    await waitFor(() => Boolean(container.querySelector('[data-testid="prompt-budget-optimizer-input"]')));
+    await waitFor(() => {
+      const el = container.querySelector<HTMLSelectElement>('[data-testid="prompt-budget-optimizer-input"]');
+      return Boolean(el && el.options.length === 3);
+    });
 
     const select = container.querySelector<HTMLSelectElement>('[data-testid="prompt-budget-optimizer-input"]')!;
     expect(select.options.length).toBe(3); // None + 2 agents
@@ -98,7 +101,10 @@ describe("PromptBudgetSettingsPanel", () => {
     const putSpy = vi.spyOn(promptBudgetApi, "putSettings").mockResolvedValue(mockSettings);
 
     const container = renderPanel();
-    await waitFor(() => Boolean(container.querySelector('[data-testid="prompt-budget-optimizer-input"]')));
+    await waitFor(() => {
+      const el = container.querySelector<HTMLSelectElement>('[data-testid="prompt-budget-optimizer-input"]');
+      return Boolean(el && el.value === "agent-2" && el.options.length === 3);
+    });
 
     const select = container.querySelector<HTMLSelectElement>('[data-testid="prompt-budget-optimizer-input"]')!;
     expect(select.value).toBe("agent-2");
