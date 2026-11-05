@@ -619,6 +619,7 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         sharedMount: {
+          enabled: true,
           hostPath: "/data/shared",
           writable: true,
         },
@@ -643,18 +644,20 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         sharedMount: {
+          enabled: true,
           hostPath: "/srv/bot-shared",
           writable: false,
-          allowedBotNames: ["eng-1", "eng-2"],
+          allowedBots: ["eng-1", "eng-2"],
         },
       });
 
     expect(res.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       sharedMount: {
+        enabled: true,
         hostPath: "/srv/bot-shared",
         writable: false,
-        allowedBotNames: ["eng-1", "eng-2"],
+        allowedBots: ["eng-1", "eng-2"],
       },
     });
   });
@@ -673,6 +676,7 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         sharedMount: {
+          enabled: true,
           hostPath: "relative/path",
           writable: false,
         },
