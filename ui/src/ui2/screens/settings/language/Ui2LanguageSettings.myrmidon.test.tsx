@@ -12,9 +12,19 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
 import { formatUi2Message } from "../../../i18n/locales";
+
+vi.mock("../../../i18n/locale-validation", () => ({
+  assertValidLocaleMessages: vi.fn(),
+  validateLocaleMessages: vi.fn(() => []),
+}));
+vi.mock("@/i18n/locale-validation", () => ({
+  assertValidLocaleMessages: vi.fn(),
+  validateLocaleMessages: vi.fn(() => []),
+}));
 
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
@@ -42,13 +52,14 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     }), { status: 200, headers: { "Content-Type": "application/json" } })));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
     flushSync(() => root?.unmount());
     root = null;
     queryClient.clear();
     container.remove();
     window.localStorage.clear();
+    await flushReact();
   });
 
   it("embeds the LanguageSwitch module at the agreed ui2/i18n path", async () => {
@@ -93,6 +104,7 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     );
     ruOption?.click();
     await flushReact();
+    await vi.waitFor(() => expect(i18n.language).toBe("ru"));
 
     expect(window.localStorage.getItem("myrmidon.ui2.locale")).toBe("ru");
     expect(window.localStorage.getItem("myrmidon:ui-language")).toBe("ru");
@@ -104,6 +116,7 @@ describe("myrmidon(UI2) Ui2LanguageSettings screen parity", () => {
     );
     enOption?.click();
     await flushReact();
+    await vi.waitFor(() => expect(i18n.language).toBe("en"));
     expect(container.textContent).toContain("Raise the soft limit for the day");
   });
 
