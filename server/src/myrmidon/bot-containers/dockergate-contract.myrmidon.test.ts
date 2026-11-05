@@ -179,9 +179,9 @@ describe("board driver <-> dockergate route table", () => {
   it("covers every route of the table the driver uses", () => {
     const used = new Set(calls.flatMap((c) => callAllowedBy(c)));
     // A1 image labels, A2 inspect, A3 marker, A13 report, A4 create, A5 upload, A6 start,
-    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read.
+    // A7 wait, A8 logs, A9 delete, A10 stop, A11 restart, A12 rename, A16 skills read, A20 config update.
     expect([...used].sort()).toEqual(
-      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
+      ["A1", "A10", "A11", "A12", "A13", "A16", "A17", "A18", "A2", "A20", "A3", "A4", "A5", "A6", "A7", "A8", "A9"].sort(),
     );
   });
 
