@@ -26,7 +26,7 @@ export function AgentAccessPolicySection({ permissions, disabled, onChange }: {
 }) {
   const { t } = useTranslation();
   const policy = permissions?.authorizationPolicy;
-  const visibility = policy?.agentVisibility as { mode?: string; hiddenFromDefaultDirectory?: boolean } | undefined;
+  const visibility = policy?.agentVisibility;
   const protectedAgent = policy?.protectedAgent;
   const [pendingBlock, setPendingBlock] = useState<boolean | null>(null);
   const blocked = protectedAgent?.blockAssignment === true;
@@ -46,7 +46,7 @@ export function AgentAccessPolicySection({ permissions, disabled, onChange }: {
         <span>{t("area.agents-3.agent-detail.configurationTab.visibility", "Visibility")}</span>
         <select aria-label={t("area.agents-3.agent-detail.configurationTab.visibility", "Visibility")} className="w-full rounded-md border border-border bg-background px-3 py-2" disabled={disabled}
           value={visibility?.mode ?? "discoverable"}
-          onChange={(event) => update({ agentVisibility: { ...visibility, mode: event.target.value } })}>
+          onChange={(event) => update({ agentVisibility: { ...visibility, mode: event.target.value as "discoverable" | "private" } })}>
           <option value="discoverable">{t("area.agents-3.agent-detail.configurationTab.discoverable", "Discoverable")}</option>
           <option value="private">{t("area.agents-3.agent-detail.configurationTab.private", "Private")}</option>
         </select>

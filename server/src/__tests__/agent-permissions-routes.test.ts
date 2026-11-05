@@ -2596,7 +2596,11 @@ describe.sequential("agent permission routes", () => {
     });
     const resBoard = await requestApp(boardApp, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
-      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
     expect(resBoard.status).toBe(403);
     expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
 
@@ -2608,7 +2612,11 @@ describe.sequential("agent permission routes", () => {
     });
     const resSelf = await requestApp(selfAgentApp, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
-      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
     expect(resSelf.status).toBe(403);
     expect(resSelf.body.error).toBe("An agent cannot modify its own authorization policy");
 
@@ -2620,7 +2628,11 @@ describe.sequential("agent permission routes", () => {
     });
     const resOther = await requestApp(otherAgentApp, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
-      .send({ authorizationPolicy: { agentVisibility: { mode: "private" } } }));
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
     expect(resOther.status).toBe(403);
     expect(resOther.body.error).toBe("Missing users:manage_permissions grant");
   });
