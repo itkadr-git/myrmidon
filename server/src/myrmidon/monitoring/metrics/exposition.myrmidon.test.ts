@@ -29,6 +29,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     runsFailedTotal: 7,
     runsFailedWindow: 1,
     emptyRunsByAgent: [],
+    noResultRunsByPair24h: [{ agentId: "agent-1", issueId: "issue-1", count: 5 }],
     runDurationSecondsP50: 42.5,
     runDurationSecondsP95: 130.25,
     roleQueueTasks: [
@@ -66,6 +67,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
 describe("prometheus exposition format", () => {
   it("renders every family the ticket names", () => {
     const text = renderMetricsText(snapshot());
+    expect(text).toContain('myrmidon_no_result_runs_24h{role="all",agent_id="agent-1",issue_id="issue-1"} 5');
     for (const family of METRIC_FAMILIES) {
       expect(text, `family ${family} must appear`).toContain(family);
     }

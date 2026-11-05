@@ -457,6 +457,8 @@ import {
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
+  recordEmptyRunEvent,
+  recordIdleRepickThresholdEvent,
 } from "./empty-run.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
@@ -14346,6 +14348,22 @@ export function heartbeatService(
     });
 
     if (issue && (emptyClassification.isEmpty || !gateResult.passed)) {
+      if (emptyClassification.isEmpty) {
+        await recordEmptyRunEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+          classification: emptyClassification,
+          gateResult,
+        });
+        await recordIdleRepickThresholdEvent(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          agentId: run.agentId,
+          runId: run.id,
+        });
+      }
       const escalation = await checkAndHandleEmptyRunEscalation(db, {
         companyId: issue.companyId,
         issueId: issue.id,

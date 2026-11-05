@@ -121,7 +121,17 @@ const MOVEMENT_ACTIVITY_ACTIONS = [
   "issue.attachment_added",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_accepted",
+  "issue.blockers_resolved_wake_emitted",
+  "issue.work_product_updated",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
 ];
+const EXTERNAL_SYSTEM_MOVEMENTS = new Set([
+  "issue.blockers_resolved_wake_emitted",
+  "issue.work_product_updated",
+  "myrmidon.task_pr_sync.settled",
+  "myrmidon.task_pr_sync.returned",
+]);
 const HEALTHY_LIVENESS = new Set(["advanced", "completed", "followup_scheduled"]);
 
 export interface IssueCoolingStatus {
@@ -237,6 +247,7 @@ export interface TaskMovement {
   actorType: "user" | "agent" | "system";
   /** Agent id for `agent` actors; user id for `user`; free text for `system`. */
   actorId: string | null;
+  action?: string;
 }
 
 /**
@@ -250,7 +261,7 @@ export interface TaskMovement {
 export function isRealTaskMovement(m: TaskMovement, runAgentId: string | null): boolean {
   if (m.actorType === "user") return true;
   if (m.actorType === "agent") return !!m.actorId && m.actorId !== runAgentId;
-  return false;
+  return m.action !== undefined && EXTERNAL_SYSTEM_MOVEMENTS.has(m.action);
 }
 
 /**
@@ -415,6 +426,7 @@ async function taskMovements(
       at: activityLog.createdAt,
       actorType: activityLog.actorType,
       actorId: activityLog.actorId,
+      action: activityLog.action,
     })
     .from(activityLog)
     .where(
@@ -435,7 +447,7 @@ async function taskMovements(
   }
   for (const a of acts) {
     const t = a.actorType === "user" || a.actorType === "agent" ? a.actorType : "system";
-    out.push({ at: a.at.getTime(), actorType: t, actorId: a.actorId });
+    out.push({ at: a.at.getTime(), actorType: t, actorId: a.actorId, action: a.action });
   }
   return out;
 }

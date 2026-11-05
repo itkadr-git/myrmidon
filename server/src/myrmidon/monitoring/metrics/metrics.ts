@@ -20,6 +20,7 @@
 import { and, count, eq, exists, gt, gte, inArray, isNotNull, isNull, lt, notExists, sql } from "drizzle-orm";
 import type { ExecutionProjection } from "@myrmidon/shared";
 import { executionProjectionsForRuns } from "../../../services/execution-projection.js";
+import { DEVEFF_EVENT_NO_OP } from "../../../services/empty-run.js";
 import {
   KNOWN_EXECUTION_PHASES,
   computeRunsExecutionEvaluation,
@@ -29,6 +30,7 @@ import {
   companies,
   corpusShadowLog,
   heartbeatRuns,
+  heartbeatRunEvents,
   agentWakeupRequests,
   knowledgeRevisions,
   knowledgeSources,
@@ -148,6 +150,7 @@ export const METRIC_FAMILIES = [
   "myrmidon_runs_failed_total",
   "myrmidon_runs_failed_window",
   "myrmidon_empty_runs_total",
+  "myrmidon_no_result_runs_24h",
   "myrmidon_run_duration_seconds",
   "myrmidon_knowledge_on_change_share",
   "myrmidon_knowledge_revision_delay_seconds",
@@ -305,6 +308,7 @@ export interface MetricsSnapshotFields {
   runsFailedWindow: number;
   /** Successful empty-response runs in the error window, by agent. */
   emptyRunsByAgent: Array<{ agentId: string; count: number }>;
+  noResultRunsByPair24h: Array<{ agentId: string; issueId: string; count: number }>;
   /** p50/p95 of finished run durations inside the latency window (seconds). */
   runDurationSecondsP50: number | null;
   runDurationSecondsP95: number | null;
@@ -598,6 +602,20 @@ async function readEmptyRunsByAgent(db: Db, windowStart: Date): Promise<Array<{ 
     )
     .groupBy(heartbeatRuns.agentId);
   return rows.map((row) => ({ agentId: row.agentId, count: Number(row.total) }));
+}
+
+async function readNoResultRunsByPair24h(db: Db, windowStart: Date): Promise<Array<{ agentId: string; issueId: string; count: number }>> {
+  const issueId = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
+  const rows = await db
+    .select({ agentId: heartbeatRuns.agentId, issueId, total: count() })
+    .from(heartbeatRuns)
+    .where(and(
+      gte(heartbeatRuns.finishedAt, windowStart),
+      sql`${issueId} is not null`,
+      sql`exists (select 1 from ${heartbeatRunEvents} e where e.run_id = ${heartbeatRuns.id} and e.event_type = ${DEVEFF_EVENT_NO_OP})`,
+    ))
+    .groupBy(heartbeatRuns.agentId, issueId);
+  return rows.map((row) => ({ agentId: row.agentId, issueId: row.issueId, count: Number(row.total) }));
 }
 
 /** Reads the failed-before-model run counts grouped by agentId from heartbeat_runs table. */
@@ -1075,6 +1093,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readEmptyRunsByAgent(deps.db, errorWindowStart),
     [] as Array<{ agentId: string; count: number }>,
   );
+  const noResultRunsByPair24h = await guarded(
+    "myrmidon_no_result_runs_24h",
+    () => readNoResultRunsByPair24h(deps.db, new Date(now.getTime() - 24 * 60 * 60 * 1000)),
+    [] as Array<{ agentId: string; issueId: string; count: number }>,
+  );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
   // and names the six families, never kills the scrape.
@@ -1189,6 +1212,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       runsFailedTotal: runCounters.failedTotal,
       runsFailedWindow: failedWindow,
       emptyRunsByAgent,
+      noResultRunsByPair24h,
       runDurationSecondsP50: durations.p50,
       runDurationSecondsP95: durations.p95,
       runsExecutionPhase: runsExecution.runsExecutionPhase,
@@ -1476,6 +1500,15 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "gauge",
       snapshot.emptyRunsByAgent.map(({ agentId, count: total }) =>
         `myrmidon_empty_runs_total{${R},agent_id="${escapeLabelValue(agentId)}"} ${formatSampleValue(total)}`),
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_no_result_runs_24h",
+      "No-result runs per agent and issue in the rolling 24-hour window.",
+      "gauge",
+      snapshot.noResultRunsByPair24h.map(({ agentId, issueId, count: total }) =>
+        `myrmidon_no_result_runs_24h{${R},agent_id="${escapeLabelValue(agentId)}",issue_id="${escapeLabelValue(issueId)}"} ${formatSampleValue(total)}`),
     ),
   );
   blocks.push(
