@@ -188,7 +188,7 @@ describe("parseSseFramesForTest", () => {
 
 describe("execute", () => {
   it("isolates developer tasks A/B while retaining non-developer agent context", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
         ? { run_id: "run-hermes-1", status: "started" }
         : { status: "completed", output: "done" },
