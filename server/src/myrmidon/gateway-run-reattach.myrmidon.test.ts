@@ -9,6 +9,7 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
 } from "@myrmidon/db";
 import {
@@ -114,6 +115,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
