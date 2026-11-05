@@ -83,7 +83,7 @@ export function buildHermesConfig(
 
   // Schema-backed settings must survive the create form, not just edit mode.
   // Keep the allowlist local so arbitrary form values cannot override runtime defaults.
-  for (const key of ["provider", "graceSec", "toolsets", "worktreeMode", "checkpoints", "filesystemScope", "filesystemSandboxCommand", "filesystemExtraPaths", "networkScope", "networkAllowlist", "quiet"] as const) {
+  for (const key of ["provider", "graceSec", "toolsets", "worktreeMode", "checkpoints", "filesystemScope", "filesystemSandboxCommand", "filesystemExtraPaths", "networkScope", "networkAllowlist", "includeConfiguredMcpServers", "runtimeMcpUrlRewrite", "runtimeMcpUrlBase", "quiet"] as const) {
     const value = v.adapterSchemaValues?.[key];
     if (value !== undefined && value !== "") ac[key] = value;
   }
