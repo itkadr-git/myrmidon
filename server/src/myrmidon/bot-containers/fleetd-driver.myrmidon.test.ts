@@ -326,6 +326,77 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
       fakeAgent.destroy();
     }
   });
+
+  it("filters internal spec fields and maps extraMounts to mounts for fleetd wire spec", async () => {
+    const { driver, calls } = driverWith([{ status: 200, body: Buffer.from("{}", "utf8") }]);
+    await driver.create({
+      botKey: "bot-wire",
+      image: "example.com/bot@sha256:bb",
+      memoryMb: 2048,
+      cpus: 2,
+      pidsLimit: 512,
+      network: "net-wire",
+      extraMounts: [
+        { source: "/srv/shared", containerPath: "/opt/shared", readOnly: true },
+      ],
+      sharedMount: {
+        hostPath: "/srv/myrmidon-shared",
+        writable: true,
+      },
+    } as any);
+
+    const call = calls[0] as { method: string; path: string; body: Buffer };
+    expect(call.method).toBe("POST");
+    expect(call.path).toBe("/bots");
+    const payload = JSON.parse(call.body.toString("utf8"));
+    expect(payload).toEqual({
+      spec: {
+        botKey: "bot-wire",
+        image: "example.com/bot@sha256:bb",
+        memoryMb: 2048,
+        cpus: 2,
+        pidsLimit: 512,
+        network: "net-wire",
+        mounts: [
+          { source: "/srv/shared", destination: "/opt/shared", readOnly: true },
+        ],
+      },
+    });
+    // Ensure internal board fields like sharedMount are NOT present
+    expect(payload.spec.sharedMount).toBeUndefined();
+    expect(payload.spec.extraMounts).toBeUndefined();
+  });
+
+  it("filters profile fields to match fleetd profile contract", async () => {
+    const { driver, calls } = driverWith([{ status: 200, body: Buffer.from("{}", "utf8") }]);
+    await driver.writeProfile("bot-wire", {
+      botKey: "bot-wire",
+      files: [
+        { path: "hermes/config.yaml", content: "test", mode: 0o644, secret: false },
+      ],
+      restartHash: "rh123",
+      filesHash: "fh123",
+      maxConcurrentRuns: 2,
+      apiServerKeyVersion: "v1",
+    } as any);
+
+    const call = calls[0] as { method: string; path: string; body: Buffer };
+    expect(call.method).toBe("PUT");
+    expect(call.path).toBe("/bots/bot-wire/profile");
+    const payload = JSON.parse(call.body.toString("utf8"));
+    expect(payload).toEqual({
+      profile: {
+        botKey: "bot-wire",
+        files: [
+          { path: "hermes/config.yaml", content: "test", mode: 0o644, secret: false },
+        ],
+        restartHash: "rh123",
+        filesHash: "fh123",
+      },
+    });
+    expect(payload.profile.maxConcurrentRuns).toBeUndefined();
+    expect(payload.profile.apiServerKeyVersion).toBeUndefined();
+  });
 });
 
 interface RawResponse {
