@@ -165,6 +165,32 @@ describeEmbeddedPostgres("selectDueEscalations PG test", () => {
     expect(await db.select().from(interactionEscalations)).toEqual([]);
   });
 
+  it("не даёт исчерпанной цепочке вытеснить действительную при лимите", async () => {
+    await seedCompanyAndIssue();
+    const now = new Date("2026-10-30T12:00:00Z");
+    const validId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(), companyId, issueId, kind: "ask_user_questions",
+        status: "pending", routeType: "decision", addresseeAgentId: agentId,
+        timeoutAt: new Date(now.getTime() - 120_000),
+        escalationChain: [{ recipient: { agentId }, afterMinutes: 0 }],
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: validId, companyId, issueId, kind: "ask_user_questions",
+        status: "pending", routeType: "decision", addresseeAgentId: agentId,
+        timeoutAt: new Date(now.getTime() - 60_000),
+        escalationChain: [
+          { recipient: { agentId }, afterMinutes: 0 },
+          { recipient: { serviceQueue: "escalations" }, afterMinutes: 10 },
+        ],
+        payload: { version: 1, questions: [] },
+      },
+    ]);
+    expect(await selectDueEscalations(db, now, 1)).toEqual([{ interactionId: validId, nextLevel: 1 }]);
+  });
+
   it("resolved и ещё не просроченные не выбираются", async () => {
     await seedCompanyAndIssue();
     const now = new Date("2026-10-30T12:00:00Z");

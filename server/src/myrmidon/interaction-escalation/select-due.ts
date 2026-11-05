@@ -54,6 +54,12 @@ export async function selectDueEscalations(
         eq(issueThreadInteractions.status, "pending"),
         isNotNull(issueThreadInteractions.timeoutAt),
         lte(issueThreadInteractions.timeoutAt, now),
+        // Filter before LIMIT so exhausted chains cannot starve actionable cards.
+        sql`(
+          nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'agentId', '') is not null
+          or nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'userId', '') is not null
+          or nullif(${issueThreadInteractions.escalationChain} -> (${issueThreadInteractions.escalationLevel} + 1) -> 'recipient' ->> 'serviceQueue', '') is not null
+        )`,
         notExists(
           db
             .select({ one: sql`1` })
