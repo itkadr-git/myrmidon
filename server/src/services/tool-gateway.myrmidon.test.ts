@@ -188,7 +188,7 @@ describeEmbeddedPostgres("myrmidon(1.6-AUTONOMY-GW) gateway enforcement", () => 
     await db.insert(companyMemberships).values({
       companyId: row!.id,
       principalType: "user",
-      principalId: `owner-${randomUUID()}`,
+      principalId: "board-user",
       status: "active",
       membershipRole: "owner",
     });
