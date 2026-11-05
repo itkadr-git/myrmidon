@@ -119,6 +119,43 @@ describe("guardedRemove: ENOENT is success", () => {
   });
 });
 
+describe("guardedRemove: permission checks match unlink", () => {
+  it("removes a non-executable 0600 file when its parent is writable", () => {
+    const dir = path.join(tmp, "file-permissions");
+    const file = path.join(dir, "archive.dir.tar");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, "archive\n", { mode: 0o600 });
+    assert.equal(guardedRemove(file, [tmp]), "removed");
+    assert.equal(fs.existsSync(file), false);
+  });
+
+  it("removes a directory owned by the caller", () => {
+    const dir = path.join(tmp, "directory-permissions");
+    fs.mkdirSync(path.join(dir, "nested"), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path.join(dir, "nested", "archive.dir.tar"), "archive\n", { mode: 0o600 });
+    assert.equal(guardedRemove(dir, [tmp]), "removed");
+    assert.equal(fs.existsSync(dir), false);
+  });
+
+  it(
+    "defers a file when its parent directory is not writable",
+    { skip: typeof process.getuid === "function" && process.getuid() === 0 ? "root ignores directory permissions" : false },
+    () => {
+      const dir = path.join(tmp, "parent-permissions");
+      const file = path.join(dir, "archive.dir.tar");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      fs.writeFileSync(file, "archive\n", { mode: 0o600 });
+      fs.chmodSync(dir, 0o555);
+      try {
+        assert.throws(() => guardedRemove(file, [tmp]), (err) => err.deferred === "foreign-uid");
+        assert.equal(fs.existsSync(file), true);
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+    },
+  );
+});
+
 describe("guardedRemove: EACCES defers without deleting", () => {
   const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
   it(
