@@ -149,6 +149,80 @@ describe("resolveAgentHeadId", () => {
     const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-eng");
     expect(headId).toBe("agent-adm");
   });
+
+  it("returns null if the root agent in the chain is paused or non-invokable", async () => {
+    const agentMap: Record<string, AgentRecord> = {
+      "agent-eng": {
+        id: "agent-eng",
+        companyId: "comp-1",
+        name: "adm-dev-eng-23",
+        status: "active",
+        reportsTo: "agent-paused-lead",
+        createdAt: new Date("2026-02-01"),
+      },
+      "agent-paused-lead": {
+        id: "agent-paused-lead",
+        companyId: "comp-1",
+        name: "adm-dev-lead",
+        status: "paused",
+        reportsTo: null,
+        createdAt: new Date("2026-01-15"),
+      },
+    };
+
+    let callIndex = 0;
+    const stepDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const res = agentMap[callIndex === 0 ? "agent-eng" : "agent-paused-lead"];
+            callIndex++;
+            return res ? [res] : [];
+          },
+        }),
+      }),
+    };
+
+    const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-eng");
+    expect(headId).toBeNull();
+  });
+
+  it("breaks cycles gracefully and returns null when cyclic reportsTo has no invokable root", async () => {
+    const agentMap: Record<string, AgentRecord> = {
+      "agent-a": {
+        id: "agent-a",
+        companyId: "comp-1",
+        name: "agent-a",
+        status: "active",
+        reportsTo: "agent-b",
+        createdAt: new Date("2026-02-01"),
+      },
+      "agent-b": {
+        id: "agent-b",
+        companyId: "comp-1",
+        name: "agent-b",
+        status: "active",
+        reportsTo: "agent-a",
+        createdAt: new Date("2026-01-15"),
+      },
+    };
+
+    let callIndex = 0;
+    const stepDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const res = agentMap[callIndex % 2 === 0 ? "agent-a" : "agent-b"];
+            callIndex++;
+            return res ? [res] : [];
+          },
+        }),
+      }),
+    };
+
+    const headId = await resolveAgentHeadId(stepDb as any, "comp-1", "agent-a");
+    expect(headId).toBeNull();
+  });
 });
 
 describe("resolveCompanyDomainHeadId", () => {
