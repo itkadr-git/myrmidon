@@ -11,6 +11,32 @@ import { z } from "zod";
  * 4. Threat & privacy containment (prompt-injection detection in diffs, secret sanitization).
  */
 
+// --- 0. Developer Role Isolation Scope (Alex clarification 05.11) ---
+
+/**
+ * Checks whether an agent belongs to the developer role (`adm-dev-eng-*`, `engineer`).
+ * Task session isolation applies strictly to developers.
+ * All other bots (adm, operators, bbq, work, life, personal) preserve common memory and context.
+ */
+export function isDeveloperRole(agent: {
+  id?: string | null;
+  name?: string | null;
+  role?: string | null;
+  adapterType?: string | null;
+}): boolean {
+  if (!agent) return false;
+  const role = (agent.role || "").toLowerCase();
+  const name = (agent.name || "").toLowerCase();
+  
+  if (role === "engineer" || role === "developer" || role === "coder") {
+    return true;
+  }
+  if (name.startsWith("adm-dev-eng") || name.includes("developer") || name.includes("coder")) {
+    return true;
+  }
+  return false;
+}
+
 // --- 1. Task Session Isolation (Session-per-task) ---
 
 export interface TaskSessionKeyInput {

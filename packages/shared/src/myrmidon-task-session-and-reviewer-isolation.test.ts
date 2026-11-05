@@ -4,6 +4,7 @@ import {
   buildReviewerInputFixture,
   buildTaskScopedScratchPath,
   buildTaskSessionKey,
+  isDeveloperRole,
   isUnscopedSessionFallbackAllowed,
   sanitizeEnvironmentSecrets,
   validateReviewVerdict,
@@ -91,6 +92,23 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
     it("constructs isolated task-scoped scratch paths", () => {
       const scratch = buildTaskScopedScratchPath("/data/scratch", "OPE-9501");
       expect(scratch).toBe("/data/scratch/tasks/OPE-9501");
+    });
+
+    it("enforces developer-only isolation scope (Alex clarification 05.11)", () => {
+      // Developers: task session isolation applies
+      expect(isDeveloperRole({ role: "engineer", name: "eng-1" })).toBe(true);
+      expect(isDeveloperRole({ role: "developer", name: "worker" })).toBe(true);
+      expect(isDeveloperRole({ role: "coder", name: "bot-1" })).toBe(true);
+      expect(isDeveloperRole({ role: "general", name: "adm-dev-eng-18" })).toBe(true);
+      expect(isDeveloperRole({ role: "general", name: "adm-dev-eng-12" })).toBe(true);
+
+      // Non-developers: retain common context and memory
+      expect(isDeveloperRole({ role: "operator", name: "adm-operator-1" })).toBe(false);
+      expect(isDeveloperRole({ role: "admin", name: "adm" })).toBe(false);
+      expect(isDeveloperRole({ role: "assistant", name: "bbq" })).toBe(false);
+      expect(isDeveloperRole({ role: "personal", name: "life" })).toBe(false);
+      expect(isDeveloperRole({ role: "worker", name: "work-tracker" })).toBe(false);
+      expect(isDeveloperRole(null as any)).toBe(false);
     });
   });
 

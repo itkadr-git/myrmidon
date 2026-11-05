@@ -10,6 +10,11 @@
 
 ## 1. Executive Summary & Problem Statement
 
+### 1.1 Developer-Only Isolation Scope (Alex clarification 05.11)
+- Изоляция сессий на задачу (`buildTaskSessionKey`, `isDeveloperRole`) применяется **исключительно** к разработчикам (`adm-dev-eng-*`, role `engineer` / `developer` / `coder`).
+- Все остальные боты компании (операторы, adm, bbq, work, life, личные боты) сохраняют общую память, сессию и контекст между задачами без изменений.
+- Ревьюеры получают минимальный фикстурный контекст (только постановка задачи и diff PR) без логов мыслей и секретов кодера.
+
 Telemetry from October 26, 2026 revealed severe token waste and model churn during developer wake cycles:
 - Timer wakeups: 387 in 6 hours yielding 0% actionable work.
 - Continuation wakeups: 243 yielding 9% actionable work.
