@@ -44,9 +44,18 @@ export function drizzleRedactionStore(db: Db): RedactionStore {
 }
 
 function replaceTokens(text: string, pairs: Array<{ token: string; original: string }>): string {
-  let result = text;
-  for (const { token, original } of pairs) result = result.split(token).join(original);
-  return result;
+  let result = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    const matches = pairs.map((pair) => ({ ...pair, index: text.indexOf(pair.token, cursor) }))
+      .filter((pair) => pair.index >= 0 && pair.token.length > 0)
+      .sort((a, b) => a.index - b.index || b.token.length - a.token.length);
+    const next = matches[0];
+    if (!next) break;
+    result += text.slice(cursor, next.index) + next.original;
+    cursor = next.index + next.token.length;
+  }
+  return result + text.slice(cursor);
 }
 
 export async function redactText(
@@ -56,21 +65,35 @@ export async function redactText(
   store: RedactionStore,
   options: { ttlMs?: number; now?: Date; id?: string } = {},
 ): Promise<RedactionResult> {
-  const ordered = entities.filter((entity) => entity.start >= 0 && entity.end > entity.start && entity.end <= text.length)
-    .sort((a, b) => a.start - b.start || b.end - a.end);
+  for (const entity of entities) {
+    if (!Number.isInteger(entity.start) || !Number.isInteger(entity.end) || entity.start < 0 ||
+      entity.end <= entity.start || entity.end > text.length || text.slice(entity.start, entity.end) !== entity.value) {
+      throw new Error("entity value must match its valid text range");
+    }
+  }
+  const ordered = [...entities].sort((a, b) => a.start - b.start || b.end - a.end);
   if (mode === "flag") return { text, entities: ordered.map(({ type, start, end }) => ({ type, start, end })) };
 
   let output = "";
   let cursor = 0;
   let sequence = new Map<string, number>();
+  const occupiedTokens = new Set<string>();
+  const nextToken = (type: string): string => {
+    let number = sequence.get(type) ?? 0;
+    let token: string;
+    do {
+      token = `[${type.toUpperCase()}_${++number}]`;
+    } while (text.includes(token) || occupiedTokens.has(token));
+    sequence.set(type, number);
+    occupiedTokens.add(token);
+    return token;
+  };
   const pairs: Array<{ token: string; original: string }> = [];
   const results: RedactionResult["entities"] = [];
   for (const entity of ordered) {
     if (entity.start < cursor) continue;
     output += text.slice(cursor, entity.start);
-    const number = (sequence.get(entity.type) ?? 0) + 1;
-    sequence.set(entity.type, number);
-    const token = `[${entity.type.toUpperCase()}_${number}]`;
+    const token = nextToken(entity.type);
     output += token;
     results.push({ type: entity.type, start: entity.start, end: entity.end, token });
     if (mode === "reversible") pairs.push({ token, original: entity.value });

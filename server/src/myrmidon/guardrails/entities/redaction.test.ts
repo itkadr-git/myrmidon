@@ -29,6 +29,21 @@ describe("entity redaction modes", () => {
     expect(await restoreText(db, "r1", result.text)).toBe("Call Anna at anna@example.com");
   });
 
+  it("preserves a pre-existing token literal during reversible round-trip", async () => {
+    const db = store();
+    const text = "[PERSON_1] met Anna";
+    const result = await redactText(text, [{ type: "person", value: "Anna", start: 15, end: 19 }], "reversible", db);
+    expect(result.text).toBe("[PERSON_1] met [PERSON_2]");
+    expect(await restoreText(db, result.redactionId!, result.text)).toBe(text);
+  });
+
+  it("rejects mismatched entity values before persisting", async () => {
+    const db = store();
+    await expect(redactText("Anna", [{ type: "person", value: "Elsa", start: 0, end: 4 }], "reversible", db))
+      .rejects.toThrow("entity value must match");
+    expect(db.rows.size).toBe(0);
+  });
+
   it("cleans expired substitutions", async () => {
     const db = store();
     const now = new Date("2026-01-01T00:00:00Z");
@@ -95,6 +110,12 @@ describe("entity redaction modes", () => {
         .post("/api/myrmidon/guardrails/redact")
         .send({ text: "Hello", entities: [], mode: "reversible", ttlMs: -10 });
       expect(badTtl.status).toBe(400);
+
+      const mismatched = await request(app)
+        .post("/api/myrmidon/guardrails/redact")
+        .send({ text: "Anna", entities: [{ type: "person", value: "Elsa", start: 0, end: 4 }], mode: "reversible" });
+      expect(mismatched.status).toBe(400);
+      expect(mismatched.body.error).toMatch(/entity value must match/);
 
       const badRestore = await request(app)
         .post("/api/myrmidon/guardrails/restore")

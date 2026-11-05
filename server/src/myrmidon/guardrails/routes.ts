@@ -92,6 +92,12 @@ export function myrmidonGuardrailsRoutes(db: Db, deps: Partial<GuardrailRoutesDe
       res.status(400).json({ error: "entities must contain type, value, start, and end" });
       return;
     }
+    if (normalized.some((entity) => !Number.isInteger(entity.start) || !Number.isInteger(entity.end) ||
+      entity.start < 0 || entity.end <= entity.start || entity.end > text.length ||
+      text.slice(entity.start, entity.end) !== entity.value)) {
+      res.status(400).json({ error: "entity value must match its valid text range" });
+      return;
+    }
     const ttl = ttlMs === undefined ? undefined : Number(ttlMs);
     if (ttl !== undefined && (!Number.isFinite(ttl) || ttl <= 0)) {
       res.status(400).json({ error: "ttlMs must be a positive number" });
