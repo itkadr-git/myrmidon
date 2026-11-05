@@ -73,3 +73,14 @@ func TestInternalReconcilerSpecRejectedByFleetdDisallowUnknownFields(t *testing.
 		t.Fatalf("expected decodeBody to reject raw internal spec with unknown fields, but it succeeded")
 	}
 }
+
+func TestDecodeBodyRejectsTrailingContent(t *testing.T) {
+	raw := []byte(`{"spec": {"botKey": "b", "image": "img", "memoryMb": 128, "cpus": 1, "pidsLimit": 10, "network": "net"}} {"extra": 1}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/bots", bytes.NewReader(raw))
+	var body struct {
+		Spec spec `json:"spec"`
+	}
+	if err := decodeBody(req, &body); err == nil {
+		t.Fatalf("expected decodeBody to reject trailing content, but it succeeded")
+	}
+}
