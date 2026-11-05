@@ -62,10 +62,20 @@ function buildApp(issueRouter?: express.Router) {
   if (issueRouter) {
     api.use(issueRouter);
   } else {
-    // The stand-in for the ordinary interaction routes of the issue router.
+    // Production routing behavior for the ordinary interaction routes of the issue router.
     api.post("/issues/:id/interactions/:interactionId/:action", (req, res) => {
+      const { id, interactionId, action } = req.params;
+      if (id !== ISSUE_ID) {
+        return res.status(404).json({ error: "Issue not found" });
+      }
+      if (interactionId !== INTERACTION_ID) {
+        return res.status(404).json({ error: "Interaction not found" });
+      }
+      if (!["accept", "reject", "respond"].includes(action as string)) {
+        return res.status(404).json({ error: "Action not found" });
+      }
       handedOver.push({ actor: req.actor, body: req.body, params: req.params as Record<string, string> });
-      res.json({ handedOver: true });
+      res.json({ id: interactionId, status: "accepted", action });
     });
   }
   app.use("/api", api);
@@ -277,27 +287,41 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
   });
 
   it("returns 404 JSON when owner reply resolution targets a missing issue or interaction", async () => {
-    mocks.authorizeOwnerReplyResolution.mockResolvedValue({
+    mocks.authorizeOwnerReplyResolution.mockResolvedValueOnce({
       ownerUserId: OWNER_ID,
-      issueId: ISSUE_ID,
+      issueId: "missing-issue-id",
       interactionId: INTERACTION_ID,
       action: "accept",
       conversationIssueId: "77777777-7777-4777-8777-777777777777",
       ownerReplyCommentId: COMMENT_ID,
     });
-    const issueRouter = express.Router();
-    issueRouter.post("/issues/:id/interactions/:interactionId/:action", (_req, _res, next) => {
-      next(new HttpError(404, "Issue not found"));
-    });
-    const app = buildApp(issueRouter);
+    const app = buildApp();
 
-    const response = await request(app)
+    const missingIssueResponse = await request(app)
       .post("/api/myrmidon/owner-message/resolve")
       .send(resolveBody());
 
-    expect(response.status).toBe(404);
-    expect(response.headers["content-type"]).toMatch(/application\/json/);
-    expect(response.body).toMatchObject({ error: "Issue not found" });
+    expect(missingIssueResponse.status).toBe(404);
+    expect(missingIssueResponse.headers["content-type"]).toMatch(/application\/json/);
+    expect(missingIssueResponse.body).toMatchObject({ error: "Issue not found" });
+    expect(handedOver).toEqual([]);
+
+    mocks.authorizeOwnerReplyResolution.mockResolvedValueOnce({
+      ownerUserId: OWNER_ID,
+      issueId: ISSUE_ID,
+      interactionId: "99999999-9999-4999-8999-999999999999",
+      action: "accept",
+      conversationIssueId: "77777777-7777-4777-8777-777777777777",
+      ownerReplyCommentId: COMMENT_ID,
+    });
+
+    const missingInteractionResponse = await request(app)
+      .post("/api/myrmidon/owner-message/resolve")
+      .send(resolveBody({ interactionId: "99999999-9999-4999-8999-999999999999" }));
+
+    expect(missingInteractionResponse.status).toBe(404);
+    expect(missingInteractionResponse.headers["content-type"]).toMatch(/application\/json/);
+    expect(missingInteractionResponse.body).toMatchObject({ error: "Interaction not found" });
     expect(handedOver).toEqual([]);
   });
 
@@ -326,6 +350,7 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
       .post("/api/myrmidon/owner-message/resolve")
       .send(resolveBody());
     expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ id: INTERACTION_ID, status: "accepted" });
     expect(mocks.authorizeOwnerReplyResolution).toHaveBeenCalledWith(
       fakeDb,
       expect.objectContaining({ companyId: COMPANY_ID, agentId: AGENT_ID, runId: RUN_ID }),
@@ -372,6 +397,7 @@ describe("myrmidon(1.6.5-OWNER-VIA-BOT) owner message routes", () => {
       .post("/api/myrmidon/owner-message/resolve")
       .send(resolveBody({ action: "respond", body: { answers } }));
     expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ id: INTERACTION_ID, action: "respond" });
     expect(handedOver[0]!.params.action).toBe("respond");
     expect(handedOver[0]!.body).toEqual({ answers });
   });
