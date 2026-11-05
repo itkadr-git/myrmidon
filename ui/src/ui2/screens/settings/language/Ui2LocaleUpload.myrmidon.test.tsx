@@ -10,8 +10,11 @@
 import { act } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Ui2LanguageSettings } from "./Ui2LanguageSettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 async function flushReact() {
   await act(async () => {
@@ -52,9 +55,11 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   it("renders upload section with locale code input, file input, and JSON area", async () => {
     await act(async () => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();
@@ -68,9 +73,11 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   it("displays key diff preview with matched, missing, extra counts and before/after values", async () => {
     await act(async () => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();
@@ -123,9 +130,11 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   it("applies the uploaded catalog live without restart and updates user language", async () => {
     await act(async () => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();
@@ -200,9 +209,11 @@ describe("myrmidon(UI2) Ui2LocaleUpload screen (OPE-9646)", () => {
   it("handles invalid JSON safely by displaying validation error and disabling apply", async () => {
     await act(async () => {
       root!.render(
-        <Ui2I18nProvider initialLocale="en">
-          <Ui2LanguageSettings />
-        </Ui2I18nProvider>,
+        <QueryClientProvider client={queryClient}>
+          <Ui2I18nProvider initialLocale="en">
+            <Ui2LanguageSettings />
+          </Ui2I18nProvider>
+        </QueryClientProvider>,
       );
     });
     await flushReact();

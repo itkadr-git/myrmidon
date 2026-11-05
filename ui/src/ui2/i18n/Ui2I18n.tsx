@@ -145,7 +145,7 @@ function persistLocale(locale: Ui2Locale): void {
 
 export interface Ui2I18nContextValue {
   locale: Ui2Locale;
-  setLocale: (locale: Ui2Locale) => void | Promise<void>;
+  setLocale: (locale: Ui2Locale | string) => void | Promise<void>;
   availableLocales: string[];
   applyCustomCatalog: (
     targetLocale: string,
