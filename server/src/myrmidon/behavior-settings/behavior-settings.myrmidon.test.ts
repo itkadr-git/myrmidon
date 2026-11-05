@@ -119,6 +119,15 @@ describe("myrmidon(1.7) behavior settings: guardrail and fleet keys (SETTINGS-TO
     expect(resolveBehaviorSettings({ stored: {}, env }).settings.baseline_interval_sec).toBe(3600);
     expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 59 }, env }).settings.baseline_interval_sec).toBe(3600);
     expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 604801 }, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: {}, env: { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" } }).sources.baseline_interval_sec).toBe("env");
+  });
+
+  it("validates saved input precheck factors and preserves environment fallback", () => {
+    const env = { MYRMIDON_INPUT_LIMIT_PRECHECK: "0", MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN: "4", MYRMIDON_INPUT_LIMIT_SAFETY: "0.8" };
+    const view = resolveBehaviorSettings({ stored: { input_limit_precheck: true, input_limit_chars_per_token: 2.5, input_limit_safety: 0.75 }, env });
+    expect(view.settings).toMatchObject({ input_limit_precheck: true, input_limit_chars_per_token: 2.5, input_limit_safety: 0.75 });
+    const fallback = resolveBehaviorSettings({ stored: { input_limit_chars_per_token: 0, input_limit_safety: 1.1 }, env });
+    expect(fallback.settings).toMatchObject({ input_limit_precheck: false, input_limit_chars_per_token: 4, input_limit_safety: 0.8 });
   });
 
   it("keeps the shared precedence: a saved value wins, the environment is the default", () => {

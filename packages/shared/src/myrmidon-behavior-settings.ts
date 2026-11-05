@@ -255,7 +255,9 @@ for (const [key, envName, fallback, validate] of [
   ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveIntegerValue],
   ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120, positiveIntegerValue],
   ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
-  ["baseline_interval_sec", "MYRMIDON_BASELINE_INTERVAL_SEC", 0, (value: unknown) => value === 0 ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604800 ? value : null],
+  ["baseline_interval_sec", "MYRMIDON_BASELINE_INTERVAL_SEC", 0, (value: unknown) => value === 0 || value === "0" ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604800 ? value : typeof value === "string" && /^(?:[1-9][0-9]*)$/.test(value.trim()) && Number(value.trim()) >= 60 && Number(value.trim()) <= 604800 ? Number(value.trim()) : null],
+  ["input_limit_chars_per_token", "MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN", 3, (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 10 ? value : null],
+  ["input_limit_safety", "MYRMIDON_INPUT_LIMIT_SAFETY", 0.9, (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1 ? value : null],
 ] as const) {
   behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
 }
@@ -274,6 +276,7 @@ for (const [key, envName] of [
 ] as const) {
   behaviorSettingRegistry.register({ key, envName, default: false, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
 }
+behaviorSettingRegistry.register({ key: "input_limit_precheck", envName: "MYRMIDON_INPUT_LIMIT_PRECHECK", default: true, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",

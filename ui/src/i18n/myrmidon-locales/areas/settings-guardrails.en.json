@@ -56,6 +56,23 @@
         "baselineIntervalSec": "Baseline snapshot interval (seconds, 60-604800; 0 disables)",
         "botContainers": "Enable bot container reconciliation",
         "botYolo": "Enable YOLO mode"
+      },
+      "input-limit-settings-panel": {
+        "title": "Input limit precheck",
+        "precheck": "Precheck before dispatch",
+        "charsPerToken": "Estimated characters per token (1-10)",
+        "safety": "Safety factor (greater than 0, up to 1)",
+        "source": "Source: {{source}}",
+        "env": "server environment",
+        "ui": "saved setting",
+        "default": "default",
+        "on": "On",
+        "off": "Off",
+        "save": "Save precheck",
+        "saving": "Saving...",
+        "loading": "Loading settings...",
+        "loadFailed": "Unable to load settings.",
+        "saveFailed": "Unable to save settings."
       }
     }
   }
