@@ -249,11 +249,27 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_blocked_tasks_without_assignee gauge");
     expect(text).toContain("# TYPE myrmidon_code_tasks_on_noncoding_roles gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
+    expect(text).toContain("# TYPE myrmidon_engineers_live gauge");
+    expect(text).toContain("# TYPE myrmidon_engineers_idle gauge");
+    expect(text).toContain("# TYPE myrmidon_todo_unblocked_tasks gauge");
   });
 
   it("renders deferred issue-execution backlog gauge", () => {
     const text = renderMetricsText(snapshot({ deferredIssueExecutionOver30m: 2 }));
     expect(text).toContain('myrmidon_deferred_issue_execution_over_30m{role="all"} 2');
+  });
+
+  it("renders engineer idle and unblocked tasks gauges", () => {
+    const text = renderMetricsText(
+      snapshot({
+        engineersLive: 5,
+        engineersIdle: 2,
+        todoUnblockedTasks: 11,
+      }),
+    );
+    expect(text).toContain('myrmidon_engineers_live{role="all"} 5');
+    expect(text).toContain('myrmidon_engineers_idle{role="all"} 2');
+    expect(text).toContain('myrmidon_todo_unblocked_tasks{role="all"} 11');
   });
 
   it("renders one sample line per family and per role/status pair", () => {
@@ -267,8 +283,14 @@ describe("prometheus exposition format", () => {
     // plus queued >30m gauge = 30, plus codeTasksOnNoncodingRoles gauge = 31,
     // plus failed_before_model = 32, plus the five recovery families = 37,
     // plus deferredIssueExecutionOver30m = 38, plus two datastore retention
-    // metrics (1.6.6 OPE-9967) = 40.
-    expect(sampleLines).toHaveLength(40);
+    // metrics (1.6.6 OPE-9967) = 40, plus the runs-execution phase gauge
+    // (5 known phases) and the reconnecting-oldest gauge
+    // (1.6.6 rc.19 MONITORING OPE-10046) = 46, plus the engineer idle and
+    // unblocked tasks gauges (1.6.6 OPE-9868) = 49.
+    expect(sampleLines).toHaveLength(49);
+    expect(text).toContain('myrmidon_engineers_live{role="all"} 0');
+    expect(text).toContain('myrmidon_engineers_idle{role="all"} 0');
+    expect(text).toContain('myrmidon_todo_unblocked_tasks{role="all"} 0');
     expect(text).toContain('myrmidon_agent_failed_before_model_total{role="all"} 0');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');

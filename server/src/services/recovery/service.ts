@@ -20,6 +20,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   not,
   notInArray,
   or,
@@ -100,6 +101,8 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -2217,7 +2220,18 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
+        // be blocked by the bounded transient retry scheduler. The scheduler is
+        // designed for failure retries (transient errors) and has many checks
+        // that return "not_scheduled" for generic continuation recovery. Only
+        // block recovery when the failure retry budget is actually exhausted.
+        const isContinuationRecoveryWithBudget =
+          input.reason === "issue_continuation_needed" &&
+          executionFailureRetryCount(predecessor) < 2;
+        if (
+          legacyExecutionNeedsReconciliation(predecessor) &&
+          !isContinuationRecoveryWithBudget
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -2225,13 +2239,29 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry) {
+        // For conversation-continuation runs with remaining retry budget,
+        // fall through to direct enqueueWakeup below. The bounded retry
+        // scheduler is for transient failure retries, not continuation recovery.
+        // However, respect the retry budget: when the predecessor's retry
+        // budget is exhausted (executionFailureRetryCount >= 2), do NOT
+        // create a new run — the incident budget must not be reset.
+        const needsReconciliation = legacyExecutionNeedsReconciliation(predecessor);
+        if (
+          input.reason === "issue_continuation_needed" &&
+          (hasConversationContinuationPolicy(predecessor) ||
+            (needsReconciliation && isContinuationRecoveryWithBudget))
+        ) {
+          if (executionFailureRetryCount(predecessor) >= 2) {
+            return null;
+          }
+          // Fall through to direct enqueueWakeup below.
+        } else if (deps.scheduleRecoveryRetry) {
           const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
           return scheduled && typeof scheduled === "object" && "id" in scheduled
             ? scheduled
             : null;
         }
-        return null;
+        // Fall through to direct enqueue for generic continuation recovery
       }
     }
     if (
@@ -2263,7 +2293,7 @@ export function recoveryService(
     if (input.reason === "issue_continuation_needed") {
       const key = buildContinuationKey({
         issueId: input.issueId,
-        event: "issue_continuation_needed",
+        event: `issue_continuation_needed:${input.agentId}`,
         head: input.continuationHead ?? "unversioned",
       });
       const claimed = await tryClaimContinuationKey(db, {
@@ -2332,6 +2362,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
@@ -2346,6 +2377,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
@@ -2467,7 +2499,56 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+    if (budgetBlock) return true;
+
+    try {
+      const [agent] = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, issue.companyId)))
+        .limit(1);
+      const runtimeConfig = agent?.runtimeConfig;
+      const heartbeat =
+        runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)
+          ? (runtimeConfig as Record<string, unknown>).heartbeat
+          : null;
+      const heartbeatConfig =
+        heartbeat && typeof heartbeat === "object" && !Array.isArray(heartbeat)
+          ? (heartbeat as Record<string, unknown>)
+          : null;
+      const configuredLimit =
+        heartbeatConfig?.maxDailyRuns ??
+        heartbeatConfig?.dailyRunLimit ??
+        heartbeatConfig?.dailyRunCap ??
+        heartbeatConfig?.maxRunsPerDay;
+      const dailyLimit =
+        configuredLimit === null || configuredLimit === undefined || configuredLimit === ""
+          ? null
+          : Math.floor(Number(configuredLimit));
+      if (dailyLimit !== null && Number.isFinite(dailyLimit) && dailyLimit >= 0) {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const [row] = await db
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              gte(heartbeatRuns.startedAt, start),
+              lt(heartbeatRuns.startedAt, end),
+              notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+            ),
+          );
+        if (Number(row?.total ?? 0) >= dailyLimit) return true;
+      }
+    } catch {
+      // If daily cap inspection fails, defer to downstream heartbeat admission
+    }
+
+    return false;
   }
 
   async function reconcileUnassignedBlockingIssues() {
@@ -5993,6 +6074,18 @@ export function recoveryService(
         currentParticipant?.type === "agent"
           ? currentParticipant.agentId
           : null;
+      const pendingReviewStage =
+        issue.status === "in_review" && pendingExecutionState?.currentStageType === "review";
+      if (pendingReviewStage) {
+        const reviewCi = await resolveReviewPullRequestCi({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (reviewCi.state === "pending" || reviewCi.state === "unknown") {
+          result.skipped += 1;
+          continue;
+        }
+      }
       const agentId =
         issue.status === "in_review" && participantAgentId
           ? participantAgentId
@@ -6222,6 +6315,10 @@ export function recoveryService(
           : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
+        executionRecoverySource.contextSnapshot &&
+        typeof executionRecoverySource.contextSnapshot === "object" &&
+        "requestedByActorId" in executionRecoverySource.contextSnapshot &&
+        executionRecoverySource.contextSnapshot.requestedByActorId &&
         (
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
@@ -6254,7 +6351,24 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && legacyExecutionNeedsReconciliation(source)) {
+        // myrmidon(WAKE-2): for generic issue continuation recovery with
+        // remaining retry budget, do NOT terminalize — the recovery path
+        // below will create a new run via enqueueStrandedIssueRecovery.
+        // Only terminalize when the retry budget is exhausted.
+        // Recovery issues (stranded_issue_recovery) always use the
+        // terminalization path to avoid duplicate comments.
+        // Cancelled runs (system/operator cancellation) also use the
+        // terminalization path — they are not continuation recoveries.
+        const isContinuationRecovery =
+          issue.status !== "in_review" &&
+          issue.originKind !== "stranded_issue_recovery" &&
+          source?.status === "failed" &&
+          executionFailureRetryCount(source ?? {}) < 2;
+        if (
+          source &&
+          legacyExecutionNeedsReconciliation(source) &&
+          !isContinuationRecovery
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,
@@ -7216,6 +7330,11 @@ export function recoveryService(
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        extraContext: {
+          issueRecovery: true,
+          recoveryMode: "stranded_assigned_issue",
+          ...(latestRun?.id ? { continuationHead: latestRun.id } : {}),
+        },
       });
       if (queued) {
         result.continuationRequeued += 1;

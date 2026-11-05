@@ -23,9 +23,10 @@
 // Everything injectable arrives through ModelProviderServiceDeps, so the suite
 // runs the real service with fakes (the real wiring is wiring.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  evaluateModelProviderPackageWarning,
   getModelProviderConnector,
   isModelProviderTypeAvailable,
   listAvailableModelProviderTypes,
@@ -34,6 +35,7 @@ import {
   modelProviderSecretName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
   type PoolAccountChannelView,
@@ -46,8 +48,22 @@ import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
+  recordPackageExpirySignals,
   recordPoolAccountSignals,
+  type ModelProviderPackageSignal,
 } from "./signals.js";
+
+export interface ModelProviderKeyRotationSnapshot {
+  secretId: string;
+  secretValue: string | null;
+  models: Array<{
+    modelName: string;
+    litellmModelName: string;
+    enabled: boolean;
+    free: boolean;
+  }>;
+  keyValidatedAt: Date | null;
+}
 
 /** The provider surface this module needs from the secret store. */
 export interface ModelProviderSecretStoreDeps {
@@ -64,6 +80,8 @@ export interface ModelProviderSecretStoreDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Restores a previously stored company secret value after failed propagation. */
+  restoreSecret(secretId: string, value: string | null): Promise<void>;
   /** Removes (soft-deletes) a company secret. */
   deleteSecret(secretId: string): Promise<void>;
 }
@@ -146,6 +164,7 @@ export interface ModelProviderView {
   toolCallCheckedAt: string | null;
   toolCallCheckError: string | null;
   keyValidatedAt: string | null;
+  packageWarning?: ModelProviderPackageWarning | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -158,11 +177,18 @@ export interface ModelProviderModelView {
   free: boolean;
 }
 
-/** Activity-log entry of add / rotate / remove. */
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
 export interface ModelProviderActivityEntry {
   companyId: string;
-  action: "model_provider_added" | "model_provider_key_rotated" | "model_provider_removed";
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
   providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
   details: Record<string, unknown>;
 }
 
@@ -187,6 +213,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
       toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
+      packageWarning: evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: now() },
+      ),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -300,6 +338,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     body: CreateModelProviderInput;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const name = input.body.name.trim();
     const existing = await deps.db
@@ -364,6 +403,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name, type: row.type, baseUrl: stored.baseUrl, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...stored, updatedAt: now() }, true);
   }
 
@@ -377,6 +430,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     providerId: string;
     key: string;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const row = await loadProvider(input.companyId, input.providerId);
     const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
@@ -402,7 +456,88 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name: row.name, type: row.type, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
+  }
+
+  /**
+   * Captures the snapshot of current key/secret and models cache before rotation,
+   * allowing rollback if live gateway synchronization fails.
+   */
+  async function captureKeyRotationSnapshot(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderKeyRotationSnapshot> {
+    const row = await loadProvider(companyId, providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+    const secretValue = await deps.secrets.readSecretValue(companyId, secretName);
+    const models = await deps.db
+      .select({
+        modelName: modelProviderModels.modelName,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+        free: modelProviderModels.free,
+      })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, row.id));
+
+    return {
+      secretId,
+      secretValue,
+      models,
+      keyValidatedAt: row.keyValidatedAt,
+    };
+  }
+
+  /**
+   * Rolls back a key rotation to the previously captured snapshot when
+   * downstream gateway propagation fails.
+   */
+  async function rollbackProviderKey(
+    companyId: string,
+    providerId: string,
+    snapshot: ModelProviderKeyRotationSnapshot,
+  ): Promise<void> {
+    const row = await loadProvider(companyId, providerId);
+    await deps.secrets.restoreSecret(snapshot.secretId, snapshot.secretValue);
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, row.id));
+    if (snapshot.models.length > 0) {
+      await deps.db.insert(modelProviderModels).values(
+        snapshot.models.map((m) => ({
+          providerId: row.id,
+          modelName: m.modelName,
+          litellmModelName: m.litellmModelName,
+          enabled: m.enabled,
+          free: m.free,
+        })),
+      );
+    }
+    await deps.db
+      .update(modelProviders)
+      .set({
+        keyValidatedAt: snapshot.keyValidatedAt,
+        updatedAt: now(),
+      })
+      .where(eq(modelProviders.id, row.id));
   }
 
   /** Re-runs compatibility checks in the background for one company. */
@@ -487,6 +622,30 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
     return view(updated, await hasKeyFor(updated));
   }
 
@@ -555,8 +714,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     providerId: string;
     models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
@@ -571,7 +732,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           ),
         );
     }
-    return listModels(input.companyId, input.providerId);
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
   }
 
   function mapStateToRu(state: string): string {
@@ -836,9 +1009,64 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return aggregated;
   }
 
+  /**
+   * Evaluates package expiration and consumption warnings for all registered
+   * providers of a company, emits board attention signals, and returns warnings.
+   */
+  async function checkPackageExpirations(
+    companyId: string,
+    options?: { now?: Date; thresholdPercent?: number },
+  ): Promise<ModelProviderPackageWarning[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, companyId), isNotNull(modelProviders.expiresAt)));
+
+    const warnings: ModelProviderPackageWarning[] = [];
+    const signals: ModelProviderPackageSignal[] = [];
+    const checkNow = options?.now ?? now();
+
+    for (const row of rows) {
+      const warning = evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: checkNow, thresholdPercent: options?.thresholdPercent },
+      );
+
+      if (warning) {
+        warnings.push(warning);
+        signals.push({
+          providerId: row.id,
+          providerName: row.name,
+          packageName: row.packageName,
+          kind: warning.trigger === "limit" ? "package_limit" : "package_expiry",
+          status: warning.status,
+          severity: warning.status === "expired" ? "high" : "medium",
+          title: `LLM key package ${warning.status === "expired" ? "expired" : "nearing expiration"}: ${row.name}`,
+          whyNow: warning.message,
+          expiresAt: warning.expiresAt,
+          observedAt: checkNow.toISOString(),
+          dedupKey: warning.key,
+        });
+      }
+    }
+
+    recordPackageExpirySignals(companyId, signals);
+    return warnings;
+  }
+
   return {
     createProvider,
     rotateProviderKey,
+    captureKeyRotationSnapshot,
+    rollbackProviderKey,
     patchProvider,
     removeProvider,
     listProviders,
@@ -849,6 +1077,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     listChannels,
     syncPoolSignals,
     checkToolCallCompatibility,
+    checkPackageExpirations,
   };
 }
 

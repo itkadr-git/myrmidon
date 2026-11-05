@@ -32,6 +32,7 @@ import {
   type ForagingIdleGateSource,
   type ForagingSkipReason,
   type ForagingSourceKind,
+  type ForagingSource,
 } from "@/api/foraging";
 
 const NO_COMPANY = "__none__";
@@ -144,6 +145,13 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
       setUrl("");
       void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) });
     },
+  });
+
+  // myrmidon(SETTINGS-UI-REMAINDER): persist per-source enablement through the registry PUT.
+  const toggleSource = useMutation({
+    mutationFn: ({ source, enabled }: { source: ForagingSource; enabled: boolean }) =>
+      foragingApi.saveSource(companyId, { role: source.role, url: source.url, kind: source.kind, enabled }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) }),
   });
 
   const removeSource = useMutation({
@@ -387,6 +395,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
             </p>
           ) : null}
 
+          {toggleSource.error ? <p className="text-sm text-destructive" role="alert">{(toggleSource.error as Error).message}</p> : null}
           {sourcesQuery.isLoading ? (
             <PageSkeleton variant="costs" />
           ) : sources.length === 0 ? (
@@ -401,6 +410,7 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.role")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.source")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.kind")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.enabled")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastSnapshot")}</th>
                     <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.sources.lastCheck")}</th>
                     <th scope="col" className="px-3 py-2 text-right font-medium text-muted-foreground" />
@@ -419,6 +429,15 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
                         ) : null}
                       </td>
                       <td className="px-3 py-2">{t(KIND_LABEL_KEYS[source.kind], { defaultValue: source.kind })}</td>
+                      <td className="px-3 py-2">
+                        <ToggleSwitch
+                          checked={source.enabled}
+                          onCheckedChange={(enabled) => toggleSource.mutate({ source, enabled })}
+                          disabled={toggleSource.isPending}
+                          aria-label={t("foraging.sources.toggleEnabled", { url: source.url })}
+                          data-testid="foraging-source-enabled-toggle"
+                        />
+                      </td>
                       <td className="px-3 py-2 tabular-nums">
                         {source.lastSnapshotAt
                           ? formatWhen(source.lastSnapshotAt, language)

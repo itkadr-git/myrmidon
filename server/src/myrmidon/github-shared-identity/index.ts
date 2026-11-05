@@ -84,6 +84,7 @@ export {
   type GitHubAppPermissionLevel,
   type GitHubAppPermissions,
   mintGitHubAppInstallationToken,
+  onResetGitHubAppTokenCache,
 } from "./app-token.js";
 export { normalizeGitHubAppPermissions } from "./settings.js";
 export { vendorGitHubConnectorEnabled, GITHUB_VENDOR_CONNECTOR_ENV } from "./vendor-connector.js";

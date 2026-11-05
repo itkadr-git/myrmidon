@@ -134,6 +134,15 @@ function fakeService() {
       });
       return providerView(input.providerId);
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "secret-1",
+        secretValue: KEY_VALUE,
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    async rollbackProviderKey() {},
     async patchProvider(input) {
       calls.push({ op: "patch", companyId: input.companyId, providerId: input.providerId, body: input.body });
       return providerView(input.providerId);
@@ -171,6 +180,10 @@ function fakeService() {
     async checkToolCallCompatibility(input) {
       calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
       return providerView(input.providerId);
+    },
+    async checkPackageExpirations(companyId, options) {
+      calls.push({ op: "checkPackageExpirations", companyId, body: options });
+      return [];
     },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });

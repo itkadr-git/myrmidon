@@ -29,8 +29,15 @@ export function isForkLanguage(value: unknown): value is ForkLanguage {
 
 export function readStoredLanguage(): ForkLanguage {
   try {
-    const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    const stored =
+      window.localStorage.getItem(LANGUAGE_STORAGE_KEY) ??
+      window.localStorage.getItem("myrmidon.ui2.locale") ??
+      window.localStorage.getItem("myrmidon:ui2:language");
     if (isForkLanguage(stored)) return stored;
+    if (typeof navigator !== "undefined" && typeof navigator.language === "string") {
+      const navLang = navigator.language.toLowerCase();
+      if (navLang.startsWith("ru")) return "ru";
+    }
   } catch {
     // localStorage unavailable (private mode, disabled) — stay on the default.
   }
@@ -40,6 +47,8 @@ export function readStoredLanguage(): ForkLanguage {
 export function storeLanguage(language: ForkLanguage): void {
   try {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+    window.localStorage.setItem("myrmidon.ui2.locale", language);
+    window.localStorage.setItem("myrmidon:ui2:language", language);
   } catch {
     // Persisting is best-effort; the in-memory switch still applies.
   }

@@ -2829,6 +2829,15 @@ export function secretService(db: Db | DbTransaction) {
   }
 
   function fallbackBindingTarget(binding: typeof companySecretBindings.$inferSelect): CompanySecretBindingTarget {
+    if (binding.targetType === "github_actions") {
+      return {
+        type: "github_actions",
+        id: binding.targetId,
+        label: `GitHub Actions: ${binding.targetId}`,
+        href: `https://github.com/${binding.targetId}/settings/secrets/actions`,
+        status: "active",
+      };
+    }
     return {
       type: binding.targetType as SecretBindingTargetType,
       id: binding.targetId,
@@ -2973,6 +2982,17 @@ export function secretService(db: Db | DbTransaction) {
           status: row.status,
         });
       }
+    }
+
+    const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+    for (const b of ghBindings) {
+      setTarget({
+        type: "github_actions",
+        id: b.targetId,
+        label: `GitHub Actions: ${b.targetId}`,
+        href: `https://github.com/${b.targetId}/settings/secrets/actions`,
+        status: "active",
+      });
     }
 
     return targetMap;

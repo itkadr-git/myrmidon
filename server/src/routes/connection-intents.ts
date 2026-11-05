@@ -12,6 +12,7 @@ import {
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
 } from "@myrmidon/shared";
+import { recordGitHubRequest } from "../services/github-rate-limit.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { verifyRuntimeToolsToken } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -46,13 +47,15 @@ import {
   RUNTIME_CONNECTION_TOOL_DEFINITIONS,
   RUNTIME_INTENT_TOOL_DEFINITIONS,
 } from "../services/connection-tool-definitions.js";
+import { boardLoadRequestMiddleware } from "../myrmidon/monitoring/board-load/index.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
 
-  router.post("/runtime-tools/github/credentials", async (req, res) => {
+  router.post("/runtime-tools/github/credentials", boardLoadRequestMiddleware(), async (req, res) => {
+    recordGitHubRequest("broker", null);
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");

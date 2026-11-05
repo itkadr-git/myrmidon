@@ -34,7 +34,7 @@ import {
 } from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
-import { assertCompanyAdmin } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import type { ModelProviderActivityEntry, ModelProviderService } from "./service.js";
 import { reportPoolAccountStatus } from "./signals.js";
 import { sanitizeErrorMessage } from "../litellm-sync/client.js";
@@ -73,6 +73,8 @@ export interface ModelProviderRoutesDeps {
   service: ModelProviderService;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;
+  /** Optional change-log listing function. */
+  listChangeLog?: (companyId: string) => Promise<unknown[]>;
 }
 
 function bodyOf(req: Request): Record<string, unknown> {
@@ -84,6 +86,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   const router = Router();
   const activity = (entry: ModelProviderActivityEntry) =>
     deps.recordActivity ? deps.recordActivity(entry) : Promise.resolve();
+
+  const actorFor = (req: Request) => {
+    const info = getActorInfo(req);
+    return { type: info.actorType, id: info.actorId };
+  };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
     const result = schema.safeParse(body);
@@ -103,17 +110,29 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const provider = await deps.service.createProvider({
       companyId,
       body,
-      activity: (entry) => activity(entry),
+      autoProbeToolCall: true,
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(201).json(provider);
+  });
+
+  router.get("/myrmidon/companies/:companyId/model-providers/package-warnings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAdmin(req, companyId);
+    const warnings = deps.service.checkPackageExpirations
+      ? await deps.service.checkPackageExpirations(companyId)
+      : [];
+    res.json({ warnings });
   });
 
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAdmin(req, companyId);
+    const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+      changeLog,
     });
   });
 
@@ -127,7 +146,8 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
         companyId,
         providerId,
         key: body.key,
-        activity: (entry) => activity(entry),
+        autoProbeToolCall: true,
+        activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
       });
       res.json(view);
       return;
@@ -136,7 +156,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
       companyId,
       providerId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.json(view);
   });
@@ -148,7 +168,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     await deps.service.removeProvider({
       companyId,
       providerId,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(204).send();
   });

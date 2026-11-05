@@ -471,7 +471,9 @@ describe("execute", () => {
     // Launcher bodies are public program text: no capability, no token.
     const launcherText = JSON.stringify(body.github_launcher);
     expect(launcherText).not.toContain("broker-capability-token");
-    expect(launcherText).not.toContain("paperclip-server-1");
+    // The non-container launcher must use the internal board candidate without
+    // embedding any capability or token in the staged program body.
+    expect(launcherText).toContain("paperclip-server-1");
   });
 
   it("omits the github_launcher field when no broker env is configured, and ignores payloadTemplate attempts to forge one", async () => {
@@ -1889,6 +1891,234 @@ describe("mapFinalResultForTest", () => {
 
     expect(fallback.model).toBe("card-model");
     expect(alone.model).toBeNull();
+  });
+
+  it("emits exactly one trace entry per run even with multiple litellm request ids", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): the gateway reports aggregate
+    // usage per run. Emitting N copies (one per litellm_request_id) inflates
+    // SUM(promptTokens) by N× and breaks acceptance criterion 2. We must emit
+    // exactly one trace entry (callIndex=0) with the first litellmRequestId.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-multi-id",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 500,
+            cached_input_tokens: 100,
+            output_tokens: 200,
+            litellm_request_ids: ["req-a", "req-b", "req-c"],
+            gateway_call_ids: ["gw-a", "gw-b", "gw-c"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-a");
+    expect(traces[0].usage.promptTokens).toBe(500);
+    expect(traces[0].usage.cachedPromptTokens).toBe(100);
+    expect(traces[0].usage.completionTokens).toBe(200);
+  });
+
+  it("passes through section chars and tool schema/result sizes to the trace", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): verify that real measurements
+    // from buildRunBody (sectionChars), paperclipSkillsField (toolSchemaChars),
+    // and tool event accumulation (toolResultChars) reach the trace entry.
+    const sectionChars = {
+      instructionsBundle: 1500,
+      cardInstructions: 300,
+      identityContract: 200,
+      wakePrompt: 400,
+      wakePayloadJson: 600,
+      sessionHandoff: 100,
+      taskMarkdown: 250,
+    };
+    const toolSchemaChars = 5000;
+    const toolSchemaTokens = 1250;
+    const toolResultChars = 800;
+    const toolResultTokens = 200;
+
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-sections",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 1000,
+            cached_input_tokens: 200,
+            output_tokens: 300,
+            litellm_request_ids: ["req-1"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      sectionChars,
+      toolSchemaChars,
+      toolSchemaTokens,
+      toolResultChars,
+      toolResultTokens,
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    const sections = traces[0].sections;
+    // system = instructionsBundle + cardInstructions
+    expect(sections.systemChars).toBe(1800);
+    // wake = identityContract + wakePrompt + wakePayloadJson
+    expect(sections.wakeChars).toBe(1200);
+    // history = sessionHandoff + taskMarkdown
+    expect(sections.historyChars).toBe(350);
+    // tool schemas and results pass through
+    expect(sections.toolsChars).toBe(5000);
+    expect(sections.toolsTokens).toBe(1250);
+    expect(sections.toolResultsChars).toBe(800);
+    expect(sections.toolResultsTokens).toBe(200);
+  });
+
+  it("emits one trace per model call when gateway provides model_calls array", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway payload carries
+    // a model_calls array with per-call usage, the adapter must emit one trace
+    // per call — this is the "трейс каждого LLM-вызова" requirement.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-per-call",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 1500,
+            cached_input_tokens: 300,
+            output_tokens: 600,
+          },
+          model_calls: [
+            {
+              usage: { input_tokens: 500, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-1",
+              model: "test-model",
+              section_chars: { instructionsBundle: 400, cardInstructions: 100 },
+            },
+            {
+              usage: { input_tokens: 600, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-2",
+              model: "test-model",
+            },
+            {
+              usage: { input_tokens: 400, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-3",
+              model: "test-model",
+            },
+          ],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(3);
+
+    // Each trace has its own callIndex and litellmRequestId
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-call-1");
+    expect(traces[0].usage.promptTokens).toBe(500);
+    expect(traces[0].usage.cachedPromptTokens).toBe(100);
+    expect(traces[0].usage.completionTokens).toBe(200);
+    // Gateway-provided section_chars override adapter-computed
+    expect(traces[0].sections.systemChars).toBe(500);
+
+    expect(traces[1].callIndex).toBe(1);
+    expect(traces[1].litellmRequestId).toBe("req-call-2");
+    expect(traces[1].usage.promptTokens).toBe(600);
+
+    expect(traces[2].callIndex).toBe(2);
+    expect(traces[2].litellmRequestId).toBe("req-call-3");
+    expect(traces[2].usage.promptTokens).toBe(400);
+
+    // Sum of per-call prompt tokens equals aggregate
+    const sumPrompt = traces.reduce((sum: number, t) => sum + t.usage.promptTokens, 0);
+    expect(sumPrompt).toBe(1500);
+  });
+
+  it("falls back to single trace per run when model_calls is absent", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway does not emit
+    // model_calls, we fall back to a single trace per run with aggregate usage.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-aggregate",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 800,
+            cached_input_tokens: 150,
+            output_tokens: 300,
+            litellm_request_ids: ["req-agg-1"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-agg-1");
+    expect(traces[0].usage.promptTokens).toBe(800);
+    expect(traces[0].usage.cachedPromptTokens).toBe(150);
+    expect(traces[0].usage.completionTokens).toBe(300);
   });
 });
 
@@ -3962,6 +4192,75 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.resultJson?.failedBeforeModel).toBe(false);
     expect(result.resultJson?.modelResponseStarted).toBe(true);
     expect(result.resultJson?.failed_before_model).toBeUndefined();
+  });
+
+  it("uses usage_limit_reached resets_in_seconds instead of a fixed cooldown", () => {
+    const before = Date.now();
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-limit",
+        status: "failed",
+        payload: {
+          error: {
+            type: "usage_limit_reached",
+            message: "Weekly usage limit reached",
+            resets_in_seconds: 3600,
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-usage-limit",
+      strategy: "issue",
+    });
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeTruthy();
+    const delay = new Date(result.retryNotBefore!).getTime() - before;
+    expect(delay).toBeGreaterThanOrEqual(3_599_000);
+    expect(delay).toBeLessThanOrEqual(3_601_000);
+  });
+
+  it("uses the earliest reset from a wham usage window", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-wham-usage",
+        status: "failed",
+        payload: {
+          error: { type: "usage_limit_reached", message: "limit" },
+          usage: { windows: [{ resets_at: "2099-01-01T00:00:00Z" }, { resets_in_seconds: 90 }] },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-wham-usage",
+      strategy: "issue",
+    });
+
+    expect(result.retryNotBefore).toBeTruthy();
+    expect(new Date(result.retryNotBefore!).getTime() - Date.now()).toBeGreaterThanOrEqual(89_000);
+  });
+  it("falls back immediately when run creation reports usage_limit_reached", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "chatgpt-pool/gpt-6-sol", provider: "chatgpt-pool", models: { fallbacks: ["kie/gemini"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        if (bodies.length === 1) {
+          return new Response(JSON.stringify({ error: { type: "usage_limit_reached", resets_in_seconds: 3600 } }), { status: 429 });
+        }
+        return new Response(JSON.stringify({ run_id: "fallback-run", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "reserve" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["chatgpt-pool/gpt-6-sol", "kie/gemini"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("reserve");
   });
 
   it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {

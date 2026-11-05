@@ -86,6 +86,12 @@ The temporary `devbuild-v2-gc.sh` script is superseded by this scheduler. Remove
 sudo rm /usr/local/bin/devbuild-v2-gc.sh
 ```
 
+## Board status guard
+
+Task clones are eligible only when the Paperclip board reports `done` or `cancelled`, in addition to the TTL and git safety checks. Set `BOARD_API_URL` to the board base URL reachable from the host (for example, the host-published board URL); the collector requests `GET /api/issues/{identifier}` and sends `PAPERCLIP_API_KEY` as a bearer token when present. A missing/unreachable board, non-2xx response, or malformed issue is fail-closed and journaled as `clone-skipped`.
+
+The default remains dry-run. Do not enable `--apply` in the timer or service until this change has been reviewed and approved by the owner.
+
 ## Tests
 
 ```bash

@@ -53,7 +53,7 @@ const ALLOWED_LATIN = new Set([
   "GitHub",
   // plugin names (myrmidon_chatgpt-pool: «ChatGPT», myrmidon_google-ai, myrmidon_antigravity)
   // are product names, not untranslated copy.
-  "ChatGPT", "Google", "Antigravity",
+  "ChatGPT", "Google", "Antigravity", "LiteLLM",
   // input placeholders stay language-neutral (role codes and URLs)
   "engineer", "https", "example", "com", "changelog",
   // myrmidon(1.7-AGENT-EXCHANGE-A): pull request / owner/repo are forge

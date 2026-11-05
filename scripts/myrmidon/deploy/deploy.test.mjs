@@ -76,6 +76,10 @@ case "$1" in
             *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;;
           esac
         done
+        if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+          echo '{"Layers":[{"size":1}]}'
+          exit 0
+        fi
         cat "$SANDBOX/component-image.json"; exit 0 ;;
     esac
     if [[ "$*" == *"imagetools inspect"* ]]; then
@@ -83,6 +87,10 @@ case "$1" in
       if [ -e "$SANDBOX/registry-invalid-revision" ]; then jq '.config.Labels["org.opencontainers.image.revision"]="efe4758"' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-labels" ]; then jq '.config |= del(.Labels)' "$SANDBOX/imagetools.json"; exit 0; fi
       if [ -e "$SANDBOX/registry-no-revision" ]; then jq '.config.Labels |= del(."org.opencontainers.image.revision")' "$SANDBOX/imagetools.json"; exit 0; fi
+      if [[ "$*" == *"--format"*".Manifest"* || "$*" == *"--format"*".Manifest.Digest"* ]]; then
+        echo '{"Layers":[{"size":1}]}'
+        exit 0
+      fi
       if [[ "$*" == *"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]]; then
         jq --arg rev "$(cat "$SANDBOX/old-label-revision" 2>/dev/null || cat "$SANDBOX/label-revision")" '.config.Labels["org.opencontainers.image.revision"]=$rev' "$SANDBOX/imagetools.json"; exit 0
       fi
@@ -103,20 +111,16 @@ case "$1" in
     exit 0 ;;
   compose)
     case "$*" in
-      *--services)
-        # HOST-TARGETING: the declared services of the sandbox's compose
-        # project (the fail-closed pre-check reads them). DEPLOY-PRECHECK (the
-        # 05.10 incident): composeConfigFails makes the project unreadable —
-        # the real compose error on stderr, nothing on stdout, exit 1, exactly
-        # like docker compose on an invalid project.
-        if [ -e "$SANDBOX/compose-config-fails" ]; then
-          echo 'service "server" has neither an image nor a build context specified' >&2
-          echo "ERROR: Invalid compose project" >&2
-          exit 1
+      *"config"*|*--services*)
+        if [[ "$*" == *--services* ]]; then
+          if [ -e "$SANDBOX/compose-config-fails" ]; then
+            echo 'service "server" has neither an image nor a build context specified' >&2
+            echo "ERROR: Invalid compose project" >&2
+            exit 1
+          fi
+          printf 'server\\ndockergate\\nfleetd\\n'
+          exit 0
         fi
-        printf 'server\\ndockergate\\nfleetd\\n' ;;
-      *"--format json"*)
-        # LICENSE-DIR: the rendered compose project, when a test supplies one
         if [ -f "$SANDBOX/compose-json" ]; then cat "$SANDBOX/compose-json"; fi
         exit 0 ;;
       *logs*) echo '{"event":"self-check ok","version":"1.4.0+0123456789ab"}' ;;
@@ -213,6 +217,10 @@ function sandbox({
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "systemctl"), `#!/usr/bin/env bash\ncase "$1" in\n  --version) echo systemd 255 ; exit 0 ;;\n  is-enabled|daemon-reload|enable|start) exit 0 ;;\n  *) exit 0 ;;\nesac\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
+`, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =
@@ -1149,6 +1157,7 @@ case "$url" in
     cat "$SANDBOX/maintenance.json" 2>/dev/null || echo '{"active":false,"instance":null,"windows":[]}'
     if [ -e "$SANDBOX/flip-on-read" ]; then rm -f "$SANDBOX/flip-on-read"; echo '{"active":false,"instance":null,"windows":[]}' > "$SANDBOX/maintenance.json"; fi ;;
   *issues*) cat "$SANDBOX/issues.json" 2>/dev/null || echo '[]' ;;
+  *heartbeat-runs*) cat "$SANDBOX/runs.json" 2>/dev/null || echo '[]' ;;
   *) echo '{"status":"ok"}' ;;
 esac
 `;
@@ -1164,6 +1173,7 @@ esac
         "MAINTENANCE_MODE=api",
         "MAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance",
         "MAINTENANCE_EXIT_WAIT_SEC=2",
+        "MYRMIDON_DEPLOY_POSTCHECK_RUNS=0",
         "",
       ].join("\n"),
     );
@@ -1174,14 +1184,17 @@ esac
   function callLib(sb, functionCall) {
     const libScript = path.join(sb.dir, "call-lib.sh");
     fs.writeFileSync(libScript, `source "$MYR_SCRIPT_DIR/lib.sh"; load_config "$LIB_CONFIG"; ${functionCall}\n`, { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: `${sb.bin}:${process.env.PATH}`,
+      SANDBOX: sb.dir,
+      LIB_CONFIG: sb.config,
+      MYR_SCRIPT_DIR: HERE,
+    };
+    delete env.BASH_ENV;
+    delete env.ENV;
     const result = spawnSync(bashPath(), [libScript], {
-      env: {
-        ...process.env,
-        PATH: `${sb.bin}:${process.env.PATH}`,
-        SANDBOX: sb.dir,
-        LIB_CONFIG: sb.config,
-        MYR_SCRIPT_DIR: HERE,
-      },
+      env,
       encoding: "utf8",
     });
     return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -1272,6 +1285,44 @@ esac
     const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
     assert.equal(code, 1);
     assert.match(out, /degraded: maintenance window did not retire after exit/);
+  });
+
+  it("post_deploy_fleet_check passes when the first completed gateway runs succeeded", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "succeeded", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, resultJson: { output: "ok" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.match(out, /5 successful, 0 failed of first 5 completed hermes_gateway runs/);
+  });
+
+  it("post_deploy_fleet_check degrades when the first five completed gateway runs fail", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.writeFileSync(path.join(sb.dir, "runs.json"), JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+      adapterType: "hermes_gateway", status: "failed", createdAt: `2026-10-01T00:00:0${i}Z`, finishedAt: `2026-10-01T00:00:0${i}Z`, errorCode: "adapter_failed", resultJson: { output: "run failed" },
+    }))));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=5\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC=1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC=1\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 1, out);
+    assert.match(out, /no successful hermes_gateway runs among the first 5 completed runs/);
+    assert.match(out, /adapter_failed/);
+  });
+
+  it("post_deploy_fleet_check skips gateway run check when MYRMIDON_DEPLOY_POSTCHECK_RUNS=0", () => {
+    const sb = libSandbox();
+    fs.writeFileSync(path.join(sb.dir, "maintenance.json"), JSON.stringify({ active: false, instance: null, windows: [] }));
+    fs.writeFileSync(path.join(sb.dir, "issues.json"), JSON.stringify([]));
+    fs.appendFileSync(sb.config, "BOARD_API_URL=http://127.0.0.1:3100/api\nBOARD_COMPANY_ID=c1\nMYRMIDON_DEPLOY_POSTCHECK_RUNS=0\n");
+    const { code, out } = callLib(sb, 'post_deploy_fleet_check "2026-10-01T00:00:00Z"');
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /completed hermes_gateway run/);
+    assert.match(out, /no blocked issues in the deploy window, maintenance retired/);
   });
 
   it("post_deploy_fleet_check is skipped without BOARD_API_URL/BOARD_COMPANY_ID", () => {

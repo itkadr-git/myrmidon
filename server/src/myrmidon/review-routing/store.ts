@@ -56,6 +56,9 @@ export interface ReviewerAgentRow {
   role: string;
   model?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Queue eligibility is checked separately from enabled/role eligibility. */
+  swarmQueueEligible?: boolean;
+  status?: string | null;
   invokable?: boolean;
 }
 
@@ -392,9 +395,11 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         id,
         name,
         role,
+        status,
         metadata: (metadata as Record<string, unknown> | null) ?? null,
         model: lastRunModel ?? model,
         invokable: isAgentStatusInvokable(status),
+        swarmQueueEligible: metadata?.swarmQueueEligible !== false,
       }));
     },
 
@@ -426,6 +431,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
         id: row.id,
         name: row.name,
         role: row.role,
+        status: row.status,
         metadata: (row.metadata as Record<string, unknown> | null) ?? null,
         invokable: isAgentStatusInvokable(row.status),
       };
@@ -479,6 +485,7 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
           entityId: activityLog.entityId,
           createdAt: activityLog.createdAt,
           reviewerAgentId: sql<string | null>`${activityLog.details} ->> 'reviewerAgentId'`,
+          previousReviewerAgentId: sql<string | null>`${activityLog.details} ->> 'previousReviewerAgentId'`,
         })
         .from(activityLog)
         .where(
@@ -493,7 +500,12 @@ export function createPgReviewRoutingStore(db: Db): ReviewRoutingStore {
       // Newest first: the first row per task is the last routing event.
       for (const row of rows) {
         const entry = history.get(row.entityId) ?? { lastAt: row.createdAt, reviewerAgentIds: [] };
-        if (row.reviewerAgentId) entry.reviewerAgentIds.unshift(row.reviewerAgentId);
+        if (row.previousReviewerAgentId && !entry.reviewerAgentIds.includes(row.previousReviewerAgentId)) {
+          entry.reviewerAgentIds.unshift(row.previousReviewerAgentId);
+        }
+        if (row.reviewerAgentId && !entry.reviewerAgentIds.includes(row.reviewerAgentId)) {
+          entry.reviewerAgentIds.unshift(row.reviewerAgentId);
+        }
         history.set(row.entityId, entry);
       }
       return history;

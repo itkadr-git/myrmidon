@@ -106,6 +106,7 @@ export function usersRoutes(db: Db): Router {
           userId,
           blocked: true,
           actorUserId,
+          reason,
         });
 
         await auditUserBlock(db, {
@@ -166,6 +167,7 @@ export function usersRoutes(db: Db): Router {
           userId,
           blocked: true,
           actorUserId,
+          reason,
         });
 
         // Also suspend company membership if present

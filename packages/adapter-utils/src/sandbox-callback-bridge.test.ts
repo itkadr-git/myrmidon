@@ -386,20 +386,29 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
     const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
-    let observedRequests!: () => void;
-    const requestsObserved = new Promise<void>((resolve) => {
-      observedRequests = resolve;
-    });
+
+    // Seed both requests before starting the poller. Observing a directory listing
+    // is not a synchronization point: the poller may list the first file before
+    // the second write lands, making the shutdown assertion depend on scheduling.
+    await mkdir(directories.requestsDir, { recursive: true });
+    for (const id of ["req-a", "req-b"]) {
+      await writeFile(
+        path.posix.join(directories.requestsDir, `${id}.json`),
+        `${JSON.stringify({
+          id,
+          method: "GET",
+          path: "/api/agents/me",
+          query: "",
+          headers: {},
+          body: "",
+          createdAt: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+    }
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: {
-        ...baseClient,
-        listJsonFiles: async (remotePath) => {
-          const files = await baseClient.listJsonFiles(remotePath);
-          if (remotePath === directories.requestsDir && files.length >= 2) observedRequests();
-          return files;
-        },
-      },
+      client: baseClient,
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -412,35 +421,8 @@ describe("sandbox callback bridge", () => {
       },
     });
 
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-a.json"),
-      `${JSON.stringify({
-        id: "req-a",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-b.json"),
-      `${JSON.stringify({
-        id: "req-b",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-
-    // Shutdown must not race ahead of the poller observing the queued files.
-    await requestsObserved;
+    // Both files existed before polling began, so the first poll observes the
+    // complete queued batch. Give the worker its normal drain window.
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     expect(processed).toEqual(["req-a", "req-b"]);

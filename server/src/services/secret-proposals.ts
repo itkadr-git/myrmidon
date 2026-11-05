@@ -14,9 +14,17 @@ import {
 import type { SecretProvider } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
+import {
+  continuationPolicyWakesOnResolution,
+  recordInteractionContinuationOutbox,
+} from "../myrmidon/interaction-continuation-outbox.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { normalizeSecretKey, secretService } from "./secrets.js";
+
+function isClosedIssueStatus(status: string | null | undefined): boolean {
+  return status === "done" || status === "cancelled";
+}
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
@@ -310,7 +318,67 @@ export function createSecretProposalsService(db: Db) {
         eq(issueThreadInteractions.id, current.id),
         inArray(issueThreadInteractions.status, outcome === "approved" ? ["pending", "accepted"] : ["pending"]),
       ));
+
+    if (
+      current.status === "pending" &&
+      continuationPolicyWakesOnResolution(current.continuationPolicy, status)
+    ) {
+      const originIssueId = current.issueId ?? proposal.originIssueId;
+      if (originIssueId) {
+        const originIssue = await txDb
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(eq(issues.id, originIssueId))
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          originIssue?.assigneeAgentId &&
+          !isClosedIssueStatus(originIssue.status)
+        ) {
+          await recordInteractionContinuationOutbox(txDb, {
+            companyId: proposal.companyId,
+            agentId: originIssue.assigneeAgentId,
+            interactionId: current.id,
+            interactionStatus: status,
+            reason: "secret_proposal_resolved",
+            contract: {
+              wakeIdempotencyKey: `interaction:${current.id}:${status}`,
+              allowRunCoalescing: true,
+              payload: {
+                issueId: originIssue.id,
+                interactionId: current.id,
+                interactionKind: current.kind,
+                interactionStatus: status,
+                sourceCommentId: current.sourceCommentId ?? null,
+                sourceRunId: current.sourceRunId ?? null,
+                mutation: `secret_proposal_${outcome}`,
+                proposalId: proposal.id,
+              },
+              contextSnapshot: {
+                issueId: originIssue.id,
+                taskId: originIssue.id,
+                interactionId: current.id,
+                interactionKind: current.kind,
+                interactionStatus: status,
+                sourceCommentId: current.sourceCommentId ?? null,
+                sourceRunId: current.sourceRunId ?? null,
+                wakeReason: "secret_proposal_resolved",
+                source: "secret.proposal.resolution",
+                proposalId: proposal.id,
+              },
+            },
+          });
+        }
+      }
+    }
   }
+
+  const markProposalInteractionResolution = reflectProposalLifecycleOnInteraction;
 
   async function createSecret(context: ProposalRunContext, input: {
     name: string;
@@ -1023,5 +1091,5 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, markProposalInteractionResolution };
 }
