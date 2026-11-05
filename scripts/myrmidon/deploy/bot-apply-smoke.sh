@@ -71,13 +71,6 @@ list_agent_ids() {
   jq -r '[.[]? | select(.adapterType == "hermes_gateway") | .id] | join(" ")' <<<"$body" 2>/dev/null
 }
 
-# Status of one agent's bot container (routes.ts bot-container status).
-container_state() {
-  local id="$1" body
-  body="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/myrmidon/agents/$id/bot-container/status" 2>/dev/null)" || return 1
-  jq -r '.container.state // "missing"' <<<"$body" 2>/dev/null
-}
-
 container_error() {
   local id="$1" body
   body="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/myrmidon/agents/$id/bot-container/status" 2>/dev/null)" || return 1
@@ -195,20 +188,6 @@ classify_bot() {
     echo "board:$bstate"
   fi
   return 0
-}
-
-check_bot_healthy() {
-  local id="$1"
-  local cname="$2"
-  local agent_status="${3:-}"
-  local res
-  res="$(classify_bot "$id" "$cname" "$agent_status")"
-  if [[ "$res" == "healthy" ]]; then
-    echo "healthy"
-    return 0
-  fi
-  echo "$res"
-  return 1
 }
 
 if [[ "$dry_run" == "1" ]]; then
