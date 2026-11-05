@@ -47,6 +47,7 @@ import {
   selectJsonbCandidates,
   tableDigest,
   textColumns,
+  type ColumnInfo,
   type Q,
   type TableDigest,
   type TableInfo,
