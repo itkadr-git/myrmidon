@@ -223,10 +223,6 @@ function fakeService() {
       ok: true,
       accountNumber: 1,
     }),
-    oauthCancel: async () => ({
-      ok: true,
-      accountNumber: 1,
-    }),
   };
   return { service, calls };
 }
