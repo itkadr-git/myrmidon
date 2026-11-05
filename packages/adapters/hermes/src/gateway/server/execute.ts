@@ -2732,6 +2732,7 @@ const UNAMBIGUOUS_PRE_SEND_CONNECT_ERROR_CODES = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
   "EHOSTUNREACH",
+  "EAI_AGAIN",
 ]);
 
 /** myrmidon(G4): true only when a failed POST /v1/runs proves Hermes never

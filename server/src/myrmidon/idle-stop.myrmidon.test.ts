@@ -680,6 +680,33 @@ describe('IdleStopService', () => {
 
       expect(mockDriver.start).toHaveBeenCalledWith('b');
     });
+
+    it('deduplicates concurrent ensureStartedAndHealthy calls for the same bot', async () => {
+      const botKey = 'concurrent-bot';
+      let startResolve: () => void;
+      const startPromise = new Promise<void>((resolve) => {
+        startResolve = resolve;
+      });
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', idleStopped: true })
+        .mockResolvedValue({ botKey, state: 'running', idleStopped: false });
+
+      vi.mocked(mockDriver.start).mockImplementation(async () => {
+        await startPromise;
+      });
+
+      const call1 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call2 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call3 = idleStopService.ensureStartedAndHealthy(botKey);
+
+      expect(mockDriver.start).toHaveBeenCalledTimes(1);
+
+      startResolve!();
+      await Promise.all([call1, call2, call3]);
+
+      expect(mockDriver.start).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('disabled functionality', () => {

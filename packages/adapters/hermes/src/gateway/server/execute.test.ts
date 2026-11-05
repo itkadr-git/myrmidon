@@ -1121,6 +1121,24 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("host.docker.internal");
   });
 
+  it("handles EAI_AGAIN DNS failures as hermes_gateway_connect_failed", async () => {
+    const cause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).toContain("EAI_AGAIN");
+    expect(result.errorMessage).toContain("myrmidon-bot-test");
+  });
+
   it("redacts echoed auth material from HTTP error payloads", async () => {
     vi.stubGlobal(
       "fetch",
@@ -2618,6 +2636,14 @@ describe("execute — operator cancellation (G4)", () => {
         label: "ENOTFOUND",
         respond: async () => {
           throw connectError("ENOTFOUND");
+        },
+        unambiguous: true,
+        errorCode: "hermes_gateway_cancelled",
+      },
+      {
+        label: "EAI_AGAIN",
+        respond: async () => {
+          throw connectError("EAI_AGAIN");
         },
         unambiguous: true,
         errorCode: "hermes_gateway_cancelled",
