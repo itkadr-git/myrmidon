@@ -6,6 +6,10 @@ import {
   type PoolAccountChannelView,
 } from "@myrmidon/shared";
 import { createModelProviderService } from "./service.js";
+import {
+  clearPoolAccountSignals,
+  evaluateAccountSignals,
+} from "./signals.js";
 
 describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and K-12 tariff", () => {
   describe("isK12Plan helper", () => {
@@ -32,7 +36,7 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
     it("derives safe namespaced secret name under provider secret prefix", () => {
       const secretName = modelProviderAccountSecretName("prov-123", 4);
       expect(secretName).toBe(`${modelProviderSecretName("prov-123")}/accounts/4`);
-      expect(secretName).toContain("myrmidon/model-providers/prov-123/accounts/4");
+      expect(secretName).toBe("model-provider-key-prov-123/accounts/4");
     });
   });
 
@@ -44,19 +48,30 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
         createSecret: vi.fn().mockResolvedValue("sec-created"),
         rotateSecret: vi.fn().mockResolvedValue(undefined),
         deleteSecret: vi.fn().mockResolvedValue(undefined),
+        restoreSecret: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const mockProvider = {
+        id: "prov-pool",
+        companyId: "company-1",
+        type: "chatgpt-pool",
+        name: "ChatGPT Codex Pool",
+        baseUrl: "http://localhost:8895",
+        free: false,
+        credentialSecretName: "model-provider-key-prov-pool",
+        createdAt: new Date(),
+        updatedAt: new Date(),
       };
 
       const mockDb = {
-        findProviderById: vi.fn().mockResolvedValue({
-          id: "prov-pool",
-          companyId: "company-1",
-          type: "chatgpt-pool",
-          name: "ChatGPT Codex Pool",
-          baseUrl: "http://localhost:8895",
-          free: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([mockProvider]),
+            })),
+          })),
+        })),
+        findProviderById: vi.fn().mockResolvedValue(mockProvider),
         listProvidersByCompany: vi.fn().mockResolvedValue([]),
         createProvider: vi.fn(),
         updateProvider: vi.fn(),
@@ -72,7 +87,7 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
 
       const service = createModelProviderService({
         db: mockDb as any,
-        secrets: mockSecrets,
+        secrets: mockSecrets as any,
         catalog: mockCatalog,
       });
 
@@ -175,6 +190,31 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
       expect(ch.windows.secondary?.resetsAt).toBe(1700600000);
       expect(ch.isExhausted).toBe(false);
     });
+
+    it("evaluates signals ignoring disabled accounts", () => {
+      const channels = [
+        {
+          n: 1,
+          label: "acc-1",
+          state: "disabled" as const,
+          stateRu: "Отключен",
+          plan: "k12",
+          isLive: false,
+          isBanned: true,
+          isRateLimited: false,
+          isExhausted: false,
+          isDisabled: true,
+          isExcluded: true,
+          limitedUntil: null,
+          windows: {
+            primary: null,
+            secondary: null,
+          },
+        },
+      ];
+      const signals = evaluateAccountSignals("company-1", "prov-pool", channels as any);
+      expect(signals).toHaveLength(0);
+    });
   });
 
   describe("Codex OAuth Lifecycle (begin, status, complete, refresh)", () => {
@@ -200,19 +240,30 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
           }
         }),
         deleteSecret: vi.fn(),
+        restoreSecret: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const mockProvider = {
+        id: "prov-pool",
+        companyId: "company-1",
+        type: "chatgpt-pool",
+        name: "ChatGPT Codex Pool",
+        baseUrl: "http://localhost:8895",
+        free: false,
+        credentialSecretName: "model-provider-key-prov-pool",
+        createdAt: new Date(),
+        updatedAt: new Date(),
       };
 
       const mockDb = {
-        findProviderById: vi.fn().mockResolvedValue({
-          id: "prov-pool",
-          companyId: "company-1",
-          type: "chatgpt-pool",
-          name: "ChatGPT Codex Pool",
-          baseUrl: "http://localhost:8895",
-          free: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([mockProvider]),
+            })),
+          })),
+        })),
+        findProviderById: vi.fn().mockResolvedValue(mockProvider),
         listProvidersByCompany: vi.fn().mockResolvedValue([]),
         createProvider: vi.fn(),
         updateProvider: vi.fn(),
@@ -228,7 +279,7 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
 
       const service = createModelProviderService({
         db: mockDb as any,
-        secrets: mockSecrets,
+        secrets: mockSecrets as any,
         catalog: mockCatalog,
       });
 
@@ -285,17 +336,25 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
     it("rejects OAuth begin for non-pool provider", async () => {
       const { service } = createService();
       // Mock db returning standard openai provider
+      const mockOpenaiProvider = {
+        id: "prov-openai",
+        companyId: "company-1",
+        type: "openai",
+        name: "OpenAI Direct",
+        baseUrl: null,
+        free: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
       const mockDb = {
-        findProviderById: vi.fn().mockResolvedValue({
-          id: "prov-openai",
-          companyId: "company-1",
-          type: "openai",
-          name: "OpenAI Direct",
-          baseUrl: null,
-          free: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }),
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([mockOpenaiProvider]),
+            })),
+          })),
+        })),
+        findProviderById: vi.fn().mockResolvedValue(mockOpenaiProvider),
       };
       const serviceNonPool = createModelProviderService({
         db: mockDb as any,
@@ -305,7 +364,8 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
           createSecret: vi.fn(),
           rotateSecret: vi.fn(),
           deleteSecret: vi.fn(),
-        },
+          restoreSecret: vi.fn().mockResolvedValue(undefined),
+        } as any,
         catalog: { listModels: vi.fn() },
       });
 
