@@ -137,8 +137,13 @@ export function HermesGatewayConfigFields({
   const sessionKeyStrategy = String(readValue("sessionKeyStrategy", DEFAULT_SESSION_KEY_STRATEGY) ?? DEFAULT_SESSION_KEY_STRATEGY);
   const timeoutSec = Number(readValue("timeoutSec", DEFAULT_TIMEOUT_SEC) ?? DEFAULT_TIMEOUT_SEC);
   const eventReconnectMs = Number(readValue("eventReconnectMs", DEFAULT_EVENT_RECONNECT_MS) ?? DEFAULT_EVENT_RECONNECT_MS);
-  const allowInsecureRemoteHttp = Boolean(readValue("dangerouslyAllowInsecureRemoteHttp", false));
   const instructions = String(readValue("instructions", "") ?? "");
+  const flag = readValue("centralHistory", false);
+  const centralHistory = flag === true || flag === "1" || flag === "true";
+  const livenessEvents = Boolean(readValue("livenessEvents", false));
+  const debugEvents = Boolean(readValue("debugEvents", false));
+  const createRequestTimeoutSec = Number(readValue("createRequestTimeoutSec", 60) ?? 60);
+  const centralHistoryMaxTurns = Number(readValue("centralHistoryMaxTurns", 10) ?? 10);
   const headers = isCreate
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
@@ -216,12 +221,23 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
-      <ToggleField
-        label={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpLabel")}
-        hint={t("area.adapters-plugins-1.hermes-gateway.fields.allowRemoteHttpHint")}
-        checked={allowInsecureRemoteHttp}
-        onChange={(v) => writeValue("dangerouslyAllowInsecureRemoteHttp", v)}
-      />
+      <Field configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.createRequestTimeoutHint")}>
+        <DraftNumberInput value={createRequestTimeoutSec} onCommit={(v) => writeValue("createRequestTimeoutSec", v)} immediate className={inputClass} />
+      </Field>
+      <ToggleField configSection="runPolicy" label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryHint")} checked={centralHistory} onChange={(v) => writeValue("centralHistory", v ? "1" : "0")} />
+      {centralHistory && <>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryUrlLabel")}>
+          <DraftInput value={String(readValue("centralHistoryUrl", "") ?? "")} onCommit={(v) => writeValue("centralHistoryUrl", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryBankIdLabel")}>
+          <DraftInput value={String(readValue("centralHistoryBankId", "") ?? "")} onCommit={(v) => writeValue("centralHistoryBankId", v || undefined)} immediate className={inputClass} />
+        </Field>
+        <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryMaxTurnsLabel")}>
+          <DraftNumberInput value={centralHistoryMaxTurns} onCommit={(v) => writeValue("centralHistoryMaxTurns", v)} immediate className={inputClass} />
+        </Field>
+      </>}
 
       <Field
         label={t("area.adapters-plugins-1.hermes-gateway.fields.extraHeadersLabel")}
