@@ -3437,7 +3437,7 @@ export function issueThreadInteractionService(
         );
       }
 
-      if (!normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
+      if (normalizedData.kind !== "ask_user_questions" && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId && actor.agentId) {
         const cannotTargetAgent =
           normalizedData.kind === "request_confirmation" &&
           (normalizedData.payload.toolAction !== undefined ||
@@ -3626,6 +3626,28 @@ export function issueThreadInteractionService(
         : actor.userId
           ? { userId: actor.userId }
           : { serviceQueue: "system" };
+      const isAgentQuestion = Boolean(actor.agentId && normalizedData.kind === "ask_user_questions");
+      const managerChain: string[] = [];
+      if (isAgentQuestion && actor.agentId) {
+        let currentId: string = actor.agentId;
+        const seen = new Set<string>([currentId]);
+        while (true) {
+          const [current] = await db.select({ reportsTo: agents.reportsTo })
+            .from(agents)
+            .where(and(eq(agents.id, currentId), eq(agents.companyId, issue.companyId)))
+            .limit(1);
+          const parentId = current?.reportsTo;
+          if (!parentId || seen.has(parentId)) break;
+          const [parent] = await db.select({ status: agents.status })
+            .from(agents)
+            .where(and(eq(agents.id, parentId), eq(agents.companyId, issue.companyId)))
+            .limit(1);
+          if (!parent || !isAgentStatusInvokable(parent.status)) break;
+          managerChain.push(parentId);
+          seen.add(parentId);
+          currentId = parentId;
+        }
+      }
 
       let recipientCandidate: InteractionRecipient | null = null;
       if (normalizedData.addresseeAgentId) {
@@ -3636,9 +3658,9 @@ export function issueThreadInteractionService(
         recipientCandidate = {
           serviceQueue: (normalizedData as any).addresseeQueue,
         };
-      } else if (isChatChannelIssue) {
+      } else if (!isAgentQuestion && isChatChannelIssue) {
         recipientCandidate = { serviceQueue: "default" };
-      } else {
+      } else if (!isAgentQuestion) {
         if (policy.effectiveResolverPolicy === "human_only") {
           if (actor.agentId) {
             const ownerRec = await resolveOwnerDecisionRecipient(db, {
@@ -3762,6 +3784,7 @@ export function issueThreadInteractionService(
       let routeType: InteractionRouteType;
       if (
         !recipientCandidate &&
+        !isAgentQuestion &&
         (normalizedData.kind === "ask_user_questions" ||
           normalizedData.kind === "suggest_tasks")
       ) {
@@ -3799,6 +3822,7 @@ export function issueThreadInteractionService(
           creator,
           projectRoles,
           recipient: recipientCandidate,
+          manager: managerChain[0] ? { agentId: managerChain[0] } : null,
           casteScope: (normalizedData as any).casteScope ?? null,
           serviceQueue:
             (recipientCandidate && "serviceQueue" in recipientCandidate
@@ -3988,6 +4012,13 @@ export function issueThreadInteractionService(
               addresseeQueue: finalAddresseeQueue,
               routeType,
               timeoutAt,
+              escalationChain: isAgentQuestion && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId
+                && managerChain.length > 0
+                ? managerChain.map((agentId, level) => ({
+                    recipient: { agentId },
+                    afterMinutes: level * DEFAULT_INTERACTION_TIMEOUT_MINUTES,
+                  }))
+                : null,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })
