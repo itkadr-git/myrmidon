@@ -2615,6 +2615,13 @@
       "breakpoints": true
     },
     {
+      "idx": 443,
+      "version": "7",
+      "when": 1793560000000,
+      "tag": "0443_guardrail_events_enforcement",
+      "breakpoints": true
+    },
+    {
       "idx": 444,
       "version": "7",
       "when": 1793570000000,
@@ -2687,7 +2694,7 @@
     {
       "idx": 458,
       "version": "7",
-      "when": 1793560000000,
+      "when": 1793560000001,
       "tag": "0458_expire_pending_interactions_on_closed_issues",
       "breakpoints": true
     }
