@@ -69,6 +69,8 @@ describe("HermesGatewayConfigFields", () => {
     expect(text).toContain("Timeout seconds");
     expect(text).toContain("Event reconnect ms");
     expect(text).toContain("Run create timeout");
+    expect(text).toContain("Runtime MCP URL rewrite");
+    expect(text).toContain("Runtime MCP internal URL base");
     expect(text).toContain("Central session history");
     expect(text).toContain("Keep active runs alive");
     expect(text).toContain("Log raw redacted gateway events");

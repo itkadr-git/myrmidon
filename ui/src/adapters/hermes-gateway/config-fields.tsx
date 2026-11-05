@@ -142,6 +142,8 @@ export function HermesGatewayConfigFields({
   const centralHistory = flag === true || flag === "1" || flag === "true";
   const livenessEvents = Boolean(readValue("livenessEvents", false));
   const debugEvents = Boolean(readValue("debugEvents", false));
+  const runtimeMcpUrlRewrite = readValue("runtimeMcpUrlRewrite", true) !== false;
+  const runtimeMcpUrlBase = String(readValue("runtimeMcpUrlBase", "") ?? "");
   const createRequestTimeoutSec = Number(readValue("createRequestTimeoutSec", 60) ?? 60);
   const centralHistoryMaxTurns = Number(readValue("centralHistoryMaxTurns", 10) ?? 10);
   const headers = isCreate
@@ -226,6 +228,10 @@ export function HermesGatewayConfigFields({
       </Field>
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.livenessEventsLabel")} checked={livenessEvents} onChange={(v) => writeValue("livenessEvents", v)} />
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.debugEventsLabel")} checked={debugEvents} onChange={(v) => writeValue("debugEvents", v)} />
+      <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlRewriteHint")} checked={runtimeMcpUrlRewrite} onChange={(v) => writeValue("runtimeMcpUrlRewrite", v)} />
+      <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.runtimeMcpUrlBaseHint")}>
+        <DraftInput value={runtimeMcpUrlBase} onCommit={(v) => writeValue("runtimeMcpUrlBase", v || undefined)} immediate className={inputClass} />
+      </Field>
       <ToggleField label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryLabel")} hint={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryHint")} checked={centralHistory} onChange={(v) => writeValue("centralHistory", v ? "1" : "0")} />
       {centralHistory && <>
         <Field label={t("area.adapters-plugins-1.hermes-gateway.fields.centralHistoryUrlLabel")}>
