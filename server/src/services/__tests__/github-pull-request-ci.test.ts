@@ -763,6 +763,76 @@ describe("createPullRequestCiResolver", () => {
     expect(res.summary).toContain("checks unavailable (GitHub rate limit until");
   });
 
+  it("acceptance: response 200 with remaining=935 and reset in future executes request and does not mark rate_limited", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const futureReset = String(Math.floor(Date.now() / 1000) + 1800);
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "x-ratelimit-remaining": "936",
+            "x-ratelimit-limit": "5000",
+            "x-ratelimit-reset": futureReset,
+          }),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-200-test", ref: "bot/test-200" },
+            base: { ref: "main" },
+            draft: false,
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-200-test/check-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "x-ratelimit-remaining": "935",
+            "x-ratelimit-limit": "5000",
+            "x-ratelimit-reset": futureReset,
+          }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 1,
+                name: "test",
+                status: "completed",
+                conclusion: "success",
+                html_url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+                started_at: "2026-11-05T04:00:00Z",
+                completed_at: "2026-11-05T04:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-200-test", headRef: "bot/test-200" }),
+    });
+
+    const res = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(callsCount).toBeGreaterThan(0);
+    expect(res.status).toBe("completed");
+    expect(res.conclusion).toBe("success");
+    expect(res.authoritative).toBe(true);
+    expect(res.summary).toContain("1/1 checks passed");
+  });
+
   it("acceptance: repeated call before reset does not call GitHub", async () => {
     const mockDb = { select: vi.fn() };
     let callsCount = 0;
