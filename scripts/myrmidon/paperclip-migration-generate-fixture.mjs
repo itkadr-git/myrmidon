@@ -450,6 +450,22 @@ INSERT INTO "mcp_oauth_tokens" (
   'access',
   now() + interval '1 day'
 ) ON CONFLICT ("id") DO NOTHING;
+
+-- Source table: resource_lifecycle_events (present in 1012.0+, mapped to activity_log)
+INSERT INTO "resource_lifecycle_events" (
+  "company_id", "resource_type", "resource_id", "action", "created_at"
+) VALUES
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000001', 'create', '2026-10-12 10:00:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000001', 'update', '2026-10-12 10:05:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000001', 'update', '2026-10-12 10:10:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000001', 'update', '2026-10-12 10:15:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000001', 'update', '2026-10-12 10:20:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000002', 'create', '2026-10-12 11:00:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000002', 'update', '2026-10-12 11:05:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000002', 'update', '2026-10-12 11:10:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000002', 'update', '2026-10-12 11:15:00+00'),
+  ('c0000000-0000-4000-a000-000000000001', 'project', 'f7f1434e-0000-4000-a000-000000000002', 'update', '2026-10-12 11:20:00+00')
+ON CONFLICT DO NOTHING;
 `;
   }
 
@@ -514,6 +530,7 @@ export function generateAllFixtures() {
       vendorGapCounts.mcp_oauth_tokens = 1;
       vendorGapCounts.mcp_oauth_grants = 1;
       vendorGapCounts.mcp_oauth_clients = 1;
+      vendorGapCounts.resource_lifecycle_events = 10;
     }
 
     const manifest = {
