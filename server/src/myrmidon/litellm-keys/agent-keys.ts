@@ -444,7 +444,7 @@ export async function listAgentGatewayKeys(
       }));
       usage = keyBudgetUsage(dailySpendCents, maxBudgetUsd ?? 0, windowStart, {
         capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
-        weeklySpentCents,
+        weeklySpentCents: weeklySpendCents,
         zeroCostEvents: Number(spent?.zeroCostEvents ?? 0),
       });
     }
