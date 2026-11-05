@@ -761,6 +761,111 @@ describe("bot-apply-smoke.sh", () => {
     assert.match(out, /DEPLOYED-DEGRADED/);
     assert.match(out, /SessionStore/);
   });
+
+  it("succeeds when idle-stopped bots are stopped and running bots are healthy (idleStop fleet)", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1\/1 active bot gateways healthy/);
+    assert.match(out, /1 idle-stopped/);
+  });
+
+  it("succeeds when all bots are cleanly idle-stopped", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-idle", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /all 1 bot gateways are idle-stopped/);
+  });
+
+  it("fails with DEPLOYED-DEGRADED when an abnormal exit / crash occurs", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-crashed", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "unhealthy", image: CI_IMAGE },
+        containerError: "gateway startup failed: fatal crash",
+      }),
+    );
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /crashed/i);
+  });
 });
 
 const PRE_DG = `ghcr.io/itkadr-git/myrmidon-dockergate@sha256:${"1".repeat(64)}`;

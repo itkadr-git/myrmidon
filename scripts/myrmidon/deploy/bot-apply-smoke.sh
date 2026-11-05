@@ -101,45 +101,113 @@ find_container() {
   echo "myrmidon-bot-$id"
 }
 
+classify_bot() {
+  local id="$1"
+  local cname="$2"
+  local agent_status="${3:-}"
+
+  local bjson
+  bjson="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/myrmidon/agents/$id/bot-container/status" 2>/dev/null || echo "{}")"
+  local bstate bidle berr
+  bstate="$(jq -r '.container.state // "missing"' <<<"$bjson" 2>/dev/null || echo "missing")"
+  bidle="$(jq -r '(.container.idleStopped // .idleStopRuntime.idleStopped // false)' <<<"$bjson" 2>/dev/null || echo "false")"
+  berr="$(jq -r '.containerError // ""' <<<"$bjson" 2>/dev/null || echo "")"
+
+  local hstatus="missing" dstatus="missing" exitcode="0" oomkilled="false"
+  if command -v docker >/dev/null 2>&1; then
+    local dinfo
+    dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}' "$cname" 2>/dev/null || echo "missing|missing|0|false")"
+    IFS='|' read -r hstatus dstatus exitcode oomkilled <<<"$dinfo"
+    [[ -z "$dstatus" ]] && dstatus="$hstatus"
+    [[ -z "$exitcode" ]] && exitcode="0"
+    [[ -z "$oomkilled" ]] && oomkilled="false"
+  fi
+
+  # 1. Crash / abnormal exit checks (аварийный выход)
+  if [[ -n "$berr" ]]; then
+    echo "crashed:error"
+    return 0
+  fi
+  if [[ "$bstate" == "unhealthy" ]]; then
+    echo "crashed:board_unhealthy"
+    return 0
+  fi
+  if [[ "$oomkilled" == "true" ]]; then
+    echo "crashed:oom"
+    return 0
+  fi
+  if [[ ( "$dstatus" == "exited" || "$hstatus" == "exited" ) && "$exitcode" != "0" ]]; then
+    echo "crashed:exit_${exitcode}"
+    return 0
+  fi
+  if [[ "$hstatus" == "unhealthy" ]]; then
+    echo "crashed:docker_unhealthy"
+    return 0
+  fi
+
+  # 2. Idle-stopped checks (штатно остановлен за простой)
+  if [[ "$bidle" == "true" ]]; then
+    echo "idle_stopped"
+    return 0
+  fi
+  if [[ "$agent_status" == "idle" && ( "$bstate" == "stopped" || "$bstate" == "missing" ) ]]; then
+    echo "idle_stopped"
+    return 0
+  fi
+  if [[ ( "$dstatus" == "created" || "$hstatus" == "created" ) && ( "$bstate" == "stopped" || "$bstate" == "missing" || "$agent_status" == "idle" ) ]]; then
+    echo "idle_stopped"
+    return 0
+  fi
+  if [[ ( "$dstatus" == "exited" || "$hstatus" == "exited" ) && "$exitcode" == "0" && ( "$bstate" == "stopped" || "$agent_status" == "idle" ) ]]; then
+    echo "idle_stopped"
+    return 0
+  fi
+
+  # 3. Healthy running checks
+  if [[ "$bstate" == "running" || "$bstate" == "healthy" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      if [[ "$dstatus" == "running" || "$hstatus" == "healthy" || "$hstatus" == "running" ]]; then
+        # Check /health probe if possible:
+        if docker exec "$cname" curl -fsS --max-time 3 "http://127.0.0.1:8642/health" >/dev/null 2>&1; then
+          echo "healthy"
+          return 0
+        fi
+        if [[ "$hstatus" == "healthy" || "$hstatus" == "running" ]]; then
+          echo "healthy"
+          return 0
+        fi
+        echo "docker:$hstatus"
+        return 0
+      fi
+      echo "docker:$hstatus"
+      return 0
+    else
+      # Docker CLI not available, board reports running
+      echo "healthy"
+      return 0
+    fi
+  fi
+
+  # 4. Other states (not healthy, not idle_stopped, not crashed)
+  if [[ "$dstatus" != "missing" && "$dstatus" != "running" && "$dstatus" != "healthy" ]]; then
+    echo "docker:$dstatus"
+  else
+    echo "board:$bstate"
+  fi
+  return 0
+}
+
 check_bot_healthy() {
   local id="$1"
   local cname="$2"
-  local bstate
-  bstate="$(container_state "$id" || echo "missing")"
-
-  if [[ "$bstate" != "running" && "$bstate" != "healthy" ]]; then
-    echo "board:$bstate"
-    return 1
-  fi
-
-  if command -v docker >/dev/null 2>&1; then
-    local hstatus
-    hstatus="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cname" 2>/dev/null || echo "missing")"
-    if [[ "$hstatus" == "unhealthy" || "$hstatus" == "starting" || "$hstatus" == "missing" ]]; then
-      echo "docker:$hstatus"
-      return 1
-    fi
-
-    # Docker healthcheck is healthy. Verify /health probe if possible:
-    if docker exec "$cname" curl -fsS --max-time 3 "http://127.0.0.1:8642/health" >/dev/null 2>&1; then
-      echo "healthy"
-      return 0
-    fi
-
-    if [[ "$hstatus" == "healthy" ]]; then
-      echo "healthy"
-      return 0
-    fi
-
-    echo "docker:$hstatus"
-    return 1
-  fi
-
-  if [[ "$bstate" == "running" ]]; then
+  local agent_status="${3:-}"
+  local res
+  res="$(classify_bot "$id" "$cname" "$agent_status")"
+  if [[ "$res" == "healthy" ]]; then
     echo "healthy"
     return 0
   fi
-  echo "board:$bstate"
+  echo "$res"
   return 1
 }
 
@@ -168,6 +236,8 @@ log "waiting for bot gateways to be healthy (timeout ${timeout_sec}s, threshold 
 deadline=$((SECONDS + timeout_sec))
 
 while ((SECONDS < deadline)); do
+  agents_json="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/companies/$company/agents" 2>/dev/null || echo "[]")"
+
   target_raw="$(get_target_bot_ids || true)"
   target_ids=()
   for id in $target_raw; do
@@ -178,59 +248,96 @@ while ((SECONDS < deadline)); do
   if (( total == 0 )); then
     log "no hermes_gateway agents listed (board not ready yet, or none in company $company)"
   else
-    needed=$(( (total * min_healthy_percent + 99) / 100 ))
-    if (( min_healthy_percent == 0 )); then
-      needed=0
-    elif (( needed < 1 )); then
-      needed=1
-    fi
-
     healthy_count=0
+    idle_count=0
+    crashed_count=0
+    unhealthy_count=0
     healthy_ids=()
+    crashed_ids=()
     unhealthy_ids=()
     status_details=()
     last_healthy_id=""
 
     for id in "${target_ids[@]}"; do
       cname="$(find_container "$id")"
-      h_out="$(check_bot_healthy "$id" "$cname" || true)"
-      if [[ "$h_out" == "healthy" ]]; then
-        healthy_count=$((healthy_count + 1))
-        healthy_ids+=("$id")
-        last_healthy_id="$id"
-        status_details+=("${id##*-}:healthy")
-      else
-        unhealthy_ids+=("$id")
-        status_details+=("${id##*-}:$h_out")
-      fi
+      agent_status="$(jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .status // "")' <<<"$agents_json" 2>/dev/null || true)"
+      bot_stat="$(classify_bot "$id" "$cname" "$agent_status")"
+      case "$bot_stat" in
+        healthy)
+          healthy_count=$((healthy_count + 1))
+          healthy_ids+=("$id")
+          last_healthy_id="$id"
+          status_details+=("${id##*-}:healthy")
+          ;;
+        idle_stopped)
+          idle_count=$((idle_count + 1))
+          status_details+=("${id##*-}:idle_stopped")
+          ;;
+        crashed:*)
+          crashed_count=$((crashed_count + 1))
+          crashed_ids+=("$id")
+          unhealthy_ids+=("$id")
+          status_details+=("${id##*-}:$bot_stat")
+          ;;
+        *)
+          unhealthy_count=$((unhealthy_count + 1))
+          unhealthy_ids+=("$id")
+          status_details+=("${id##*-}:$bot_stat")
+          ;;
+      esac
     done
 
-    if (( healthy_count >= needed )); then
-      log "OK: bot container of agent ${last_healthy_id:-${target_ids[0]}} is running and healthy (re-applied after the deploy; $healthy_count/$total bot gateways healthy, threshold: ${min_healthy_percent}%)"
-      exit 0
+    active_total=$(( total - idle_count ))
+    needed=$(( (active_total * min_healthy_percent + 99) / 100 ))
+    if (( min_healthy_percent == 0 )); then
+      needed=0
+    elif (( needed < 1 && active_total > 0 )); then
+      needed=1
     fi
 
-    log "waiting for bot gateways: $healthy_count/$total healthy (required: $needed, ${min_healthy_percent}%; statuses: ${status_details[*]:-none})"
+    # Pass condition:
+    # 1. No abnormal exits or crashes (crashed_count == 0)
+    # 2. If active_total > 0: healthy_count >= needed
+    # 3. If active_total == 0: all bots are idle-stopped (and none crashed)
+    if (( crashed_count == 0 )); then
+      if (( active_total == 0 )); then
+        log "OK: all $total bot gateways are idle-stopped (0 active, 0 crashed; release gate passed)"
+        exit 0
+      elif (( healthy_count >= needed )); then
+        log "OK: bot container of agent ${last_healthy_id:-${target_ids[0]}} is running and healthy (re-applied after the deploy; $healthy_count/$active_total active bot gateways healthy, $idle_count idle-stopped, threshold: ${min_healthy_percent}%)"
+        exit 0
+      fi
+    fi
+
+    log "waiting for bot gateways: $healthy_count/$active_total active healthy ($idle_count idle-stopped, ${crashed_count} crashed, required: $needed, ${min_healthy_percent}%; statuses: ${status_details[*]:-none})"
   fi
   sleep "$interval"
 done
 
-target_raw="$(get_target_bot_ids || true)"
-target_ids=()
-for id in $target_raw; do
-  [[ -n "$id" ]] && target_ids+=("$id")
-done
-total="${#target_ids[@]}"
-needed=$(( (total * min_healthy_percent + 99) / 100 ))
+active_total=$(( total - idle_count ))
+needed=$(( (active_total * min_healthy_percent + 99) / 100 ))
 if (( min_healthy_percent == 0 )); then
   needed=0
-elif (( needed < 1 && total > 0 )); then
+elif (( needed < 1 && active_total > 0 )); then
   needed=1
 fi
 
-log "SMOKE FAILED: DEPLOYED-DEGRADED: only ${healthy_count:-0}/$total bot gateways are healthy within ${timeout_sec}s (required: $needed, ${min_healthy_percent}%)"
+if (( crashed_count > 0 )); then
+  log "SMOKE FAILED: DEPLOYED-DEGRADED: $crashed_count bot containers had abnormal exits / crashed within ${timeout_sec}s ($healthy_count/$active_total active healthy, $idle_count idle-stopped)"
+else
+  log "SMOKE FAILED: DEPLOYED-DEGRADED: only ${healthy_count:-0}/$active_total active bot gateways are healthy within ${timeout_sec}s ($idle_count idle-stopped, required: $needed, ${min_healthy_percent}%)"
+fi
+
 log "Diagnosis: trailing gateway logs for unhealthy bot containers:"
-for id in "${unhealthy_ids[@]:-${target_ids[@]}}"; do
+bad_ids=()
+for id in "${crashed_ids[@]:-}" "${unhealthy_ids[@]:-}"; do
+  [[ -n "$id" ]] && bad_ids+=("$id")
+done
+if (( ${#bad_ids[@]} == 0 )); then
+  bad_ids=("${target_ids[@]}")
+fi
+
+for id in "${bad_ids[@]}"; do
   cname="$(find_container "$id")"
   log "--- Last gateway log lines for bot $id ($cname) ---"
   if command -v docker >/dev/null 2>&1; then
