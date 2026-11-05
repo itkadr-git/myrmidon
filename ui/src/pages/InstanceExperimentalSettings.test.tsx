@@ -769,6 +769,39 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     vi.clearAllMocks();
   });
 
+  it("renders workspace repair and duplex kill switches, patches each, and locks managed values", async () => {
+    const cases = [
+      ["enableWorkspaceBranchReconcileForward", "Toggle workspace branch forward reconciliation", true],
+      ["enableWorkspaceDirtyQuarantineRepair", "Toggle dirty workspace quarantine repair", true],
+      ["enableSandboxDuplexBridge", "Toggle sandbox duplex bridge", false],
+    ] as const;
+    for (const [key, label, initial] of cases) {
+      await renderPage(defaultExperimentalSettings());
+      const toggle = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      expect(toggle?.getAttribute("aria-checked")).toBe(String(initial));
+      await act(() => toggle?.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ [key]: !initial });
+      flushSync(() => root?.unmount());
+      root = null;
+      queryClient.clear();
+      mockInstanceSettingsApi.updateExperimental.mockClear();
+
+      await renderPage({
+        ...defaultExperimentalSettings(),
+        managedKeys: { [key]: { managed: true, managedBy: "paperclip-cloud" } },
+      });
+      const managedToggle = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      expect(managedToggle?.disabled).toBe(true);
+      expect(managedToggle?.getAttribute("aria-checked")).toBe(String(initial));
+      await act(() => managedToggle?.click());
+      expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+      flushSync(() => root?.unmount());
+      root = null;
+      queryClient.clear();
+    }
+  });
+
   it("patches pipelines through the experimental endpoint and locks a managed value", async () => {
     await renderPage(defaultExperimentalSettings());
     const toggle = container.querySelector<HTMLButtonElement>(PIPELINES_TOGGLE_SELECTOR);

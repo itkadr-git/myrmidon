@@ -209,6 +209,9 @@ export function InstanceExperimentalSettings() {
   const enablePipelines = experimentalQuery.data?.enablePipelines === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableWorkspaceBranchReconcileForward = experimentalQuery.data?.enableWorkspaceBranchReconcileForward === true;
+  const enableWorkspaceDirtyQuarantineRepair = experimentalQuery.data?.enableWorkspaceDirtyQuarantineRepair === true;
+  const enableSandboxDuplexBridge = experimentalQuery.data?.enableSandboxDuplexBridge === true;
   const enableIsolatedWorkspacesByDefault =
     experimentalQuery.data?.enableIsolatedWorkspacesByDefault === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
@@ -436,6 +439,42 @@ export function InstanceExperimentalSettings() {
             ariaLabel={t("area.settings-company.instance-experimental-settings.toggleIsolatedWorkspacesByDefault")}
           />
         )}
+
+        <ExperimentalToggleCard
+          title={t("area.settings-company.instance-experimental-settings.workspaceBranchReconcileForward")}
+          description={t("area.settings-company.instance-experimental-settings.workspaceBranchReconcileForwardDescription")}
+          footnote={t("area.settings-company.instance-experimental-settings.workspaceBranchReconcileForwardNote")}
+          checked={enableWorkspaceBranchReconcileForward}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableWorkspaceBranchReconcileForward: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableWorkspaceBranchReconcileForward"
+          managed={managedKeys.enableWorkspaceBranchReconcileForward}
+          ariaLabel={t("area.settings-company.instance-experimental-settings.toggleWorkspaceBranchReconcileForward")}
+        />
+
+        <ExperimentalToggleCard
+          title={t("area.settings-company.instance-experimental-settings.workspaceDirtyQuarantineRepair")}
+          description={t("area.settings-company.instance-experimental-settings.workspaceDirtyQuarantineRepairDescription")}
+          footnote={t("area.settings-company.instance-experimental-settings.workspaceDirtyQuarantineRepairNote")}
+          checked={enableWorkspaceDirtyQuarantineRepair}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableWorkspaceDirtyQuarantineRepair: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableWorkspaceDirtyQuarantineRepair"
+          managed={managedKeys.enableWorkspaceDirtyQuarantineRepair}
+          ariaLabel={t("area.settings-company.instance-experimental-settings.toggleWorkspaceDirtyQuarantineRepair")}
+        />
+
+        <ExperimentalToggleCard
+          title={t("area.settings-company.instance-experimental-settings.sandboxDuplexBridge")}
+          description={t("area.settings-company.instance-experimental-settings.sandboxDuplexBridgeDescription")}
+          footnote={t("area.settings-company.instance-experimental-settings.sandboxDuplexBridgeNote")}
+          checked={enableSandboxDuplexBridge}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableSandboxDuplexBridge: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableSandboxDuplexBridge"
+          managed={managedKeys.enableSandboxDuplexBridge}
+          ariaLabel={t("area.settings-company.instance-experimental-settings.toggleSandboxDuplexBridge")}
+        />
 
         <ExperimentalToggleCard
           title={t("area.settings-company.instance-experimental-settings.experimentalFileViewer")}

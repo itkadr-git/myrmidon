@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Foraging } from "./Foraging";
+import { i18n } from "@/i18n";
 import type {
   ForagingBudgetView,
   ForagingFinding,
@@ -170,6 +171,7 @@ afterEach(async () => {
   });
   container?.remove();
   queryClient?.clear();
+  await i18n.changeLanguage("en");
   vi.clearAllMocks();
 });
 
@@ -190,6 +192,33 @@ describe("myrmidon(1.6-FORAGE) Foraging page", () => {
     expect(saveSourceMock).toHaveBeenCalledWith("company-1", {
       role: "engineer", url: "https://example.com/changelog", kind: "url", enabled: false,
     });
+  });
+
+  it("shows localized source status and toggle label from GET in EN and RU", async () => {
+    sourcesMock.mockResolvedValue({ sources: [source({ enabled: false })], enabled: true });
+    await i18n.changeLanguage("en");
+    await renderAndSee("foraging-source-status");
+    const status = container.querySelector('[data-testid="foraging-source-status"]');
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]');
+    expect(status?.textContent).toBe("Paused");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Toggle https://example.com/changelog");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(status?.textContent).toBe("На паузе");
+    expect(toggle?.getAttribute("aria-label")).toBe("Переключить https://example.com/changelog");
+  });
+
+  it("keeps a failed toggle visible without changing the GET status", async () => {
+    saveSourceMock.mockRejectedValue(new Error("Board access required"));
+    await renderAndSee("foraging-source-enabled-toggle");
+    const toggle = container.querySelector('[data-testid="foraging-source-enabled-toggle"]') as HTMLElement;
+    await act(async () => { toggle.click(); });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="foraging-source-toggle-error"]')?.textContent)
+        .toContain("Board access required");
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[data-testid="foraging-source-status"]')?.textContent).toBe("Active");
   });
 
   it("shows the findings with their lifecycle state and diff size", async () => {
