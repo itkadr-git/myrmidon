@@ -71,6 +71,16 @@ describe("prometheus exposition format", () => {
     }
   });
 
+  it("renders rolling per-agent spend for the authenticated metrics scrape", () => {
+    const text = renderMetricsText(snapshot({ llmKeySpend: [
+      { companyId: "co-a", agentId: "agent-a", window: "24h", cents: 120 },
+      { companyId: "co-a", agentId: "agent-a", window: "7d", cents: 420 },
+    ] }));
+    expect(text).toContain('myrmidon_llm_key_spend_cents{role="all",company_id="co-a",agent_id="agent-a",window="24h"} 120');
+    expect(text).toContain('myrmidon_llm_key_spend_cents{role="all",company_id="co-a",agent_id="agent-a",window="7d"} 420');
+    expect(text).toContain("# TYPE myrmidon_llm_key_spend_cents gauge");
+  });
+
   it("renders the created and deduped continuation counters after port calls", () => {
     continuationDedupeMetrics.reset();
     try {

@@ -515,6 +515,10 @@ describeEmbeddedPostgres("metrics collector", () => {
       latencyWindowSec: 3600,
     });
     expect(snapshot.llmCostCentsWindow).toBe(300);
+    expect(snapshot.llmKeySpend).toEqual([
+      { companyId, agentId, window: "24h", cents: 1299 },
+      { companyId, agentId, window: "7d", cents: 1299 },
+    ]);
   });
 
   it("counts agent error signals from the attention registries", async () => {

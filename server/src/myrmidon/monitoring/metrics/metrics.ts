@@ -167,6 +167,7 @@ export const METRIC_FAMILIES = [
   "swarm_scent_classifier_alarm",
   "myrmidon_agent_error_signals",
   "myrmidon_llm_cost_cents_total",
+  "myrmidon_llm_key_spend_cents",
   "myrmidon_recovery_created_total",
   "myrmidon_recovery_deduped_total",
   "myrmidon_recovery_success_total",
@@ -324,6 +325,8 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /** Per-agent ledger spend in rolling windows, exported by the authenticated /metrics endpoint. */
+  llmKeySpend?: Array<{ companyId: string; agentId: string; window: "24h" | "7d"; cents: number }>;
   recoveryCreatedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoveryDedupedTotal?: Map<IssueRecoveryActionKind, number> | null;
   recoverySuccessTotal?: Map<IssueRecoveryActionKind, number> | null;
@@ -886,6 +889,23 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+async function readKeySpend(db: Db, now: Date): Promise<NonNullable<MetricsSnapshot["llmKeySpend"]>> {
+  const dayStart = new Date(now.getTime() - 24 * 3_600_000);
+  const weekStart = new Date(now.getTime() - 7 * 24 * 3_600_000);
+  const rows = await db.select({
+    companyId: litellmCostEvents.companyId,
+    agentId: litellmCostEvents.agentId,
+    dailyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}) filter (where ${litellmCostEvents.occurredAt} >= ${dayStart}), 0)`,
+    weeklyCents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)`,
+  }).from(litellmCostEvents)
+    .where(and(gte(litellmCostEvents.occurredAt, weekStart), isNotNull(litellmCostEvents.agentId)))
+    .groupBy(litellmCostEvents.companyId, litellmCostEvents.agentId);
+  return rows.flatMap((row) => [
+    { companyId: row.companyId, agentId: row.agentId!, window: "24h" as const, cents: Number(row.dailyCents) },
+    { companyId: row.companyId, agentId: row.agentId!, window: "7d" as const, cents: Number(row.weeklyCents) },
+  ]);
+}
+
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
   const collected = await collectMetricsParts(deps);
@@ -1050,6 +1070,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => readCostWindow(deps.db, errorWindowStart),
     0,
   );
+  const llmKeySpend = await guarded(
+    "myrmidon_llm_key_spend_cents",
+    () => readKeySpend(deps.db, now),
+    [] as NonNullable<MetricsSnapshot["llmKeySpend"]>,
+  );
   const deferredIssueExecutionOver30m = await guarded(
     "myrmidon_deferred_issue_execution_over_30m",
     () => deps.db.select({ total: count() }).from(agentWakeupRequests).where(and(
@@ -1211,6 +1236,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      llmKeySpend,
       recoveryCreatedTotal: new Map(recoveryCounters.created),
       recoveryDedupedTotal: new Map(recoveryCounters.deduped),
       recoverySuccessTotal: new Map(recoveryCounters.succeeded),
@@ -1623,6 +1649,16 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "LLM spend collected by the gateway cost sweep inside the scrape window, in cents.",
       "counter",
       [`myrmidon_llm_cost_cents_total{${R}} ${formatSampleValue(snapshot.llmCostCentsWindow)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_llm_key_spend_cents",
+      "Rolling LiteLLM ledger spend in cents by company and agent (24h and 7d).",
+      "gauge",
+      (snapshot.llmKeySpend ?? []).map(({ companyId, agentId, window, cents }) =>
+        `myrmidon_llm_key_spend_cents{${R},company_id="${escapeLabelValue(companyId)}",agent_id="${escapeLabelValue(agentId)}",window="${window}"} ${formatSampleValue(cents)}`,
+      ),
     ),
   );
   const recoveryCounterFamily = (
