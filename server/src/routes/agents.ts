@@ -2709,6 +2709,33 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  function assertLocalAdapterSecurityChangeAllowed(
+    req: Request,
+    adapterType: string | null | undefined,
+    previousAdapterConfig: Record<string, unknown> | null | undefined,
+    nextAdapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    if (adapterType !== "claude_local" && adapterType !== "codex_local") return;
+    const previous = previousAdapterConfig ?? {};
+    const next = nextAdapterConfig ?? {};
+    const protectedKeys = [
+      "filesystemScope",
+      "filesystemExtraPaths",
+      "filesystemSandboxCommand",
+      "networkScope",
+      "networkAllowlist",
+      "approvalMode",
+      "dangerouslySkipPermissions",
+      "dangerouslyBypassApprovalsAndSandbox",
+      "dangerouslyBypassSandbox",
+    ];
+    const changedProtectedKey = protectedKeys.some((key) =>
+      Object.prototype.hasOwnProperty.call(next, key)
+      && JSON.stringify(previous[key]) !== JSON.stringify(next[key]),
+    );
+    if (changedProtectedKey) assertInstanceAdmin(req);
+  }
+
   async function assertAdapterConfigConstraints(
     companyId: string,
     adapterType: string | null | undefined,
@@ -4969,6 +4996,7 @@ function getActorIdentityPart(req: Request): string {
         rawCreateAdapterConfig,
       ),
     );
+    assertLocalAdapterSecurityChangeAllowed(req, createInput.adapterType, null, rawCreateAdapterConfig);
     assertExternalInstructionsAdmin(req, {
       id: agentId,
       companyId,
@@ -5751,6 +5779,12 @@ function getActorIdentityPart(req: Request): string {
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      assertLocalAdapterSecurityChangeAllowed(
+        req,
+        requestedAdapterType,
+        asRecord(existing.adapterConfig),
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
