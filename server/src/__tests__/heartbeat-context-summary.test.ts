@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
+  buildReviewerInputFromTaskData,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
@@ -643,5 +644,50 @@ describe("summarizeHeartbeatRunListResultJson", () => {
         totalCostUsd: "abc",
       }),
     ).toBeNull();
+  });
+});
+
+describe("buildReviewerInputFromTaskData", () => {
+  it("builds an isolated reviewer fixture from only task data and the PR diff", () => {
+    const reviewerInput = buildReviewerInputFromTaskData({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-10333",
+        title: "Task-scoped reviewer isolation",
+        description: "Only the task specification and diff belong in reviewer context.",
+      },
+      executionState: {
+        reviewRequest: {
+          acceptanceCriteria: ["Reviewer receives no coder session history."],
+          instructions: "Check the diff against the acceptance criteria.",
+        },
+        coderSessionHistory: "must-not-appear",
+        foreignTaskContext: "must-not-appear",
+      },
+      pullRequest: {
+        number: 2469,
+        repository: "itkadr-git/myrmidon",
+        baseBranch: "main",
+        headBranch: "bot/OPE-10333",
+        headSha: "503bb749b79f2083b6436235e621510ddc856353",
+        authorLogin: "adm-dev-eng-18",
+      },
+      diff: "diff --git a/file.ts b/file.ts\n+reviewer-visible change",
+    });
+
+    expect(reviewerInput).toMatchObject({
+      taskIdentifier: "OPE-10333",
+      taskTitle: "Task-scoped reviewer isolation",
+      diff: "diff --git a/file.ts b/file.ts\n+reviewer-visible change",
+      prMetadata: {
+        number: 2469,
+        repository: "itkadr-git/myrmidon",
+        headSha: "503bb749b79f2083b6436235e621510ddc856353",
+      },
+      forbiddenDataExcluded: true,
+    });
+    expect(reviewerInput).not.toHaveProperty("coderSessionHistory");
+    expect(reviewerInput).not.toHaveProperty("foreignTaskContext");
+    expect(JSON.stringify(reviewerInput)).not.toContain("must-not-appear");
   });
 });
