@@ -195,6 +195,7 @@ export interface ImportTreeResult {
 
 export interface KnowledgeServiceOptions {
   searchIndex?: SearchIndex;
+  semanticMirror?: ReturnType<typeof import("./semantic-mirror.js").createSemanticMirror>;
   /** When false (default) activity mirroring is skipped if logActivity fails. */
   now?: () => Date;
 }
@@ -252,6 +253,7 @@ function toRevisionDto(
 export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions = {}) {
   const now = options.now ?? (() => new Date());
   const search = options.searchIndex ?? null;
+  const mirror = options.semanticMirror;
 
   async function loadItem(nestId: string, idOrSlug: string): Promise<ItemRow> {
     const byId = idOrSlug.length >= 20 && !idOrSlug.includes("/") && /^[0-9a-f-]{36}$/i.test(idOrSlug);
@@ -308,7 +310,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
   }
 
   async function reindex(nestId: string, itemId: string): Promise<void> {
-    if (!search) return;
+    if (!search && !mirror) return;
     const [item] = await db
       .select()
       .from(knowledgeItems)
@@ -334,7 +336,17 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         .where(and(eq(knowledgeRevisions.translationOf, canonicalId), eq(knowledgeRevisions.status, "approved"))) : [];
       contents.push(...translations.map((row: { content: string }) => row.content));
     }
-    await search.upsert({ itemId: item.id, nestId, slug: item.slug, title: item.title, summary: item.summary, content: contents.join("\n") });
+    if (search) await search.upsert({ itemId: item.id, nestId, slug: item.slug, title: item.title, summary: item.summary, content: contents.join("\n") });
+    if (mirror && item.deliveredRevisionId) {
+      const [revision] = await db.select().from(knowledgeRevisions).where(eq(knowledgeRevisions.id, item.deliveredRevisionId)).limit(1);
+      if (revision) {
+        try {
+          await mirror.upsert({ itemId: item.id, slug: item.slug, title: item.title, revision: revision.revisionNumber, lang: revision.lang, space: nestId, content: revision.content });
+        } catch (error) {
+          console.warn("Knowledge semantic mirror unavailable; FTS remains active:", error);
+        }
+      }
+    }
   }
 
   async function syncLinks(tx: Db | Parameters<Parameters<Db["transaction"]>[0]>[0], item: { companyId: string; nestId: string; id: string; slug: string }, content: string): Promise<void> {
@@ -956,6 +968,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.archived", actor, payload: {} });
     if (search) await search.remove(row.id);
+    if (mirror) await mirror.remove(nestId, row.id).catch((error) => console.warn("Knowledge semantic mirror removal failed:", error));
     return toItemDto(row);
   }
 
@@ -990,6 +1003,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
 
     await mirrorActivity({ companyId: row.companyId, itemId: row.id, slug: row.slug, event: "knowledge.superseded", actor, payload: { bySlug: replacement.slug } });
     if (search) await search.remove(row.id);
+    if (mirror) await mirror.remove(nestId, row.id).catch((error) => console.warn("Knowledge semantic mirror removal failed:", error));
     return toItemDto(row);
   }
 
@@ -1137,9 +1151,23 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     }));
   }
 
-  async function searchNest(nestId: string, query: string, limit = 20, language?: KnowledgeRevisionLang): Promise<Array<{ itemId: string; slug: string; title: string }>> {
+  async function searchNest(nestId: string, query: string, limit = 20, language?: KnowledgeRevisionLang, mode: "fts" | "semantic" | "both" = "fts"): Promise<Array<{ itemId: string; slug: string; title: string }>> {
     if (!search) throw new KnowledgeDomainError("search_unavailable", 501, "No SearchIndex is attached to this knowledge service.");
-    const results = await search.search(nestId, query, limit);
+    let semantic: Array<{ itemId: string; slug: string; title: string }> = [];
+    if (mode !== "fts" && mirror) {
+      try {
+        const slugs = await mirror.search(nestId, query, limit);
+        if (slugs.length) {
+          const rows = await db.select().from(knowledgeItems).where(and(eq(knowledgeItems.nestId, nestId), inArray(knowledgeItems.slug, slugs)));
+          const bySlug = new Map(rows.filter((row) => row.deliveredRevisionId && row.status !== "archived" && row.status !== "superseded").map((row) => [row.slug, row]));
+          semantic = slugs.flatMap((slug) => { const row = bySlug.get(slug); return row ? [{ itemId: row.id, slug: row.slug, title: row.title }] : []; });
+        }
+      } catch (error) {
+        console.warn("Knowledge semantic search unavailable; falling back to FTS:", error);
+      }
+    }
+    const fts = mode === "fts" || mode === "both" || semantic.length === 0 ? await search.search(nestId, query, limit) : [];
+    const results = [...semantic, ...fts.filter((row) => !semantic.some((hit) => hit.itemId === row.itemId))].slice(0, limit);
     if (results.length === 0) return results;
     const lang = language ? normalizeKnowledgeRevisionLang(language) : undefined;
     const resultIds = new Set(results.map(({ itemId }) => itemId));
