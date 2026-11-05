@@ -10,6 +10,11 @@ import {
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
+import {
+  litellmBudgetSignalsForKey,
+  recordLitellmBudgetSignals,
+  type LitellmBudgetAttentionSignal,
+} from "../litellm-costs/attention.js";
 import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
 
 /**
@@ -388,6 +393,7 @@ export async function listAgentGatewayKeys(
   const spendByAgent = new Map(spendRows.map((spent) => [spent.agentId, spent]));
 
   const views: AgentGatewayKeyView[] = [];
+  const budgetSignals: LitellmBudgetAttentionSignal[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
@@ -424,9 +430,21 @@ export async function listAgentGatewayKeys(
     }
     if (value) {
       const spent = spendByAgent.get(row.id);
-      usage = keyBudgetUsage(Number(spent?.dailyCents ?? 0), maxBudgetUsd ?? 0, windowStart, {
+      const dailySpendCents = Number(spent?.dailyCents ?? 0);
+      const weeklySpendCents = Number(spent?.weeklyCents ?? 0);
+      budgetSignals.push(...litellmBudgetSignalsForKey({
+        companyId,
+        agentId: row.id,
+        agentName: row.name,
+        capCents: maxBudgetUsd == null ? null : maxBudgetUsd * 100,
+        gatewaySpendCents: gatewaySpendUsd == null ? null : gatewaySpendUsd * 100,
+        dailySpendCents,
+        weeklySpendCents,
+        activityAt: new Date().toISOString(),
+      }));
+      usage = keyBudgetUsage(dailySpendCents, maxBudgetUsd ?? 0, windowStart, {
         capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
-        weeklySpentCents: Number(spent?.weeklyCents ?? 0),
+        weeklySpentCents,
         zeroCostEvents: Number(spent?.zeroCostEvents ?? 0),
       });
     }
@@ -445,6 +463,7 @@ export async function listAgentGatewayKeys(
       usage,
     });
   }
+  recordLitellmBudgetSignals(companyId, budgetSignals);
   return views;
 }
 

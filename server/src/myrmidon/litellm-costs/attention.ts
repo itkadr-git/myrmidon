@@ -165,6 +165,17 @@ export function litellmBudgetSignalsForKey(input: {
 // ---------------------------------------------------------------------------
 
 const signalByCompany = new Map<string, EmptyCatalogAttentionSignal>();
+const budgetSignalsByCompany = new Map<string, LitellmBudgetAttentionSignal[]>();
+
+/** Record the latest key-budget classification for the attention feed. */
+export function recordLitellmBudgetSignals(companyId: string, signals: LitellmBudgetAttentionSignal[]): void {
+  budgetSignalsByCompany.set(companyId, signals);
+}
+
+/** Read the latest key-budget classifications recorded by the gateway-key projection. */
+export function readLitellmBudgetSignals(companyId: string): LitellmBudgetAttentionSignal[] {
+  return budgetSignalsByCompany.get(companyId) ?? [];
+}
 
 /**
  * Records the outcome of one sweep's catalog refresh. `catalogSize` is the

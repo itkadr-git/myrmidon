@@ -94,7 +94,10 @@ import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 import { readPoolAccountSignals, readPackageExpirySignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
-import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+import {
+  readEmptyCatalogSignal,
+  readLitellmBudgetSignals,
+} from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
 import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
@@ -217,6 +220,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
   // key is misconfigured; one card per company.
   "empty_model_catalog",
+  // myrmidon(OPE-11776): key cap and spend threshold cards.
+  "litellm_budget",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
@@ -263,6 +268,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
   // the model picker — a stop, ranked with the other gateway-ops alerts.
   empty_model_catalog: 0,
+  // myrmidon(OPE-11776): budget exhaustion is a critical operational alert.
+  litellm_budget: 3,
   // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
   // an error — ranked with the other advisory sources.
   bot_media_mcp: 13,
@@ -3844,6 +3851,42 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(emptyCatalogSignal.summary),
+            images: [],
+          },
+        }));
+      }
+
+      for (const budgetSignal of readLitellmBudgetSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "litellm_budget",
+          subject: {
+            kind: "agent",
+            id: budgetSignal.agentId,
+            companyId,
+            title: budgetSignal.title,
+            identifier: budgetSignal.agentId,
+            status: null,
+            href: `/${prefix}/agents/${budgetSignal.agentId}`,
+            metadata: { litellmBudgetSignal: budgetSignal.kind },
+          },
+          whyNow: budgetSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent's LLM gateway key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the LiteLLM key projection crosses its configured budget threshold.",
+          exitRule: "the next key projection no longer reports this threshold.",
+          dedupKey: budgetSignal.dedupKey,
+          severity: budgetSignal.severity,
+          activityAt: budgetSignal.activityAt,
+          createdAt: budgetSignal.activityAt,
+          updatedAt: budgetSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(budgetSignal.summary),
             images: [],
           },
         }));
