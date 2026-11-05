@@ -431,10 +431,24 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   // conversation across runs; a stored session id from a prior run means that
   // conversation already received the task brief, so pick the compact
   // task-context variant under the shared resume rules.
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const issueId = issueIdFromContext(ctx);
+  const sessionKeyStrategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession,
+    issueId,
+  });
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
-    Boolean(nonEmpty(ctx.runtime?.sessionId));
+    Boolean(nonEmpty(ctx.runtime?.sessionId)) &&
+    (ctx.config.developerOnlyTaskSession !== true ||
+      nonEmpty(ctx.runtime?.sessionId) === resolveSessionKey({
+        strategy: "issue",
+        companyId: ctx.agent.companyId,
+        agentId: ctx.agent.id,
+        runId: idempotencyRunId,
+        issueId,
+        generation: readSessionGeneration(ctx.config.sessionGeneration),
+      }));
   const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
     conversationMode: ctx.context.conversationMode === true,
