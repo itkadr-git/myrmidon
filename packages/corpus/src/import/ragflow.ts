@@ -462,7 +462,10 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       const runState = document.run === undefined || document.run === null ? "" : String(document.run).toUpperCase();
       const isReady = ["DONE", "3"].includes(runState);
       const hasChunks = expectedChunks > 0;
-      if (!isReady && !hasChunks) {
+      const isUnparsedNonReady = !hasChunks && (
+        !isReady && (["CANCEL", "FAIL", "UNSTART", "UNSTARTED", "FAILED", "CANCELED", "4", "0"].includes(runState) || runState === "")
+      );
+      if (isUnparsedNonReady) {
         const notParsed = { id: document.id, name: document.name ?? document.location ?? document.id, run: runState || "UNKNOWN", size: safeInteger(document.size) };
         progress.notParsed!.push(notParsed);
         progress.documentId = document.id;

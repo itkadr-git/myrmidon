@@ -462,7 +462,9 @@ describe("RAGFlow corpus import", () => {
   it("imports partial chunks and reports unparsed documents", async () => {
     const memory = memoryTarget();
     const uploaded: string[] = [];
-    memory.target.uploadDocument = async (input) => uploaded.push(input.filename);
+    memory.target.uploadDocument = async (input) => {
+      uploaded.push(input.filename);
+    };
     const documents = [
       { id: "done", name: "done.pdf", run: "DONE", chunk_count: 1 },
       { id: "partial", name: "partial.pdf", run: "FAIL", chunk_count: 1 },
