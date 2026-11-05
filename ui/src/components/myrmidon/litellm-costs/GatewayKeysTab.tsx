@@ -39,6 +39,7 @@ import {
   type GatewayFallbackReport,
   type KeyBudgetLimitView,
 } from "./litellmKeysApi";
+import { formatCents } from "@/lib/utils";
 import { GatewayFallbacksEditor } from "./GatewayFallbacksEditor";
 
 /** One line per agent: the display name, the secret, present status, value hash, and allowlist. */
