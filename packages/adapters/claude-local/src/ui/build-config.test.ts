@@ -77,4 +77,25 @@ describe("buildClaudeLocalConfig", () => {
       FLAG: { type: "plain", value: "on" },
     });
   });
+
+  it("persists filesystem and network sandbox fields along with probe from adapterSchemaValues", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        adapterSchemaValues: {
+          filesystemScope: "workspace",
+          filesystemExtraPaths: ["/tmp/extra"],
+          networkScope: "allowlist",
+          networkAllowlist: ["api.anthropic.com"],
+          probe: true,
+        },
+      }),
+    );
+    expect(config).toMatchObject({
+      filesystemScope: "workspace",
+      filesystemExtraPaths: ["/tmp/extra"],
+      networkScope: "allowlist",
+      networkAllowlist: ["api.anthropic.com"],
+      probe: true,
+    });
+  });
 });

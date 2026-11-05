@@ -25,6 +25,22 @@
         "webhookUrlLabel": "Webhook URL",
         "urlPlaceholder": "https://..."
       },
+      "localSandbox": {
+        "filesystemScopeLabel": "Filesystem sandbox",
+        "filesystemScopeHint": "Confine CLI access to the workspace. Requires server-side authorization and Bubblewrap.",
+        "extraPathsLabel": "Additional filesystem paths",
+        "extraPathsHint": "Comma-separated absolute paths; use only paths approved for this agent.",
+        "networkScopeLabel": "Network sandbox",
+        "networkScopeHint": "Restrict local CLI network egress. Allowlist is validated server-side.",
+        "allowlistLabel": "Network allowlist",
+        "allowlistHint": "Comma-separated hostnames, host:port entries, or origin URLs.",
+        "disabled": "Default",
+        "workspace": "Workspace only",
+        "deny": "Deny network",
+        "allowlist": "Allowlist",
+        "probeLabel": "Probe environment before run",
+        "probeHint": "Run the adapter environment probe before starting a session."
+      },
       "claude-local": {
         "fields": {
           "instructionsFileLabel": "Agent instructions file",

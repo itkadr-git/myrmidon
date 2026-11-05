@@ -66,6 +66,12 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  if (v.adapterSchemaValues?.filesystemScope) ac.filesystemScope = v.adapterSchemaValues.filesystemScope;
+  if (v.adapterSchemaValues?.filesystemExtraPaths) ac.filesystemExtraPaths = v.adapterSchemaValues.filesystemExtraPaths;
+  if (v.adapterSchemaValues?.networkScope) ac.networkScope = v.adapterSchemaValues.networkScope;
+  if (v.adapterSchemaValues?.networkAllowlist) ac.networkAllowlist = v.adapterSchemaValues.networkAllowlist;
+  if (typeof v.adapterSchemaValues?.probe === "boolean") ac.probe = v.adapterSchemaValues.probe;
+  if (typeof v.adapterSchemaValues?.approvalMode === "string") ac.approvalMode = v.adapterSchemaValues.approvalMode;
   return ac;
 }
 

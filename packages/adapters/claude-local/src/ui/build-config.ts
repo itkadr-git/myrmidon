@@ -59,5 +59,10 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  if (v.adapterSchemaValues?.filesystemScope) ac.filesystemScope = v.adapterSchemaValues.filesystemScope;
+  if (v.adapterSchemaValues?.filesystemExtraPaths) ac.filesystemExtraPaths = v.adapterSchemaValues.filesystemExtraPaths;
+  if (v.adapterSchemaValues?.networkScope) ac.networkScope = v.adapterSchemaValues.networkScope;
+  if (v.adapterSchemaValues?.networkAllowlist) ac.networkAllowlist = v.adapterSchemaValues.networkAllowlist;
+  if (typeof v.adapterSchemaValues?.probe === "boolean") ac.probe = v.adapterSchemaValues.probe;
   return ac;
 }

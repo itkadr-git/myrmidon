@@ -25,6 +25,22 @@
         "webhookUrlLabel": "URL вебхука",
         "urlPlaceholder": "https://..."
       },
+      "localSandbox": {
+        "filesystemScopeLabel": "Песочница файловой системы",
+        "filesystemScopeHint": "Ограничить CLI рабочим каталогом. Требуются серверная авторизация и Bubblewrap.",
+        "extraPathsLabel": "Дополнительные пути",
+        "extraPathsHint": "Абсолютные пути через запятую; используйте только разрешённые пути.",
+        "networkScopeLabel": "Сетевая песочница",
+        "networkScopeHint": "Ограничить сетевой выход локального CLI. Allowlist проверяется на сервере.",
+        "allowlistLabel": "Сетевой allowlist",
+        "allowlistHint": "Имена хостов, host:port или origin URL через запятую.",
+        "disabled": "По умолчанию",
+        "workspace": "Только рабочий каталог",
+        "deny": "Запретить сеть",
+        "allowlist": "Allowlist",
+        "probeLabel": "Проверять окружение перед запуском",
+        "probeHint": "Выполнять проверку окружения адаптера перед запуском сессии."
+      },
       "claude-local": {
         "fields": {
           "instructionsFileLabel": "Файл инструкций агента",
