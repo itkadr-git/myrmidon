@@ -25,10 +25,6 @@ export const BREAKER_FAILURE_THRESHOLD = 2;
 export const BREAKER_OPEN_MS = 6 * 60 * 60 * 1000;
 /** How long one read may take, in milliseconds. */
 export const READ_TIMEOUT_MS = 15_000;
-/** The tool name and contact the host sees; a host must know who is knocking. */
-export const FORAGING_USER_AGENT = "myrmidon-foraging/1.0 (+https://github.com/itkadr-git/myrmidon)";
-/** Maximum source response body accepted from the network, in bytes. */
-export const MAX_FORAGING_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 interface HostState {
   lastReadAt: number;
@@ -216,87 +212,9 @@ function createHttpEdgeFetchClient(deps: ForagingReaderDeps): NonNullable<Foragi
       return await response.json() as ForagingEdgeFetchResponse;
     };
   }
-  return async (request, signal) => {
-    const target = new URL(request.url);
-    if (target.protocol !== "http:" && target.protocol !== "https:") {
-      throw new Error("foraging: source URL must use http or https");
-    }
-    const response = await fetchImpl(target, {
-      method: "GET",
-      redirect: "manual",
-      headers: { "user-agent": FORAGING_USER_AGENT, accept: "text/html,text/plain,application/xhtml+xml" },
-      signal,
-    });
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      throw new Error("foraging: source redirects are not allowed");
-    }
-    if (!response.ok) throw new Error(`foraging: source answered ${response.status}`);
-    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-    if (!contentType.startsWith("text/") && contentType !== "application/xhtml+xml") {
-      await response.body?.cancel();
-      throw new Error("foraging: source content type is not text");
-    }
-    const declaredLength = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_FORAGING_RESPONSE_BYTES) {
-      await response.body?.cancel();
-      throw new Error("foraging: source response exceeds the 2 MB limit");
-    }
-    const bytes = await readBoundedBody(response, signal);
-    const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const text = contentType === "text/html" || contentType === "application/xhtml+xml" ? htmlToMarkdown(raw) : raw;
-    return {
-      request_id: request.request_id,
-      status: "succeeded",
-      truncated: false,
-      pages: [{
-        url: request.url,
-        final_url: request.url,
-        title: null,
-        markdown: text,
-        fetched_at: new Date().toISOString(),
-        content_sha256: createHash("sha256").update(bytes).digest("hex"),
-      }],
-    };
+  return async (_request, _signal) => {
+    throw new Error(
+      "foraging: direct HTTP fetch from vm-core is disabled; configure MYRMIDON_FORAGING_FETCHER_URL and MYRMIDON_FORAGING_FETCHER_TOKEN",
+    );
   };
-}
-
-async function readBoundedBody(response: Response, signal: AbortSignal): Promise<Uint8Array> {
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      if (signal.aborted) throw new Error("foraging: source read timed out");
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_FORAGING_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new Error("foraging: source response exceeds the 2 MB limit");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-
-function htmlToMarkdown(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/\s+/g, " ")
-    .trim();
 }
