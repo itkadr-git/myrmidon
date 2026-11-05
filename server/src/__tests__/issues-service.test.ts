@@ -7452,7 +7452,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .insert(labels)
       .values({
         companyId,
-        name: "1.6.7",
+        name: "1.7.0",
         color: "#445566",
       })
       .returning();
@@ -7478,6 +7478,6 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       labelIds: [childLabel.id],
     });
 
-    expect(child.labels?.map((l: any) => l.name)).toEqual(["1.6.7"]);
+    expect(child.labels?.map((l: any) => l.name)).toEqual(["1.7.0"]);
   });
 });
