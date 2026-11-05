@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   collect,
   foldChangelog,
+  foldReplaceRows,
   foldTableRows,
   listFragments,
   parseFragment,
@@ -324,6 +325,15 @@ describe("sectionKey / resolveSectionHeading (EN↔RU heading pairing)", () => {
     const heading = "TASK-PR-SYNC — a task settles once its pull requests merge";
     // exact heading is absent; the relaxed prefix matches two distinct sections
     assert.equal(resolveSectionHeading(doc, heading), heading);
+  });
+
+  it("replaces rows that have leading malformed line numbers (e.g. 240i|)", () => {
+    const doc = "## Section\n\n| Existing |\n| --- |\n240i| `FOO` | old |\n";
+    const out = foldReplaceRows(doc, {
+      rows: "| `FOO` | new |",
+      section: "Section",
+    });
+    assert.equal(out, "## Section\n\n| Existing |\n| --- |\n| `FOO` | new |\n");
   });
 });
 
