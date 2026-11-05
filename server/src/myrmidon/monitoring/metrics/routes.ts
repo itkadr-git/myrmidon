@@ -26,9 +26,13 @@ import {
   METRICS_CONTENT_TYPE,
   renderMetricsText,
   runMetricsSelfCheck,
+  type CapacityDashboardMetricsProvider,
   type MetricsCollectorDeps,
   type MetricsSelfCheck,
 } from "./metrics.js";
+import {
+  createDefaultCapacityDashboardProvider,
+} from "./capacity-producer.js";
 import {
   startProcessMetricsObservation,
   type ProcessMetricsSource,
@@ -82,6 +86,11 @@ export interface MetricsRoutesDeps {
    * Absent → the production store on `db`.
    */
   processStore?: BoardProcessStore;
+  /**
+   * myrmidon(1.6.6 OPE-9565): the capacity dashboard metrics seam.
+   * Absent → the production producer on `db`. Pass `null` to disable exposition.
+   */
+  capacityDashboard?: CapacityDashboardMetricsProvider | null;
   /** Role override (tests); resolved through the product env aliases otherwise. */
   role?: string;
 }
@@ -195,6 +204,10 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
 
     ensureProcessObservation();
     const query = req.query as Record<string, unknown>;
+    const capacityDashboard =
+      deps.capacityDashboard !== undefined
+        ? deps.capacityDashboard
+        : createDefaultCapacityDashboardProvider(deps.db, deps.now);
     const snapshot = await collectMetricsSnapshot({
       db: deps.db,
       now: deps.now,
@@ -203,6 +216,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
       engineerIdleWindowSec: clampEngineerIdleWindowSec(query.idle_window),
       role,
       ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
+      ...(capacityDashboard !== undefined ? { capacityDashboard } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
   });
