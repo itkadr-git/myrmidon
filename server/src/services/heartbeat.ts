@@ -8599,7 +8599,10 @@ export function buildReviewerInputFromTaskData(input: {
       environmentSecrets: {},
       foreignTaskContext: undefined,
     },
-    pr: input.pullRequest,
+    pr: {
+      ...input.pullRequest,
+      diff: input.diff,
+    },
     reviewInstructions:
       typeof reviewRequest.instructions === "string"
         ? reviewRequest.instructions
