@@ -1143,7 +1143,7 @@ describe("execute", () => {
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://myrmidon-bot-test:8642",
-      apiKey: ***
+      apiKey: "secret-key",
       dangerouslyAllowInsecureRemoteHttp: true,
       gatewayReadyTimeoutMs: 5000,
       timeoutSec: 5,
@@ -1188,7 +1188,7 @@ describe("execute", () => {
         execute(
           makeCtx({
             apiBaseUrl: `http://${b}:8642`,
-            apiKey: ***
+            apiKey: "secret-key",
             dangerouslyAllowInsecureRemoteHttp: true,
             gatewayReadyTimeoutMs: 5000,
             timeoutSec: 5,
@@ -1215,7 +1215,7 @@ describe("execute", () => {
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://myrmidon-bot-test:8642",
-      apiKey: ***
+      apiKey: "secret-key",
       dangerouslyAllowInsecureRemoteHttp: true,
       gatewayReadyTimeoutMs: 0,
     }));
