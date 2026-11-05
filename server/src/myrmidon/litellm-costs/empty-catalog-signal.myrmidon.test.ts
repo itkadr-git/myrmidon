@@ -4,6 +4,7 @@ import {
   emptyCatalogDedupKey,
   EMPTY_CATALOG_ATTENTION_DEDUP_PREFIX,
   EMPTY_CATALOG_ATTENTION_TITLE,
+  litellmBudgetSignalsForKey,
   readEmptyCatalogSignal,
   recordEmptyCatalogSweep,
   resetEmptyCatalogSignals,
@@ -13,8 +14,6 @@ import {
   type LitellmCostsDeps,
   type LitellmGatewayClient,
 } from "./litellm-costs.js";
-
-// Neutral ids only: company-a, example.com, no real keys or hosts.
 
 const COMPANY = "company-a";
 const NOW = new Date("2026-10-08T12:00:00.000Z");
@@ -47,10 +46,6 @@ function gatewayClient(models: Array<{ modelName: string }>): LitellmGatewayClie
   };
 }
 
-// A minimal drizzle-shaped stub: the sweep touches three queries before and
-// around the catalog refresh — the lookback select, the run-window select and
-// the model upsert (only when the catalog is non-empty). Every chain resolves
-// to an empty result; nothing is asserted about the writes themselves.
 function sweepDbStub() {
   const chain: Record<string, unknown> = {};
   const self = () => chain;
@@ -144,5 +139,42 @@ describe("myrmidon(1.6.5-F-18) empty catalog attention signal", () => {
   it("builds a stable dedup key from the company id", () => {
     expect(emptyCatalogDedupKey(COMPANY)).toBe(`${EMPTY_CATALOG_ATTENTION_DEDUP_PREFIX}${COMPANY}`);
     expect(emptyCatalogDedupKey("other-company")).not.toBe(emptyCatalogDedupKey(COMPANY));
+  });
+});
+
+describe("LiteLLM key budget attention classification", () => {
+  const input = {
+    companyId: COMPANY,
+    agentId: "agent-a",
+    agentName: "Builder",
+    capCents: 1_000,
+    gatewaySpendCents: 800,
+    dailySpendCents: 100,
+    weeklySpendCents: 700,
+    activityAt: NOW.toISOString(),
+  };
+
+  it("emits a near-cap signal at exactly 80%", () => {
+    expect(litellmBudgetSignalsForKey(input).map((signal) => signal.kind)).toEqual(["near_cap"]);
+  });
+
+  it("emits exhausted instead of near-cap at 100%", () => {
+    const signals = litellmBudgetSignalsForKey({ ...input, gatewaySpendCents: 1_000 });
+    expect(signals.find((signal) => signal.kind === "exhausted")?.severity).toBe("critical");
+    expect(signals.some((signal) => signal.kind === "near_cap")).toBe(false);
+  });
+
+  it("emits a daily anomaly at twice the seven-day daily average", () => {
+    const signals = litellmBudgetSignalsForKey({ ...input, dailySpendCents: 200 });
+    expect(signals.map((signal) => signal.kind)).toEqual(["near_cap", "daily_anomaly"]);
+  });
+
+  it("does not emit cap or anomaly signals without usable observations", () => {
+    expect(litellmBudgetSignalsForKey({
+      ...input,
+      capCents: null,
+      gatewaySpendCents: null,
+      weeklySpendCents: 0,
+    })).toEqual([]);
   });
 });
