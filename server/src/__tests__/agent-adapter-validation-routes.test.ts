@@ -403,8 +403,13 @@ describe("agent routes adapter validation", () => {
       .send({ name: "Local agent", adapterType, adapterConfig: valid }));
     expect(create.status, JSON.stringify(create.body)).toBe(201);
     expect(mockAgentService.create).toHaveBeenCalledOnce();
-    // Agent creation may persist the managed instructions bundle via update.
-    const updatesAfterValidCreate = mockAgentService.update.mock.calls.length;
+    const editedValid = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType, adapterConfig: valid }));
+    expect(editedValid.status, JSON.stringify(editedValid.body)).toBe(200);
+    // Creation may also persist the managed instructions bundle via update.
+    const updatesAfterValidSaves = mockAgentService.update.mock.calls.length;
+    expect(updatesAfterValidSaves).toBeGreaterThan(0);
 
     const invalid = [
       { filesystemScope: "unrestricted" },
@@ -431,7 +436,7 @@ describe("agent routes adapter validation", () => {
       expect(edited.status, JSON.stringify({ adapterType, adapterConfig, body: edited.body })).toBe(422);
     }
     expect(mockAgentService.create).toHaveBeenCalledOnce();
-    expect(mockAgentService.update.mock.calls.length).toBe(updatesAfterValidCreate);
+    expect(mockAgentService.update.mock.calls.length).toBe(updatesAfterValidSaves);
   });
 
   it.each(["claude_local", "codex_local"])("requires instance admin for %s sandbox changes", async (adapterType) => {
