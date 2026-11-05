@@ -1,9 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
-import { WebSocket, WebSocketServer } from "ws";
+import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Duplex } from "node:stream";
+import { WebSocket, WebSocketServer } from "ws";
 
 import { DurablePrpControlPlane } from "@myrmidon/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -38,7 +38,7 @@ describe("runner PRP websocket route", () => {
         companyId: "company-1",
         runId,
         authority: {
-          handleUpgrade(request, socket, _path, head) {
+          handleUpgrade(request: IncomingMessage, socket: Duplex, _path: string, head: Buffer) {
             const wss = new WebSocketServer({ noServer: true });
             wss.handleUpgrade(request, socket, head, (client) => {
               client.send(JSON.stringify(prepare));
