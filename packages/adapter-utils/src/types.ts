@@ -830,6 +830,9 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  filesystemScope?: "workspace";
+  networkScope?: "deny" | "allowlist";
+  networkAllowlist?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;

@@ -57,6 +57,9 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (runtimeServices && Array.isArray(runtimeServices.services)) {
     ac.workspaceRuntime = runtimeServices;
   }
+  if (v.filesystemScope) ac.filesystemScope = v.filesystemScope;
+  if (v.networkScope) ac.networkScope = v.networkScope;
+  if (v.networkScope === "allowlist") ac.networkAllowlist = (v.networkAllowlist ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
