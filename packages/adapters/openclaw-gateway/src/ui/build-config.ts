@@ -33,6 +33,11 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (typeof v.disableDeviceAuth === "boolean") ac.disableDeviceAuth = v.disableDeviceAuth;
   if (typeof v.autoPairOnFirstConnect === "boolean") ac.autoPairOnFirstConnect = v.autoPairOnFirstConnect;
   if (v.devicePrivateKeyPem) ac.devicePrivateKeyPem = v.devicePrivateKeyPem;
+  const deviceToken = v.adapterSchemaValues?.deviceToken;
+  if (deviceToken && typeof deviceToken === "object" && !Array.isArray(deviceToken) &&
+      deviceToken.type === "secret_ref" && typeof deviceToken.secretId === "string") {
+    ac.deviceToken = deviceToken;
+  }
 
   // Gateway identity fields
   if (v.role) ac.role = v.role;

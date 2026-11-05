@@ -50,6 +50,17 @@ describe("HermesGatewayConfigFields", () => {
     document.body.innerHTML = "";
   });
 
+  it("shows the agent-scoped Hindsight bank only in advanced settings", () => {
+    const result = renderFields({ config: { hindsight: { bankId: "old-bank", custom: "keep" } }, section: "advanced" });
+    roots.push(result.root);
+    expect(result.container.querySelector<HTMLInputElement>('input[value="old-bank"]')).toBeTruthy();
+    expect(result.container.textContent).not.toContain("raw-token");
+    expect(result.container.textContent).toContain("Hindsight bank ID");
+    const adapter = renderFields({ section: "adapter" });
+    roots.push(adapter.root);
+    expect(adapter.container.textContent).not.toContain("Hindsight bank ID");
+  });
+
   it("shows the gateway URL and runtime fields in edit mode", () => {
     const result = renderFields({
       config: {

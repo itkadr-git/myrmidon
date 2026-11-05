@@ -142,6 +142,16 @@ export function HermesGatewayConfigFields({
   const headers = isCreate
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
+  const hindsightValue = readValue("hindsight", null);
+  const hindsight = hindsightValue && typeof hindsightValue === "object" && !Array.isArray(hindsightValue)
+    ? hindsightValue as Record<string, unknown>
+    : {};
+  const updateHindsight = (key: string, value: unknown) => {
+    const next = { ...hindsight };
+    if (value === undefined || value === "") delete next[key];
+    else next[key] = value;
+    writeValue("hindsight", Object.keys(next).length ? next : undefined);
+  };
 
   return configFieldsForSection(section, (
     <>
@@ -250,6 +260,14 @@ export function HermesGatewayConfigFields({
           onCommit={(v) => writeValue("instructions", v || undefined)}
           immediate
           minRows={3}
+        />
+      </Field>
+      <Field configSection="advanced" label="Hindsight bank ID" hint="Agent-specific memory bank; no shared-bank fallback. Leave empty only if the plugin maps this agent explicitly.">
+        <DraftInput
+          value={String(hindsight.bankId ?? "")}
+          onCommit={(v) => updateHindsight("bankId", v.trim())}
+          immediate
+          className={inputClass}
         />
       </Field>
     </>
