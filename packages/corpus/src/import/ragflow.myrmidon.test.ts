@@ -457,7 +457,32 @@ describe("RAGFlow corpus import", () => {
     expect(firstChunk.content).toBe("first section");
   });
 
-  // myrmidon(OPE-10668): only allowlisted datasets are imported.
+  it("imports partial chunks and reports unparsed documents", async () => {
+    const memory = memoryTarget();
+    const uploaded: string[] = [];
+    memory.target.uploadDocument = async (input) => uploaded.push(input.filename);
+    const documents = [
+      { id: "done", name: "done.pdf", run: "DONE", chunk_count: 1 },
+      { id: "partial", name: "partial.pdf", run: "FAIL", chunk_count: 1 },
+      { id: "cancel", name: "cancel.pdf", size: 42, run: "CANCEL", chunk_count: 0 },
+    ];
+    const chunks: Record<string, RagflowChunk[]> = { done: [{ id: "done-c", content: "done" }], partial: [{ id: "partial-c", content: "partial" }], cancel: [] };
+    const source: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [{ id: "ds", name: "KB", document_count: 3, chunk_count: 2 }]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* (_dataset, id) { yield* chunks[id]!; },
+      async countChunks(_dataset, id) { return chunks[id]!.length; },
+      async downloadDocument() { return { bytes: new Uint8Array([1]), filename: "cancel.pdf", mimeType: "application/pdf" }; },
+    };
+    const summary = await importRagflowCorpus({ source, target: memory.target, companyId: "company", embeddingDimensions: 4, embed: embedFixture, uploadUnparsed: true });
+    expect(summary.partial).toEqual(["partial"]);
+    expect(summary.notParsed).toEqual([{ id: "cancel", name: "cancel.pdf", run: "CANCEL", size: 42 }]);
+    expect(summary.chunks).toBe(2);
+    expect([...memory.documents.values()].map((doc) => doc.title)).not.toContain("cancel.pdf");
+    expect(uploaded).toEqual(["cancel.pdf"]);
+  });
+
   it("imports only datasets whose names are allowlisted", async () => {
     const memory = memoryTarget();
     const datasets: RagflowDataset[] = [

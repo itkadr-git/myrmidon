@@ -51,6 +51,8 @@ export type RagflowSource = {
   listDocuments(datasetId: string): AsyncIterable<RagflowDocument>;
   listChunks(datasetId: string, documentId: string): AsyncIterable<RagflowChunk>;
   countChunks?(datasetId: string, documentId: string): Promise<number | undefined>;
+  /** Optional original-file retrieval for unparsed documents. */
+  downloadDocument?(datasetId: string, documentId: string): Promise<{ bytes: Uint8Array; filename: string; mimeType?: string | null }>;
 };
 
 export type CorpusImportDataset = {
@@ -100,6 +102,7 @@ export type CorpusImportTarget = {
   getChunkStates(companyId: string, ids: string[]): Promise<Map<string, ChunkState>>;
   upsertChunks(chunks: CorpusImportChunk[]): Promise<void>;
   markDocumentReady(companyId: string, documentId: string): Promise<void>;
+  uploadDocument?(input: { companyId: string; datasetId: string; filename: string; mimeType: string | null; bytes: Uint8Array }): Promise<void>;
 };
 
 export type CorpusImporterOptions = {
@@ -114,6 +117,7 @@ export type CorpusImporterOptions = {
   chunkCountTolerance?: number;
   /** myrmidon(OPE-10668): when set, only datasets whose name is in this list are imported. */
   datasetNames?: readonly string[];
+  uploadUnparsed?: boolean;
   onProgress?: (progress: CorpusImportProgress) => void;
 };
 
@@ -127,6 +131,17 @@ export type CorpusImportProgress = {
   chunks: number;
   embedded: number;
   reused: number;
+  /** A document failed after producing some chunks. */
+  partial?: boolean;
+  /** Document IDs that have no parsed chunks and were not imported. */
+  notParsed?: CorpusImportNotParsed[];
+};
+
+export type CorpusImportNotParsed = {
+  id: string;
+  name: string;
+  run: string;
+  size: number | null;
 };
 
 export type CorpusImportSummary = {
@@ -135,6 +150,8 @@ export type CorpusImportSummary = {
   chunks: number;
   embedded: number;
   reused: number;
+  partial?: string[];
+  notParsed: CorpusImportNotParsed[];
   durationMs: number;
 };
 
@@ -290,6 +307,16 @@ export function createRagflowSource(options: {
       for await (const _chunk of this.listChunks(datasetId, documentId)) count += 1;
       return count;
     },
+    async downloadDocument(datasetId, documentId) {
+      const response = await fetchImpl(`${baseUrl}/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}/download`, {
+        headers: { authorization: `Bearer ${options.apiKey}` },
+      });
+      if (!response.ok) throw new RagflowApiError(`RAGFlow document download failed (${response.status})`, response.status);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const contentDisposition = response.headers.get("content-disposition") ?? "";
+      const filename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] ?? documentId;
+      return { bytes, filename, mimeType: response.headers.get("content-type") };
+    },
   };
 }
 
@@ -304,7 +331,8 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new RangeError("embeddingBatchSize must be positive");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new RangeError("embeddingConcurrency must be positive");
 
-  const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0, reused: 0 };
+  const progress: CorpusImportProgress = { phase: "dataset", datasets: 0, documents: 0, chunks: 0, embedded: 0, reused: 0, notParsed: [] };
+  const partialDocuments: string[] = [];
   const report = () => options.onProgress?.({ ...progress });
   const datasets = (await options.source.listDatasets()).filter((dataset) => {
     if (!options.datasetNames || options.datasetNames.length === 0) return true;
@@ -386,12 +414,24 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       if (!document.id) throw new RagflowApiError(`RAGFlow document in dataset ${dataset.id} is missing an id`);
       const expectedChunks = expectedChunksByDocument.get(JSON.stringify([dataset.id, document.id])) ?? 0;
       const runState = document.run === undefined || document.run === null ? "" : String(document.run).toUpperCase();
-      // The documented completed statuses are textual DONE or numeric 3. Fail closed
-      // for missing/unknown values: the importer must never copy a partial RAGFlow index.
-      // Zero-chunk documents produce no chunks to index, so uncompleted run states
-      // are permitted when expectedChunks is zero.
-      if (expectedChunks > 0 && !["DONE", "3"].includes(runState)) {
-        throw new RagflowApiError(`RAGFlow document ${document.id} is not ready (run=${runState || "unknown"})`);
+      const isReady = ["DONE", "3"].includes(runState);
+      const hasChunks = expectedChunks > 0;
+      if (!isReady && !hasChunks) {
+        const notParsed = { id: document.id, name: document.name ?? document.location ?? document.id, run: runState || "UNKNOWN", size: safeInteger(document.size) };
+        progress.notParsed!.push(notParsed);
+        progress.documentId = document.id;
+        report();
+        if (options.uploadUnparsed && options.source.downloadDocument && options.target.uploadDocument) {
+          const file = await options.source.downloadDocument(dataset.id, document.id);
+          await options.target.uploadDocument({ companyId: options.companyId, datasetId, filename: file.filename, mimeType: file.mimeType ?? mimeTypeFromName(file.filename, document.type), bytes: file.bytes });
+        }
+        continue;
+      }
+      if (!isReady && hasChunks) {
+        partialDocuments.push(document.id);
+        progress.documentId = document.id;
+        progress.partial = true;
+        report();
       }
       const documentId = stableUuid("document", JSON.stringify([options.companyId, dataset.id, document.id]));
       const filename = document.name ?? document.location ?? document.id;
@@ -505,7 +545,7 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
       await flush();
       const expectedDocumentChunks = expectedChunksByDocument.get(JSON.stringify([dataset.id, document.id]));
       // myrmidon(OPE-10668): apply the same tolerance as the preflight checks.
-      if (expectedDocumentChunks !== undefined && !isWithinChunkTolerance(expectedDocumentChunks, documentChunks, tolerance)) {
+      if (expectedDocumentChunks !== undefined && isReady && !isWithinChunkTolerance(expectedDocumentChunks, documentChunks, tolerance)) {
         throw new RagflowApiError(`RAGFlow chunk count mismatch for ${document.id}: source reports ${expectedDocumentChunks}, imported ${documentChunks}`);
       }
       await options.target.markDocumentReady(options.companyId, documentId);
@@ -516,14 +556,14 @@ export async function importRagflowCorpus(options: CorpusImporterOptions): Promi
   if (progress.datasets !== sourceDatasetCount) {
     throw new RagflowApiError(`RAGFlow dataset count mismatch: source listed ${sourceDatasetCount}, imported ${progress.datasets}`);
   }
-  if (progress.documents !== sourceDocumentCount) {
+  if (progress.documents + progress.notParsed!.length !== sourceDocumentCount) {
     throw new RagflowApiError(`RAGFlow document count mismatch: source listed ${sourceDocumentCount}, imported ${progress.documents}`);
   }
-  if (sourceChunkCount > 0 && (progress.chunks < sourceMinimumChunks || progress.chunks > sourceMaximumChunks)) {
+  if (sourceChunkCount > 0 && progress.notParsed!.length === 0 && partialDocuments.length === 0 && (progress.chunks < sourceMinimumChunks || progress.chunks > sourceMaximumChunks)) {
     throw new RagflowApiError(`RAGFlow corpus chunk count mismatch: source lists ${sourceChunkCount} ±${tolerance * 100}%, imported ${progress.chunks}`);
   }
   report();
-  return { datasets: progress.datasets, documents: progress.documents, chunks: progress.chunks, embedded: progress.embedded, reused: progress.reused, durationMs: Date.now() - startedAt };
+  return { datasets: progress.datasets, documents: progress.documents, chunks: progress.chunks, embedded: progress.embedded, reused: progress.reused, partial: partialDocuments.length > 0 ? partialDocuments : undefined, notParsed: progress.notParsed ?? [], durationMs: Date.now() - startedAt };
 }
 
 function sourceCount(...values: unknown[]): number | undefined {
