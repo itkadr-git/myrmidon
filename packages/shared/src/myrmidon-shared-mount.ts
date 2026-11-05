@@ -24,7 +24,10 @@ export const sharedMountSettingsSchema = z
     // a plain absolute path: it ends up in a "source:target:mode" bind string
     hostPath: z.string().regex(/^\/[^:,\0]*$/, "must be an absolute path without ':' or ','").optional(),
     writable: z.boolean().optional(),
-    allowedBots: z.array(z.string().min(1)).optional(),
+    allowedBots: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/, "must be a bot ID")).refine(
+      (ids) => new Set(ids).size === ids.length,
+      "bot IDs must be unique",
+    ).optional(),
   })
   .strict();
 
