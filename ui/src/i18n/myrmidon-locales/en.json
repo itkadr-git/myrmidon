@@ -1245,7 +1245,10 @@
     "loadFailed": "Failed to load the queue priority settings.",
     "saveFailed": "Saving the queue priority settings failed.",
     "error": {
-      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
+      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty",
+      "invalidWeight": "Enter a non-negative whole number within the allowed range",
+      "missingPriority": "All five priorities are required",
+      "missingRole": "At least one role is required"
     },
     "position": {
       "of": "Queue position {{position}} of {{total}}",
@@ -1272,7 +1275,13 @@
     "agingStepWeight": "Aging step weight",
     "agingStepWeightHint": "Weight gained per full aging step.",
     "starvationLimit": "Starvation limit (minutes)",
-    "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+    "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off.",
+    "issueWeightsHint": "Issue priority weights inside each role band (none is the fallback for unknown priorities).",
+    "issue": { "critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "none": "None / unknown" },
+    "roleWeightsHint": "Role weights returned by the server, including custom roles. Higher weights start first.",
+    "starvationTop": "Starvation top weight",
+    "starvationTopHint": "After {{minutes}} minutes queued, a run gets this weight outright; a zero-minute limit disables the escape.",
+    "adminOnly": "Only instance administrators can change queue priority settings."
   },
   "processes": {
     "title": "Board processes",
