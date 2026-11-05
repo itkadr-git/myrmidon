@@ -90,10 +90,10 @@ describe("myrmidon(FLEETD-VMEXEC) placement — the card's gateway base URL", ()
   });
 
   it("accepts an https fleetd url for registry sites and produces http://<host>:<port>", () => {
-    expect(fleetGatewayApiBaseUrl("https://10.10.0.110:9100", 18701, { source: "registry" })).toBe("http://10.10.0.110:18701");
+    expect(fleetGatewayApiBaseUrl("https://192.0.2.110:9100", 18701, { source: "registry" })).toBe("http://192.0.2.110:18701");
     expect(fleetGatewayApiBaseUrl("https://fleetd.example.com:9100", 18702, "registry")).toBe("http://fleetd.example.com:18702");
-    expect(fleetGatewayApiBaseUrl("https://10.10.0.110:9100", 18701, { allowHttps: true })).toBe("http://10.10.0.110:18701");
-    expect(fleetGatewayApiBaseUrl("http://10.10.0.110:9100", 18701, { source: "registry" })).toBe("http://10.10.0.110:18701");
-    expect(() => fleetGatewayApiBaseUrl("ftp://10.10.0.110:9100", 18701, { source: "registry" })).toThrow(/must be http:\/\/ or https:\/\//);
+    expect(fleetGatewayApiBaseUrl("https://192.0.2.110:9100", 18701, { allowHttps: true })).toBe("http://192.0.2.110:18701");
+    expect(fleetGatewayApiBaseUrl("http://192.0.2.110:9100", 18701, { source: "registry" })).toBe("http://192.0.2.110:18701");
+    expect(() => fleetGatewayApiBaseUrl("ftp://192.0.2.110:9100", 18701, { source: "registry" })).toThrow(/must be http:\/\/ or https:\/\//);
   });
 });

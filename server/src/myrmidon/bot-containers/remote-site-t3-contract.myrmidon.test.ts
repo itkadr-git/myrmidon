@@ -61,7 +61,7 @@ describe("T3 regressions against production profile, placement, routing and drif
   });
   it("uses the site hostname with the allocated gateway port", () => {
     expect(fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 18642)).toBe("http://t3-a.example.test:18642");
-    expect(fleetGatewayApiBaseUrl("https://10.10.0.110:9100", 18701, { source: "registry" })).toBe("http://10.10.0.110:18701");
+    expect(fleetGatewayApiBaseUrl("https://198.51.100.110:9100", 18701, { source: "registry" })).toBe("http://198.51.100.110:18701");
   });
   it("rejects missing and invalid gateway ports", () => {
     expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, undefined)).toThrow(/did not report/);

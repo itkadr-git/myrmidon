@@ -102,7 +102,10 @@ export function fleetGatewayApiBaseUrl(
     throw new Error(`fleetd reported an invalid gateway port: ${JSON.stringify(gatewayPort)}`);
   }
   const source = typeof options === "string" ? options : options?.source;
-  const allowHttps = (typeof options === "object" && options?.allowHttps) ?? source === "registry";
+  const allowHttps =
+    typeof options === "object" && typeof options?.allowHttps === "boolean"
+      ? options.allowHttps
+      : source === "registry";
   const url = new URL(fleetdUrl);
   if (allowHttps) {
     if (url.protocol !== "http:" && url.protocol !== "https:") {
