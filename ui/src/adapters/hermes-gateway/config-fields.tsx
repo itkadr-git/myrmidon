@@ -297,7 +297,9 @@ export function HermesGatewayConfigFields({
       <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeLabel")}>
         <select className={inputClass} value={String(hindsight.memoryMode ?? "")} onChange={(event) => updateHindsight("memoryMode", event.target.value)}>
           <option value="">{t("area.adapters-plugins-1.hermes-gateway.fields.useRuntimeDefault")}</option>
-          <option value="hybrid">Hybrid</option><option value="context">Context</option><option value="tools">Tools</option>
+          <option value="hybrid">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeHybrid")}</option>
+          <option value="context">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeContext")}</option>
+          <option value="tools">{t("area.adapters-plugins-1.hermes-gateway.fields.hindsightMemoryModeTools")}</option>
         </select>
       </Field>
       <Field configSection="advanced" label={t("area.adapters-plugins-1.hermes-gateway.fields.hindsightAutoRetainLabel")}>

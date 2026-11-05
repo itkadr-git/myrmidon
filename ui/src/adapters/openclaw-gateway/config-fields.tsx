@@ -150,8 +150,9 @@ export function OpenClawGatewayConfigFields({
     ? values?.adapterSchemaValues?.deviceToken
     : eff("adapterConfig", "deviceToken", config.deviceToken);
   const deviceTokenSecretId = deviceToken && typeof deviceToken === "object" && !Array.isArray(deviceToken) &&
-    deviceToken.type === "secret_ref" && typeof deviceToken.secretId === "string"
-      ? deviceToken.secretId
+    "type" in deviceToken && (deviceToken as { type?: unknown }).type === "secret_ref" &&
+    "secretId" in deviceToken && typeof (deviceToken as { secretId?: unknown }).secretId === "string"
+      ? (deviceToken as { secretId: string }).secretId
       : "";
 
   return configFieldsForSection(section, (
