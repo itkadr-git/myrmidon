@@ -40,6 +40,10 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
+  EffectiveSkillPolicy,
+  EvaluateSkillPolicy,
+  ReplaceSkillPolicy,
+  SkillPolicyDecision,
 } from "@myrmidon/shared";
 import { api } from "./client";
 
@@ -262,25 +266,11 @@ export const companySkillsApi = {
       payload,
     ),
   getPolicy: (companyId: string) =>
-    api.get<Record<string, unknown>>(`/companies/${encodeURIComponent(companyId)}/skill-policy`),
-  replacePolicy: (
-    companyId: string,
-    payload: {
-      policy: {
-        defaultEffect: "allow" | "deny";
-        rules?: Array<{
-          id: string;
-          effect: "allow" | "deny";
-          description?: string;
-          subjects?: Array<{ type: "all" } | { type: "agent"; agentId: string }>;
-          actions?: Array<"read" | "use" | "modify" | "install">;
-          resources?: Array<{ type: "all" } | { type: "catalog"; catalogRef?: string } | { type: "skill"; skillId?: string }>;
-        }>;
-      };
-      expectedRevision?: number;
-    },
-  ) =>
-    api.put<Record<string, unknown>>(`/companies/${encodeURIComponent(companyId)}/skill-policy`, payload),
+    api.get<EffectiveSkillPolicy>(`/companies/${encodeURIComponent(companyId)}/skill-policy`),
+  replacePolicy: (companyId: string, payload: ReplaceSkillPolicy) =>
+    api.put<EffectiveSkillPolicy>(`/companies/${encodeURIComponent(companyId)}/skill-policy`, payload),
+  previewPolicy: (companyId: string, payload: EvaluateSkillPolicy) =>
+    api.post<SkillPolicyDecision>(`/companies/${encodeURIComponent(companyId)}/skill-policy/evaluate`, payload),
   resetPolicy: (companyId: string, expectedRevision?: number) =>
     api.delete<Record<string, unknown>>(
       `/companies/${encodeURIComponent(companyId)}/skill-policy${
