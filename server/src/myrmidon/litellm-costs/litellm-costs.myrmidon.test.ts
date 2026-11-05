@@ -220,6 +220,11 @@ describe("myrmidon(M2-A) gateway client (/spend/logs/v2)", () => {
     expect(parsed?.entries[0]).toMatchObject({ requestId: "req-1", promptTokens: 10, completionTokens: 5, provider: "openai" });
   });
 
+  it("parses the final failure and fallback-attempt count for dead-end detection", () => {
+    const parsed = parseSpendLogsV2Page({ data: [v2Row({ status: "failure", metadata: { attempted_fallbacks: 2 } })], total_pages: 1 }, span);
+    expect(parsed?.entries[0]).toMatchObject({ status: "failure", attemptedFallbacks: 2 });
+  });
+
   it("does not parse the v1 daily-aggregate shape as rows", () => {
     const aggregates = [{ startTime: "2026-09-30", spend: 1.5, users: {}, models: { m: 1.5 } }];
     expect(parseSpendLogsV2Page(aggregates, span)).toBeNull();

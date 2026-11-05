@@ -86,7 +86,7 @@ import {
 } from "../myrmidon/pause-guard/attention.js";
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
-import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+import { readModelFallbackSignals, readModelFallbackDeadendSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
 import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
@@ -3669,6 +3669,34 @@ async function buildAttentionFeedSnapshot(
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
             images: [],
           },
+        }));
+      }
+
+      for (const deadend of readModelFallbackDeadendSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_fallback_alert",
+          subject: {
+            kind: "agent", id: deadend.agentId, companyId,
+            title: deadend.title, identifier: null, status: null,
+            href: `/${prefix}/agents/${deadend.agentId}`,
+            metadata: { requestId: deadend.requestId, model: deadend.model },
+          },
+          whyNow: deadend.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the failed request and fallback chain." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this fallback alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a live attributed gateway request failed after fallback routing.",
+          exitRule: "no failed attributed gateway request remains in the sweep window or the alert is dismissed.",
+          dedupKey: deadend.dedupKey,
+          severity: deadend.severity,
+          activityAt: deadend.activityAt,
+          createdAt: deadend.activityAt,
+          updatedAt: deadend.activityAt,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(deadend.summaryExcerpt), images: [] },
         }));
       }
 
