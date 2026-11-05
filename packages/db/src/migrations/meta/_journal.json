@@ -2683,6 +2683,13 @@
       "when": 1727787600000,
       "tag": "0456_user_ui_custom_catalogs",
       "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1762248000000,
+      "tag": "0457_company_secret_github_app_installations",
+      "breakpoints": true
     }
   ]
 }
