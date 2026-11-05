@@ -280,6 +280,9 @@ function evaluateAuthorizationPolicyForAssignment(
     "assignmentPolicy",
     "protectedAgent",
     "managedBy",
+    "trustPreset",
+    "reviewPreset",
+    "trustBoundary",
   ]);
   const hasUnknownTopLevelKey = Object.keys(policy).some((key) => !knownTopLevelKeys.has(key));
   const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent);
