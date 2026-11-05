@@ -28,7 +28,11 @@ export async function repositoryHasHostedCi(input: {
     if (input.token && [401, 403, 404].includes(response.status) && response.headers.get("x-ratelimit-remaining") !== "0") {
       response = await read(null);
     }
-    if (response.status === 404) return authenticatedStatus === 401 || authenticatedStatus === 403 ? null : false;
+    if (response.status === 404) {
+      if (authenticatedStatus !== 401 && authenticatedStatus !== 403) return false;
+      // Anonymous 404 can hide a private repository; it does not prove absent CI.
+      return null;
+    }
     if (!response.ok) return null;
     const files: unknown = await response.json();
     if (!Array.isArray(files)) return null;
