@@ -13,6 +13,7 @@ import { LogOut, SlidersHorizontal } from "lucide-react";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -33,6 +34,7 @@ import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPan
 import { ModelMenuSettingsPanel } from "@/components/myrmidon/ModelMenuSettingsPanel"; // myrmidon(1.6.6 MODEL-MENU B)
 import { ModelApiPricingSettingsPanel } from "@/components/myrmidon/ModelApiPricingSettingsPanel"; // OPE-9499: configurable API-equivalent pool pricing
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -133,8 +135,11 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const showKeyboardShortcuts = !hiddenSettings.has("instance.general.keyboardShortcuts");
   const showBackupRetention = !hiddenSettings.has("instance.general.backupRetention");
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
+  const showExecutionPolicy = !hiddenSettings.has("instance.general.executionMode");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
+  const executionMode = generalQuery.data?.executionMode ?? "any";
   const visibleTopics = [
+    ...(showExecutionPolicy ? [t("settings.executionPolicy")] : []),
     ...(showCensorUsernameInLogs ? [t("area.settings-company.instance-general-settings.topicLogDisplay")] : []),
     ...(showKeyboardShortcuts ? [t("area.settings-company.instance-general-settings.topicKeyboardShortcuts")] : []),
     ...(showBackupRetention ? [t("area.settings-company.instance-general-settings.topicBackupRetention")] : []),
@@ -185,6 +190,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ModelMenuSettingsPanel /> {/* myrmidon(1.6.6 MODEL-MENU B) */}
       <ModelApiPricingSettingsPanel /> {/* OPE-9499: pool usage priced at configured API rates */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
@@ -234,6 +240,26 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
               label={t("settings.bootstrapInvite")}
               value={healthQuery.data?.bootstrapInviteActive ? t("settings.active") : t("settings.none")}
             />
+          </div>
+        </div>
+      </section>
+      )}
+
+      {showExecutionPolicy && (
+      <section data-testid="instance-execution-policy-section">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">{t("settings.executionPolicy")}</h2>
+              <Badge variant="outline" data-testid="execution-mode-badge" className="font-mono text-xs capitalize">
+                {executionMode}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {executionMode === "kubernetes"
+                ? t("settings.executionPolicyDescriptionKubernetes")
+                : t("settings.executionPolicyDescription")}
+            </p>
           </div>
         </div>
       </section>

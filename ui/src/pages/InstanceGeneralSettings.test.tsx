@@ -423,3 +423,79 @@ describe("InstanceGeneralSettings backup retention keep-last-only", () => {
     );
   });
 });
+
+describe("InstanceGeneralSettings execution policy", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      executionMode: "kubernetes",
+    });
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage() {
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+  }
+
+  it("renders read-only execution policy badge from general settings", async () => {
+    await renderPage();
+
+    const badge = container.querySelector('[data-testid="execution-mode-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.trim()).toBe("kubernetes");
+    expect(container.textContent).toContain("Execution policy");
+    expect(container.textContent).toContain("forces all agent execution into the managed Kubernetes sandbox");
+  });
+
+  it("hides execution policy when hiddenSettings includes instance.general.executionMode", async () => {
+    const healthWithHidden = {
+      ...SELF_HOSTED_HEALTH,
+      hiddenSettings: ["instance.general.executionMode"],
+    };
+    mockHealthApi.get.mockResolvedValue(healthWithHidden);
+    queryClient.setQueryData(queryKeys.health, healthWithHidden);
+
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <InstanceGeneralSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+
+    expect(container.querySelector('[data-testid="execution-mode-badge"]')).toBeNull();
+  });
+});
