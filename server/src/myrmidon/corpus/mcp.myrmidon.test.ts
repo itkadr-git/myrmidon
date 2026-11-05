@@ -106,6 +106,24 @@ describe("company corpus MCP endpoint", () => {
     expect(textHits[0].text).toContain("Поставщик обязан");
   });
 
+  it("wraps list results in MCP objects and mirrors the structured payload in text", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    const res = await request(app)
+      .post(URL)
+      .send({ id: 14, method: "tools/call", params: { name: "corpus_list_datasets", arguments: {} } })
+      .expect(200);
+    expect(Array.isArray(res.body.result.structuredContent)).toBe(false);
+    expect(res.body.result.structuredContent.datasets).toHaveLength(1);
+    expect(JSON.parse(res.body.result.content[0].text)).toEqual(res.body.result.structuredContent);
+  });
+
+  it("declares object output schemas for all corpus tools", async () => {
+    const app = harness({ settings: () => ENABLED, port: () => corpus().port });
+    const res = await request(app).post(URL).send({ id: 15, method: "tools/list" }).expect(200);
+    for (const tool of res.body.result.tools) {
+      expect(tool.outputSchema.type).toBe("object");
+    }
+  });
   it("lists no tools at all when the module is off", async () => {
     const app = harness({
       settings: () => DEFAULT_CORPUS_MODULE_SETTINGS,
