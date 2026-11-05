@@ -51,6 +51,8 @@ export interface GatewayKeyRow {
   models: string[];
   /** Projected key budget limit (OPE-9859), when the company has one. */
   budget?: KeyBudgetLimitView | null;
+  maxBudgetUsd?: number | null;
+  usage?: AgentGatewayKeyView["usage"];
 }
 
 /** Joins the key views with the agent names the page already knows. */
@@ -64,6 +66,8 @@ export function keyRows(keys: AgentGatewayKeyView[], agentNames: Map<string, str
       valueHash: entry.valueHash ?? null,
       models: entry.models ?? [],
       budget: entry.budget ?? null,
+      maxBudgetUsd: entry.maxBudgetUsd ?? null,
+      usage: entry.usage ?? null,
     }))
     .sort((a, b) => (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId));
 }
@@ -247,7 +251,17 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                     </div>
                   )}
 
-                {row.budget && (
+                  {row.maxBudgetUsd != null && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+                      <span>LiteLLM cap: ${row.maxBudgetUsd.toFixed(2)}</span>
+                      {row.usage && (
+                        <span data-testid={`key-usage-${row.agentId}`} className={row.usage.status === "exhausted" ? "text-destructive" : row.usage.status === "near_cap" ? "text-amber-600" : "text-foreground"}>
+                          24h {formatCents(row.usage.spentCents)} ({row.usage.utilizationPercent?.toFixed(1)}%)
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {row.budget && (
                   <div
                     data-testid={`key-budget-${row.agentId}`}
                     className="mt-2 flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
@@ -267,7 +281,7 @@ function GatewayKeysCard({ companyId }: { companyId: string }) {
                 )}
               </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0 pt-2 md:pt-0">
 
                   {!row.present ? (
                     <Button

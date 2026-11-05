@@ -55,7 +55,7 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
     expect(rows[1]!.models).toEqual([]);
   });
 
-  it("projects an agent key budget into the display row", () => {
+  it("projects an agent key budget and spend into the display row", () => {
     const budget = {
       amountUsd: 9.5,
       periodHours: 24,
@@ -63,11 +63,14 @@ describe("myrmidon(M2-B) gateway keys tab", () => {
       effectiveMode: "soft" as const,
       caste: "engineer",
     };
+    const usage = { spentCents: 800, windowStart: "2026-11-04T00:00:00.000Z", utilizationPercent: 84.21, status: "near_cap" as const };
     const [row] = keyRows(
-      [view({ agentId: "agent-a", budget, role: "engineer" })],
+      [view({ agentId: "agent-a", budget, maxBudgetUsd: 10, usage, role: "engineer" })],
       new Map([["agent-a", "alpha"]]),
     );
     expect(row?.budget).toEqual(budget);
+    expect(row?.maxBudgetUsd).toBe(10);
+    expect(row?.usage).toEqual(usage);
   });
 
   it("counts how many agents have a key of their own", () => {

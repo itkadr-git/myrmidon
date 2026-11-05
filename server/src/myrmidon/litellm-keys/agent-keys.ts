@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { agents, type Db } from "@myrmidon/db";
+import { and, eq, gte, sql } from "drizzle-orm";
+import { agents, litellmCostEvents, type Db } from "@myrmidon/db";
 import {
   AGENT_KEY_SECRET_PREFIX,
   agentKeySecretName,
@@ -10,7 +10,7 @@ import {
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
 import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
-import type { KeyBudgetLimitView } from "./key-budget-adapter.js";
+import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -80,7 +80,7 @@ export interface GatewayKeyAdminPort {
    */
   setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
   /** Reads key metadata from the gateway (such as model allowlist). */
-  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[] } | null>;
+  getKeyInfo?(input: { alias: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
@@ -102,6 +102,10 @@ export interface AgentGatewayKeyView {
   models?: string[];
   /** Key budget limit projected from the OPE-8675 budget projection. */
   budget?: KeyBudgetLimitView | null;
+  /** LiteLLM /key/info cap in USD; null when unavailable or uncapped. */
+  maxBudgetUsd?: number | null;
+  /** Spend facts from the board ledger (OPE-11776). */
+  usage?: KeyBudgetUsageView | null;
 }
 
 export interface AgentGatewayKeyInput {
@@ -369,15 +373,20 @@ export async function listAgentGatewayKeys(
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
     let models: string[] | undefined;
+    let maxBudgetUsd: number | null = null;
     if (value && gw?.getKeyInfo) {
       try {
         const info = await gw.getKeyInfo({ alias: secretName });
-        if (info) models = info.models ?? [];
+        if (info) {
+          models = info.models ?? [];
+          maxBudgetUsd = info.maxBudgetUsd ?? null;
+        }
       } catch {
         // non-fatal
       }
     }
     let budget: KeyBudgetLimitView | null = null;
+    let usage: KeyBudgetUsageView | null = null;
     if (projection && row.role) {
       const match = projection.limits.find(
         (limit) => limit.level === "caste" && limit.scopeId === row.role && limit.amountUsd > 0,
@@ -392,6 +401,18 @@ export async function listAgentGatewayKeys(
         };
       }
     }
+    if (maxBudgetUsd != null && maxBudgetUsd > 0) {
+      const windowStart = new Date(Date.now() - 24 * 3_600_000);
+      const [spent] = await deps.db
+        .select({ cents: sql<number>`coalesce(sum(${litellmCostEvents.costCents}), 0)` })
+        .from(litellmCostEvents)
+        .where(and(
+          eq(litellmCostEvents.companyId, companyId),
+          eq(litellmCostEvents.agentId, row.id),
+          gte(litellmCostEvents.occurredAt, windowStart),
+        ));
+      usage = keyBudgetUsage(Number(spent?.cents ?? 0), maxBudgetUsd, windowStart);
+    }
     views.push({
       agentId: row.id,
       agentName: row.name,
@@ -402,6 +423,8 @@ export async function listAgentGatewayKeys(
       canManageKeys: settings.canManageKeys,
       ...(models !== undefined ? { models } : {}),
       budget,
+      maxBudgetUsd,
+      usage,
     });
   }
   return views;
@@ -594,8 +617,13 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     async getKeyInfo({ alias }) {
       const response = await post("/key/info", { key_alias: alias }, { okStatuses: [200, 404] });
       if (response.status === 404 || !response.body) return null;
-      const body = response.body as { info?: { models?: string[] }; models?: string[] };
-      return { models: body.info?.models ?? body.models ?? [] };
+      const body = response.body as { info?: { models?: string[]; max_budget?: number | null }; models?: string[]; max_budget?: number | null };
+      const rawBudget = body.info?.max_budget ?? body.max_budget;
+      return {
+        models: body.info?.models ?? body.models ?? [],
+        maxBudgetUsd: typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+          ? rawBudget : null,
+      };
     },
   };
 }

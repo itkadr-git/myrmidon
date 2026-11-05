@@ -465,7 +465,7 @@ describe("myrmidon(M2-B) gateway key transport", () => {
     expect(seen[0]!.body).toEqual({ key_aliases: ["llm-gateway-key-alpha-agent-a"] });
   });
 
-  it("getKeyInfo calls /key/info with key_alias and returns parsed models", async () => {
+  it("getKeyInfo calls /key/info with key_alias and returns parsed models and cap", async () => {
     const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
     server = createServer((req, res) => {
       let raw = "";
@@ -478,7 +478,7 @@ describe("myrmidon(M2-B) gateway key transport", () => {
           body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
         });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ info: { key_alias: "my-key", models: ["model-1", "model-2"] } }));
+        res.end(JSON.stringify({ info: { key_alias: "my-key", models: ["model-1", "model-2"], max_budget: 10 } }));
       });
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
@@ -489,7 +489,7 @@ describe("myrmidon(M2-B) gateway key transport", () => {
     const info = await admin.getKeyInfo!({ alias: "my-key" });
     expect(seen[0]!.path).toBe("/key/info");
     expect(seen[0]!.body).toEqual({ key_alias: "my-key" });
-    expect(info).toEqual({ models: ["model-1", "model-2"] });
+    expect(info).toEqual({ models: ["model-1", "model-2"], maxBudgetUsd: 10 });
   });
 
   it("maps a gateway error to a 422 instead of a silent success", async () => {
