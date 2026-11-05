@@ -110,6 +110,7 @@ import type { IssueScent } from "@myrmidon/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBlockedHasReason, isAutoUnblockCandidate } from "../myrmidon/blocked-reason-guard.js";
+import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -10196,6 +10197,39 @@ export function issueService(db: Db) {
             issueData.projectId = parentIssue.projectId;
           }
         }
+        if (issueData.parentId) {
+          const existingLabels = inputLabelIds && inputLabelIds.length > 0
+            ? await tx
+                .select({ id: labels.id, name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+            : [];
+          const hasExplicitReleaseLabel = existingLabels.some((l) => Boolean(extractReleasePrefix(l.name)));
+          if (!hasExplicitReleaseLabel) {
+            const parentLabelRows = await tx
+              .select({ id: labels.id, name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(
+                and(
+                  eq(issueLabels.companyId, companyId),
+                  eq(issueLabels.issueId, issueData.parentId),
+                ),
+              );
+            const parentReleaseLabels = parentLabelRows.filter((l) => Boolean(extractReleasePrefix(l.name)));
+            if (parentReleaseLabels.length > 0) {
+              const inheritedReleaseLabelIds = parentReleaseLabels.map((l) => l.id);
+              inputLabelIds = [...new Set([...(inputLabelIds ?? []), ...inheritedReleaseLabelIds])];
+              if (
+                issueData.status === "backlog" &&
+                !issueData.assigneeAgentId &&
+                !issueData.assigneeUserId
+              ) {
+                issueData.status = "todo";
+              }
+            }
+          }
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
@@ -10502,6 +10536,7 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          status: issueData.status ?? "backlog",
           responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {
