@@ -27,7 +27,7 @@ export function isDeveloperRole(agent: {
   if (!agent) return false;
   const role = (agent.role || "").toLowerCase();
   const name = (agent.name || "").toLowerCase();
-  
+
   if (role === "engineer" || role === "developer" || role === "coder") {
     return true;
   }

@@ -279,6 +279,16 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+export function resolveEffectiveSessionKeyStrategy(input: {
+  configuredStrategy: SessionKeyStrategy;
+  developerOnlyTaskSession?: boolean;
+  issueId: string | null;
+}): SessionKeyStrategy {
+  return input.developerOnlyTaskSession === true && input.issueId
+    ? "issue"
+    : input.configuredStrategy;
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -2514,7 +2524,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const strategy = resolveEffectiveSessionKeyStrategy({
+    configuredStrategy,
+    developerOnlyTaskSession: ctx.config.developerOnlyTaskSession === true,
+    issueId: issueIdFromContext(ctx),
+  });
   // myrmidon(G4): raw debug JSON is opt-in; see handleEvent/logCompactEvent.
   const debugEvents = ctx.config.debugEvents === true;
   // myrmidon(G4): the Idempotency-Key, the "run" session-key strategy, and
@@ -2539,6 +2554,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const idempotencyKey = nonEmpty(ctx.config.modelAttemptId) ?? ctx.runId;
   // myrmidon(PERF-DIET-K): the board's session generation for this issue (see
   // server/src/myrmidon/session-generations/); 1 = the vendor's unsuffixed key.
+  const issueId = issueIdFromContext(ctx);
   const sessionGeneration = readSessionGeneration(ctx.config.sessionGeneration);
   const sessionKey = resolveSessionKey({
     strategy,

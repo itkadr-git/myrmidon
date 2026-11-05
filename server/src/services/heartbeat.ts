@@ -82,6 +82,7 @@ import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import {
   aiConnectionBindingSchema,
   buildContinuationKey,
+  isDeveloperRole,
   type AiConnectionBinding,
   type IssueBlockerMetadata,
 } from "@myrmidon/shared";
@@ -24296,6 +24297,15 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
+      // WAKE-9A: only developer agents receive task-scoped Hermes sessions.
+      // Non-developer bots retain their configured (usually agent-scoped) memory.
+      if (isDeveloperRole(agent) && taskKey) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          sessionKeyStrategy: "issue",
+          developerOnlyTaskSession: true,
+        };
+      }
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,

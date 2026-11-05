@@ -8,7 +8,7 @@ import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveEffectiveSessionKeyStrategy, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -141,6 +141,12 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
+  it("forces developer task sessions to issue scope while preserving other strategies", () => {
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: true, issueId: "issue-1" })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: false, issueId: "issue-1" })).toBe("agent");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "run", developerOnlyTaskSession: true, issueId: null })).toBe("run");
+  });
+
   it("derives issue-scoped session keys by default", () => {
     expect(
       resolveSessionKey({
