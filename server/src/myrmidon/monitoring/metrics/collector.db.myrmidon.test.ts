@@ -507,6 +507,18 @@ describeEmbeddedPostgres("metrics collector", () => {
       occurredAt: new Date(NOW.getTime() - 10 * 3600 * 1000),
       requestId: randomUUID(),
     });
+    await db.insert(litellmCostEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "provider-a",
+      model: "model-a",
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 400,
+      occurredAt: new Date(NOW.getTime() - 48 * 3600 * 1000),
+      requestId: randomUUID(),
+    });
 
     const snapshot = await collectMetricsSnapshot({
       db,
@@ -517,7 +529,7 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.llmCostCentsWindow).toBe(300);
     expect(snapshot.llmKeySpend).toEqual([
       { companyId, agentId, window: "24h", cents: 1299 },
-      { companyId, agentId, window: "7d", cents: 1299 },
+      { companyId, agentId, window: "7d", cents: 1699 },
     ]);
   });
 
