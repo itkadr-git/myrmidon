@@ -10164,6 +10164,8 @@ export function heartbeatService(
       shouldQueueFollowupForRunningIssueWake,
     },
     recovery: {
+      deferReviewParticipantReleaseForCi: (input) =>
+        recovery.deferReviewParticipantReleaseForCi(input),
       escalateStrandedAssignedIssue: async (input) => {
         const rows = await loadStrandedEscalationRows(input);
         if (!rows) return;
