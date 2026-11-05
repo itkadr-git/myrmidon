@@ -6,6 +6,7 @@ import { CORPUS_EMBEDDING_DIMENSIONS } from "./vector.js";
 const companyId = "aaaaaaaa-0000-0000-0000-000000000001";
 const datasetId = "bbbbbbbb-0000-0000-0000-000000000002";
 const documentId = "cccccccc-0000-0000-0000-000000000003";
+const secondDocumentId = "cccccccc-0000-0000-0000-000000000004";
 
 interface RecordedCall {
   readonly text: string;
@@ -23,11 +24,11 @@ interface ChunkRow {
   score: number;
 }
 
-function chunkRow(id: string, chunkIndex: number, score: number): ChunkRow {
+function chunkRow(id: string, chunkIndex: number, score: number, rowDocumentId = documentId): ChunkRow {
   return {
     id,
     company_id: companyId,
-    document_id: documentId,
+    document_id: rowDocumentId,
     chunk_index: chunkIndex,
     content: `chunk ${id}`,
     token_count: 12,
@@ -63,6 +64,7 @@ function embedding(): number[] {
 
 const documents = [
   { id: documentId, dataset_id: datasetId, title: "Contract", source_uri: "file://contract.pdf" },
+  { id: secondDocumentId, dataset_id: datasetId, title: "Second", source_uri: "file://second.pdf" },
 ];
 
 /** A cluster migrated without pgvector: every call to the vector leg fails with a driver code. */
@@ -152,6 +154,23 @@ describe("hybrid search index", () => {
     expect(hits[1].fusion).toEqual({ vectorRank: 2, fullTextRank: 1 });
   });
 
+  it("diversifies top-k by document instead of returning adjacent chunks from one document", async () => {
+    const { sql } = createRecordingSql({
+      vector: [
+        chunkRow("a1", 0, 0.9),
+        chunkRow("a2", 1, 0.8),
+        chunkRow("b1", 0, 0.7, secondDocumentId),
+      ],
+      fullText: [],
+      documents,
+    });
+    const index = createPostgresSearchIndex({ sql });
+
+    const hits = await index.search({ companyId, datasetId, text: "contract", embedding: embedding(), limit: 2 });
+
+    expect(hits.map((hit) => hit.chunkId)).toEqual(["a1", "b1"]);
+    expect(new Set(hits.map((hit) => hit.documentId)).size).toBe(2);
+  });
   it("takes kCandidates rows from each ranking and returns only the requested limit", async () => {
     const { sql, calls } = createRecordingSql({
       vector: [chunkRow("a", 0, 1), chunkRow("b", 1, 1)],
