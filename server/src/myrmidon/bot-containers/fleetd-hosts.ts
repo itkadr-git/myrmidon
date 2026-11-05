@@ -38,6 +38,8 @@ export interface FleetHostConfig {
   /** LLM gateway base URL as seen from this host (`http://…`); instance-wide value when omitted. */
   llmBaseUrl?: string;
   mcpEndpoints?: readonly string[];
+  /** Board address the site-agent uses for its health probe, as host:port. */
+  boardAddress?: string;
   /** Name the bot container on this host resolves the board by (docker `--add-host`
    *  target). The instance-wide board URL name by default; the board's own
    *  hostname allowlist is never widened by this field. */
@@ -62,6 +64,7 @@ const ALLOWED_KEYS = new Set([
   "hindsightUrl",
   "llmBaseUrl",
   "mcpEndpoints",
+  "boardAddress",
   "boardExtraHost",
   "volumeRoot",
   "network",
@@ -125,6 +128,10 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
     if (hosts.has(name)) throw new Error(`${FLEET_HOSTS_ENV}: duplicate host name "${name}"`);
 
+    const boardAddress = optionalString(entry, "boardAddress", name);
+    if (boardAddress !== undefined && !/^\S+:\d{1,5}$/.test(boardAddress)) {
+      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress" must be host:port`);
+    }
     const boardExtraHost = optionalString(entry, "boardExtraHost", name);
     if (boardExtraHost !== undefined && !HOSTNAME_PATTERN.test(boardExtraHost)) {
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardExtraHost" must be a hostname (got "${boardExtraHost}")`);
@@ -152,6 +159,7 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "mcpEndpoints" must be an array of non-empty strings`);
     }
     if (entry.mcpEndpoints !== undefined) host.mcpEndpoints = (entry.mcpEndpoints as string[]).map((value) => value.trim());
+    if (boardAddress !== undefined) host.boardAddress = boardAddress;
     if (boardExtraHost !== undefined) host.boardExtraHost = boardExtraHost;
     if (volumeRoot !== undefined) host.volumeRoot = volumeRoot;
     if (network !== undefined) host.network = network;
