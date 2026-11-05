@@ -73,13 +73,13 @@ export function parseLitellmChannel(item: any): LitellmChannelView {
         ? Number(rawOrder)
         : null;
 
-  const rawWeight = litellmParams.weight ?? modelInfo.weight ?? item?.weight;
+  const rawWeight = litellmParams.weight ?? modelInfo.weight ?? item?.weight ?? 0;
   const weight =
     typeof rawWeight === "number" && !Number.isNaN(rawWeight)
       ? rawWeight
       : typeof rawWeight === "string" && !Number.isNaN(Number(rawWeight))
         ? Number(rawWeight)
-        : null;
+        : 0;
 
   return {
     id,

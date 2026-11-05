@@ -458,6 +458,20 @@ describe("LitellmSyncService", () => {
         order: 2,
         weight: 15,
       });
+
+      const parsedWithoutWeight = parseLitellmChannel({
+        model_name: "gpt-4o",
+        model_info: {
+          id: "deploy-2",
+          custom_llm_provider: "openai",
+        },
+        litellm_params: {
+          model: "openai/gpt-4o-mini",
+          order: 1,
+        },
+      });
+
+      expect(parsedWithoutWeight.weight).toBe(0);
     });
 
     it("sanitizes error messages containing keys and tokens", () => {

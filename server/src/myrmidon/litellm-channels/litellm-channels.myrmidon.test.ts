@@ -217,6 +217,23 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     expect(result.disabled).toBe(false);
   });
 
+  it("defaults missing weight to 0 for simple-shuffle routing", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({
+      litellmBaseUrl: baseUrl,
+      litellmAdminKey: "test-admin-key",
+    });
+
+    const result = await client.addChannel({
+      channelId: "chan-no-weight",
+      modelName: "gpt-4o",
+      providerModel: "openai/gpt-4o",
+      order: 1,
+    });
+
+    expect(result.weight).toBe(0);
+  });
+
   it("verifies HTTP methods and bodies for updateChannel (/model/update)", async () => {
     const baseUrl = await startMockGateway();
     const client = createLitellmChannelsClient({
@@ -502,7 +519,7 @@ describe("LiteLLM Channels Express Routes & Authorization (OPE-9854)", () => {
           baseUrl: input.baseUrl ?? null,
           credentialSecretName: input.credentialSecretName ?? null,
           order: input.order ?? 0,
-          weight: input.weight ?? 1,
+          weight: input.weight ?? 0,
           disabled: Boolean(input.disabled),
         };
         inMemoryChannels.push(item);
