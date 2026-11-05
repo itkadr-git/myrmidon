@@ -2582,6 +2582,7 @@ describe.sequential("agent permission routes", () => {
   });
 
   it("enforces authorizationPolicy mutation RBAC (rejects unauthorized agent and board actor)", async () => {
+    mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.updatePermissions.mockClear();
