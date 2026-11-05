@@ -23,7 +23,7 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
-import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
+import { RunPrioritySettingsPanel } from "@/components/myrmidon/RunPrioritySettingsPanel";
 import { GuardrailsSettingsPanel } from "@/components/myrmidon/GuardrailsSettingsPanel"; // myrmidon(1.7-SETTINGS-C)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { LiteLlmBudgetSyncSettingsPanel } from "@/components/myrmidon/LiteLlmBudgetSyncSettingsPanel"; // myrmidon(SETTINGS-UI-REMAINDER)
@@ -37,6 +37,7 @@ import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSet
 import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234)
 import { InputLimitSettingsPanel } from "@/components/myrmidon/InputLimitSettingsPanel";
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { SharedMountSettingsPanel } from "@/components/myrmidon/SharedMountSettingsPanel";
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
 import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
@@ -180,7 +181,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
-      <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
+      <RunPrioritySettingsPanel />
       <GuardrailsSettingsPanel /> {/* myrmidon(1.7-SETTINGS-C) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <LiteLlmBudgetSyncSettingsPanel /> {/* myrmidon(SETTINGS-UI-REMAINDER) */}
@@ -194,6 +195,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4, OPE-11234) */}
       <InputLimitSettingsPanel />
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <SharedMountSettingsPanel />
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
       <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
