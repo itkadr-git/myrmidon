@@ -267,6 +267,8 @@ export type StrandedRecoveryInPlaceEscalationInput = {
 
 /** Wraps `services/recovery`'s stranded-issue escalation, called only after the release transaction commits. */
 export interface RecoveryEscalationPort {
+  /** Defer a review participant's release until current PR-head CI is terminal. */
+  deferReviewParticipantReleaseForCi(input: { companyId: string; runId: string }): Promise<boolean>;
   escalateStrandedAssignedIssue(input: StrandedAssignedIssueEscalationInput): Promise<void>;
   escalateStrandedRecoveryIssueInPlace(input: StrandedRecoveryInPlaceEscalationInput): Promise<void>;
 }

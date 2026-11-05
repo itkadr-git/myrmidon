@@ -1093,6 +1093,12 @@ export function createReleaseIssueExecution(deps: {
   return async function releaseIssueExecution(
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
+    // Persist the CI wait before the release transaction can queue a recovery run.
+    // The tail then observes monitorNextCheckAt and leaves review recovery asleep.
+    await deps.recovery.deferReviewParticipantReleaseForCi({
+      companyId: input.companyId,
+      runId: input.runId,
+    });
     const result = await deps.issueLock.withIssueExecutionLock(
       {
         companyId: input.companyId, runId: input.runId, now: input.now,
