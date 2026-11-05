@@ -79,10 +79,18 @@ async function paperclipRequestBrokerCredentials(env, candidateUrls, limits, rep
         if (remaining <= 0) { outcome = 'budget_exhausted'; break; }
         response = await fetch(url, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(Math.min(requestTimeoutMs, remaining)),
-          headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-            'x-myrmidon-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
-            'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
-            'content-type': 'application/json' },
+          headers: {
+            authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BROKER_TOKEN || env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY),
+            ...(env.PAPERCLIP_GITHUB_BROKER_TOKEN ? {
+              'x-myrmidon-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
+              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
+            } : {}),
+            ...(env.PAPERCLIP_RUN_ID ? {
+              'x-paperclip-run-id': env.PAPERCLIP_RUN_ID,
+              'x-myrmidon-run-id': env.PAPERCLIP_RUN_ID,
+            } : {}),
+            'content-type': 'application/json',
+          },
           body,
         });
         outcome = String(response.status);
