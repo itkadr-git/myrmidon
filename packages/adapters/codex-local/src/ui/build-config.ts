@@ -42,8 +42,14 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
     if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
     ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
   }
-  ac.timeoutSec = 0;
-  ac.graceSec = 15;
+  ac.timeoutSec =
+    typeof v.adapterSchemaValues?.timeoutSec === "number" && v.adapterSchemaValues.timeoutSec > 0
+      ? v.adapterSchemaValues.timeoutSec
+      : 0;
+  ac.graceSec =
+    typeof v.adapterSchemaValues?.graceSec === "number" && v.adapterSchemaValues.graceSec >= 0
+      ? v.adapterSchemaValues.graceSec
+      : 15;
   const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
@@ -68,6 +74,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   if (v.adapterSchemaValues?.filesystemScope) ac.filesystemScope = v.adapterSchemaValues.filesystemScope;
   if (v.adapterSchemaValues?.filesystemExtraPaths) ac.filesystemExtraPaths = v.adapterSchemaValues.filesystemExtraPaths;
+  if (v.adapterSchemaValues?.filesystemSandboxCommand) ac.filesystemSandboxCommand = v.adapterSchemaValues.filesystemSandboxCommand;
   if (v.adapterSchemaValues?.networkScope) ac.networkScope = v.adapterSchemaValues.networkScope;
   if (v.adapterSchemaValues?.networkAllowlist) ac.networkAllowlist = v.adapterSchemaValues.networkAllowlist;
   if (typeof v.adapterSchemaValues?.probe === "boolean") ac.probe = v.adapterSchemaValues.probe;

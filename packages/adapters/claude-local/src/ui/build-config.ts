@@ -61,8 +61,13 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   if (v.adapterSchemaValues?.filesystemScope) ac.filesystemScope = v.adapterSchemaValues.filesystemScope;
   if (v.adapterSchemaValues?.filesystemExtraPaths) ac.filesystemExtraPaths = v.adapterSchemaValues.filesystemExtraPaths;
+  if (v.adapterSchemaValues?.filesystemSandboxCommand) ac.filesystemSandboxCommand = v.adapterSchemaValues.filesystemSandboxCommand;
   if (v.adapterSchemaValues?.networkScope) ac.networkScope = v.adapterSchemaValues.networkScope;
   if (v.adapterSchemaValues?.networkAllowlist) ac.networkAllowlist = v.adapterSchemaValues.networkAllowlist;
   if (typeof v.adapterSchemaValues?.probe === "boolean") ac.probe = v.adapterSchemaValues.probe;
+  if (typeof v.adapterSchemaValues?.timeoutSec === "number" && v.adapterSchemaValues.timeoutSec > 0) ac.timeoutSec = v.adapterSchemaValues.timeoutSec;
+  if (typeof v.adapterSchemaValues?.graceSec === "number" && v.adapterSchemaValues.graceSec >= 0) ac.graceSec = v.adapterSchemaValues.graceSec;
+  if (typeof v.adapterSchemaValues?.approvalMode === "string") ac.approvalMode = v.adapterSchemaValues.approvalMode;
+  if (typeof v.adapterSchemaValues?.dangerouslySkipPermissions === "boolean") ac.dangerouslySkipPermissions = v.adapterSchemaValues.dangerouslySkipPermissions;
   return ac;
 }
