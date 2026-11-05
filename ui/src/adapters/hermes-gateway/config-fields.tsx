@@ -152,6 +152,10 @@ export function HermesGatewayConfigFields({
     else next[key] = value;
     writeValue("hindsight", Object.keys(next).length ? next : undefined);
   };
+  const hindsightTags = Array.isArray(hindsight.tags) ? hindsight.tags.join(", ") : "";
+  const observationScopes = Array.isArray(hindsight.observationScopes)
+    ? hindsight.observationScopes.map((scope) => Array.isArray(scope) ? scope.join(", ") : "").join("\n")
+    : "";
 
   return configFieldsForSection(section, (
     <>
@@ -262,12 +266,44 @@ export function HermesGatewayConfigFields({
           minRows={3}
         />
       </Field>
-      <Field configSection="advanced" label="Hindsight bank ID" hint="Agent-specific memory bank; no shared-bank fallback. Leave empty only if the plugin maps this agent explicitly.">
+      <Field configSection="advanced" label="Hindsight bank ID" hint="Agent-specific memory bank. Leave empty only when the plugin maps this agent or the bot fleet has an explicit bank fallback.">
         <DraftInput
           value={String(hindsight.bankId ?? "")}
           onCommit={(v) => updateHindsight("bankId", v.trim())}
           immediate
           className={inputClass}
+        />
+      </Field>
+      <Field configSection="advanced" label="Hindsight retain tags" hint="Comma-separated tags added to retained memories.">
+        <DraftInput value={hindsightTags} onCommit={(v) => updateHindsight("tags", v.split(",").map((tag) => tag.trim()).filter(Boolean))} immediate className={inputClass} />
+      </Field>
+      <Field configSection="advanced" label="Hindsight bank mission">
+        <DraftTextarea value={String(hindsight.mission ?? "")} onCommit={(v) => updateHindsight("mission", v.trim())} immediate minRows={2} />
+      </Field>
+      <Field configSection="advanced" label="Hindsight recall budget">
+        <select className={inputClass} value={String(hindsight.recallBudget ?? "")} onChange={(event) => updateHindsight("recallBudget", event.target.value)}>
+          <option value="">Use runtime default</option>
+          <option value="low">Low</option><option value="mid">Mid</option><option value="high">High</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label="Hindsight memory mode">
+        <select className={inputClass} value={String(hindsight.memoryMode ?? "")} onChange={(event) => updateHindsight("memoryMode", event.target.value)}>
+          <option value="">Use runtime default</option>
+          <option value="hybrid">Hybrid</option><option value="context">Context</option><option value="tools">Tools</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label="Hindsight auto-retain">
+        <select className={inputClass} value={typeof hindsight.autoRetain === "boolean" ? String(hindsight.autoRetain) : ""} onChange={(event) => updateHindsight("autoRetain", event.target.value === "" ? undefined : event.target.value === "true")}>
+          <option value="">Use runtime default</option>
+          <option value="true">Enabled</option><option value="false">Disabled</option>
+        </select>
+      </Field>
+      <Field configSection="advanced" label="Hindsight observation scopes" hint="One tag conjunction per line. Separate tags with commas.">
+        <DraftTextarea
+          value={observationScopes}
+          onCommit={(v) => updateHindsight("observationScopes", v.split("\n").map((line) => line.split(",").map((tag) => tag.trim()).filter(Boolean)).filter((scope) => scope.length > 0))}
+          immediate
+          minRows={2}
         />
       </Field>
     </>
