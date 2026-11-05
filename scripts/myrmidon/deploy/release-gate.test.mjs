@@ -505,6 +505,41 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     assert.match(out, /rollback\.sh --config/);
   });
 
+  it("deploy succeeds when idle-stopped bot containers are Created/stopped under idleStop", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1\/1 active bot gateways healthy/);
+    assert.match(out, /1 idle-stopped/);
+    assert.match(out, /release gate passed/);
+  });
+
   it("warns when the smoke cannot run (no company configured)", () => {
     const sb = sandbox({ smokeCompany: "" });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
