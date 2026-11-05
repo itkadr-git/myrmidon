@@ -12,6 +12,10 @@ vi.mock("@/context/CompanyContext", () => ({
   useOptionalCompany: () => ({ selectedCompanyId: "company-test" }),
 }));
 
+vi.mock("./licensingApi", () => ({
+  useIsInstanceAdmin: () => true,
+}));
+
 const mockSettings = {
   warnPct: 80,
   critPct: 90,
