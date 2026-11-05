@@ -116,6 +116,12 @@ export function evaluateAccountSignals(
   const isoNow = nowDate.toISOString();
 
   for (const acc of accounts) {
+    // Disabled accounts (e.g. K-12 disabled accounts) are intentionally not in rotation
+    // and should not produce banned/exhaustion alarm signals
+    if (acc.state === "disabled" || acc.isDisabled) {
+      continue;
+    }
+
     if (acc.isBanned) {
       signals.push({
         dedupKey: codexPoolBannedDedupKey(companyId, providerId, acc.n),
