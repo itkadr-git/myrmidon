@@ -9986,7 +9986,7 @@ export function issueService(db: Db) {
     ) => {
       const {
         initialPlan,
-        labelIds: inputLabelIds,
+        labelIds: rawLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         skipExecutionWorkspaceInheritance,
@@ -10001,6 +10001,7 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      let inputLabelIds = rawLabelIds;
       if (
         issueData.parentId &&
         !parentAssigneeInheritanceResolved &&
@@ -10221,7 +10222,7 @@ export function issueService(db: Db) {
               const inheritedReleaseLabelIds = parentReleaseLabels.map((l) => l.id);
               inputLabelIds = [...new Set([...(inputLabelIds ?? []), ...inheritedReleaseLabelIds])];
               if (
-                issueData.status === "backlog" &&
+                (!issueData.status || issueData.status === "backlog") &&
                 !issueData.assigneeAgentId &&
                 !issueData.assigneeUserId
               ) {
