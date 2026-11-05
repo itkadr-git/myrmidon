@@ -7,6 +7,8 @@ export interface GitHubRateLimitMetrics {
   limit: number | null;
   resetEpochSeconds: number | null;
   resetTimeUtc: string | null;
+  windowResetEpochSeconds: number | null;
+  windowResetUtc: string | null;
   isRateLimited: boolean;
   sources: Record<GitHubRequestSource, number>;
 }
@@ -19,14 +21,16 @@ export function formatUtcTime(date: Date): string {
 interface RateLimitState {
   remaining: number | null;
   limit: number | null;
-  resetEpochSeconds: number | null;
+  windowResetEpochSeconds: number | null;
+  rateLimitResetEpochSeconds: number | null;
   sources: Record<GitHubRequestSource, number>;
 }
 
 const state: RateLimitState = {
   remaining: null,
   limit: null,
-  resetEpochSeconds: null,
+  windowResetEpochSeconds: null,
+  rateLimitResetEpochSeconds: null,
   sources: {
     "ci-resolver": 0,
     "review-recovery": 0,
@@ -55,9 +59,11 @@ export function recordGitHubRequest(
   };
 
   const remHeader = getHeader("x-ratelimit-remaining");
+  let parsedRemaining: number | null = null;
   if (remHeader !== null) {
     const parsed = parseInt(remHeader, 10);
     if (Number.isFinite(parsed)) {
+      parsedRemaining = parsed;
       state.remaining = parsed;
     }
   }
@@ -74,36 +80,80 @@ export function recordGitHubRequest(
   if (resetHeader !== null) {
     const parsed = parseInt(resetHeader, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
-      state.resetEpochSeconds = parsed;
+      state.windowResetEpochSeconds = parsed;
+    }
+  }
+
+  const retryAfterHeader = getHeader("retry-after");
+  let retryAfterEpochSeconds: number | null = null;
+  if (retryAfterHeader !== null) {
+    const parsed = parseInt(retryAfterHeader, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      retryAfterEpochSeconds = Math.floor(Date.now() / 1000) + parsed;
+    } else {
+      const parsedDate = Date.parse(retryAfterHeader);
+      if (!Number.isNaN(parsedDate)) {
+        const sec = Math.floor(parsedDate / 1000);
+        if (sec > Math.floor(Date.now() / 1000)) {
+          retryAfterEpochSeconds = sec;
+        }
+      }
     }
   }
 
   const status = response.status;
-  const isExplicitRateLimit =
+  const isSecondaryRateLimit = (status === 403 || status === 429) && retryAfterEpochSeconds !== null;
+  const isPrimaryRateLimit =
     status === 429 ||
-    (status === 403 && (state.remaining === 0 || remHeader === "0"));
+    (status === 403 && (state.remaining === 0 || remHeader === "0")) ||
+    (parsedRemaining === 0);
 
-  if (isExplicitRateLimit) {
-    if (!state.resetEpochSeconds || state.resetEpochSeconds * 1000 <= Date.now()) {
-      state.resetEpochSeconds = Math.floor(Date.now() / 1000) + 3600;
+  if (isSecondaryRateLimit || isPrimaryRateLimit) {
+    if (retryAfterEpochSeconds !== null) {
+      state.rateLimitResetEpochSeconds = retryAfterEpochSeconds;
+    } else if (state.windowResetEpochSeconds && state.windowResetEpochSeconds * 1000 > Date.now()) {
+      state.rateLimitResetEpochSeconds = state.windowResetEpochSeconds;
+    } else {
+      state.rateLimitResetEpochSeconds = Math.floor(Date.now() / 1000) + 3600;
     }
+  } else if (status !== undefined && status >= 200 && status < 400 && state.remaining !== null && state.remaining > 0) {
+    state.rateLimitResetEpochSeconds = null;
   }
 }
 
 export function isGitHubRateLimited(): boolean {
-  if (state.resetEpochSeconds === null) {
-    return false;
+  const now = Date.now();
+
+  if (state.rateLimitResetEpochSeconds !== null) {
+    if (state.rateLimitResetEpochSeconds * 1000 <= now) {
+      state.rateLimitResetEpochSeconds = null;
+      if (state.remaining === 0) {
+        state.remaining = null;
+      }
+      return false;
+    }
+    return true;
   }
-  if (state.resetEpochSeconds * 1000 <= Date.now()) {
-    // Reset time has passed
-    state.resetEpochSeconds = null;
-    return false;
+
+  if (state.remaining === 0) {
+    if (state.windowResetEpochSeconds !== null) {
+      if (state.windowResetEpochSeconds * 1000 <= now) {
+        state.remaining = null;
+        return false;
+      }
+      return true;
+    }
+    return true;
   }
-  return true;
+
+  return false;
 }
 
 export function getGitHubRateLimitResetEpochSeconds(): number | null {
-  return isGitHubRateLimited() ? state.resetEpochSeconds : null;
+  if (!isGitHubRateLimited()) {
+    return null;
+  }
+  return state.rateLimitResetEpochSeconds ?? state.windowResetEpochSeconds;
 }
 
 export function getGitHubRateLimitResetTime(): string | null {
@@ -114,11 +164,17 @@ export function getGitHubRateLimitResetTime(): string | null {
 
 export function getGitHubRateLimitMetrics(): GitHubRateLimitMetrics {
   const rateLimited = isGitHubRateLimited();
+  const resetEpochSeconds = getGitHubRateLimitResetEpochSeconds();
+  const resetTimeUtc = resetEpochSeconds ? formatUtcTime(new Date(resetEpochSeconds * 1000)) : null;
+  const windowResetUtc = state.windowResetEpochSeconds ? formatUtcTime(new Date(state.windowResetEpochSeconds * 1000)) : null;
+
   return {
     remaining: state.remaining,
     limit: state.limit,
-    resetEpochSeconds: rateLimited ? state.resetEpochSeconds : null,
-    resetTimeUtc: rateLimited && state.resetEpochSeconds ? formatUtcTime(new Date(state.resetEpochSeconds * 1000)) : null,
+    resetEpochSeconds,
+    resetTimeUtc,
+    windowResetEpochSeconds: state.windowResetEpochSeconds,
+    windowResetUtc,
     isRateLimited: rateLimited,
     sources: { ...state.sources },
   };
@@ -127,7 +183,8 @@ export function getGitHubRateLimitMetrics(): GitHubRateLimitMetrics {
 export function resetGitHubRateLimitForTests(): void {
   state.remaining = null;
   state.limit = null;
-  state.resetEpochSeconds = null;
+  state.windowResetEpochSeconds = null;
+  state.rateLimitResetEpochSeconds = null;
   state.sources = {
     "ci-resolver": 0,
     "review-recovery": 0,
@@ -137,7 +194,8 @@ export function resetGitHubRateLimitForTests(): void {
 }
 
 export function setGitHubRateLimitForTests(resetEpochSeconds: number, remaining = 0): void {
-  state.resetEpochSeconds = resetEpochSeconds;
+  state.windowResetEpochSeconds = resetEpochSeconds;
+  state.rateLimitResetEpochSeconds = resetEpochSeconds;
   state.remaining = remaining;
 }
 
@@ -151,7 +209,7 @@ export function startGitHubRateLimitPeriodicLogging(intervalMs = 300_000): void 
       {
         githubRateLimit: metrics,
       },
-      `[github-rate-limit] remaining=${metrics.remaining ?? "unknown"}, sources=${JSON.stringify(metrics.sources)}, rateLimited=${metrics.isRateLimited}`,
+      `[github-rate-limit] remaining=${metrics.remaining ?? "unknown"}, sources=${JSON.stringify(metrics.sources)}, rateLimited=${metrics.isRateLimited}, windowReset=${metrics.windowResetUtc ?? "unknown"}`,
     );
   }, intervalMs);
   logTimer.unref?.();
