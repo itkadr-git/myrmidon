@@ -2,7 +2,8 @@ name: Agent runtime images
 
 on:
   push:
-    branches: [master]
+    branches: [main]
+    tags: ["myr-v*"]
     paths:
       - "docker/agent-runtime/**"
       - "tools/agent-shim/**"
@@ -21,8 +22,8 @@ permissions:
   id-token: write   # cosign keyless OIDC
 
 env:
-  REGISTRY: ghcr.io/paperclipai
-  VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
+  REGISTRY: ghcr.io/itkadr-git
+  VERSION: ${{ github.event.inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('git-{0}', github.sha) }}
 
 jobs:
   build-and-sign:

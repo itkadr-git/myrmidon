@@ -213,6 +213,25 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
   };
   return { service, calls };
 }

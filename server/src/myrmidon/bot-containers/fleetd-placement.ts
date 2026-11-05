@@ -61,6 +61,20 @@ export function effectiveBotSettings(
   };
 }
 
+export type FleetGatewaySource = "registry" | "env";
+
+export interface FleetGatewayUrlOptions {
+  /**
+   * Source of the fleet host:
+   * - "registry": site from the registry, allows https:// fleetd URL.
+   * - "env": host from MYRMIDON_FLEET_HOSTS, requires http:// fleetd URL.
+   * Defaults to "env".
+   */
+  source?: FleetGatewaySource;
+  /** Explicit override to allow https:// fleetd URLs. */
+  allowHttps?: boolean;
+}
+
 /**
  * The base URL the BOARD uses to reach a bot gateway on a fleet host:
  * `http://<fleetd-host>:<published-port>`. The host part comes from the fleetd
@@ -69,8 +83,17 @@ export function effectiveBotSettings(
  * `BotContainerStatus.gatewayPort`, because only fleetd knows which port it
  * allocated. A missing port is an error, never a guessed default: pointing the
  * card at the wrong port would silently break the bot's runs.
+ *
+ * For a remote site enrolled in the registry (/companies/:id/fleet/sites), fleetd
+ * is reached over mTLS (`https://...` or `http://...`), while the bot's Hermes gateway
+ * on that site listens on plain HTTP (`gatewayBindIp`, ports 18700-18799).
+ * For legacy `MYRMIDON_FLEET_HOSTS` on the internal network, fleetd URL must be `http://`.
  */
-export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | undefined): string {
+export function fleetGatewayApiBaseUrl(
+  fleetdUrl: string,
+  gatewayPort: number | undefined,
+  options?: FleetGatewayUrlOptions | FleetGatewaySource,
+): string {
   if (!fleetdUrl) throw new Error("fleet host URL is required for gateway routing");
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
@@ -78,9 +101,20 @@ export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | 
   if (!Number.isInteger(gatewayPort) || gatewayPort <= 0 || gatewayPort > 65535) {
     throw new Error(`fleetd reported an invalid gateway port: ${JSON.stringify(gatewayPort)}`);
   }
+  const source = typeof options === "string" ? options : options?.source;
+  const allowHttps =
+    typeof options === "object" && typeof options?.allowHttps === "boolean"
+      ? options.allowHttps
+      : source === "registry";
   const url = new URL(fleetdUrl);
-  if (url.protocol !== "http:") {
-    throw new Error(`fleetd url must be http:// (got ${url.protocol}//)`);
+  if (allowHttps) {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`fleetd url must be http:// or https:// (got ${url.protocol}//)`);
+    }
+  } else {
+    if (url.protocol !== "http:") {
+      throw new Error(`fleetd url must be http:// (got ${url.protocol}//)`);
+    }
   }
   return `http://${url.hostname}:${gatewayPort}`;
 }
