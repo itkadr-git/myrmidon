@@ -75,7 +75,7 @@ function client(options: Partial<Parameters<typeof createDocumentParserClient>[0
   return createDocumentParserClient({
     baseUrl: service.baseUrl,
     pollIntervalMs: 1,
-    pollTimeoutMs: 2_000,
+    ...(options.parserTimeoutMs === undefined ? { pollTimeoutMs: 2_000 } : {}),
     sleep: async () => {},
     retry: fastRetries,
     ...options,
